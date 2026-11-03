@@ -609,6 +609,42 @@ describe('other bytes back', { timeout: 60_000 }, () => {
         expect((await w.event(w.missingId)).version).toBe(after.version);
     });
 
+    it('refuse a second bind for the photo while the first waits for the watcher, writing nothing', async () => {
+        const w = await world();
+        await otherBytes(w);
+        fs.writeFileSync(w.lib.file('harbor/elsewhere.jpg'), images.second);
+        await w.pass();
+        const item = await w.event(w.missingId);
+        expect(await bindReplacement({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR })).toMatchObject({ ok: true });
+        const after = await w.event(w.missingId);
+        const before = { layers: layers(w), decisions: pendingDecisions(w) };
+        const again = await bindReplacement({ root: w.root, eventId: after.id, expectedVersion: after.version, actor: ACTOR, path: 'harbor/elsewhere.jpg' });
+        expect(again).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`A bind for ${w.p} already waits for the watcher's next pass`) });
+        expect({ layers: layers(w), decisions: pendingDecisions(w) }).toEqual(before);
+        expect((await w.event(w.missingId)).version).toBe(after.version);
+    });
+
+    it('refuse a bind, and a second archive, while an archive of the photo waits for the watcher, as after a reopen, writing nothing', async () => {
+        const w = await world();
+        removeP(w);
+        await w.pass();
+        fs.writeFileSync(w.lib.file('harbor/elsewhere.jpg'), images.third);
+        await w.pass();
+        const item = await w.event(w.missingId);
+        expect(await archiveMissing({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
+        const archived = await w.event(w.missingId);
+        expect(await reopenEvent({ root: w.root, eventId: archived.id, expectedVersion: archived.version, actor: ACTOR })).toMatchObject({ ok: true });
+        const reopened = await w.event(w.missingId);
+        const before = { layers: layers(w), decisions: pendingDecisions(w) };
+        expect(before.decisions).toEqual([expect.objectContaining({ type: 'archive', photoId: w.p })]);
+        const bound = await bindReplacement({ root: w.root, eventId: reopened.id, expectedVersion: reopened.version, actor: ACTOR, path: 'harbor/elsewhere.jpg' });
+        expect(bound).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`An archive of ${w.p} waits for the watcher's next pass`) });
+        const again = await archiveMissing({ root: w.root, eventId: reopened.id, expectedVersion: reopened.version, expectedBase: w.revisionId, actor: ACTOR });
+        expect(again).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`An archive of ${w.p} waits for the watcher's next pass`) });
+        expect({ layers: layers(w), decisions: pendingDecisions(w) }).toEqual(before);
+        expect((await w.event(w.missingId)).version).toBe(reopened.version);
+    });
+
     it('refuse a second bind that would merge the photo a pending bind already merges, writing nothing', async () => {
         const w = await world();
         const { n } = await otherBytes(w);

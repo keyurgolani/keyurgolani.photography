@@ -49,6 +49,24 @@ export async function pendingBindOf(root: string, photoId: string): Promise<Pend
     return null;
 }
 
+export interface PendingArchive {
+    decisionId: string;
+}
+
+/**
+ * #118: the pending archive decision for `photoId`, or null. Until the watcher applies it, the registry still calls
+ * the photo missing, so this is what shows an archive already waits. A decision file that can't be read could be
+ * one, so it throws.
+ */
+export async function pendingArchiveOf(root: string, photoId: string): Promise<PendingArchive | null> {
+    for (const file of await readPendingDecisions(root)) {
+        if (file.raw === null) throw new Error(`The identity decision ${file.name} can't be read, so nothing shows whether it archives ${photoId}`);
+        const decision = file.decision;
+        if (decision?.type === 'archive' && decision.photoId === photoId) return { decisionId: decision.decisionId };
+    }
+    return null;
+}
+
 export type DecisionState =
     | { state: 'pending' }
     | { state: 'applied' }

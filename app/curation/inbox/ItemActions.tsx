@@ -1,13 +1,14 @@
 'use client';
 
-import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
-import { Save } from 'lucide-react';
+import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import { Check, Save } from 'lucide-react';
 import styles from '../curator.module.css';
-import { approveItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
+import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
 import { itemUrl, moveOn } from './journey';
 import {
+    ARCHIVE_TAKEDOWN,
+    archiveQuestion,
     arrivalMessage,
-    CONFIRM_UNAVAILABLE,
     decideLaterRefuses,
     DEFER_LABEL,
     fileParts,
@@ -16,6 +17,7 @@ import {
     descriptionHint,
     formStart,
     IDLE,
+    LIBRARY_PATH_HINT,
     nextItemId,
     parsePlacementValue,
     placementLabel,
@@ -38,6 +40,9 @@ const ACTIONS: Record<InboxActionKind, (previous: InboxActionState, form: FormDa
     dismiss: dismissItem,
     retry: retryItem,
     reopen: reopenItem,
+    confirm: confirmItem,
+    bind: bindItem,
+    archive: archiveItem,
 };
 
 /** Every form's submit button names its action as `intent`, and this sends the form to that action. */
@@ -94,8 +99,10 @@ function reloadItem(event: MouseEvent<HTMLAnchorElement>) {
 
 function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetail }) {
     if (state.status === 'idle') return null;
+    // #118: a bind that went through only waits for the watcher, so it takes the waiting tone, not the done one.
+    const tone = state.status === 'done' && state.action === 'bind' ? 'change' : TONE[state.status];
     return (
-        <div className={styles.notice} data-tone={TONE[state.status]} data-state={state.status}>
+        <div className={styles.notice} data-tone={tone} data-state={state.status}>
             <p>{state.message}</p>
             {state.status === 'stale' ? (
                 <a className={styles.linkButton} href={`/curation/inbox?item=${detail.id}#item`} onClick={reloadItem}>
@@ -106,14 +113,20 @@ function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetai
     );
 }
 
-/** Where an answer shows: by the field it's about, inside Dismiss for a dismissal Dismiss can still take, or under the action buttons. */
-type AnswerSlot = 'description' | 'dismiss' | 'actions';
+/**
+ * Where an answer shows: by the field it's about, inside Dismiss, Bind or Archive for an answer that form can still
+ * take, or under the action buttons.
+ */
+type AnswerSlot = 'description' | 'dismiss' | 'bind' | 'archive' | 'actions';
 
-function slotOf(state: InboxActionState, canDismiss: boolean): AnswerSlot | null {
+function slotOf(state: InboxActionState, can: InboxDetail['can']): AnswerSlot | null {
     if (state.status === 'idle') return null;
     if (state.field === 'description') return 'description';
     // A dismissal that went through leaves no Dismiss to show it in, so its answer shows under the buttons, by Reopen.
-    if (state.action === 'dismiss' && canDismiss) return 'dismiss';
+    // So does a bind or an archive once the refresh after it takes its form away (#118).
+    if (state.action === 'dismiss' && can.dismiss) return 'dismiss';
+    if (state.action === 'bind' && can.bind) return 'bind';
+    if (state.action === 'archive' && can.archive) return 'archive';
     return 'actions';
 }
 
@@ -121,12 +134,238 @@ function slotOf(state: InboxActionState, canDismiss: boolean): AnswerSlot | null
  * A polite live region, there from the start, so an answer put in it is read
  * out. It holds the answers to actions taken on this page; what an approval
  * or Decide later did before this item opened is ArrivalStrip's, at the top.
+ * The one under the buttons takes focus when the control that was pressed is
+ * gone after the refresh, so focus never drops to the page's body.
  */
-function AnswerRegion({ show, state, detail }: { show: boolean; state: InboxActionState; detail: InboxDetail }) {
+function AnswerRegion({ show, state, detail, regionRef, announce }: { show: boolean; state: InboxActionState; detail: InboxDetail; regionRef?: RefObject<HTMLDivElement | null>; announce?: { text: string; serial: number } | null }) {
     return (
-        <div role="status" aria-live="polite" className={styles.answer}>
-            {show ? <Notice state={state} detail={detail} /> : null}
+        <div role="status" aria-live="polite" className={styles.answer} ref={regionRef} tabIndex={regionRef ? -1 : undefined}>
+            {/* #118: a refusal the page makes itself, before any post, said here too, since the field it's by may already
+                hold focus. A new node each time, so the same words are read again. The field shows it on screen. */}
+            {announce ? (
+                <p key={announce.serial} className={styles.visuallyHidden}>
+                    {announce.text}
+                </p>
+            ) : show ? (
+                <Notice state={state} detail={detail} />
+            ) : null}
         </div>
+    );
+}
+
+/** What every submit button says while an action is out: unavailable, but focusable still (#1's focus contract). */
+const offWhile = (pending: boolean) => ({ 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined });
+
+interface ResolveProps {
+    detail: InboxDetail;
+    activeRevisionId: string | null;
+    state: InboxActionState;
+    pending: boolean;
+    slot: AnswerSlot | null;
+    submit: (event: FormEvent<HTMLFormElement>) => void;
+}
+
+/**
+ * #118: Bind, for a missing source: #17's bindReplacement() gives the photograph the file at a library path. The file
+ * #10 linked at its last path is chosen when there's one; several are offered with none chosen; and another file's
+ * path can be typed, which the server checks is inside the library. The watcher applies the bind on its next pass,
+ * so the item stays open until then, and the answer says it waits.
+ */
+function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: ResolveProps) {
+    const linked = detail.linkedFiles;
+    // A linked file goes by its item's ID, never its path, which the page shows escaped: the server reads the path again.
+    const [choice, setChoice] = useState<string | null>(linked.length === 1 ? linked[0].id : linked.length === 0 ? 'typed' : null);
+    const [path, setPath] = useState('');
+    const pathRef = useRef<HTMLInputElement>(null);
+    const firstFileRef = useRef<HTMLInputElement>(null);
+    const refusedBind = state.status !== 'idle' && state.status !== 'done' && state.action === 'bind' ? state : null;
+    const pathError = refusedBind?.field === 'path' ? refusedBind.message : null;
+    // A refusal about which linked file shows by the files, while there are files to show it by.
+    const filesError = refusedBind?.field === 'bindTo' && linked.length > 0 ? refusedBind.message : null;
+    const answerSerial = state.status === 'idle' ? 0 : state.serial;
+    useEffect(() => {
+        if (pathError) pathRef.current?.focus();
+        else if (filesError) firstFileRef.current?.focus();
+    }, [answerSerial, pathError, filesError]);
+    return (
+        <details className={styles.more}>
+            <summary>Bind to the file that replaces it</summary>
+            <form method="post" onSubmit={submit} aria-label="Bind">
+                <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
+                {linked.length > 0 ? (
+                    <fieldset className={styles.sequence} aria-describedby={filesError ? 'bind-to-error' : undefined}>
+                        <legend>File to bind</legend>
+                        {linked.map((file, index) => (
+                            <label key={file.id} className={styles.slot}>
+                                <input ref={index === 0 ? firstFileRef : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} />
+                                {linked.length === 1 ? `${file.path}, the new file at its last path` : file.path}
+                            </label>
+                        ))}
+                        <label className={styles.slot}>
+                            <input type="radio" name="bindTo" value="typed" checked={choice === 'typed'} onChange={() => setChoice('typed')} />
+                            Another file in the library
+                        </label>
+                    </fieldset>
+                ) : (
+                    <input type="hidden" name="bindTo" value="typed" />
+                )}
+                {filesError ? (
+                    <p className={styles.fieldError} id="bind-to-error" data-state="invalid">
+                        {filesError}
+                    </p>
+                ) : null}
+                <label className={styles.label}>
+                    Library path
+                    <input
+                        ref={pathRef}
+                        className={styles.control}
+                        name="path"
+                        value={path}
+                        required={linked.length === 0}
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(event) => {
+                            setPath(event.target.value);
+                            // Typing a path chooses it, so the file sent is the one in the field.
+                            if (linked.length > 0) setChoice('typed');
+                        }}
+                        aria-invalid={pathError ? true : undefined}
+                        aria-describedby={pathError ? 'bind-path-error bind-path-hint' : 'bind-path-hint'}
+                    />
+                </label>
+                {pathError ? (
+                    <p className={styles.fieldError} id="bind-path-error" data-state="invalid">
+                        {pathError}
+                    </p>
+                ) : null}
+                <p className={styles.hint} id="bind-path-hint">
+                    {LIBRARY_PATH_HINT}
+                </p>
+                <p className={styles.hint}>The watcher applies a bind on its next pass, so this item stays open until then. Nothing a visitor sees changes.</p>
+                <div className={styles.actions}>
+                    <button type="submit" name="intent" value="bind" className={styles.button} {...offWhile(pending)}>
+                        Bind
+                    </button>
+                </div>
+            </form>
+            {/* A refused path or file shows by its field; every other answer to Bind shows here, while Bind is still offered. */}
+            <AnswerRegion show={slot === 'bind' && pathError === null && filesError === null} state={state} detail={detail} />
+        </details>
+    );
+}
+
+/**
+ * #118: Archive, for a missing source: #17's archiveMissing() takes the photograph out of every series in the draft
+ * and archives it, which the next publish makes public. That is a takedown, so it needs a reason and a second,
+ * explicit step that names the file, and only that step's button sends the form.
+ */
+function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }: ResolveProps) {
+    const [reason, setReason] = useState('');
+    const [confirming, setConfirming] = useState(false);
+    const [missingReason, setMissingReason] = useState(false);
+    // Counts each time the page asks for a reason, so the live region says it every time, and the field takes focus
+    // once the error is there to describe it.
+    const [asked, setAsked] = useState(0);
+    const reasonRef = useRef<HTMLInputElement>(null);
+    const archiveRef = useRef<HTMLButtonElement>(null);
+    const questionRef = useRef<HTMLParagraphElement>(null);
+    const refused = state.status === 'invalid' && state.action === 'archive' && state.field === 'reason' ? state.message : null;
+    const reasonError = missingReason ? 'Archiving needs a reason.' : refused;
+    const answerSerial = state.status === 'idle' ? 0 : state.serial;
+    useEffect(() => {
+        if (refused) reasonRef.current?.focus();
+    }, [answerSerial, refused]);
+    useEffect(() => {
+        if (confirming) questionRef.current?.focus();
+    }, [confirming]);
+    useEffect(() => {
+        if (asked > 0) reasonRef.current?.focus();
+    }, [asked]);
+    const toggle = () => {
+        if (confirming) {
+            setConfirming(false);
+            return;
+        }
+        if (reason.trim() === '') {
+            setMissingReason(true);
+            setAsked((count) => count + 1);
+            return;
+        }
+        setMissingReason(false);
+        setConfirming(true);
+    };
+    const cancel = () => {
+        setConfirming(false);
+        archiveRef.current?.focus();
+    };
+    const question = archiveQuestion(fileParts(detail.sourcePath).name);
+    return (
+        <details className={styles.more}>
+            <summary>Archive and take it down</summary>
+            <form method="post" onSubmit={submit} aria-label="Archive">
+                <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
+                <p className={styles.hint} id="archive-takedown">
+                    {ARCHIVE_TAKEDOWN}
+                </p>
+                <label className={styles.label}>
+                    Reason for archiving
+                    <input
+                        ref={reasonRef}
+                        className={styles.control}
+                        name="reason"
+                        value={reason}
+                        required
+                        maxLength={500}
+                        autoComplete="off"
+                        onChange={(event) => {
+                            setReason(event.target.value);
+                            if (event.target.value.trim() !== '') setMissingReason(false);
+                        }}
+                        onKeyDown={(event) => {
+                            // Enter in the field opens the second step, as Archive does; it never sends the form by itself.
+                            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                                event.preventDefault();
+                                if (!confirming) toggle();
+                            }
+                        }}
+                        aria-invalid={reasonError ? true : undefined}
+                        aria-describedby={reasonError ? 'archive-reason-error' : undefined}
+                    />
+                </label>
+                {reasonError ? (
+                    <p className={styles.fieldError} id="archive-reason-error" data-state="invalid">
+                        {reasonError}
+                    </p>
+                ) : null}
+                <div className={styles.actions}>
+                    <button ref={archiveRef} type="button" className={styles.button} aria-expanded={confirming} aria-controls="archive-confirm" aria-describedby="archive-takedown" onClick={toggle}>
+                        Archive
+                    </button>
+                </div>
+                <div id="archive-confirm" role={confirming ? 'group' : undefined} aria-labelledby={confirming ? 'archive-question' : undefined}>
+                    {confirming ? (
+                        <>
+                            {/* tabIndex -1: the second step takes focus when it opens, so the question is read first. */}
+                            <p id="archive-question" tabIndex={-1} ref={questionRef}>
+                                {question}
+                            </p>
+                            {/* Sent only from this step, and the server refuses an archive without it. */}
+                            <input type="hidden" name="confirmed" value="yes" />
+                            <div className={styles.actions}>
+                                <button type="button" className={styles.button} onClick={cancel}>
+                                    Cancel
+                                </button>
+                                <button type="submit" name="intent" value="archive" className={styles.button} {...offWhile(pending)}>
+                                    Yes, archive it
+                                </button>
+                            </div>
+                        </>
+                    ) : null}
+                </div>
+            </form>
+            {/* A refused reason shows by its field; every other answer to Archive shows here, while Archive is still offered. */}
+            <AnswerRegion show={slot === 'archive' && refused === null} state={state} detail={detail} announce={missingReason ? { text: 'Archiving needs a reason.', serial: asked } : null} />
+        </details>
     );
 }
 
@@ -382,14 +621,22 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     }, [state, detail.id, detail.version, detail.sourcePath, seen, open]);
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
-    // A new photograph's approve is unavailable only while a pending bind merges it (#17); its hint says why.
-    const unavailable = primary !== undefined && detail.primaryUnavailable !== null && (detail.type !== 'new' || !can.approve);
+    // A new photograph's approve is unavailable only while a pending bind merges it (#17); its hint says why. A
+    // replacement's Confirm is unavailable while its new set builds or can't be used (#118), with its own short reason,
+    // since the hint beside it is about Decide later.
+    const confirmReason = detail.type === 'replacement' && !can.confirm ? detail.confirmUnavailable : null;
+    const unavailable = primary !== undefined && ((detail.type === 'new' && detail.primaryUnavailable !== null && !can.approve) || confirmReason !== null);
     // A replacement whose Decide later the page already knows would refuse shows it disabled, with the hint as its reason.
     const deferRefuses = can.defer && detail.type === 'replacement' && decideLaterRefuses(detail.replacement);
-    // A replacement's Confirm has its own short reason; the hint beside it is about Decide later.
-    const confirmReason = detail.type === 'replacement' ? 'confirm-unavailable' : 'primary-unavailable';
-    const anyButton = unavailable || (detail.type === 'new' && (can.edit || can.approve)) || can.defer;
-    const slot = slotOf(state, can.dismiss);
+    const anyButton = unavailable || (detail.type === 'new' && (can.edit || can.approve)) || can.defer || can.confirm;
+    const slot = slotOf(state, can);
+    // #118: a confirm, bind or archive that went through takes its control away once the page refreshes. Then the
+    // answer under the buttons takes the focus, which would otherwise drop to the page's body.
+    const answerRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (state.status !== 'done' || (state.action !== 'confirm' && state.action !== 'bind' && state.action !== 'archive') || slot !== 'actions') return;
+        if (document.activeElement === null || document.activeElement === document.body) answerRef.current?.focus();
+    }, [state, slot, detail]);
     return (
         <>
             <form method="post" onSubmit={submit} aria-label="Review">
@@ -401,17 +648,17 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                     <div className={styles.actions}>
                         {/* An action the inbox can't take yet stays visible with its reason, before the live ones and quieter than them. */}
                         {unavailable ? (
-                            <button type="button" className={`${styles.button} ${styles.unavailable}`} disabled aria-describedby={confirmReason}>
+                            <button type="button" className={`${styles.button} ${styles.unavailable}`} disabled aria-describedby={confirmReason !== null ? 'confirm-unavailable' : 'primary-unavailable'}>
                                 {primary}
                             </button>
                         ) : null}
-                        {unavailable && confirmReason === 'confirm-unavailable' ? (
+                        {confirmReason !== null ? (
                             <span className={styles.visuallyHidden} id="confirm-unavailable">
-                                {CONFIRM_UNAVAILABLE}
+                                {confirmReason}
                             </span>
                         ) : null}
                         {detail.type === 'new' && can.edit ? (
-                            <button type="submit" name="intent" value="edit" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
+                            <button type="submit" name="intent" value="edit" className={styles.button} {...offWhile(pending)}>
                                 Save edits
                             </button>
                         ) : null}
@@ -420,14 +667,22 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                                 {DEFER_LABEL}
                             </button>
                         ) : can.defer ? (
-                            // On a replacement the hint says what Decide later does to the draft, so it describes the button.
-                            <button type="submit" name="intent" value="defer" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined} aria-describedby={detail.type === 'replacement' && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
+                            // On a replacement the hint says what Decide later does to the draft, and on a missing source what it keeps
+                            // (#118), so it describes the button.
+                            <button type="submit" name="intent" value="defer" className={styles.button} {...offWhile(pending)} aria-describedby={(detail.type === 'replacement' || detail.type === 'missing') && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
                                 {DEFER_LABEL}
                             </button>
                         ) : null}
                         {primary && detail.type === 'new' && can.approve ? (
-                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
+                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} {...offWhile(pending)}>
                                 <Save size={16} aria-hidden="true" />
+                                {primary}
+                            </button>
+                        ) : null}
+                        {/* #118: Confirm takes the primary place, as Approve does. It writes the draft only; a publish makes it public. */}
+                        {primary && detail.type === 'replacement' && can.confirm ? (
+                            <button type="submit" name="intent" value="confirm" className={`${styles.button} ${styles.primary}`} {...offWhile(pending)}>
+                                <Check size={16} aria-hidden="true" />
                                 {primary}
                             </button>
                         ) : null}
@@ -444,7 +699,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {can.retry ? (
                 <form method="post" onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="retry" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
+                    <button type="submit" name="intent" value="retry" className={styles.button} {...offWhile(pending)}>
                         Retry processing
                     </button>
                 </form>
@@ -453,14 +708,18 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {can.reopen ? (
                 <form method="post" onSubmit={submit} className={styles.actions}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="reopen" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
+                    <button type="submit" name="intent" value="reopen" className={styles.button} {...offWhile(pending)}>
                         Reopen
                     </button>
                 </form>
             ) : null}
 
-            {/* Every answer but a dismissal or a refused description lands here, right under the buttons that produced it. */}
-            <AnswerRegion show={slot === 'actions'} state={state} detail={detail} />
+            {/* Every answer but a dismissal, a bind, an archive or a refused description lands here, right under the buttons that produced it. */}
+            <AnswerRegion show={slot === 'actions'} state={state} detail={detail} regionRef={answerRef} />
+
+            {/* Keyed by the version the page showed, as the suggestion is, so a form left open across a refresh never reads as another state's. */}
+            {can.bind ? <BindForm key={`bind-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} slot={slot} submit={submit} /> : null}
+            {can.archive ? <ArchiveForm key={`archive-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} slot={slot} submit={submit} /> : null}
 
             {can.dismiss ? (
                 <details className={styles.more}>
@@ -472,7 +731,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                             <input className={styles.control} name="reason" required maxLength={500} autoComplete="off" />
                         </label>
                         <div className={styles.actions}>
-                            <button type="submit" name="intent" value="dismiss" className={styles.button} aria-disabled={pending || undefined} data-off={pending ? 'true' : undefined}>
+                            <button type="submit" name="intent" value="dismiss" className={styles.button} {...offWhile(pending)}>
                                 Dismiss
                             </button>
                         </div>

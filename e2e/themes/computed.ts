@@ -74,14 +74,16 @@ export interface Walk {
  * Every element under body, in the page and in any same-origin frame, by a path of tag and nth-of-type (no class
  * names, which differ between builds). The theme control and its popover, and today's toggle with its description,
  * are left out with their subtrees, and don't count toward their siblings' positions. The slot that holds only them
- * (SiteNav's end) stays, compared by style alone.
+ * (SiteNav's end) stays, compared by style alone. `leaveOut` names more elements left out the same way: ones the head
+ * adds that the base never had (dark-parity.spec.ts's HEAD_ONLY).
  */
-export function walk(page: Page, selectors: string[] = []): Promise<Walk> {
-    return page.evaluate(([properties, wanted]) => {
+export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = []): Promise<Walk> {
+    return page.evaluate(([properties, wanted, added]) => {
         const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'NOSCRIPT', 'TEMPLATE', 'META']);
         const isToggle = (el: Element) => el.tagName === 'BUTTON' && /^Switch to/.test((el.textContent ?? '').trim());
         // Today's toggle comes with a hidden description beside it; the control with its popover.
-        const isPart = (el: Element) => el.matches('[data-theme-control], .theme-menu-popover') || isToggle(el) || (el.matches('span[hidden]') && [...(el.parentElement?.children ?? [])].some(isToggle));
+        const isPart = (el: Element) =>
+            el.matches('[data-theme-control], .theme-menu-popover') || isToggle(el) || (el.matches('span[hidden]') && [...(el.parentElement?.children ?? [])].some(isToggle)) || added.some((selector) => el.matches(selector));
         // The control's slot: an element holding the control and nothing else (SiteNav's end), which collapses with it
         // where it's hidden (no JavaScript). In the curator's header, which holds more, only the control goes.
         const isSlot = (el: Element) => el.children.length > 0 && [...el.children].every(isPart);
@@ -151,7 +153,7 @@ export function walk(page: Page, selectors: string[] = []): Promise<Walk> {
             elements,
             resolved,
         };
-    }, [[...PROPERTIES], selectors] as const);
+    }, [[...PROPERTIES], selectors, leaveOut] as const);
 }
 
 export interface Comparison {

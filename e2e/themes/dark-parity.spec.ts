@@ -1,11 +1,11 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium, expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
+import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
@@ -89,24 +89,25 @@ test.skip(!BASE, 'Set PARITY_BASE_DIR to a built checkout of the base; CI\'s The
 
 const pinned = (process.env.PARITY_PORTS ?? '').split(',').map(Number).filter(Boolean);
 
-function freePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => {
-            const { port } = server.address() as net.AddressInfo;
-            server.close(() => resolve(port));
-        });
-    });
-}
 
 interface Server {
     origin: string;
     stop: () => Promise<void>;
 }
 
-/** `next start` from `tree`'s build on 127.0.0.1, with `env`, answering `status` on `ready`. */
-async function serve(tree: string, port: number, env: Record<string, string>, ready: string, status = 200): Promise<Server> {
+type Env = Record<string, string>;
+
+/**
+ * `next start` from `tree`'s build on 127.0.0.1, with `env`, answering `status` on `ready`. A pinned `port` is used
+ * as it is. With none, it takes a free one, and a fresh one if a server finds its port taken (test/helpers/ports.ts),
+ * so `env` can be a builder for the env of whichever port it lands on.
+ */
+function serve(tree: string, port: number | null, env: Env | ((port: number) => Env), ready: string, status = 200): Promise<Server> {
+    const on = (listen: number) => serveOn(tree, listen, typeof env === 'function' ? env(listen) : env, ready, status);
+    return port === null ? retryOnAddrInUse(on) : on(port);
+}
+
+async function serveOn(tree: string, port: number, env: Env, ready: string, status: number): Promise<Server> {
     const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('PHOTOGRAPHY_') && !name.startsWith('CURAT') && name !== 'SITE_URL'));
     const child: ChildProcess = spawn(process.execPath, [path.join(tree, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
         cwd: tree,
@@ -787,12 +788,21 @@ const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width) => {
     ];
 });
 
+/**
+ * Elements the head adds that the base never had, each named. Like the theme control, each is taken out of the head's
+ * layout and left out of the walk in both builds, so the rest of the page is still compared exactly. The report
+ * lists them.
+ */
+const HEAD_ONLY: { selector: string; why: string }[] = [{ selector: 'header nav a[href="/curation/series"]', why: "#150: the curator header's Series link" }];
+
 const ALLOWANCES: Allowance[] = [
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
     { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow', 'border-bottom-color'], why: "P2-8: the Inbox's selected row's outline" },
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
     ...INDEPENDENT_PANELS,
+    // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
+    ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
 const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && (entry.width === undefined || entry.width === width));
 
@@ -827,7 +837,11 @@ async function styles(
 ): Promise<Walked2> {
     const head = !tag.startsWith('base');
     // The curator's head takes the control out of the layout, as no JavaScript does, since the base's header had none.
-    const css = [pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '', pair.headStyle && head ? pair.headStyle : ''].join('');
+    const css = [
+        pair.addsControl && head ? '[data-theme-control]{display:none!important}' : '',
+        head ? `${HEAD_ONLY.map((entry) => entry.selector).join(',')}{display:none!important}` : '',
+        pair.headStyle && head ? pair.headStyle : '',
+    ].join('');
     const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
     try {
         const selectors = allowancesFor(pair, viewport.width).map((entry) => entry.selector);
@@ -842,7 +856,7 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors), timedOut, ...painted };
+        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector)), timedOut, ...painted };
     } finally {
         await context.close();
     }
@@ -946,7 +960,7 @@ let library = '';
 let visitorRoot = '';
 let inbox: InboxFixture | undefined;
 let secrets: TestCuratorSecrets | undefined;
-const port = async (index: number) => pinned[index] ?? (await freePort());
+const port = (index: number): number | null => pinned[index] ?? null;
 
 test.beforeAll(async () => {
     fs.mkdirSync(OUT, { recursive: true });
@@ -986,6 +1000,8 @@ test.afterAll(async () => {
             '',
             "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Dark against the base, at 1440, 1024 and 390, in Dark's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
             '',
+            `Left out as new in the head, taken out of its layout and of both walks: ${HEAD_ONLY.map((entry) => `\`${entry.selector}\` (${entry.why})`).join('; ')}.`,
+            '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
             read(STYLE_ROWS).trimEnd(),
@@ -1012,7 +1028,7 @@ test.describe('the visitor site and the legacy Gallery', () => {
     test.beforeAll(async () => {
         const common = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig };
         const catalog = { ...common, PHOTOGRAPHY_DATA_DIR: visitorRoot };
-        const [a, b, c, d] = [await port(0), await port(1), await port(2), await port(3)];
+        const [a, b, c, d] = [port(0), port(1), port(2), port(3)];
         const started = await Promise.all([serve(BASE!, a, catalog, '/api/ready'), serve(HEAD, b, catalog, '/api/ready'), serve(BASE!, c, common, '/'), serve(HEAD, d, common, '/')]);
         servers.push(...started);
         visitor = { base: started[0].origin, head: started[1].origin };
@@ -1111,7 +1127,7 @@ test.describe('the curator and its 503', () => {
         inbox = await createInboxFixture();
         await openInboxItems(inbox);
         secrets = await makeCuratorSecrets();
-        const [a, b, c, d] = [await port(0), await port(1), await port(2), await port(3)];
+        const [a, b, c, d] = [port(0), port(1), port(2), port(3)];
         const env = (listen: number, secretEnv: Record<string, string>) => ({
             PHOTOGRAPHY_LIBRARY_DIR: inbox!.library,
             PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig,
@@ -1120,12 +1136,13 @@ test.describe('the curator and its 503', () => {
             CURATOR_TUNNEL_PORT: String(listen),
             ...secretEnv,
         });
+        const signedIn = secrets.env;
         const missing = { CURATOR_PASSPHRASE_HASH_FILE: path.join(temp, 'no-such.hash'), CURATOR_SESSION_SECRET_FILE: path.join(temp, 'no-such.key') };
         const started = await Promise.all([
-            serve(BASE!, a, env(a, secrets.env), '/curation/login'),
-            serve(HEAD, b, env(b, secrets.env), '/curation/login'),
-            serve(BASE!, c, env(c, missing), '/curation/login', 503),
-            serve(HEAD, d, env(d, missing), '/curation/login', 503),
+            serve(BASE!, a, (listen) => env(listen, signedIn), '/curation/login'),
+            serve(HEAD, b, (listen) => env(listen, signedIn), '/curation/login'),
+            serve(BASE!, c, (listen) => env(listen, missing), '/curation/login', 503),
+            serve(HEAD, d, (listen) => env(listen, missing), '/curation/login', 503),
         ]);
         servers.push(...started);
         curator = { base: started[0].origin, head: started[1].origin };
@@ -1163,7 +1180,7 @@ test.describe('the error page', () => {
         fs.mkdirSync(path.join(root, 'catalog', 'active'), { recursive: true });
         fs.writeFileSync(path.join(root, 'catalog', 'active', 'v1.json'), 'not a pointer');
         const env = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig, PHOTOGRAPHY_DATA_DIR: root };
-        const [a, b] = [await port(0), await port(1)];
+        const [a, b] = [port(0), port(1)];
         const started = await Promise.all([serve(BASE!, a, env, '/work', 500), serve(HEAD, b, env, '/work', 500)]);
         servers.push(...started);
         failing = { base: started[0].origin, head: started[1].origin };

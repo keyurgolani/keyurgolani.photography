@@ -3,15 +3,17 @@ import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
-import { pendingBindOf, pendingMergeOf } from './binds';
+import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
+import { candidateOf } from './candidates';
 import { printable, scrub } from './commands';
 import { backAtItsPath, closeCauseOf, EVENT_ID_RE, FAILURE_TEXT, needsJudgment, waitingReason, type CurationEvent } from './events';
 import { photoHolderEntries, type ReferenceCache } from './holders';
 import {
     bindWaitingText,
+    CONFIRM_UNAVAILABLE,
     humanDate,
     itemTitle,
-    PRIMARY_ACTION,
+    MISSING_HINT,
     replacementHint,
     seriesName,
     settledMissingTitle,
@@ -29,6 +31,7 @@ import {
 import { readDraftPlan } from './pins';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
+import { linkedNewItems } from './resolutions';
 
 /**
  * Reads the inbox for the curator's page (#14's 14-3): every event, grouped
@@ -192,10 +195,41 @@ function decisionDetail(decision: CurationEvent['decisions'][number], series: re
 }
 
 /**
- * Which of 14-1's actions would get past their state and type checks. The
+ * #118: why an open replacement can't be confirmed now, by what confirmReplacement() checks first: the photograph
+ * still on these bytes, and their set ready. Null when it can be, or the item isn't an open replacement. The writer
+ * checks again under the lock, and detailOf() adds a photograph with no photo record once it has read the record.
+ */
+function confirmBlock(event: CurationEvent, registry: Registry | null): string | null {
+    if (event.type !== 'replacement' || !(event.status === 'open' || event.status === 'deferred' || event.status === 'failed')) return null;
+    if (event.photoId === null || event.assetRevision === null) return CONFIRM_UNAVAILABLE.changed;
+    if (registry === null) return CONFIRM_UNAVAILABLE.unknown;
+    const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
+    if (!photo || photo.mergedInto || photo.sourceHealth !== 'present' || photo.source.observedRevision !== event.assetRevision) return CONFIRM_UNAVAILABLE.changed;
+    const candidate = candidateOf(registry, event.photoId, event.assetRevision);
+    if (candidate.state === 'pending') return CONFIRM_UNAVAILABLE.building;
+    if (candidate.state === 'failed') return CONFIRM_UNAVAILABLE.failed;
+    return candidate.state === 'ready' ? null : CONFIRM_UNAVAILABLE.changed;
+}
+
+/**
+ * #118: whether a missing item's photograph can still be bound or archived, as bindReplacement() and
+ * archiveMissing() check it first: the registry still holds it, unmerged, and its source is still missing. A
+ * source back, which the watcher closes the item for, can't be either. Bind also needs it not archived yet.
+ */
+function missingSettles(event: CurationEvent, registry: Registry | null): { bind: boolean; archive: boolean; back: boolean } {
+    const none = { bind: false, archive: false, back: false };
+    if (event.type !== 'missing' || event.photoId === null || registry === null || !(event.status === 'open' || event.status === 'deferred' || event.status === 'failed')) return none;
+    const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
+    if (!photo || photo.mergedInto) return none;
+    if (photo.sourceHealth === 'present' && photo.source.present) return { ...none, back: true };
+    return { bind: photo.sourceHealth !== 'archived', archive: true, back: false };
+}
+
+/**
+ * Which of 14-1's and #17's actions would get past their state and type checks. The
  * action checks again, under the lock. A missing photograph that something
- * still shows can't be dismissed either (detailOf() decides that once it
- * knows the references).
+ * still shows can't be dismissed either, and one a bind waits for can't be bound
+ * or archived (detailOf() decides those once it knows the references and the bind).
  */
 function abilities(event: CurationEvent, registry: Registry | null): InboxDetail['can'] {
     const open = event.status === 'open' || event.status === 'deferred' || event.status === 'failed';
@@ -203,6 +237,7 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
     const revision = event.photoId !== null && event.assetRevision !== null ? registry?.photos[event.photoId]?.revisions[event.assetRevision] : undefined;
     const failedBuild = revision !== undefined && Object.values(revision.profiles).some((profile) => profile.state === 'failed');
     const merged = event.photoId !== null && registry?.photos[event.photoId]?.mergedInto !== undefined;
+    const settles = missingSettles(event, registry);
     return {
         approve: event.type === 'new' && (event.status === 'open' || event.status === 'deferred'),
         edit: open,
@@ -215,21 +250,50 @@ function abilities(event: CurationEvent, registry: Registry | null): InboxDetail
         // reopened it would read as missing and unresolved until the watcher's next start. Nor a new item whose photo
         // a bind merged, whose approve can only be refused. `curation reopen` takes all three.
         reopen: event.status === 'deferred' || (event.status === 'dismissed' && !backAtItsPath(event)) || event.status === 'approved' || (event.status === 'resolved' && event.type !== 'missing' && !merged),
+        // #118: as confirmReplacement(), bindReplacement() and archiveMissing() decide before they take a lock.
+        confirm: event.type === 'replacement' && open && confirmBlock(event, registry) === null,
+        bind: settles.bind,
+        archive: settles.archive,
     };
 }
 
 /**
  * The hint under the actions. Only while Decide later is offered, since it names Decide later: for a replacement, what
- * Decide later does with the draft now; for a missing source, why its primary action isn't in the inbox yet. A settled
- * item (approved, dismissed, or #17's resolved or archived missing item) offers no Decide later, so it gets none.
+ * Decide later does with the draft now; for a missing source, what settles it, or why Bind and Archive wait (#118). A
+ * settled item (approved, dismissed, or #17's resolved or archived missing item) offers no Decide later, so it gets none.
  */
-function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null, bindWaiting: BindWaiting | null): string | null {
+function primaryUnavailable(event: CurationEvent, can: InboxDetail['can'], replacement: ReplacementDraft | null, bindWaiting: BindWaiting | null, archiveWaiting: boolean, registry: Registry | null): string | null {
     // #17: a new photograph a pending bind merges can't be approved, so the page says why before any click.
     if (event.type === 'new' && bindWaiting?.kind === 'merge') return bindWaitingText(bindWaiting, printable(event.derivedFacts.sourcePath));
-    if (PRIMARY_ACTION[event.type] === undefined || event.type === 'new' || !can.defer) return null;
-    return event.type === 'replacement'
-        ? replacementHint(replacement)
-        : "Locating, binding, and archiving aren't in the inbox yet, so choose Decide later until they are. The published output stays protected.";
+    if (!can.defer) return null;
+    if (event.type === 'replacement') return replacementHint(replacement);
+    if (event.type !== 'missing') return null;
+    if (bindWaiting?.kind === 'bind') return MISSING_HINT.bindWaiting;
+    if (archiveWaiting) return MISSING_HINT.archiveWaiting;
+    return missingSettles(event, registry).back ? MISSING_HINT.back : MISSING_HINT.open;
+}
+
+/**
+ * #118: whether an archive of the missing item's photograph waits for the watcher, as after an archive and a reopen.
+ * A decision file that can't be read counts as one, so Bind and Archive stay withdrawn, and their writers say why.
+ */
+async function archiveWaitingOf(root: string, event: CurationEvent): Promise<boolean> {
+    if (event.type !== 'missing' || event.photoId === null || !(event.status === 'open' || event.status === 'deferred' || event.status === 'failed')) return false;
+    return (await pendingArchiveOf(root, event.photoId).catch(() => ({ decisionId: '' }))) !== null;
+}
+
+/**
+ * #118: the new files linked at a missing photograph's last path, which Bind offers, by their items. The form sends
+ * the item's ID and the server reads the path again, since the page's copy is escaped. Empty when none is linked, or
+ * they can't be read.
+ */
+async function linkedFilesOf(root: string, event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): Promise<InboxDetail['linkedFiles']> {
+    if (event.type !== 'missing' || event.photoId === null || registry === null || !can.bind) return [];
+    try {
+        return (await linkedNewItems(root, event.photoId, registry)).map((item) => ({ id: item.id, path: printable(item.derivedFacts.sourcePath) }));
+    } catch {
+        return [];
+    }
 }
 
 /**
@@ -287,11 +351,19 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
     }
     const replacement = await replacementOf(root, event, registry, cache);
     const bindWaiting = await bindWaitingOf(root, event, registry);
+    const archiveWaiting = await archiveWaitingOf(root, event);
+    // #118: confirmReplacement() refuses a photograph with no photo record, which replacementOf() has read. Only an
+    // item Confirm could take needs a reason; a settled one shows no Confirm at all.
+    const confirmable = event.type === 'replacement' && (event.status === 'open' || event.status === 'deferred' || event.status === 'failed');
+    const confirmUnavailable = confirmBlock(event, registry) ?? (confirmable && replacement?.draft === 'none' ? CONFIRM_UNAVAILABLE.noRecord : null);
     const can = {
         ...abilities(event, registry),
         ...(event.type === 'missing' && references?.length !== 0 ? { dismiss: false } : {}),
         // approveEvent() refuses a photograph a pending bind merges, so the page doesn't offer it.
         ...(bindWaiting?.kind === 'merge' ? { approve: false } : {}),
+        ...(confirmUnavailable !== null ? { confirm: false } : {}),
+        // #118: archiveMissing() and bindReplacement() refuse while a bind or an archive of the photograph waits.
+        ...(bindWaiting?.kind === 'bind' || archiveWaiting ? { bind: false, archive: false } : {}),
     };
     const suggestedSeries = event.suggestions.series;
     const placement = event.suggestions.placement;
@@ -329,7 +401,9 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         reviewedAt: event.reviewedAt,
         reviewedBy: event.reviewedBy === null ? null : printable(event.reviewedBy),
         can,
-        primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting),
+        primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting, archiveWaiting, registry),
+        confirmUnavailable,
+        linkedFiles: await linkedFilesOf(root, event, can, registry),
         replacement,
         resolvedBy: resolvedCauseOf(event, registry),
         bindWaiting,

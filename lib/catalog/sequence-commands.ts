@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isFocalPoint, placementAt } from './edit-fields';
 import { applySequenceOp, type Actor, type Consequence, type OrderError, type Placement, type SequenceOp } from './sequence';
 import type { AuthoredSeries, FocalPoint } from './types';
 import { readAuthoredRecord } from './working-layer';
@@ -46,15 +47,7 @@ const EDITOR: Actor = { kind: 'editor' };
 
 class UsageError extends Error {}
 
-/**
- * Where a photo goes so that it ends up at 1-based `position` in the result,
- * as an anchor, or null when the result has no such position.
- */
-export function placementAt(photoIds: readonly string[], photoId: string, position: number): Placement | null {
-    const rest = photoIds.filter((id) => id !== photoId);
-    if (position < 1 || position > rest.length + 1) return null;
-    return position === 1 ? 'start' : { after: rest[position - 2] };
-}
+export { placementAt };
 
 const photographs = (count: number) => `${count} photograph${count === 1 ? '' : 's'}`;
 const number = (index: number, total: number) => String(index + 1).padStart(Math.max(2, String(total).length), '0');
@@ -117,8 +110,7 @@ function refused(error: OrderError): CommandResult {
 }
 
 function focalPoint(focal: FocalPoint): FocalPoint {
-    const inRange = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
-    if (!inRange(focal.x) || !inRange(focal.y)) throw new UsageError('--focal takes x,y, each from 0 to 1.');
+    if (!isFocalPoint(focal)) throw new UsageError('--focal takes x,y, each from 0 to 1.');
     return { x: focal.x, y: focal.y };
 }
 
