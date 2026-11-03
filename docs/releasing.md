@@ -8,9 +8,9 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 | Job | What it does |
 |---|---|
-| `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, `npm run test:prod`, `ci/check-standalone.sh`, `npm run check:prerender`, and `npm run smoke:media`. `npm run test:prod` runs `npm run build`, serves a copy of `.next/standalone` on a temp data root, publishes twice and rolls back once, and checks that `/api/ready`, #6's Home records endpoint (`/api/catalog/home/series/<seriesId>/photos/<photoId>`), and `/media` follow each activation without a restart, and that the endpoint's ETag gets 304 only while the same revision and build are served, through a restart, and not after a new build ID. Before the first publish, it checks that the site serves nothing: `/api/ready` and the endpoint answer 503 with `not-published`, Home and Work answer 500, `/api/photos` and v1.4.0's Home records route, `/api/catalog/home/photos/<photoId>`, 404, `/gallery` 308 to `/work`, and a photo's seven legacy derivatives, on disk, 404 directly and 400 through `/_next/image`, as they do throughout. It also checks that no public JSON response or page names a legacy derivative or an original source path, that `/media` sets are `immutable`, and that `/api/image`, `/api/photos` and v1.4.0's Home records route are 404. A second server then keeps serving the revision it loaded, as `degraded` and with the same ETag, once its active pointer is damaged and then removed. A third, whose only request after its publish is `/api/ready`, reports that revision as `degraded`, never `not-published`, once `catalog/` is moved out of its data root. Plain `npm test` skips it unless `RUN_PROD_TESTS=1`, and the checks after it run on its build. `ci/check-standalone.sh` fails if the build copied project sources, the default data root, or the library into `.next/standalone`. `npm run check:prerender` fails if the build prerendered a route that reads the data root per request, `/`, `/api/ready`, or another path `ci/check-prerender.mjs` lists. `npm run smoke:media` publishes a small test catalog into a temp data root with `ci/publish-fixture.ts`, and checks that the build's `/media` route serves a set the active revision holds, 404s one whose files exist but which no revision holds, and that `/api/ready` names the revision. |
+| `Lint, unit tests, build` | Checks that `.nvmrc` holds a bare Node major and the `Dockerfile` base image matches it, then runs `npm ci`, `npm run lint`, `npm test -- --run`, `npm run test:prod`, `ci/check-standalone.sh`, `npm run check:prerender`, and `npm run smoke:media`. `npm run test:prod` runs `npm run build`, serves a copy of `.next/standalone` on a temp data root, publishes twice and rolls back once, and checks that `/api/ready`, #6's Home records endpoint (`/api/catalog/home/series/<seriesId>/photos/<photoId>`), and `/media` follow each activation without a restart, and that the endpoint's ETag gets 304 only while the same revision and build are served, through a restart, and not after a new build ID. Before the first publish, it checks that the site serves nothing: `/api/ready` and the endpoint answer 503 with `not-published`, Home and Work answer 500, `/api/photos` and v1.4.0's Home records route, `/api/catalog/home/photos/<photoId>`, 404, `/gallery` 308 to `/work`, and a photo's seven legacy derivatives, planted on disk as a v1.6 watcher left them, 404 directly and 400 through `/_next/image`, as they do throughout. It also checks that no public JSON response or page names a legacy derivative or an original source path, that `/media` sets are `immutable`, and that `/api/image`, `/api/photos` and v1.4.0's Home records route are 404. A second server then keeps serving the revision it loaded, as `degraded` and with the same ETag, once its active pointer is damaged and then removed. A third, whose only request after its publish is `/api/ready`, reports that revision as `degraded`, never `not-published`, once `catalog/` is moved out of its data root. Plain `npm test` skips it unless `RUN_PROD_TESTS=1`, and the checks after it run on its build. `ci/check-standalone.sh` fails if the build copied project sources, the default data root, or the library into `.next/standalone`. `npm run check:prerender` fails if the build prerendered a route that reads the data root per request, `/`, `/api/ready`, or another path `ci/check-prerender.mjs` lists. `npm run smoke:media` publishes a small test catalog into a temp data root with `ci/publish-fixture.ts`, and checks that the build's `/media` route serves a set the active revision holds, 404s one whose files exist but which no revision holds, and that `/api/ready` names the revision. |
 | `Browser tests` | Runs `npm run test:e2e`, which builds and serves the site against an empty temp photo library and runs `e2e/` in Chromium on a desktop and a Pixel 7 project, and `e2e/home-immersive.spec.ts` in WebKit on an iPhone 13 project, `mobile-webkit`. A second server serves a published Home fixture from the same build, for Home and the pages that need a catalog. A failed run uploads `playwright-report/` and `test-results/`. |
-| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which checks that the image ships the bundled scripts and no dev dependencies or tsx, has the image's node generate a fixture library from the checkout's `test/fixtures`, runs the image's watcher with `--once` on it, checks that it deletes nothing after a photo is removed and exits 1 on a missing library, and checks the web server on an empty data root and with no data root at all: `/api/ready` and a #6 endpoint answer 503 with `not-published`, `/api/photos` and the other removed endpoints 404, `/gallery` 308s to `/work`, and the legacy derivatives and originals 404, and 400 through `/_next/image`. Last, it runs `npm ci` and `ci/smoke-catalog.sh`, which checks the catalog routes in the image on a migrated fixture library and on a published test catalog. |
+| `Image smoke test` | Runs `ci/check-compose.sh`, builds the image, checks that it runs the Node major in `.nvmrc`, and runs `ci/smoke-image.sh` against it. Then it runs `ci/smoke-watcher-once.sh`, which checks that the image ships the bundled scripts and no dev dependencies or tsx, has the image's node generate a fixture library from the checkout's `test/fixtures`, migrates a data root, runs the image's watcher with `--once` with the library read-only at `/data/library`, checks that it builds a set and `manifest.json` for each photo, writes nothing in the library, deletes nothing after a photo is removed, says `legacyDerivatives: false`, exits 1 on a missing library and on an unset `PHOTOGRAPHY_LIBRARY_DIR`, and 2 on `--force`, and checks the web server on an empty data root and with no data root at all: `/api/ready` and a #6 endpoint answer 503 with `not-published`, `/api/photos` and the other removed endpoints 404, `/gallery` 308s to `/work`, and the legacy derivatives and originals, planted under its `public/` folder as a v1.6 host's library holds them, 404, and 400 through `/_next/image`. Last, it runs `npm ci` and `ci/smoke-catalog.sh`, which checks the catalog routes in the image on a migrated fixture library and on a published test catalog. |
 | `Production audit` | Runs `ci/audit-gate.mjs`, which runs `npm audit --omit=dev` and fails on a high or critical advisory that `.github/audit-allowlist.json` doesn't list. It reads only the lockfile, so it skips `npm ci`. |
 | `CI result` | Fails unless all four jobs above succeeded. |
 
@@ -20,7 +20,7 @@ Every pull request runs `.github/workflows/ci.yml`, whether it targets `main` or
 
 `ci/check-compose.sh` checks that every image line in `docker-compose.prod.yml` is exactly `ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?...}`, that Compose resolves every service to that one tag and refuses the file when the variable is unset, that the file has no `:latest`, that the services Compose starts by default are exactly the ones in `ci/smoke-services`, the list `ci/smoke-image.sh` starts, that every published port is on the host's 127.0.0.1 whatever `PHOTOGRAPHY_PORT` says and no service uses `network_mode: host`, that `web` mounts the data root once, read-only, and points `PHOTOGRAPHY_DATA_DIR` at it, that every bind of the data root or the library has `create_host_path: false`, and that no service mounts `/app/.next/cache` or `./.next-images-cache`, the `/_next/image` cache bind v1.6.0 removed. A PR that adds a service lists it in `ci/smoke-services` and extends the smoke test to check it.
 
-`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns #21's error page as HTML, `/api/health` answers, `/api/ready` answers 503 with `not-published`, `/api/photos` 404, and `/gallery` 308 to `/work`, and that the watcher passes its healthcheck, writes all seven derivatives for each photo, none of which serves (404 directly, 400 through `/_next/image`), picks up a photo added while it runs, and never restarts. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, checks that `/api/ready` still answers `not-published`, waits for the watcher to build every `/media` set, checks that `/media` serves none of them before the first activation, that #6's Home records endpoint answers 503 with `not-published` for each photo, and an original 404s, and that recreating the containers keeps every photo ID, `/media` URL, and set. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it writes the legacy derivatives and no registry. Its only change to the Compose file is an override that binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
+`ci/smoke-image.sh` starts `web` and `image-watcher` from `docker-compose.prod.yml` on the image under test, with the two photos in `ci/fixtures/library/` as the library and an empty data root. It checks that `/` returns #21's error page as HTML, `/api/health` answers, `/api/ready` answers 503 with `not-published`, `/api/photos` 404, and `/gallery` 308 to `/work`, and that the watcher passes its healthcheck and never restarts. The library starts with a v1.6 host's legacy derivatives in it, none of which serves (404 directly, 400 through `/_next/image`). `image-watcher` mounts it read-only at `/data/library` and can't write it, though the host folder lets anyone, `web` has no `/data/library`, and a listing of every file's size, mtime and SHA-256 must come out the same at each step, so nothing in the stack writes the library. Then it runs the migration runbook in [data-root.md](data-root.md) as uid 1001, checks that `/api/ready` still answers `not-published`, waits for the watcher to build every `/media` set and reads each set's `manifest.json`, for the photos it starts with and for one added while it runs, checks that the heartbeat says `legacyDerivatives: false`, checks that `/media` serves none of them before the first activation, that #6's Home records endpoint answers 503 with `not-published` for each photo, and an original 404s, and that recreating the containers keeps every photo ID, `/media` URL, and set. Last, it runs the watcher with `PHOTOGRAPHY_DATA_DIR` unset and checks that it exits 1 and writes nothing, and runs the watcher and `photos.mjs` with `PHOTOGRAPHY_LIBRARY_DIR` unset and the library at its old path, as on v1.6's compose file, and checks that both exit 1, name the variable, and write nothing. Its only change to the Compose file is an override that binds `web` to 127.0.0.1. CI runs it on the image the PR built, and `Publish to GHCR` runs it again on the exact digest it pushed. To run it locally you need Docker with Compose 2.24.4 or later, for the override's `!override` tag, and a free port, 3000 unless you set `SMOKE_IMAGE_PORT`:
 
 ```bash
 docker build -t ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke .
@@ -410,6 +410,104 @@ docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
 
 `v1.5.x` serves the active revision the same way. On a launched data root it never shows the legacy pages, and its `/api/photos` lists the active revision again until you roll forward.
 
+### v1.7.0: the library at /data/library
+
+`v1.7.0` carries the second PR of slice E of [#13](https://github.com/keyurgolani/keyurgolani.photography/issues/13), which finishes the cutover in the library. Nothing a visitor sees changes: the site serves the active revision and its `/media` sets as before. What changes is who touches the library, the owner's originals: nothing does any more, but to read them.
+
+- **The watcher stops writing the legacy derivatives**, the seven `<name>.webp`, `.avif` and `.txt` copies of each photo in `thumbnails/`, `medium/`, `optimized/`, `thumbnails-avif/`, `medium-avif/`, `optimized-avif/` and `lqip/`, and `cache/` beside them, at the top of the library. Nothing has served them since the launch. The ones already there stay exactly as they are, and the identity scan keeps skipping those names. Its heartbeat, `status/watcher.json` in the data root, now says `"legacyDerivatives": false`, which #15's GC waits for before it takes legacy files. `--force`, which rebuilt them, exits 2 now.
+- **The library is mounted at `/data/library`, read-only**, in `image-watcher`, and so in every `run --rm --no-deps image-watcher` command, and in `curator`, with `PHOTOGRAPHY_LIBRARY_DIR=/data/library`. `web` no longer mounts it at all, since it reads nothing there. The host folder is the same `./public/assets/photos` as before: nothing moves on the host.
+- **`PHOTOGRAPHY_LIBRARY_DIR` has no default.** Before, an unset variable meant `public/assets/photos` under the working directory. Now the watcher and every command that reads the library exit 1 and name the variable, so a container never reads a folder nobody configured, and an empty one never reads as an empty library.
+- **The watcher exits 1 when it has nothing to do**: with no data root in production, and with `--once` on a data root the migration hasn't initialized. Before, it still wrote legacy derivatives there.
+
+It changes `docker-compose.prod.yml`, so the host takes four steps, and an optional fifth, later. With an override, add `-f <override>` after each `-f docker-compose.prod.yml` and `-f docker-compose.prod.yml.new`, and add `curator` to the `pull` and `up -d` lines when it runs. A host that skipped `v1.6.0` takes its steps on the way.
+
+1. **Note what the watcher sees now**, to compare after the switch. The photo count and the `missing` count come back the same if the new file mounts the same folder:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs identity status
+   ```
+
+2. **Fetch the new compose file, and check it mounts the same library.** Compose merges an override's `volumes:` with the file's by target path. An override that binds the photos from somewhere else at `/app/public/assets/photos`, the old target, no longer replaces the file's bind: it adds a second mount nothing reads, and the file's own `./public/assets/photos` goes to `/data/library`. On a host where that folder is empty or stale, the watcher would read it, and every photo would turn up as `missing` in the Inbox. Nothing is deleted then, and the items close once the right folder is back, but it's noise. This block stops before anything changes unless the new file, with your override, binds exactly the host folder the old one did, at `/data/library`, read-only, and nothing at `/app/public/assets/photos` any more. It needs `jq` on the host. An override bind for the photos has to move to `target: /data/library` with `read_only: true`, its source unchanged. The diff should show `web`'s library mount and its comment gone, and `image-watcher`'s and `curator`'s bind at `/data/library` with `read_only: true` and `PHOTOGRAPHY_LIBRARY_DIR=/data/library`, under reworded comments. Nothing else should differ but what this host changed, which stays in the override:
+
+   ```bash
+   [ -e docker-compose.prod.yml.before-v1.7.0 ] || cp -p docker-compose.prod.yml docker-compose.prod.yml.before-v1.7.0
+   curl -fsSL -o docker-compose.prod.yml.new https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/v1.7.0/docker-compose.prod.yml
+   diff -u docker-compose.prod.yml.before-v1.7.0 docker-compose.prod.yml.new
+   PHOTOGRAPHY_IMAGE_TAG=v1.7.0 docker compose -f docker-compose.prod.yml.new config --quiet
+   (
+     old=$(docker compose -f docker-compose.prod.yml config --format json |
+       jq -er '[.services["image-watcher"].volumes[] | select(.target == "/app/public/assets/photos")] | if length == 1 then .[0].source else error("not one bind") end') ||
+       { echo "The running file doesn't bind one library at /app/public/assets/photos. Nothing was changed." >&2; exit 1; }
+     new=$(PHOTOGRAPHY_IMAGE_TAG=v1.7.0 docker compose -f docker-compose.prod.yml.new config --format json |
+       jq -er '[.services[] | (.volumes // [])[] | select(.target | startswith("/app/public/assets/photos"))] as $stray
+         | [.services["image-watcher"].volumes[] | select(.target == "/data/library" and .read_only == true)]
+         | if length == 1 and ($stray | length) == 0 then .[0].source else error("not one read-only bind") end') ||
+       { echo "The new file doesn't bind one library, read-only, at /data/library, or something still mounts /app/public/assets/photos. Fix the override. Nothing was changed." >&2; exit 1; }
+     [ "$old" = "$new" ] || { echo "The new file binds $new as the library, but the running one binds $old. Fix the override. Nothing was changed." >&2; exit 1; }
+     echo "The library stays $new, read-only at /data/library."
+   )
+   ```
+
+3. **Install it, and switch both services.** `up -d` recreates `web`, `image-watcher` and, when it runs, `curator`, since their mounts changed:
+
+   ```bash
+   mv docker-compose.prod.yml.new docker-compose.prod.yml
+   # set PHOTOGRAPHY_IMAGE_TAG=v1.7.0 in .env
+   docker compose -f docker-compose.prod.yml pull web image-watcher
+   docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
+   ```
+
+4. **Check it.** `/api/ready` names the same revision with `"state":"ok"`. The watcher's heartbeat says `"legacyDerivatives":false`, its library is `/data/library`, and Docker has that mount read-only, `false` for writable. `identity status` shows the counts step 1 noted, once the watcher's first pass has run, and a heartbeat under two minutes old. None of these writes anything:
+
+   ```bash
+   curl -s http://127.0.0.1:3000/api/ready
+   docker compose -f docker-compose.prod.yml exec image-watcher sh -c 'printenv PHOTOGRAPHY_LIBRARY_DIR; cat /data/portfolio/status/watcher.json; echo'
+   docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data/library"}}{{.Source}} writable={{.RW}}{{end}}{{end}}' "$(docker compose -f docker-compose.prod.yml ps -q image-watcher)"
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs identity status
+   ```
+
+   If the watcher keeps restarting and its log says `PHOTOGRAPHY_LIBRARY_DIR is not set`, the old compose file is still in place with the new image: install the new file as in step 3. If photos now show as `missing`, the watcher reads another folder: stop it with `stop image-watcher`, and fix the override as step 2 says, or roll back as below. Nothing was deleted either way.
+
+5. **Optional, later: move the legacy derivatives out of the library.** From `v1.7.0` they're dead weight: nothing writes, reads, or serves them. Keep them while a rollback to `v1.6.x` is still on the table: its watcher rebuilds every missing one from the originals, which harms nothing but takes hours on a large library. #15's GC, once it ships, takes them itself after it reads `"legacyDerivatives": false`. To clear them sooner, move them aside rather than delete them. Only the eight folder names a watcher wrote count, directly in the library's top folder, and the block moves nothing else.
+
+   With the watcher and the curator stopped, so nothing reads the library meanwhile, the first command lists any file in those folders that a watcher wouldn't have written there. If it prints anything, a folder of yours shares one of those names: stop, and move only what you're sure of. The `mv -n` never replaces anything, and the folder it moves into sits beside `docker-compose.prod.yml`, on the same filesystem, outside the library and outside anything a container mounts:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml stop image-watcher
+   # only if curator runs:
+   docker compose -f docker-compose.prod.yml stop curator
+   (
+     cd public/assets/photos || exit 1
+     for d in thumbnails medium optimized; do [ -d "$d" ] && find "$d" -type f ! -name '*.webp'; done
+     for d in thumbnails-avif medium-avif optimized-avif; do [ -d "$d" ] && find "$d" -type f ! -name '*.avif'; done
+     [ -d lqip ] && find lqip -type f ! -name '*.txt'
+     [ -d cache ] && find cache -type f ! -path 'cache/dynamic/*' ! -path 'cache/set-sources/*.json' ! -path cache/upright-rebuild.json
+   )
+   (
+     aside=legacy-derivatives-$(date -u +%Y%m%dT%H%M%SZ)
+     mkdir "$aside" || exit 1
+     for d in thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache; do
+       if [ -d "public/assets/photos/$d" ] && [ ! -L "public/assets/photos/$d" ]; then sudo mv -n "public/assets/photos/$d" "$aside/"; fi
+     done
+     ls -A "$aside"
+   )
+   docker compose -f docker-compose.prod.yml start image-watcher
+   ```
+
+   Start `curator` again only if it was running, with `--profile curator start curator`. The watcher's next pass changes nothing, since it skipped those folders anyway. Once you're sure you won't roll back to `v1.6.x`, delete the dated folder by hand. Its files belong to uid 1001, so it takes `sudo rm -rf legacy-derivatives-<time>`. It holds copies made from your photos and none of the photos.
+
+**Rolling back** goes to `v1.6.x` with its compose file. Both halves go together. `v1.6.x`'s watcher on this file finds the library read-only and can't write its derivatives. This release's watcher on the older file has no `PHOTOGRAPHY_LIBRARY_DIR` and exits 1 at once, rather than read the library at its old path. `web` keeps serving either way. If step 5 moved the legacy derivatives aside, move them back first, so `v1.6.x` doesn't rebuild them all. Then restore the copy step 2 saved, set the older tag, and run the scoped commands, with `-f <override>` and `curator` as above:
+
+```bash
+# only if step 5 moved them: sudo mv -n legacy-derivatives-<time>/* public/assets/photos/
+cp -p docker-compose.prod.yml.before-v1.7.0 docker-compose.prod.yml
+# set PHOTOGRAPHY_IMAGE_TAG in .env back to the v1.6.x tag
+docker compose -f docker-compose.prod.yml pull web image-watcher
+docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
+```
+
+The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`'s heartbeat simply drops `legacyDerivatives`, which #15's GC reads as a watcher that still writes them. An override changed for step 2 goes back to its `/app/public/assets/photos` target with the older file.
+
 ## About's portrait
 
 About reads its portrait from the host. It's one file in `./site-config`, next to `docker-compose.prod.yml`, which `web` mounts read-only at `/config/site` (`PHOTOGRAPHY_SITE_CONFIG_DIR`). From `v1.2.1`, `curator` mounts it the same way, so the draft preview's About shows the same portrait ([curator.md](curator.md#preview-and-publish)):
@@ -497,7 +595,7 @@ A revision with carried-over photos names them by their place, which no release 
 
 ## Rollback
 
-After the launch, an image older than v1.2.1 can't read the catalog. Take the site back to legacy mode first (Rollback C), then change the tag. Legacy mode comes back only from a data-root backup made before the launch publish, as [After the catalog launch](#after-the-catalog-launch) says. Rolling back past `v1.6.0` needs its compose file back too, and `./.next-images-cache` in place, as [v1.6.0](#v160-the-cutover-cleanup) says.
+After the launch, an image older than v1.2.1 can't read the catalog. Take the site back to legacy mode first (Rollback C), then change the tag. Legacy mode comes back only from a data-root backup made before the launch publish, as [After the catalog launch](#after-the-catalog-launch) says. Rolling back past `v1.6.0` needs its compose file back too, and `./.next-images-cache` in place, as [v1.6.0](#v160-the-cutover-cleanup) says, and rolling back past `v1.7.0` needs its compose file back, as [v1.7.0](#v170-the-library-at-datalibrary) says.
 
 Before changing `.env`, note the tag the host runs now, as Deploying says. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same scoped `pull` and `up -d --no-deps` as Deploying, with the same files. Once the catalog has launched, `v1.2.1` is the floor, as above. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
@@ -516,7 +614,7 @@ docker compose -f docker-compose.prod.yml -f <override> up -d --no-deps web imag
 
 Without an override, leave out `-f <override>`. Add `curator` to both lines when it runs.
 
-Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable and runs only the legacy step.
+Leave `./portfolio-data` where it is. Older releases never read it, and once you roll forward, the watcher's next pass catches up with what changed in the library meanwhile. A release that finds a data root written by a newer one, with a schema it doesn't know, treats it as unavailable: one before `v1.7.0` then runs only the legacy step, and `v1.7.0` and later process nothing until it's readable.
 
 Rolling back past the first release with slice C of #13 lists `/api/photos` from the library again, and ignores any catalog revision published since. Rolling forward serves the active revision again.
 

@@ -161,7 +161,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the standalone build', () =
         featured = catalog.content.series.find((series) => series.id === featuredSeries)!.photoIds[0];
         // The library where the image mounts it, at the copy's public/assets/photos.
         library = path.join(served, 'public/assets/photos');
-        // All seven legacy derivatives of a catalog photo's source, as the watcher still writes them. Next serves
+        // All seven legacy derivatives of a catalog photo's source, as a v1.6 watcher left them in a library. Next serves
         // only the public/ files present when it starts, so they're written first, and must still 404.
         const source = Object.values(catalog.registry.photos)[0].source.path;
         legacyBase = path.posix.basename(source, path.posix.extname(source));

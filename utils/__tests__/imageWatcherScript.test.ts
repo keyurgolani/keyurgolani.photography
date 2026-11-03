@@ -170,7 +170,7 @@ describe('imageWatcher --once', { timeout: 120_000 }, () => {
         for (const folder of LEGACY_FOLDERS) fs.mkdirSync(lib.file(folder));
         fs.copyFileSync(lib.file('square.webp'), lib.file('optimized', 'square.webp'));
         fs.writeFileSync(lib.file('lqip', 'square.txt'), 'data:image/webp;base64,AAAA');
-        fs.writeFileSync(lib.file('cache', 'upright-v1.json'), '{}');
+        fs.writeFileSync(lib.file('cache', 'upright-rebuild.json'), '{}');
         const before = lib.snapshot();
 
         const run = await runOnceWithIdentity(lib.root, data.root);

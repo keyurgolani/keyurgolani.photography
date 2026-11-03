@@ -178,7 +178,7 @@ docker compose -f docker-compose.prod.yml -f <override> --profile curator up -d 
 docker compose -f docker-compose.prod.yml -f <override> stop curator
 ```
 
-Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It reads the library (`:ro`), writes the data root, and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too. Its Inbox, Publish and Restore write `authored/`, `catalog/`, `locks/` and `curation/events/` there, so stop it with the watcher whenever the data root has to hold still: [Backing up](data-root.md#backing-up), [Restoring](data-root.md#restoring) and [Editing a document by hand](data-root.md#editing-a-document-by-hand) say how.
+Its restart policy is `no`, so a reboot or a Docker restart leaves it off. It reads the library, mounted read-only at `/data/library` with `PHOTOGRAPHY_LIBRARY_DIR` pointing there, writes the data root, and runs as uid 1001, the watcher's, so the data root setup in [data-root.md](data-root.md) covers it too. Its Inbox, Publish and Restore write `authored/`, `catalog/`, `locks/` and `curation/events/` there, so stop it with the watcher whenever the data root has to hold still: [Backing up](data-root.md#backing-up), [Restoring](data-root.md#restoring) and [Editing a document by hand](data-root.md#editing-a-document-by-hand) say how.
 
 ## What keeps it private
 
@@ -191,7 +191,7 @@ Each of these holds on its own. `proxy.ts` checks the first six on every request
 - **The session.** Every curator path but the login page and its form needs a live session. Without one, a page and its RSC fetch go to `/curation/login` (a 307), and a route handler or a server action answers 401.
 - **The secret files.** With either one missing or unusable, every path `proxy.ts` sees answers 503.
 - **The headers.** Every curator response sends `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: frame-ancestors 'none'`, and every curator page renders per request.
-- **Read-only everywhere else.** Outside the curator paths the site takes only GET, HEAD and OPTIONS, so a server action posted to `/` answers 404. `web` mounts the library and the data root read-only, and `/media` serves only what the active catalog revision holds.
+- **Read-only everywhere else.** Outside the curator paths the site takes only GET, HEAD and OPTIONS, so a server action posted to `/` answers 404. `web` mounts the data root read-only and no library at all, and `/media` serves only what the active catalog revision holds.
 
 ### The bind rule
 

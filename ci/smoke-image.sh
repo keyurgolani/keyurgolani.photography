@@ -123,7 +123,7 @@ plant_legacy() {
     done
   done
   mkdir -p "$library/cache/set-sources"
-  printf '{}\n' >"$library/cache/upright-v1.json"
+  printf '{}\n' >"$library/cache/upright-rebuild.json"
 }
 
 # Prints every file and folder under <library>, sorted: its path, its type,

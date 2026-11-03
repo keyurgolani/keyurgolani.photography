@@ -110,7 +110,7 @@ An edit that also changes or removes the stamp isn't caught. It reads as a versi
 
 ## Setting it up
 
-Before the first `up -d` with this compose file, decide who owns the photos. If another process writes them, such as a file sync tool running as another user, don't `chown` them here. Run the block below as it is and follow [Who owns the photos](#who-owns-the-photos) for the photos folder:
+Before the first `up -d` with this compose file, create the data root and hand it to uid 1001. The photos need no `chown`: since v1.7.0 nothing in the stack writes them, and uid 1001 only has to read them, as [Who owns the photos](#who-owns-the-photos) says:
 
 ```bash
 mkdir -p portfolio-data
@@ -118,45 +118,28 @@ sudo chown -R 1001:1001 portfolio-data
 sudo chmod 700 portfolio-data
 ```
 
-On a host where nothing else writes the photos, also hand the whole folder to uid 1001:
-
-```bash
-sudo chown -R 1001:1001 public/assets/photos
-```
-
 Compose files before #13's slice E (v1.6.0) also mounted `./.next-images-cache`, `web`'s `/_next/image` cache. Nothing on the site uses `/_next/image` now, so the file doesn't mount it, and a host that has one may delete it, as [releasing.md](releasing.md) says for v1.6.0. A rollback to an older release's compose file needs it back, owned by uid 1001.
 
-Until the migration below initializes the data root, the watcher writes only its heartbeat there, logs once that the identity step is off, and keeps writing the legacy derivatives, which nothing serves. `GET /api/health` reports `uninitialized`. The site serves only a published catalog revision, so until the first publish, `GET /api/ready` answers 503 with `not-published`, and Home and Work show #21's error page. There is no legacy Home or Gallery to fall back to.
+Until the migration below initializes the data root, the watcher writes only its heartbeat there and logs once that the identity step is off. It writes nothing in the library, then or ever. `GET /api/health` reports `uninitialized`. The site serves only a published catalog revision, so until the first publish, `GET /api/ready` answers 503 with `not-published`, and Home and Work show #21's error page. There is no legacy Home or Gallery to fall back to.
 
 ### Who owns the photos
 
-Both containers run as uid 1001, and each needs only part of the photos folder:
+The containers run as uid 1001, and since v1.7.0 (#13's slice E) none of them writes the photos. The library, `./public/assets/photos` on the host, is mounted read-only at `/data/library`, and `PHOTOGRAPHY_LIBRARY_DIR` points there:
 
 | Container | Reads | Writes |
 |---|---|---|
-| `web` | Nothing it serves: every path under `/assets/photos` answers 404, and photos come from the `/media` sets in the data root. It still mounts the folder read-only until slice E's second PR of #13 moves the library to `/data/library`. | Nothing on the host |
-| `image-watcher` | The originals, in every folder of the library | The derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/`, all at the top of the photos folder, and the data root |
+| `web` | Nothing in the library, which it doesn't mount: every path under `/assets/photos` answers 404, and photos come from the `/media` sets in the data root | Nothing on the host |
+| `image-watcher`, and each `run --rm` command in it | The originals, in every folder of the library, read-only at `/data/library` | The data root only |
+| `curator` | The library, read-only at `/data/library` | The data root only |
 
-When nothing else writes the photos, the second `chown -R` in [Setting it up](#setting-it-up) is the simple way to give uid 1001 all of that.
-
-When another process writes them, such as a file sync tool running as another user, a `chown -R` takes the originals away from it. The tool may then fail to update them, or hand them back to its own user on its next pass, and every change of owner makes the watcher's next identity pass read every photo again, as [Health](#health) says. Leave the originals with their owner, and hand uid 1001 only the folders the watcher writes, creating any that are missing:
-
-```bash
-(
-  cd public/assets/photos || exit 1
-  sudo mkdir -p thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache
-  sudo chown -R 1001:1001 thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache
-)
-```
-
-That works only if uid 1001 can still read the originals: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` gets no ID or `/media` set, so it never reaches the Inbox or the site, since the watcher can't read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
+So the photos can keep whatever owner they have, a file sync tool running as another user included, as long as uid 1001 can read them: every folder in the library readable and searchable, and every photo readable. The containers share no group with the tool unless you set one up, so in practice that means the world bits, folders at least `0755` and photos at least `0644`, and a tool set to create new files that way. A photo that arrives as `0600` gets no ID or `/media` set, so it never reaches the Inbox or the site, since the watcher can't read it. This prints every file or folder in the library that uid 1001 can't read, so no output means it can read them all:
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher \
-  find /app/public/assets/photos \( ! -exec test -r {} \; -o -type d ! -exec test -x {} \; \) -print
+  find /data/library \( ! -exec test -r {} \; -o -type d ! -exec test -x {} \; \) -print
 ```
 
-If the tool can leave folders out, leave out the derivative folders and `cache/` too. The watcher builds them from the originals. A subfolder the tool creates in one, as its own user, is one the watcher can't write into, and the tool would sync the watcher's output back and forth for nothing.
+A library a watcher before v1.7.0 wrote into still has its legacy derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/` at the top, often owned by uid 1001. They stay as they are: nothing reads or writes them, and the identity scan skips those names. A host that ran `chown -R 1001:1001` on the photos for an older release can leave that as it is too, since reading is all uid 1001 does now. Every change of owner makes the watcher's next identity pass read every photo again, as [Health](#health) says, so don't `chown` the library back and forth. If a tool can leave folders out, leave out those eight.
 
 ## Never migrate into an empty data root beside a library that had IDs
 
@@ -166,7 +149,7 @@ If `./portfolio-data` is lost or comes up empty on a host whose library had IDs,
 
 ## Backing up
 
-While the stack runs, the watcher writes the data root, and so does the curator when it's on: its Inbox, its Publish screen's review stamps, Publish and Restore all write `authored/`, `catalog/`, `locks/` or `curation/events/`. The watcher writes the legacy derivatives in the library too. Stop both, archive both folders together, and start them again. The block starts the curator again only if it was running.
+While the stack runs, the watcher writes the data root, and so does the curator when it's on: its Inbox, its Publish screen's review stamps, Publish and Restore all write `authored/`, `catalog/`, `locks/` or `curation/events/`. Neither writes the library, but a backup copies both folders at one moment, so the data root's registry matches the photos it names. Stop both, archive both folders together, and start them again. The block starts the curator again only if it was running.
 
 Both have to be real folders next to `docker-compose.prod.yml`, not symlinks. `tar` stores a symlink named on its command line as the link itself, not the files behind it, so the archive would hold no registry, and a restore's `mv` would move only the link. This block and the ones in [Restoring](#restoring) check that first, and stop before anything else runs. The `exit` leaves only the block's subshell, not your shell:
 
@@ -230,7 +213,7 @@ The watcher's next pass keeps the ID of every photo that archive knew, follows a
 
 `GET /api/ready` says whether `web` can serve the photos, and which catalog revision: `"state":"ok"` with `revisionId`, `revisionNumber`, and `activatedAt`, or `"degraded"`, still serving the last revision it loaded because the current one can't be read. Its `mode` is always `"catalog"` since #13's slice E removed legacy mode, and is kept so a check written for an older release still reads it. It answers 503 with a `reason` when it can serve nothing. `not-published` means nothing was ever published here, or no data root is set: there is nothing to serve, and no legacy site to fall back to. `catalog-unreadable` means `web` can't read `catalog/` well enough to tell whether anything was published, for example when a command run as another user left it unreadable to uid 1001. It serves nothing until `catalog/` reads again, and then answers `not-published` if nothing was. `active-unreadable` and `revision-unreadable` mean a site that has published can't read its pointer or the revision it names, and has no revision loaded to serve meanwhile.
 
-The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old, isn't stamped more than 120 s ahead of the container's clock, and shows no identity pass running longer than 30 minutes. The watcher rewrites it every 30 s, so a watcher whose loop stopped, a data root uid 1001 can't write, or an identity pass that never ends turns it unhealthy. It doesn't catch a legacy derivative job that never finishes: a pass starts only once the legacy step is idle, and the legacy backlog on a first start can rightly take hours, so the healthcheck doesn't time it. The 30-minute limit can also flag a pass that's working as it should. A pass reads, hashes, and decodes every file whose size, inode, or times changed, so after a restore, after `identity/stat-cache.json` is deleted, or after a `chown -R` of the library, the first pass reads every photo again, and on a large library that can take longer than 30 minutes. The watcher shows unhealthy until that pass ends, so check its logs before acting on it. If `/media` sets stop appearing while the watcher reads healthy, check its logs for the last photo it processed. `restart: always` doesn't act on unhealthy, so this only changes what `ps` and a dashboard show. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
+The watcher's healthcheck runs `node dist/scripts/watcherHealth.mjs`, which passes while `status/watcher.json` is at most 120 s old, isn't stamped more than 120 s ahead of the container's clock, and shows no identity pass running longer than 30 minutes. The watcher rewrites it every 30 s, so a watcher whose loop stopped, a data root uid 1001 can't write, or an identity pass that never ends turns it unhealthy. The 30-minute limit can also flag a pass that's working as it should. A pass reads, hashes, and decodes every file whose size, inode, or times changed, so after a restore, after `identity/stat-cache.json` is deleted, or after a `chown -R` of the library, the first pass reads every photo again, and on a large library that can take longer than 30 minutes. The watcher shows unhealthy until that pass ends, so check its logs before acting on it. If `/media` sets stop appearing while the watcher reads healthy, check its logs for the last photo it processed. `restart: always` doesn't act on unhealthy, so this only changes what `ps` and a dashboard show. `docker compose -f docker-compose.prod.yml ps` shows the state, and the healthcheck's last lines say why:
 
 ```bash
 docker inspect --format '{{json .State.Health}}' "$(docker compose -f docker-compose.prod.yml ps -q image-watcher)"

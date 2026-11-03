@@ -4,7 +4,7 @@ import { foldName } from '../lib/foldName';
  * How proxy.ts reads a request pathname the way `next dev`'s file lookup
  * would, so nothing under /assets/photos, the photo library, is served
  * however it's spelled. Since #13's slice E no file there is public: not the
- * originals, and not the legacy derivatives the watcher still writes.
+ * originals, and not the legacy derivatives a watcher before v1.7.0 wrote.
  */
 
 /** Decode a request pathname once, the way Next's file lookup does, or return it as sent if it doesn't decode. */
