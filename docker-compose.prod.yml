@@ -106,8 +106,8 @@ services:
   # curator's passphrase login. With CURATOR_PUBLISH set in .env to the
   # host's private LAN address (LAN mode, opt-in), every device on that
   # network can reach the login, over plain http: docs/curator.md, From your
-  # home network. It reads the library and writes the data root, as the
-  # watcher's uid, on a network of its own, so no other container can reach it.
+  # home network. It writes the data root, as the watcher's uid, and mounts
+  # no library, on a network of its own, so no other container can reach it.
   curator:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     profiles: ["curator"]
@@ -121,13 +121,6 @@ services:
     networks:
       - curator
     volumes:
-      # The photo library, read-only and never created, as image-watcher mounts it.
-      - type: bind
-        source: ./public/assets/photos
-        target: /data/library
-        read_only: true
-        bind:
-          create_host_path: false
       - type: bind
         source: ./portfolio-data
         target: /data/portfolio
@@ -157,6 +150,10 @@ services:
     environment:
       - NODE_ENV=production
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      # The library's path, which image-watcher mounts, only so the curator can
+      # keep it out of its messages. The curator reads no file there, so it
+      # mounts no library: its Inbox, Series and Publish screens read the
+      # registry and the /media sets in the data root.
       - PHOTOGRAPHY_LIBRARY_DIR=/data/library
       - PHOTOGRAPHY_SITE_CONFIG_DIR=/config/site
       - CURATION_ENABLED=true
