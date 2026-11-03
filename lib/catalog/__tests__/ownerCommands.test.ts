@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { curationPaths } from '../../curation/repository';
 import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../identity/registry';
-import { libraryRoot } from '../../storage/config';
+import { DATA_ROOT_FILE, libraryRoot } from '../../storage/config';
 import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
@@ -140,6 +140,44 @@ describe('photos status', () => {
         expect(result).toEqual({ exitCode: 1, output: `Data root: ${missing} (unavailable: it does not exist)\n` });
         const unset = await runStatusCommand({ dataRoot: null });
         expect(unset).toEqual({ exitCode: 1, output: 'Data root: not set (unset: PHOTOGRAPHY_DATA_DIR is not set)\n' });
+    });
+
+    it('says in JSON that it didn\'t check for a publish when the data root is missing or unset, never unpublished', async () => {
+        const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kg13e-status-')), 'missing');
+        cleanups.push(() => fs.promises.rm(path.dirname(missing), { recursive: true, force: true }));
+        for (const dataRoot of [missing, null]) {
+            const result = await runStatusCommand({ dataRoot }, { json: true });
+            expect(result.exitCode, String(dataRoot)).toBe(1);
+            expect((JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>).catalog, String(dataRoot)).toEqual({ published: 'unknown', active: null, lastPublish: null });
+        }
+    });
+
+    it('reads the publish and the live revision on a launched data root whose data-root.json is gone, and still exits 1', async () => {
+        const catalog = await fixture();
+        expect((await run(catalog)).outcome).toBe('PUBLISHED');
+        fs.rmSync(path.join(catalog.root, DATA_ROOT_FILE));
+        const status = await ownerStatus({ dataRoot: catalog.root });
+        expect(status.identity.dataRoot.state).toBe('uninitialized');
+        expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed' }, lastPublish: { outcome: 'PUBLISHED' } });
+        const result = await runStatusCommand({ dataRoot: catalog.root });
+        expect(result.exitCode).toBe(1);
+        const text = withoutRoot(result.output, catalog.root);
+        expect(text).toContain('Data root: <root> (uninitialized');
+        expect(text).toContain(`Catalog: revision 1 (${catalog.revisionId}) active since`);
+        expect(text).not.toContain('nothing published yet');
+    });
+
+    it.skipIf(process.getuid?.() === 0)('reads a launched data root it can\'t write, as the read-only web container mounts it', async () => {
+        const catalog = await fixture();
+        expect((await run(catalog)).outcome).toBe('PUBLISHED');
+        fs.chmodSync(catalog.root, 0o555);
+        cleanups.unshift(async () => fs.chmodSync(catalog.root, 0o755));
+        expect(() => fs.writeFileSync(path.join(catalog.root, 'probe'), '')).toThrow();
+        const json = JSON.parse((await runStatusCommand({ dataRoot: catalog.root }, { json: true })).output) as Awaited<ReturnType<typeof ownerStatus>>;
+        expect(json.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed' } });
+        const { output } = await runStatusCommand({ dataRoot: catalog.root });
+        expect(output).toContain(`Catalog: revision 1 (${catalog.revisionId}) active since`);
+        expect(output).not.toContain('nothing published yet');
     });
 
     it('reports the revision the pointer names as live after a first publish crashes past the switch', async () => {

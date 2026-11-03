@@ -167,12 +167,20 @@ export interface StatusHandle {
     clock?: () => number;
 }
 
+/**
+ * The data root states whose catalog status reads: any usable root, a
+ * launched one without its data-root.json included. An unset or unavailable
+ * one isn't read, so its publish state stays `unknown`, never `unpublished`,
+ * which would contradict a web process serving a launched site.
+ */
+const CATALOG_READABLE: ReadonlySet<IdentityStatus['dataRoot']['state']> = new Set(['ready', 'uninitialized']);
+
 export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<OwnerStatus> {
     // status builds no failed-profile text of its own: identityStatus() strips the library and data root paths from
     // each reason (withoutAbsolutePaths(), #53), so status --json carries none.
     const identity = dataRoot === null ? unsetIdentity() : await identityStatus({ root: path.resolve(dataRoot), clock });
-    const status: OwnerStatus = { identity, catalog: { published: 'unpublished', active: null, lastPublish: null }, working: null, inbox: null };
-    if (dataRoot === null || identity.dataRoot.state !== 'ready') return status;
+    const status: OwnerStatus = { identity, catalog: { published: 'unknown', active: null, lastPublish: null }, working: null, inbox: null };
+    if (dataRoot === null || !CATALOG_READABLE.has(identity.dataRoot.state)) return status;
     const root = path.resolve(dataRoot);
     try {
         status.catalog.published = (await checkPublished(root)).state;
@@ -198,6 +206,7 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     } catch (error) {
         status.catalog.error = message(error);
     }
+    if (identity.dataRoot.state !== 'ready') return status;
     if (identity.registryError === undefined && identity.registry !== null) {
         status.working = workingSummary(await readWorkingLayer(root), await readRegistry(root));
     }
@@ -213,7 +222,7 @@ function formatStatus(status: OwnerStatus): string {
     const { identity, catalog, working } = status;
     const lines = [`Data root: ${identity.dataRoot.root ?? 'not set'} (${identity.dataRoot.state}${identity.dataRoot.detail ? `: ${identity.dataRoot.detail}` : ''})`];
     if (identity.dataRoot.state === 'uninitialized') lines.push('  photos:migrate initializes it, as docs/data-root.md describes.');
-    if (identity.dataRoot.state !== 'ready') return `${lines.join('\n')}\n`;
+    if (!CATALOG_READABLE.has(identity.dataRoot.state)) return `${lines.join('\n')}\n`;
     if (catalog.error) {
         lines.push(`Catalog: can't be read (${catalog.error})`);
     } else if (catalog.active) {
@@ -251,6 +260,7 @@ function formatStatus(status: OwnerStatus): string {
     lines.push(last
         ? `Last publish: ${last.outcome} at ${last.at} by ${last.actor}, ${count(last.errors, 'error')} and ${count(last.warnings, 'warning')}${last.revisionNumber === null ? '' : `, revision ${last.revisionNumber}`}`
         : 'Last publish: none yet');
+    if (identity.dataRoot.state !== 'ready') return `${lines.join('\n')}\n`;
     const { photos } = identity;
     lines.push(identity.registry
         ? `Photos: ${photos.total} in the registry (${Object.entries(photos.bySourceHealth).map(([health, n]) => `${health} ${n}`).join(', ')})`
