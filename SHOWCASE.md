@@ -113,4 +113,4 @@ About shows the portrait and the name, a short note, and links to my photography
 
 ---
 
-_Screenshots from the live site at v1.3.0, whose visitor pages are unchanged through v1.4.0, in catalog mode, revision 1, in Chromium at 1200 px wide with reduced motion, which is why Home's slideshow shows Play. The series shown is The Palouse. About's use a stand-in portrait, and Home's are taken without its portrait badge. See the [README](README.md) for setup and configuration._
+_Screenshots from production on 2026-11-03, serving v1.4.0 in catalog mode, revision 1, in Chromium at 1200 px wide with reduced motion, which is why Home's slideshow shows Play. The series shown is The Palouse. About and Home's portrait badge show my own portrait. See the [README](README.md) for setup and configuration._
