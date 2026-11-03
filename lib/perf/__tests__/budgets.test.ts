@@ -165,6 +165,24 @@ describe('payloads on the 5,000-photo fixture', () => {
         }
     });
 
+    it('Home with ten featured series, its long one first: every series\' order, but still three records, within its compressed budget', () => {
+        const content = structuredClone(fixture.content);
+        content.site.featuredSeriesIds = content.series.slice(0, 10).map((series) => series.id);
+        const looping = createCatalogReader(content, { revisionId: fixture.revisionId, revisionNumber: null });
+        const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader: looping }, routes, () => 0);
+        if (result.kind !== 'home' || !result.home.featuredSeries) throw new Error('Expected a featured series');
+        const model = result.home;
+        const loop = [model.featuredSeries!, ...(model.followingSeries ?? [])];
+        expect(loop.map((series) => series.id)).toEqual(content.site.featuredSeriesIds);
+        expect(loop.flatMap((series) => series.photoIds)).toHaveLength(content.series.slice(0, 10).reduce((sum, series) => sum + series.photoIds.length, 0));
+        expect(model.featuredSeries!.records).toHaveLength(3);
+        expect(imagesIn(model)).toHaveLength(3);
+        const size = payloadSize(model);
+        record('home', size, 3, `10 featured series, ${loop.flatMap((series) => series.photoIds).length} IDs, 3 records`);
+        expect(size.gzipBytes).toBeLessThanOrEqual(SCREEN_BUDGETS.home.gzipBytes);
+        expectGeometry(model);
+    });
+
     it('Work: every series as a summary with its cover, no photo sequence, within its compressed budget', () => {
         const model: WorkCatalog = reader.getWorkSummaries(routes);
         expect(model.series).toHaveLength(100);

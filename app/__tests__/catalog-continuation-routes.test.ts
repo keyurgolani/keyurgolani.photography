@@ -26,12 +26,16 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
 
 const seriesRoute = await import('../api/catalog/series/[slug]/pages/[cursor]/route');
 const homeRoute = await import('../api/catalog/home/photos/[photoId]/route');
+const homeSeriesRoute = await import('../api/catalog/home/series/[seriesId]/photos/[photoId]/route');
 const peekRoute = await import('../api/catalog/series/[slug]/photos/[photoId]/route');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const LONG = Array.from({ length: 250 }, (_, n) => id(n + 1));
 const FEATURED = Array.from({ length: 5 }, (_, n) => id(n + 301));
 const DRAFT = [id(401)];
+/** A second featured series, which Home plays after the first. */
+const SECOND = [id(501), id(502)];
+const HIDDEN = [id(601)];
 const REVISION_B = `rev_${'b'.repeat(64)}`;
 
 let fixture: TestCatalogContent;
@@ -40,7 +44,7 @@ let logged: ReturnType<typeof vi.spyOn>;
 beforeAll(async () => {
     fixture = await buildTestCatalog({
         seed: 67,
-        photos: [...LONG, ...FEATURED, ...DRAFT].map((photoId) => ({
+        photos: [...LONG, ...FEATURED, ...DRAFT, ...SECOND, ...HIDDEN].map((photoId) => ({
             id: photoId,
             // One photo with an accent of its own and one without, under a series that has one, for the peek's accent.
             ...(photoId === FEATURED[1] && { accent: '#123456', title: 'SENTINEL peek title', caption: 'SENTINEL peek caption' }),
@@ -49,7 +53,11 @@ beforeAll(async () => {
             { id: 'ser_fixture-featured', slug: 'fixture-featured', photoIds: FEATURED, accent: '#abcdef' },
             { id: 'ser_fixture-long', slug: 'fixture-long', slugAliases: ['old-fixture-long'], photoIds: LONG },
             { id: 'ser_fixture-draft', slug: 'fixture-draft', photoIds: DRAFT, visibility: 'draft' },
+            { id: 'ser_fixture-second', slug: 'fixture-second', photoIds: SECOND, openingPhotoId: SECOND[1] },
+            { id: 'ser_fixture-hidden', slug: 'fixture-hidden', photoIds: HIDDEN, visibility: 'hidden' },
         ],
+        // The draft and the hidden series are listed too, as a hand-built site record could: being listed never opens one.
+        featuredSeriesIds: ['ser_fixture-featured', 'ser_fixture-second', 'ser_fixture-draft', 'ser_fixture-hidden'],
     });
 }, 60_000);
 
@@ -85,6 +93,11 @@ function homeGET(photoId: string, query: string, headers: Record<string, string>
     return homeRoute.GET(request, { params: Promise.resolve({ photoId }) });
 }
 
+function homeSeriesGET(seriesId: string, photoId: string, query: string, headers: Record<string, string> = {}): Promise<Response> {
+    const request = new Request(`http://127.0.0.1/api/catalog/home/series/${seriesId}/photos/${photoId}${query}`, { headers });
+    return homeSeriesRoute.GET(request, { params: Promise.resolve({ seriesId, photoId }) });
+}
+
 function peekGET(slug: string, photoId: string, query: string, headers: Record<string, string> = {}): Promise<Response> {
     const request = new Request(`http://127.0.0.1/api/catalog/series/${slug}/photos/${photoId}${query}`, { headers });
     return peekRoute.GET(request, { params: Promise.resolve({ slug, photoId }) });
@@ -106,7 +119,7 @@ async function headersAndBody(response: Response) {
 
 describe('every endpoint', () => {
     it('render per request and set no revalidate', () => {
-        for (const route of [seriesRoute, homeRoute, peekRoute]) {
+        for (const route of [seriesRoute, homeRoute, homeSeriesRoute, peekRoute]) {
             expect(route.dynamic).toBe('force-dynamic');
             expect('revalidate' in route).toBe(false);
         }
@@ -234,6 +247,98 @@ describe('GET /api/catalog/home/photos/[photoId]', () => {
         state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
         await expectError(await homeGET(FEATURED[0], revision()), 500, { reason: 'internal' });
         expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/home/photos/[photoId]', error: 'ENOENT' });
+    });
+});
+
+describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
+    const revision = (value = fixture.revisionId) => `?revision=${value}`;
+    const ids = async (response: Response) => ((await response.json()).photos as { id: string }[]).map((photo) => photo.id);
+
+    it('answers the window around the photograph in Home\'s loop with no-cache, a weak revision ETag, and the revision', async () => {
+        const response = await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision());
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-cache');
+        expect(response.headers.get('etag')).toMatch(/^W\/"[A-Za-z0-9_-]{22}"$/);
+        expect(response.headers.get('x-catalog-revision')).toBe(fixture.revisionId);
+        const text = await response.text();
+        expect(JSON.parse(text).revisionId).toBe(fixture.revisionId);
+        expect(Object.keys(JSON.parse(text)).sort()).toEqual(['photos', 'revisionId']);
+        // The featured series opens on its first photograph, so its last plays just before the second series' opening one.
+        expect((JSON.parse(text).photos as { id: string }[]).map((photo) => photo.id)).toEqual([SECOND[0], FEATURED[0], FEATURED[1]]);
+        expect(await ids(await homeSeriesGET('ser_fixture-featured', FEATURED[4], revision()))).toEqual([FEATURED[3], FEATURED[4], SECOND[1]]);
+        // The second series opens on its second photograph, wraps to its first, then the loop goes back to the featured one.
+        expect(await ids(await homeSeriesGET('ser_fixture-second', SECOND[1], revision()))).toEqual([FEATURED[4], SECOND[1], SECOND[0]]);
+        expect(await ids(await homeSeriesGET('ser_fixture-second', SECOND[0], revision()))).toEqual([SECOND[1], SECOND[0], FEATURED[0]]);
+    });
+
+    it('answers 304 to its own ETag, and each pair has its own', async () => {
+        const first = (await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision())).headers.get('etag') as string;
+        expect((await homeSeriesGET('ser_fixture-second', SECOND[0], revision())).headers.get('etag')).not.toBe(first);
+        expect((await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision(), { 'If-None-Match': first })).status).toBe(304);
+    });
+
+    it('answers 409 when Home\'s revision isn\'t the one served, as the old route does', async () => {
+        await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
+        await expectError(await homeSeriesGET('ser_fixture-second', SECOND[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
+    });
+
+    it('answers one identical 404 for a draft, hidden, unfeatured or unknown series, so it never lists one', async () => {
+        const answers = [];
+        for (const [seriesId, photoId] of [
+            ['ser_fixture-draft', DRAFT[0]],
+            ['ser_fixture-hidden', HIDDEN[0]],
+            ['ser_fixture-long', LONG[0]],
+            ['ser_fixture-unknown', FEATURED[0]],
+        ]) {
+            answers.push(await headersAndBody(await homeSeriesGET(seriesId, photoId, revision())));
+        }
+        expect(answers[0].status).toBe(404);
+        expect(JSON.parse(answers[0].body)).toEqual({ reason: 'not-found' });
+        for (const answer of answers) expect(answer).toEqual(answers[0]);
+    });
+
+    it('answers the same 404 for a photograph its series doesn\'t hold, a malformed ID, and legacy mode', async () => {
+        const answers = [];
+        for (const [seriesId, photoId] of [
+            ['ser_fixture-featured', SECOND[0]],
+            ['ser_fixture-featured', LONG[0]],
+            ['ser_fixture-featured', id(999)],
+            ['ser_fixture-featured', 'ph_x'],
+            ['fixture-featured', FEATURED[0]],
+            ['ser_Fixture-featured', FEATURED[0]],
+        ]) {
+            answers.push(await headersAndBody(await homeSeriesGET(seriesId, photoId, revision())));
+        }
+        state.catalog = { mode: 'legacy' };
+        answers.push(await headersAndBody(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision())));
+        state.catalog = served();
+        answers.push(await headersAndBody(await homeSeriesGET('ser_fixture-draft', DRAFT[0], revision())));
+        expect(answers[0].status).toBe(404);
+        for (const answer of answers) expect(answer).toEqual(answers[0]);
+    });
+
+    it('answers 400 for no revision, two of them, or a malformed one, without reading the catalog', async () => {
+        for (const query of ['', '?revision=', `?revision=${fixture.revisionId}&revision=${fixture.revisionId}`, '?revision=rev_a', `?rev=${fixture.revisionId}`]) {
+            await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], query), 400, { reason: 'bad-request' });
+        }
+        expect(state.loads).toBe(0);
+    });
+
+    it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
+        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' };
+        await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
+        state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
+        await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 500, { reason: 'internal' });
+        expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/home/series/[seriesId]/photos/[photoId]', error: 'ENOENT' });
+    });
+
+    it('leaves the old route answering for pages already open, inside the first featured series alone', async () => {
+        // The old route's windows never leave the first featured series, as the Home that asks for them plays it alone.
+        const old = await homeGET(FEATURED[4], revision());
+        expect(old.status).toBe(200);
+        expect(((await old.json()).photos as { id: string }[]).map((photo) => photo.id)).toEqual([FEATURED[3], FEATURED[4], FEATURED[0]]);
+        await expectError(await homeGET(SECOND[0], revision()), 404, { reason: 'not-found' });
+        await expectError(await homeGET(FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
     });
 });
 

@@ -90,7 +90,8 @@ beforeAll(async () => {
             { id: 'ser_fixture-draft', slug: 'fixture-draft', title: SENTINELS.draftTitle, photoIds: [P[7]], visibility: 'draft' },
             { id: 'ser_fixture-hidden', slug: 'fixture-hidden', title: SENTINELS.hiddenTitle, photoIds: [P[8]], visibility: 'hidden' },
         ],
-        featuredSeriesIds: ['ser_fixture-a', 'ser_fixture-b'],
+        // A alone: a second featured series joins Home's loop (homeLoop.test.ts), and B stays out of everything here.
+        featuredSeriesIds: ['ser_fixture-a'],
         seriesOrder: ['ser_fixture-b', 'ser_fixture-draft', 'ser_fixture-a', 'ser_fixture-hidden'],
     });
 });
@@ -221,12 +222,14 @@ describe('the featured series', () => {
         expect(featured(home).id).toBe('ser_fixture-a');
     });
 
-    it('never rotates: the second featured entry shows only when the first isn\'t held', () => {
+    it('skips featured entries the revision doesn\'t hold, and plays the rest after the one it opens on', () => {
         const held = content();
         held.site.featuredSeriesIds = ['ser_fixture-draft', 'ser_fixture-hidden', 'ser_fixture-b', 'ser_fixture-a'];
-        const series = featured(homeOf(held));
+        const home = publishedHomeOf(source(held), routes, () => 0);
+        const series = featured(home);
         expect(series.id).toBe('ser_fixture-b');
         expect(series.photoIds).toEqual([P[5], P[6]]);
+        expect(home.followingSeries?.map((entry) => entry.id)).toEqual(['ser_fixture-a']);
     });
 
     it('holds nothing unpublished or unfeatured', () => {
@@ -406,13 +409,13 @@ describe('the empty state', () => {
         expect(homeOf(held)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
     });
 
-    it('is a null featured series when the featured series has no photograph that resolves, without falling through to the next', () => {
+    it('is a null featured series when the featured series has no photograph that resolves', () => {
         const held = content();
         held.series[1].photoIds = [P[9], P[7]];
         expect(homeOf(held)).toEqual({ catalogRevision: REVISION_A, featuredSeries: null });
     });
 
-    it('is a null featured series when the featured ID appears more than once, without falling through to the next', () => {
+    it('is a null featured series when the featured ID appears more than once', () => {
         const held = content();
         // A hand-written revision: a second record under A's ID, with its own slug and B's photographs. #5 answers both not-found.
         held.series.push({ ...structuredClone(held.series[0]), id: 'ser_fixture-a', slug: 'fixture-a-again', slugAliases: [] });
