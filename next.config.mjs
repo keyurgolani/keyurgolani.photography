@@ -1,5 +1,3 @@
-import { DERIVATIVE_FOLDERS } from './lib/derivativeFolders.mjs';
-
 // #14's curator paths. proxy.ts 404s them unless CURATION_ENABLED is true.
 const CURATOR_SOURCES = ['/curation/:path*', '/api/curation/:path*'];
 // #16's preview site subtree, the one curator path a same-origin frame may embed.
@@ -61,23 +59,18 @@ const nextConfig = {
     minimumCacheTTL: 86400, // 1 day
     deviceSizes: [400, 800, 1200, 1920],
     imageSizes: [400, 800],
-    // A response over this limit hangs /_next/image instead of failing, so it stays
-    // high. localPatterns below keeps originals out of /_next/image entirely.
+    // A response over this limit hangs /_next/image instead of failing, so it stays high.
     maximumResponseBody: 500_000_000,
-    // /_next/image optimizes only the legacy derivatives, so it answers 400
-    // for an original photo and for any other public file. Next adds
-    // /_next/static/media/** itself at load, for statically imported images,
-    // and proxy.ts 404s a path there that encodes its way out. About's
-    // portrait, which Home's intro shows too, comes from the site config
-    // folder at /about/portrait/, never through /_next/image. This list is
-    // fixed when the server starts, so it can't follow the launch: unless the
-    // legacy derivatives serve, proxy.ts refuses these urls at /_next/image too.
-    localPatterns: [
-      // Every image derivative folder, by its extension. The LQIP text files aren't images.
-      ...Object.entries(DERIVATIVE_FOLDERS)
-        .filter(([, extension]) => extension !== '.txt')
-        .map(([folder, extension]) => ({ pathname: `/assets/photos/${folder}/*${extension}`, search: '' })),
-    ],
+    // /_next/image optimizes nothing of the site's own. Since #13's slice E no
+    // page uses next/image: photos are /media sets ResponsivePhoto draws from
+    // their own variants, and About's portrait, which Home's intro shows too,
+    // comes from the site config folder at /about/portrait/. No public file
+    // is a static import, so nothing needs /assets/profile/** either. Next
+    // adds /_next/static/media/** itself at load, for a statically imported
+    // image, and refuses every other url with a 400. proxy.ts refuses a url
+    // under /assets/photos there too, before the optimizer's cache can answer,
+    // and 404s one that encodes its way out of /_next/static.
+    localPatterns: [],
   },
 };
 

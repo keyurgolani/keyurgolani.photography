@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # The catalog smoke test for a built image, on two throwaway data roots:
 #
-# 1. Legacy mode. The image's node generates a fixture library from this
-#    checkout's test/fixtures/makeLibrary.ts, `photos migrate` gives each
+# 1. Nothing published. The image's node generates a fixture library from
+#    this checkout's test/fixtures/makeLibrary.ts, `photos migrate` gives each
 #    photo its ID in an empty data root, and the watcher's --once run builds
-#    every derivative. web then reports legacy mode at /api/ready, lists each
-#    photo once at /api/photos in the legacy item shape, serves the WebP each
-#    item names, directly and through /_next/image, and answers the same
-#    after a restart.
+#    every derivative and set. web then answers the catalog's unavailable
+#    state, the same after a restart: /api/ready and #6's Home records
+#    endpoint answer 503 with not-published. Since #13's slice E there is no
+#    legacy mode: /api/photos is a 404, /gallery a 308 to /work, and each
+#    legacy WebP the watcher wrote 404s and is refused at /_next/image.
 # 2. A published catalog. ci/publish-fixture.ts publishes a small test
 #    catalog into a second data root, and web serves it with the first
-#    root's library still in place. It 404s each legacy WebP and refuses it
-#    at /_next/image, since a live revision closes /assets/photos. It names
-#    its revision at /api/ready and /api/photos, serves a set the revision
-#    holds from /media with 200, `immutable`, and an ETag of its bytes,
-#    answers 304 to that ETag, and 404s a set whose files exist but which no
-#    revision holds. After a
+#    root's library still in place. It names its revision at /api/ready and
+#    at the Home records endpoint, still 404s /api/photos and each legacy
+#    WebP, serves a set the revision holds from /media with 200,
+#    `immutable`, and an ETag of its bytes, answers 304 to that ETag, and
+#    404s a set whose files exist but which no revision holds. After a
 #    restart on the same published root, /api/ready answers exactly as before
 #    it, naming the same revision, the set still serves, and the legacy WebPs
 #    stay closed.
@@ -45,8 +45,10 @@ WEB_STARTED=false
 BASE_URL=
 # The body of /_next/image's 400 for a url images.localPatterns doesn't allow.
 NOT_ALLOWED='"url" parameter is not allowed'
-# The keys of a legacy /api/photos item, as jq's keys sorts them.
-LEGACY_KEYS='["caption","date","height","id","lqip","medium","mediumAvif","optimized","optimizedAvif","optimizedHeight","optimizedWidth","src","thumbnail","thumbnailAvif","width"]'
+# The legacy WebPs the watcher writes for makeLibrary.ts's fixtures, which never serve.
+LEGACY_WEBPS=(/assets/photos/optimized/landscape.webp /assets/photos/optimized/portrait.webp /assets/photos/optimized/square.webp)
+# A revision ID no catalog holds, for the #6 endpoint's `revision`.
+NO_REVISION=rev_$(printf '0%.0s' {1..64})
 
 fail() {
   echo "::error::$1"
@@ -123,47 +125,42 @@ expect_json() {
   jq -e "$@" "$filter" "$TMP/body.json" >/dev/null || fail "GET $endpoint returned $(cat "$TMP/body.json"), which fails $filter."
 }
 
-# Checks legacy mode, and copies the /api/photos list to <file>.
-check_legacy() {
-  local src code
-  expect_json /api/ready 200 no-store '. == {mode: "legacy", state: "ok", revisionId: null, revisionNumber: null, activatedAt: null}'
-  # shellcheck disable=SC2016 # $keys is jq's
-  expect_json /api/photos 200 no-cache '
-    type == "array"
-    and ([.[].src] | sort) == ["/assets/photos/optimized/landscape.webp", "/assets/photos/optimized/portrait.webp", "/assets/photos/optimized/square.webp"]
-    and all(.[]; keys == $keys and .width > 0 and .height > 0 and (.lqip | startswith("data:image/")))
-    and [.[].id] == [range(length)]' --argjson keys "$LEGACY_KEYS"
-  [ "$(header x-catalog-mode)" = legacy ] && [ "$(header x-catalog-revision)" = legacy ] ||
-    fail "GET /api/photos sent X-Catalog-Mode '$(header x-catalog-mode)' and X-Catalog-Revision '$(header x-catalog-revision)', expected legacy and legacy."
-  cp "$TMP/body.json" "$1"
-  # Before the launch the legacy pages load these: each listed WebP serves, never as immutable, and /_next/image optimizes it.
-  for src in $(jq -r '.[].src' "$1"); do
-    code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$src") || fail "GET $src failed."
-    [ "$code" = 200 ] || fail "GET $src, which /api/photos lists, returned $code, expected 200."
-    [ "$(header content-type)" = image/webp ] || fail "GET $src sent Content-Type: $(header content-type)."
-    case $(header cache-control) in *immutable*) fail "GET $src sent Cache-Control: $(header cache-control)." ;; esac
-    code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL/_next/image?url=$(jq -rn --arg src "$src" '$src | @uri')&w=400&q=75") ||
-      fail "GET /_next/image for $src failed."
-    [ "$code" = 200 ] || fail "GET /_next/image for $src returned $code, expected 200."
-    case $(header content-type) in image/*) ;; *) fail "GET /_next/image for $src sent Content-Type: $(header content-type)." ;; esac
-  done
+# Fails unless GET <endpoint> answers <code>. Leaves the headers in $TMP/headers.txt.
+expect_code() {
+  local endpoint=$1 expected=$2 code
+  code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$endpoint") || fail "GET $endpoint failed."
+  [ "$code" = "$expected" ] || fail "GET $endpoint returned $code, expected $expected."
 }
 
-# Checks that the WebPs <file> lists, which serve in legacy mode, are closed
-# once a revision is live: 404 with nothing cached, and /_next/image's 400.
-check_contained() {
+# What every server answers, published or not: no /api/photos, /gallery on to
+# /work, and each legacy WebP, which is on disk, closed: 404 with nothing
+# cached, and /_next/image's 400.
+check_closed() {
   local src code
-  for src in $(jq -r '.[].src' "$1"); do
+  expect_code /api/photos 404
+  expect_code /gallery 308
+  [ "$(header location)" = /work ] || fail "GET /gallery sent Location: $(header location), expected /work."
+  for src in "${LEGACY_WEBPS[@]}"; do
+    [ -s "$LIB${src#/assets/photos}" ] || fail "The watcher wrote no $src, so its 404 would prove nothing."
     code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$src") || fail "GET $src failed."
-    [ "$code" = 404 ] || fail "GET $src with a revision live returned $code, expected 404."
+    [ "$code" = 404 ] || fail "GET $src returned $code, expected 404."
     [ "$(header cache-control)" = no-store ] || fail "The 404 for $src sent Cache-Control: $(header cache-control)."
     code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o "$TMP/image-error.txt" -w '%{http_code}' "$BASE_URL/_next/image?url=$(jq -rn --arg src "$src" '$src | @uri')&w=400&q=75") ||
       fail "GET /_next/image for $src failed."
-    [ "$code" = 400 ] || fail "GET /_next/image for $src with a revision live returned $code, expected 400."
+    [ "$code" = 400 ] || fail "GET /_next/image for $src returned $code, expected 400."
     [ "$(cat "$TMP/image-error.txt")" = "$NOT_ALLOWED" ] ||
       fail "GET /_next/image for $src answered 400 with '$(cat "$TMP/image-error.txt")', expected '$NOT_ALLOWED'."
     [ "$(header cache-control)" = no-store ] || fail "The 400 for /_next/image of $src sent Cache-Control: $(header cache-control)."
   done
+}
+
+# The unavailable state of a data root with nothing published, at /api/ready
+# and at #6's Home records endpoint, for photo <photoId>. Copies /api/ready's body to <file>.
+check_unpublished() {
+  expect_json /api/ready 503 no-store '. == {mode: "catalog", state: "unavailable", revisionId: null, revisionNumber: null, activatedAt: null, reason: "not-published"}'
+  cp "$TMP/body.json" "$2"
+  expect_json "/api/catalog/home/photos/$1?revision=$NO_REVISION" 503 no-store '. == {reason: "not-published"}'
+  check_closed
 }
 
 # 1. The fixture library, generated by the image under test with this
@@ -193,15 +190,19 @@ jq -e '.dataRoot.state == "ready" and .photos.total == 3 and .pendingJobs == 0 a
   fail "After the --once run, photos identity status reported $(cat "$TMP/status.json")."
 echo "The migration gave the 3 fixtures their IDs, and --once built their derivatives and sets."
 
-# 4. Legacy mode lists every photo, and a restart changes nothing.
+# 4. With nothing published, web answers the unavailable state and serves no
+#    legacy WebP, and a restart changes nothing.
+photo=$(in_image node dist/scripts/photos.mjs list --json | jq -r '.[0].photoId') ||
+  fail "photos list --json failed."
+[[ $photo == ph_* ]] || fail "photos list --json named no photo ID."
 start_web "$LIB" "$DATA"
-check_legacy "$TMP/legacy-before.json"
+check_unpublished "$photo" "$TMP/unpublished-before.json"
 docker restart "$WEB" >/dev/null
 wait_for_web
-check_legacy "$TMP/legacy-after.json"
-diff -u "$TMP/legacy-before.json" "$TMP/legacy-after.json" || fail "/api/photos changed when web restarted."
+check_unpublished "$photo" "$TMP/unpublished-after.json"
+diff -u "$TMP/unpublished-before.json" "$TMP/unpublished-after.json" || fail "/api/ready changed when web restarted."
 stop_web
-echo "Legacy mode: /api/ready and /api/photos answered the same before and after a restart, and every listed WebP served, directly and through /_next/image."
+echo "Nothing published: /api/ready and the #6 Home records endpoint answered 503 not-published before and after a restart, /api/photos 404, /gallery 308 to /work, and every legacy WebP 404, and 400 through /_next/image."
 
 # 5. A published test catalog in a second data root. web reads it as the
 #    image's user, so make it readable.
@@ -210,18 +211,19 @@ chmod -R a+rX "$PUBLISHED"
 revision=$(jq -r .revisionId "$TMP/fixture.json")
 active=$(jq -r .active "$TMP/fixture.json")
 inactive=$(jq -r .inactive "$TMP/fixture.json")
-[[ $revision == rev_* && $active == /media/* && $inactive == /media/* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
+featured=$(jq -r .featured "$TMP/fixture.json")
+[[ $revision == rev_* && $active == /media/* && $inactive == /media/* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
 start_web "$LIB" "$PUBLISHED"
-# shellcheck disable=SC2016 # $revision and $active are jq's
+# shellcheck disable=SC2016 # $revision and $featured are jq's
 expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 1' --arg revision "$revision"
 cp "$TMP/body.json" "$TMP/ready-before.json"
 # shellcheck disable=SC2016
-expect_json /api/photos 200 no-cache 'type == "array" and length == 2 and any(.[]; .medium == $active)' --arg active "$active"
-[ "$(header x-catalog-mode)" = catalog ] && [ "$(header x-catalog-revision)" = "$revision" ] ||
-  fail "GET /api/photos sent X-Catalog-Mode '$(header x-catalog-mode)' and X-Catalog-Revision '$(header x-catalog-revision)', expected catalog and $revision."
-echo "/api/ready and /api/photos name $revision."
-check_contained "$TMP/legacy-before.json"
-echo "With $revision live, every legacy WebP returned 404, and 400 through /_next/image."
+expect_json "/api/catalog/home/photos/$featured?revision=$revision" 200 no-cache '.revisionId == $revision and any(.photos[]; .id == $featured)' --arg revision "$revision" --arg featured "$featured"
+[ "$(header x-catalog-revision)" = "$revision" ] || fail "The #6 Home records endpoint sent X-Catalog-Revision '$(header x-catalog-revision)', expected $revision."
+expect_json "/api/catalog/home/photos/$featured?revision=$NO_REVISION" 409 no-store '. == {reason: "revision-changed"}'
+echo "/api/ready and the #6 Home records endpoint name $revision."
+check_closed
+echo "With $revision live, /api/photos returned 404, /gallery 308, and every legacy WebP 404, and 400 through /_next/image."
 
 # 6. The set the revision holds: 200, immutable, an ETag of its bytes, and 304 to that ETag.
 code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o "$TMP/media" -w '%{http_code}' "$BASE_URL$active") || fail "GET $active failed."
@@ -250,6 +252,6 @@ diff -u "$TMP/ready-before.json" "$TMP/body.json" || fail "/api/ready changed wh
 code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$active") || fail "GET $active after the restart failed."
 [ "$code" = 200 ] || fail "GET $active returned $code after the restart, expected 200."
 [ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the restart."
-check_contained "$TMP/legacy-before.json"
+check_closed
 echo "After a restart on the published root, /api/ready named $revision as before, its set still served, and the legacy WebPs stayed closed."
 echo "smoke-catalog passed."

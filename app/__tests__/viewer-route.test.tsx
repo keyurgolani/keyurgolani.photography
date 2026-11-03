@@ -107,7 +107,6 @@ afterAll(async () => {
 
 const served = (servedState: 'ok' | 'degraded', content: CandidateContent = catalog.content): ActiveCatalog =>
     ({
-        mode: 'catalog',
         state: servedState,
         reader: createCatalogReader(content, { revisionId: catalog.revisionId, revisionNumber: 1 }),
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
@@ -236,7 +235,7 @@ describe('the Viewer route', () => {
         expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
     });
 
-    it('answers the one not-found for anything it can\'t serve, and in legacy mode', async () => {
+    it('answers the one not-found for anything it can\'t serve', async () => {
         const cases: [string, string][] = [
             ['route-a', P[3]],
             ['route-b', P[0]],
@@ -251,15 +250,15 @@ describe('the Viewer route', () => {
             ['sentinel-old-slug', P[3]],
         ];
         for (const [slug, photoId] of cases) expect(await answer(slug, photoId), `${slug} ${photoId}`).toEqual({ notFound: true });
-        state.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
-        expect(await answer('route-a', P[0])).toEqual({ notFound: true });
     });
 
-    it('throws CatalogUnavailableError while the catalog is unavailable, so the error page answers', async () => {
-        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' } satisfies ActiveCatalog;
-        const result = await answer('route-a', P[0]);
-        expect('thrown' in result && result.thrown).toBeInstanceOf(CatalogUnavailableError);
-        expect(await generateMetadata(props('route-a', P[0]))).toEqual({});
+    it('throws CatalogUnavailableError while the catalog is unavailable, nothing published included, so the error page answers', async () => {
+        for (const reason of ['revision-unreadable', 'not-published'] as const) {
+            state.catalog = { state: 'unavailable', reason } satisfies ActiveCatalog;
+            const result = await answer('route-a', P[0]);
+            expect('thrown' in result && result.thrown, reason).toBeInstanceOf(CatalogUnavailableError);
+            expect(await generateMetadata(props('route-a', P[0]))).toEqual({});
+        }
     });
 });
 
@@ -310,7 +309,7 @@ describe('the Viewer\'s share metadata', () => {
         for (const [slug, photoId] of [['route-a', P[3]], ['sentinel-old-slug', P[1]], ['route-draft', P[4]], ['Route-A', P[0]]]) {
             expect(await generateMetadata(props(slug, photoId)), `${slug} ${photoId}`).toEqual({});
         }
-        state.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
+        state.catalog = { state: 'unavailable', reason: 'not-published' } satisfies ActiveCatalog;
         expect(await generateMetadata(props('route-a', P[0]))).toEqual({});
     });
 });

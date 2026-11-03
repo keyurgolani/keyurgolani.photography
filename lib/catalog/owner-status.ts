@@ -7,7 +7,7 @@ import type { PhotoRecord, Registry } from '../identity/types';
 import { mediaFilePath } from '../media/path';
 import { dataRootStatus } from '../storage/config';
 import { usualProfile } from './compile';
-import { catalogMode, type CatalogMode } from './mode';
+import { checkPublished, type PublishState } from './mode';
 import { lastCommitted, listActivations, readLastPublish, readRevisionFile, type LastPublishFile } from './repository';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { Activation, AuthoredPhoto, AuthoredSeries, WorkingLayer } from './types';
@@ -66,7 +66,8 @@ export interface LiveRevision {
 export interface OwnerStatus {
     identity: IdentityStatus;
     catalog: {
-        mode: CatalogMode;
+        /** Whether the data root has published (checkPublished()). Nothing serves before it does. */
+        published: PublishState;
         active: LiveRevision | null;
         lastPublish: LastPublishFile | null;
         /** Why a catalog file couldn't be read, if one couldn't. */
@@ -170,11 +171,11 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     // status builds no failed-profile text of its own: identityStatus() strips the library and data root paths from
     // each reason (withoutAbsolutePaths(), #53), so status --json carries none.
     const identity = dataRoot === null ? unsetIdentity() : await identityStatus({ root: path.resolve(dataRoot), clock });
-    const status: OwnerStatus = { identity, catalog: { mode: 'legacy', active: null, lastPublish: null }, working: null, inbox: null };
+    const status: OwnerStatus = { identity, catalog: { published: 'unpublished', active: null, lastPublish: null }, working: null, inbox: null };
     if (dataRoot === null || identity.dataRoot.state !== 'ready') return status;
     const root = path.resolve(dataRoot);
     try {
-        status.catalog.mode = await catalogMode(root);
+        status.catalog.published = (await checkPublished(root)).state;
         const activations = await listActivations(root);
         const pointer = await readActivePointer(root);
         if (pointer) {
@@ -219,27 +220,27 @@ function formatStatus(status: OwnerStatus): string {
         const { revisionId, revisionNumber, kind, actor, committedAt, sequence } = catalog.active;
         switch (catalog.active.status) {
             case 'committed':
-                lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) active since ${committedAt ?? 'an unknown time'}, a ${kind} by ${actor}`);
+                lines.push(`Catalog: revision ${revisionNumber} (${revisionId}) active since ${committedAt ?? 'an unknown time'}, a ${kind} by ${actor}`);
                 break;
             case 'pending':
-                lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) is live, from a ${kind} by ${actor} that didn't finish`);
+                lines.push(`Catalog: revision ${revisionNumber} (${revisionId}) is live, from a ${kind} by ${actor} that didn't finish`);
                 lines.push(`  Activation ${sequence} is pending. The next photos publish settles it.`);
                 break;
             case 'abandoned':
-                lines.push(`Catalog: ${catalog.mode} mode, revision ${revisionNumber} (${revisionId}) is live, though its activation was abandoned`);
+                lines.push(`Catalog: revision ${revisionNumber} (${revisionId}) is live, though its activation was abandoned`);
                 lines.push(`  Activation ${sequence} is abandoned, but the pointer names it. The next photos publish repairs it, unless that revision's rules block it.`);
                 break;
             case 'missing':
-                lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but no activation record names it`);
+                lines.push(`Catalog: ${revisionId} is live, but no activation record names it`);
                 lines.push("  The next photos publish repairs the record, unless that revision's rules block it.");
                 break;
             case 'mismatch':
-                lines.push(`Catalog: ${catalog.mode} mode, ${revisionId} is live, but the pointer names activation ${sequence}, which activated ${catalog.active.activationRevisionId}`);
+                lines.push(`Catalog: ${revisionId} is live, but the pointer names activation ${sequence}, which activated ${catalog.active.activationRevisionId}`);
                 lines.push("  The pointer and its activation record disagree. The next photos publish repairs them, unless that revision's rules block it.");
                 break;
         }
     } else {
-        lines.push(`Catalog: ${catalog.mode} mode, nothing published yet, so the site lists the registry's photos`);
+        lines.push("Catalog: nothing published yet, so the site answers unavailable (503, not-published) until the first photos publish");
     }
     const last = catalog.lastPublish;
     lines.push(last

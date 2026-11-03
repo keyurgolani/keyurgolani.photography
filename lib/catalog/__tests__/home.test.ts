@@ -472,7 +472,7 @@ describe('catalog revision consistency', () => {
         const readerA = createCatalogReader(a, { revisionId: REVISION_A, revisionNumber: 3 });
         const readerB = createCatalogReader(b, { revisionId: REVISION_B, revisionNumber: 4 });
         const at = (reader: typeof readerA) => {
-            const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader }, routes);
+            const result = homeRouteOf({ state: 'ok', reader }, routes);
             if (result.kind !== 'home') throw new Error(`Expected Home, got ${result.kind}`);
             return result.home;
         };
@@ -486,22 +486,18 @@ describe('catalog revision consistency', () => {
     });
 });
 
-describe('homeRouteOf, the cutover gate', () => {
+describe('homeRouteOf, the gate', () => {
     /** A reader that fails the test if anything reads it. */
-    const trap = (): HomeActiveCatalog & { mode: 'catalog'; state: 'ok' } => {
+    const trap = (): HomeActiveCatalog & { state: 'ok' } => {
         const fail = () => {
             throw new Error('The catalog was read');
         };
-        return { mode: 'catalog', state: 'ok', reader: { revision: fail, site: fail, listSeries: fail, photosOf: fail } };
+        return { state: 'ok', reader: { revision: fail, site: fail, listSeries: fail, photosOf: fail } };
     };
 
-    it('renders today\'s Home only in legacy mode', () => {
-        expect(homeRouteOf({ mode: 'legacy' }, routes)).toEqual({ kind: 'legacy' });
-    });
-
-    it('reports an unavailable catalog for the page to throw, never the legacy Home', () => {
-        for (const reason of ['catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
-            const catalog: HomeActiveCatalog<typeof reason> = { mode: 'catalog', state: 'unavailable', reason };
+    it('reports an unavailable catalog, nothing published included, for the page to throw', () => {
+        for (const reason of ['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
+            const catalog: HomeActiveCatalog<typeof reason> = { state: 'unavailable', reason };
             expect(homeRouteOf(catalog, routes)).toEqual({ kind: 'unavailable', reason });
         }
     });
@@ -509,21 +505,21 @@ describe('homeRouteOf, the cutover gate', () => {
     it('renders the catalog Home from the served revision, ok or degraded', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 });
         for (const state of ['ok', 'degraded'] as const) {
-            const result = homeRouteOf({ mode: 'catalog', state, reader }, routes);
+            const result = homeRouteOf({ state, reader }, routes);
             expect(result).toEqual({ kind: 'home', home: homeOf() });
         }
     });
 
-    it('renders the catalog Home\'s empty state, not the legacy one, when nothing is featured', () => {
+    it('renders the catalog Home\'s empty state when nothing is featured', () => {
         const held = content();
         held.site.featuredSeriesIds = [];
         const reader = createCatalogReader(held, { revisionId: REVISION_A, revisionNumber: 3 });
-        expect(homeRouteOf({ mode: 'catalog', state: 'ok', reader }, routes)).toEqual({ kind: 'home', home: { catalogRevision: REVISION_A, featuredSeries: null } });
+        expect(homeRouteOf({ state: 'ok', reader }, routes)).toEqual({ kind: 'home', home: { catalogRevision: REVISION_A, featuredSeries: null } });
     });
 
     it('reads the revision ID from the reader itself', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_B, revisionNumber: 9 });
-        const result = homeRouteOf({ mode: 'catalog', state: 'degraded', reader }, routes);
+        const result = homeRouteOf({ state: 'degraded', reader }, routes);
         expect(result.kind === 'home' && result.home.catalogRevision).toBe(REVISION_B);
     });
 
@@ -544,20 +540,19 @@ describe('homeRouteOf, the cutover gate', () => {
                 return this.of.photosOf(seriesId);
             }
         }
-        expect(homeRouteOf({ mode: 'catalog', state: 'ok', reader: new Reader(inner) }, routes)).toEqual({ kind: 'home', home: homeOf() });
+        expect(homeRouteOf({ state: 'ok', reader: new Reader(inner) }, routes)).toEqual({ kind: 'home', home: homeOf() });
     });
 
     it('builds the link with the routes it\'s handed', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 });
-        const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader }, createRouteBuilder({ basePath: '/curation/preview' }));
+        const result = homeRouteOf({ state: 'ok', reader }, createRouteBuilder({ basePath: '/curation/preview' }));
         expect(result.kind === 'home' && result.home.featuredSeries?.href).toBe('/curation/preview/work/fixture-a');
     });
 
-    it('reads no reader in legacy mode or while the catalog is unavailable', () => {
+    it('reads no reader while the catalog is unavailable', () => {
         const { reader } = trap();
         expect(() => homeRouteOf(trap(), routes)).toThrow('The catalog was read');
-        expect(homeRouteOf({ mode: 'legacy', reader } as unknown as HomeActiveCatalog, routes)).toEqual({ kind: 'legacy' });
-        const unavailable = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable', reader } as unknown as HomeActiveCatalog;
+        const unavailable = { state: 'unavailable', reason: 'revision-unreadable', reader } as unknown as HomeActiveCatalog;
         expect(homeRouteOf(unavailable, routes)).toEqual({ kind: 'unavailable', reason: 'revision-unreadable' });
     });
 });
@@ -573,7 +568,8 @@ describe('Home on published revisions', { timeout: 60_000 }, () => {
         const homeAt = async () => homeRouteOf(await loadActiveCatalog(root), routes);
         const authored = published.series[0].photoIds;
 
-        expect(await homeAt()).toEqual({ kind: 'legacy' });
+        // Nothing published yet: the unavailable state, never a listing of the library (#13's slice E).
+        expect(await homeAt()).toEqual({ kind: 'unavailable', reason: 'not-published' });
 
         const one = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger });
         expect(one.outcome).toBe('PUBLISHED');
@@ -663,7 +659,7 @@ describe('homePhotosOf, the window Home asks for as it moves', () => {
 });
 
 describe('homePhotosFrom, the records endpoint\'s answer', () => {
-    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ mode: 'catalog', state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
+    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
 
     it('answers a malformed photo ID not-found and a missing or malformed revision as a bad request, before reading the catalog', async () => {
         const load = vi.fn(async () => served());
@@ -674,9 +670,9 @@ describe('homePhotosFrom, the records endpoint\'s answer', () => {
         expect(load).not.toHaveBeenCalled();
     });
 
-    it('answers legacy mode not-found and passes an unavailable catalog on', async () => {
-        expect(await homePhotosFrom(async () => ({ mode: 'legacy' }), P[0], REVISION_A)).toEqual({ kind: 'not-found' });
-        expect(await homePhotosFrom(async () => ({ mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
+    it('passes an unavailable catalog on, nothing published included', async () => {
+        expect(await homePhotosFrom(async () => ({ state: 'unavailable', reason: 'not-published' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'not-published' });
+        expect(await homePhotosFrom(async () => ({ state: 'unavailable', reason: 'active-unreadable' }), P[0], REVISION_A)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
     });
 
     it('answers revision-changed for any revision but the served one, whatever the photo', async () => {

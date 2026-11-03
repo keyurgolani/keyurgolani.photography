@@ -8,7 +8,7 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus, libraryRoot } from '../storage/config';
 import { LockLostError, LockTimeoutError, withLock, type LockContext } from '../storage/lock';
-import { legacyEntries, legacySitePhotos } from './photos-api';
+import { legacyEntries, legacySitePhotos } from './legacy-photos';
 import { checkLayer } from './publish';
 import { hashValue, stampWrite } from './review';
 import { CARRY_OVER_SERIES_ID, parseAuthoredRecord } from './schema';
@@ -23,8 +23,9 @@ import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError,
  * published series, "Gallery", in the Gallery's order, featured on Home and
  * alone in Work's order, so no photo leaves the site at the launch.
  *
- * The source of truth is legacyEntries() (photos-api.ts), the list legacy
- * /api/photos serves and the legacy Gallery shows in that order. What counts
+ * The source of truth is legacyEntries() (legacy-photos.ts), the list legacy
+ * /api/photos served and the legacy Gallery showed in that order, until #13's
+ * slice E removed both. What counts
  * as on the site is legacySitePhotos(), as publish's launch count has it, so
  * a photo the Gallery can't show for want of its legacy files can't carry,
  * and has to be accepted by name like any photo that leaves at the launch. Each photo

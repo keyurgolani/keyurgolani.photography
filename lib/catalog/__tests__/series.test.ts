@@ -745,7 +745,7 @@ describe('catalog revision consistency', () => {
 });
 
 describe('seriesPageFrom', () => {
-    const okCatalog = (state: 'ok' | 'degraded' = 'ok'): SeriesActiveCatalog => ({ mode: 'catalog', state, reader: readerOf(revisionContent()) });
+    const okCatalog = (state: 'ok' | 'degraded' = 'ok'): SeriesActiveCatalog => ({ state, reader: readerOf(revisionContent()) });
 
     it('answers a malformed slug not-found without loading the catalog', async () => {
         const load = vi.fn(async () => okCatalog());
@@ -757,13 +757,14 @@ describe('seriesPageFrom', () => {
         expect(load).toHaveBeenCalledTimes(1);
     });
 
-    it('answers a site with no active revision not-found, like an unknown series, and never redirects there', async () => {
-        expect(await seriesPageFrom(async () => ({ mode: 'legacy' }), 'fixture-a', routes)).toEqual({ kind: 'not-found' });
-        expect(await seriesPageFrom(async () => ({ mode: 'legacy' }), 'old-fixture-a', routes)).toEqual({ kind: 'not-found' });
+    it('reports a site with nothing published as unavailable, never a not-found or a redirect', async () => {
+        const unpublished: SeriesActiveCatalog<'not-published'> = { state: 'unavailable', reason: 'not-published' };
+        expect(await seriesPageFrom(async () => unpublished, 'fixture-a', routes)).toEqual({ kind: 'unavailable', reason: 'not-published' });
+        expect(await seriesPageFrom(async () => unpublished, 'old-fixture-a', routes)).toEqual({ kind: 'unavailable', reason: 'not-published' });
     });
 
     it('reports an unavailable catalog for the route to throw, never a not-found or a redirect', async () => {
-        const unavailable: SeriesActiveCatalog<'active-unreadable'> = { mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' };
+        const unavailable: SeriesActiveCatalog<'active-unreadable'> = { state: 'unavailable', reason: 'active-unreadable' };
         expect(await seriesPageFrom(async () => unavailable, 'fixture-a', routes)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
         expect(await seriesPageFrom(async () => unavailable, 'old-fixture-a', routes)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
         expect(await seriesPageFrom(async () => unavailable, 'fixture-draft', routes)).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
@@ -797,7 +798,8 @@ describe('the series page on published revisions', { timeout: 60_000 }, () => {
         const { loadActiveCatalog } = await import('../public-reader');
         const load = () => loadActiveCatalog(root);
 
-        expect(await seriesPageFrom(load, 'fixture-a', routes)).toEqual({ kind: 'not-found' });
+        // Nothing published yet: unavailable, never a not-found (#13's slice E).
+        expect(await seriesPageFrom(load, 'fixture-a', routes)).toEqual({ kind: 'unavailable', reason: 'not-published' });
 
         const one = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger });
         expect(one.outcome).toBe('PUBLISHED');

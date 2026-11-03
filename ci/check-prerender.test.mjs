@@ -18,26 +18,27 @@ function manifest({ routes = {}, dynamicRoutes = {} } = {}) {
   };
 }
 
-// The entry a build wrote for /api/photos while the route set revalidate = 60.
-const PHOTOS_AT_BUILD_TIME = {
-  '/api/photos': { initialRevalidateSeconds: 60, initialExpireSeconds: 31536000, srcRoute: '/api/photos', dataRoute: null },
+// The entry a build would write for /api/ready if the route set revalidate = 60, as the removed /api/photos once did.
+const READY_AT_BUILD_TIME = {
+  '/api/ready': { initialRevalidateSeconds: 60, initialExpireSeconds: 31536000, srcRoute: '/api/ready', dataRoute: null },
 };
 
 describe('prerenderedPaths', () => {
   it('lists Home, the catalog API routes and the curator page', () => {
-    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/', '/api/photos', '/api/ready', '/curation']));
+    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/', '/api/ready', '/curation']));
   });
 
-  it('lists Work and the legacy Gallery, whose cutover gate reads the catalog per request', () => {
-    expect(DYNAMIC_PATHS).toEqual(expect.arrayContaining(['/work', '/gallery']));
+  it('lists Work, which reads the catalog per request, and not the routes #13 removed', () => {
+    expect(DYNAMIC_PATHS).toContain('/work');
+    expect(DYNAMIC_PATHS).not.toContain('/api/photos');
+    expect(DYNAMIC_PATHS).not.toContain('/gallery');
   });
 
-  it('finds Work and the Gallery when the build prerendered them as static pages', () => {
+  it('finds Work when the build prerendered it as a static page', () => {
     const routes = {
       '/work': { initialRevalidateSeconds: false, srcRoute: '/work', dataRoute: '/work.rsc' },
-      '/gallery': { initialRevalidateSeconds: false, srcRoute: '/gallery', dataRoute: '/gallery.rsc' },
     };
-    expect(prerenderedPaths(manifest({ routes }))).toEqual(['/gallery', '/work']);
+    expect(prerenderedPaths(manifest({ routes }))).toEqual(['/work']);
   });
 
   it('lists the series route by its pattern, since the page reads the catalog per request', () => {
@@ -83,7 +84,7 @@ describe('prerenderedPaths', () => {
   });
 
   it('finds a listed route the build prerendered', () => {
-    expect(prerenderedPaths(manifest({ routes: PHOTOS_AT_BUILD_TIME }))).toEqual(['/api/photos']);
+    expect(prerenderedPaths(manifest({ routes: READY_AT_BUILD_TIME }))).toEqual(['/api/ready']);
   });
 
   it('finds Home when the build prerendered it', () => {
@@ -136,13 +137,13 @@ describe('check-prerender.mjs run directly', () => {
   it('exits 0 and names the paths it checked when the build prerendered none of them', () => {
     const result = run(file(manifest()));
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('The build prerendered none of: /, /api/photos, /api/ready, /work, /gallery, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId], /api/catalog/home/series/[seriesId]/photos/[photoId], /api/catalog/series/[slug]/photos/[photoId], /about, /about/portrait/[token]/[variant], /curation.');
+    expect(result.stdout).toContain('The build prerendered none of: /, /api/ready, /work, /work/[slug], /work/[slug]/photo/[photoId], /api/catalog/series/[slug]/pages/[cursor], /api/catalog/home/photos/[photoId], /api/catalog/home/series/[seriesId]/photos/[photoId], /api/catalog/series/[slug]/photos/[photoId], /about, /about/portrait/[token]/[variant], /curation.');
   });
 
-  it('exits 1 with the fix when the build prerendered /api/photos', () => {
-    const result = run(file(manifest({ routes: PHOTOS_AT_BUILD_TIME })));
+  it('exits 1 with the fix when the build prerendered /api/ready', () => {
+    const result = run(file(manifest({ routes: READY_AT_BUILD_TIME })));
     expect(result.status).toBe(1);
-    expect(result.stdout).toContain('::error::The build prerendered /api/photos, which must render per request.');
+    expect(result.stdout).toContain('::error::The build prerendered /api/ready, which must render per request.');
     expect(result.stdout).toContain("Set dynamic = 'force-dynamic' on the route");
   });
 

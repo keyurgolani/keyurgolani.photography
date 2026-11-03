@@ -64,9 +64,9 @@ export function openableSeries(source: OpenableSource, series: SeriesRecord): bo
 /**
  * The parts of #13's ActiveCatalog a screen's route reads, with the reader
  * narrowed to what that screen calls (`R`), so a projection stays clear of
- * the server-only public reader.
+ * the server-only public reader. There is no legacy mode since #13's slice E:
+ * a site with nothing published is `unavailable` too.
  */
 export type ScreenCatalog<R, Reason extends string = string> =
-    | { mode: 'legacy' }
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: R }
-    | { mode: 'catalog'; state: 'unavailable'; reason: Reason };
+    | { state: 'ok' | 'degraded'; reader: R }
+    | { state: 'unavailable'; reason: Reason };

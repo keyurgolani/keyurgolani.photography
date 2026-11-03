@@ -21,14 +21,14 @@ import { usePlaybackHolds } from './usePlaybackHolds';
 import styles from './CatalogHome.module.css';
 
 /**
- * Home after the cutover, from one revision's PublishedHome and the later
- * records useHomeRecords() asks that same revision for (#6), and nothing
- * else: no /api/photos, no legacy photo list, no shuffle. The featured
- * series play as one loop (v1.5.0), starting on the one the server picked:
- * each in its authored order from its opening photograph, then the next,
- * inside #18's chrome, which names the series on screen, with #2's playback
- * as the only timer. Nothing featured is the empty state, with no intro and
- * the chrome held up by #18's no-photo hold. Every prop ships to visitors, so it takes only the projection and
+ * Home, from one revision's PublishedHome and the later records
+ * useHomeRecords() asks that same revision for (#6), and nothing else: no
+ * photo list, no library scan, no shuffle. The featured series play as one
+ * loop (v1.5.0), starting on the one the server picked: each in its authored
+ * order from its opening photograph, then the next, inside #18's chrome,
+ * which names the series on screen, with #2's playback as the only timer.
+ * Nothing featured is the empty state, with no intro and the chrome held up
+ * by #18's no-photo hold. Every prop ships to visitors, so it takes only the projection and
  * About's portrait view, whose URLs and alt About already shows.
  */
 export default function CatalogHome({ home, portrait = null }: { home: PublishedHome; portrait?: AboutPortraitView | null }) {

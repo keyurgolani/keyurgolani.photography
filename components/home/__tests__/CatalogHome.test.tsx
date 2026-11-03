@@ -438,16 +438,11 @@ describe('CatalogHome', () => {
       expect(playback()).toBe('advancing');
     });
 
-    it('never reads the legacy photo list or /api/photos', async () => {
+    it('fetches nothing while the opening window plays', async () => {
       const fetch = vi.spyOn(globalThis, 'fetch');
-      const cache = await import('@/utils/homeHeroCache');
-      cache.setCachedHomeHeroImages([{ id: '/legacy.jpg', accessibleName: 'Legacy', sources: { thumbnail: '/legacy-thumb.webp', full: '/legacy.webp' }, width: 1, height: 1 }]);
-      const get = vi.spyOn(cache, 'getCachedHomeHeroImages');
       await renderHome();
       load(3);
       advance(HOME_AUTO_ADVANCE_MS);
-      expect(document.body.innerHTML).not.toContain('legacy');
-      expect(get).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
     });
   });

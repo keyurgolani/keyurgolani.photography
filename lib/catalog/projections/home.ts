@@ -306,9 +306,7 @@ export function homePhotosOf(source: HomeSource, photoId: unknown): HomePhotosRe
 export type HomeActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'revision' | 'site' | 'listSeries' | 'photosOf'>, Reason>;
 
 export type HomeRouteResult<Reason extends string = string> =
-    /** Before the cutover: today's Home, unchanged. */
-    | { kind: 'legacy' }
-    /** After it: the catalog Home, which renders its empty state when `home.featuredSeries` is null. */
+    /** The catalog Home, which renders its empty state when `home.featuredSeries` is null. */
     | { kind: 'home'; home: PublishedHome }
     /** The page throws CatalogUnavailableError, so #21's error page renders. */
     | { kind: 'unavailable'; reason: Reason };
@@ -317,21 +315,18 @@ export type HomeRouteResult<Reason extends string = string> =
  * What `/` renders for the site as it stands, for the page to call per
  * request with getActiveCatalog():
  *
- * | catalog                  | `/`              |
- * | ------------------------ | ---------------- |
- * | legacy                   | legacy Home      |
- * | catalog, ok or degraded  | catalog Home     |
- * | catalog, unavailable     | unavailable      |
+ * | catalog                         | `/`          |
+ * | ------------------------------- | ------------ |
+ * | ok or degraded                  | catalog Home |
+ * | unavailable, not-published too  | unavailable  |
  *
- * The legacy Home serves only before the cutover, never as a fallback after
- * it: its shuffled filesystem scan would show photographs no revision
- * published. An unavailable catalog may be one whose cutover couldn't be
- * confirmed (#13's `catalog-unreadable`), so it gets neither Home. A
+ * There is no legacy Home since #13's slice E, so a site that has published
+ * nothing gets the unavailable state, never a listing of the library: its
+ * shuffled filesystem scan would show photographs no revision published. A
  * degraded catalog serves the last revision it loaded, read once here, so
  * the whole Home comes from that one revision.
  */
 export function homeRouteOf<Reason extends string>(catalog: HomeActiveCatalog<Reason>, routes: Pick<RouteBuilder, 'seriesHref'>, pick: HomePick = randomInt): HomeRouteResult<Reason> {
-    if (catalog.mode === 'legacy') return { kind: 'legacy' };
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     return { kind: 'home', home: publishedHomeOf(homeSourceOf(catalog.reader), routes, pick) };
 }
@@ -346,8 +341,8 @@ function homeSourceOf(reader: HomeReader): HomeSource {
  * The Home records endpoint's answer for the site as it stands, for
  * `/api/catalog/home/series/<seriesId>/photos/<photoId>?revision=<revisionId>`.
  * A malformed series or photo ID is not-found and a missing or malformed
- * revision a bad request, all before the catalog is read; legacy mode is
- * not-found; an unavailable catalog is unavailable, for a 503. A revision
+ * revision a bad request, all before the catalog is read; an unavailable
+ * catalog, one that has published nothing too, is unavailable, for a 503. A revision
  * other than the one being served is revision-changed, whatever the series,
  * so Home replaces its sequence instead of mixing two revisions; anything
  * else is homeSeriesPhotosOf() on the served one, which answers only for a
@@ -363,7 +358,6 @@ export async function homeSeriesPhotosFrom<Reason extends string>(
     if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
     if (revisionId === null || !REVISION_ID_RE.test(revisionId)) return { kind: 'bad-request' };
     const catalog = await load();
-    if (catalog.mode === 'legacy') return { kind: 'not-found' };
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     const { reader } = catalog;
     if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
@@ -384,7 +378,6 @@ export async function homePhotosFrom<Reason extends string>(
     if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
     if (revisionId === null || !REVISION_ID_RE.test(revisionId)) return { kind: 'bad-request' };
     const catalog = await load();
-    if (catalog.mode === 'legacy') return { kind: 'not-found' };
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     const { reader } = catalog;
     if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };

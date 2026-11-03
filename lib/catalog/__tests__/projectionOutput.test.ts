@@ -131,8 +131,8 @@ function photoIdsOf(content: CatalogContent): string[] {
 
 const sha256 = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-function served(reader: CatalogReader): HomeActiveCatalog & { mode: 'catalog' } {
-    return { mode: 'catalog', state: 'ok', reader };
+function served(reader: CatalogReader): HomeActiveCatalog {
+    return { state: 'ok', reader };
 }
 
 /** Every series ID a Home loop request could name: each the content holds, the draft's, and an unknown one. */

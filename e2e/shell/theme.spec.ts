@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import { artist } from '../../data/artist';
+import { CATALOG_ORIGIN, HOME_SERIES } from '../support/catalog-home';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
 
@@ -11,17 +12,14 @@ import { expect, test } from '../support/test';
 
 test.skip(({ isMobile }) => isMobile, 'The desktop project covers it. SiteNav runs on both in nav.spec.ts.');
 
+// On playwright.config.ts's catalog server, since Home and Work need a published catalog (#13's slice E). Work stands
+// where the legacy Gallery did.
+test.use({ baseURL: CATALOG_ORIGIN });
+
 const control = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 /** The body's background, or '' while the parser hasn't reached the body yet. */
 const bodyBackground = (page: Page) => page.evaluate(() => (document.body ? getComputedStyle(document.body).backgroundColor : ''));
-/** The legacy Gallery's main, the one ground the old toggle painted, or '' while the parser hasn't reached it yet. */
-const galleryBackground = (page: Page) =>
-    page.evaluate(() => {
-        const main = document.querySelector('main');
-        return main ? getComputedStyle(main).backgroundColor : '';
-    });
-/** Today's grounds, which Dark keeps: the legacy Gallery's dark main, the shell's Gallery After Hours, About's paper. */
-const DARK_GROUND = 'rgb(5, 5, 5)';
+/** Today's grounds, which Dark keeps: the shell's Gallery After Hours, and About's paper. */
 const SHELL_GROUND = 'rgb(8, 10, 9)';
 const PAPER = 'rgb(244, 236, 215)';
 const LIGHT_SHELL = 'rgb(235, 229, 217)';
@@ -37,7 +35,7 @@ function watchErrors(page: Page) {
 }
 
 test('the server sends System painting Dark', async ({ request }) => {
-    const html = await (await request.get('/gallery')).text();
+    const html = await (await request.get('/work')).text();
     expect(html).toMatch(/<html[^>]*data-theme="dark"/);
     expect(html).toMatch(/<html[^>]*data-theme-choice="system"/);
 });
@@ -55,7 +53,7 @@ test('a stored Light choice is on <html> and paints, before any Next.js script r
         await route.continue();
     });
     const problems = watchErrors(page);
-    await page.goto('/gallery', { waitUntil: 'commit' });
+    await page.goto('/work', { waitUntil: 'commit' });
 
     await expect.poll(() => bodyBackground(page)).toBe(LIGHT_SHELL);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -75,7 +73,7 @@ for (const [scheme, theme, name] of [
         await page.emulateMedia({ colorScheme: scheme });
         // No Next.js script ever loads, so nothing hydrates. The inline theme script still runs.
         await page.route('**/_next/static/**/*.js', (route) => route.abort());
-        await page.goto('/gallery', { waitUntil: 'domcontentloaded' });
+        await page.goto('/work', { waitUntil: 'domcontentloaded' });
         await expect(page.locator('html')).toHaveAttribute('data-theme-choice', 'system');
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         expect(await page.evaluate(() => document.documentElement.hasAttribute('data-hydrated')), 'React never hydrated').toBe(false);
@@ -86,15 +84,14 @@ for (const [scheme, theme, name] of [
 test('a stored value that is no choice is System, and on a dark device keeps today\'s grounds', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await page.addInitScript(() => localStorage.setItem('theme', 'blue'));
-    await page.goto('/gallery');
+    await page.goto('/work');
     await waitForHydration(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    expect(await galleryBackground(page)).toBe(DARK_GROUND);
     expect(await bodyBackground(page)).toBe(SHELL_GROUND);
 });
 
 for (const theme of ['dark', 'black', 'light'] as const) {
-    for (const path of ['/', '/gallery', '/about', '/does-not-exist']) {
+    for (const path of ['/', '/work', '/about', '/does-not-exist']) {
         test(`${path} logs no page or hydration error in the ${theme} theme`, async ({ page }) => {
             await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
             const problems = watchErrors(page);
@@ -115,7 +112,7 @@ test("today's stored dark stays Dark, the preview's charcoal reads as Dark, and 
             sessionStorage.setItem('seeded', '1');
         }
     });
-    await page.goto('/gallery');
+    await page.goto('/work');
     await waitForHydration(page);
     const html = page.locator('html');
     await expect(html).toHaveAttribute('data-theme', 'dark');
@@ -153,10 +150,10 @@ test("today's stored dark stays Dark, the preview's charcoal reads as Dark, and 
 
 test('a choice made in another tab applies here too', async ({ context, page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
-    await page.goto('/gallery');
+    await page.goto('/work');
     await waitForHydration(page);
     const other = await context.newPage();
-    await other.goto('/gallery');
+    await other.goto('/work');
     await waitForHydration(other);
     await other.evaluate(() => localStorage.setItem('theme', 'bright'));
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'bright');
@@ -166,7 +163,7 @@ test('a choice made in another tab applies here too', async ({ context, page }) 
 
 test('under forced colours the swatch keeps an edge, and only the chosen row shows a check', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark', forcedColors: 'active' });
-    await page.goto('/gallery');
+    await page.goto('/work');
     await waitForHydration(page);
     expect(await page.locator('.theme-menu-swatch').evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('solid');
     await control(page).click();
@@ -177,7 +174,7 @@ test('under forced colours the swatch keeps an edge, and only the chosen row sho
 
 test('a choice in the control applies at once, is stored, and a reload keeps it from first paint', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
-    await page.goto('/gallery');
+    await page.goto('/work');
     await waitForHydration(page);
     const html = page.locator('html');
     await expect(control(page)).toHaveAccessibleName('Theme: System (Dark now)');
@@ -235,7 +232,7 @@ test.describe('with JavaScript disabled', () => {
     test.use({ javaScriptEnabled: false });
 
     for (const [path, heading, ground, groundName] of [
-        ['/gallery', 'Gallery', SHELL_GROUND, "today's dark ground"],
+        ['/work', 'Bodies of work', SHELL_GROUND, "today's dark ground"],
         ['/about', artist.profile.statementHeading, PAPER, "About's paper"],
     ] as const) {
         test(`${path} shows its heading and SiteNav on ${groundName}, in Dark, with no theme control`, async ({ page }) => {
@@ -247,7 +244,6 @@ test.describe('with JavaScript disabled', () => {
             // Nothing in the menu could work without JavaScript, so it isn't offered (R2-P2-6).
             await expect(page.getByRole('button', { name: /^Theme:/ })).toHaveCount(0);
             expect(await bodyBackground(page)).toBe(ground);
-            if (path === '/gallery') expect(await galleryBackground(page)).toBe(DARK_GROUND);
         });
     }
 });
@@ -257,7 +253,7 @@ test('under reduced motion a switch starts next to no transitions, however many 
     // start a transition per element and colour, about 45,000 on the 5,000-photo series. ThemeProvider's
     // data-theme-swap and its rule in app/globals.css stop them; drop either and this counts hundreds.
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
-    await page.goto('/gallery');
+    await page.goto(`/work/${HOME_SERIES.slug}`);
     await waitForHydration(page);
     await control(page).click();
     const light = page.getByRole('radio', { name: /^Light/ });
@@ -269,7 +265,7 @@ test('under reduced motion a switch starts next to no transitions, however many 
         document.addEventListener('transitionrun', () => void counted.transitionRuns++, true);
         return document.querySelectorAll('body *').length;
     });
-    // Work in CI's fixture holds about 120 elements: an unguarded switch still starts at least one transition per
+    // A series page in CI's fixture holds enough elements: an unguarded switch still starts at least one transition per
     // recoloured element, several times the ceiling below.
     expect(elements, 'a page with enough elements that an unguarded switch would count far past the ceiling').toBeGreaterThanOrEqual(100);
 

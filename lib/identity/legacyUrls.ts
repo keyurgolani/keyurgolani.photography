@@ -6,8 +6,8 @@ import { DERIVATIVE_FOLDERS } from '../derivativeFolders.mjs';
  * them: the original, and for a top-level file the derivatives named by its
  * base name. Nested files never had derivatives. Each path segment is
  * encoded, as the site wrote it, so a `%` or `#` in a name stays part of it.
- * Its own module, so the web process's legacy /api/photos can use it without
- * loading the migration.
+ * Its own module, so the legacy list (lib/catalog/legacy-photos.ts) can use
+ * it without loading the migration.
  */
 export function legacyUrls(sourcePath: string): string[] {
     const url = (...segments: string[]) => `/assets/photos/${segments.map(encodeURIComponent).join('/')}`;

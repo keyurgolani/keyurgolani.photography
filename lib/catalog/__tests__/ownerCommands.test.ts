@@ -65,7 +65,7 @@ describe('photos status', () => {
         expect(result.exitCode).toBe(0);
         const text = withoutRoot(result.output, catalog.root);
         expect(text).toContain('Data root: <root> (ready)');
-        expect(text).toContain('Catalog: legacy mode, nothing published yet, so the site lists the registry\'s photos');
+        expect(text).toContain('Catalog: nothing published yet, so the site answers unavailable (503, not-published) until the first photos publish');
         expect(text).toContain('Last publish: none yet');
         expect(text).toContain('Photos: 4 in the registry (present 4, missing 0, ambiguous 0, archived 0)');
         expect(text).toContain('Working layer: site.json, 1 series record (published 1, draft 0, hidden 0), 4 photo records');
@@ -82,7 +82,7 @@ describe('photos status', () => {
         const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
         expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working', 'inbox']);
         expect(status.inbox).toEqual({ missing: [], failed: [], unreadable: 0 });
-        expect(status.catalog).toMatchObject({ mode: 'catalog', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
+        expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
     });
 
@@ -151,7 +151,7 @@ describe('photos status', () => {
         expect(output).toContain('Activation 2 is pending. The next photos publish settles it.');
         // The next publish settles it, and status says so.
         expect((await run(catalog)).outcome).toBe('NO_CHANGES');
-        expect((await runStatusCommand({ dataRoot: catalog.root })).output).toContain(`Catalog: catalog mode, revision 2 (${pointer?.revisionId}) active since `);
+        expect((await runStatusCommand({ dataRoot: catalog.root })).output).toContain(`Catalog: revision 2 (${pointer?.revisionId}) active since `);
         expect((await listActivations(catalog.root)).map((activation) => activation.status)).toEqual(['committed', 'committed']);
     });
 });
@@ -171,7 +171,7 @@ describe('photos status with a pointer its activation disagrees with', () => {
         const status = await ownerStatus({ dataRoot: catalog.root });
         expect(status.catalog.active).toMatchObject({ revisionId: catalog.revisionId, activationId: pointer?.activationId, status: 'mismatch' });
         const { output } = await runStatusCommand({ dataRoot: catalog.root });
-        expect(output).toContain(`Catalog: catalog mode, ${catalog.revisionId} is live, but the pointer names activation 2, which activated ${second.revisionId}`);
+        expect(output).toContain(`Catalog: ${catalog.revisionId} is live, but the pointer names activation 2, which activated ${second.revisionId}`);
         expect(output).toContain("  The pointer and its activation record disagree. The next photos publish repairs them, unless that revision's rules block it.");
     });
 });

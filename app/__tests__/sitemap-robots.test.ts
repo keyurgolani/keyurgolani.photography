@@ -44,7 +44,6 @@ afterAll(async () => {
 
 const served = (servedState: 'ok' | 'degraded'): ActiveCatalog =>
     ({
-        mode: 'catalog',
         state: servedState,
         reader: createCatalogReader(catalog.content, { revisionId: catalog.revisionId, revisionNumber: 1 }),
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
@@ -52,7 +51,7 @@ const served = (servedState: 'ok' | 'degraded'): ActiveCatalog =>
 
 beforeEach(() => {
     vi.stubEnv('SITE_URL', ORIGIN);
-    state.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
+    state.catalog = { state: 'unavailable', reason: 'not-published' } satisfies ActiveCatalog;
 });
 
 afterEach(() => {
@@ -71,12 +70,12 @@ describe('/sitemap.xml', () => {
         expect(await urls()).toEqual([`${ORIGIN}/`, `${ORIGIN}/work`, `${ORIGIN}/work/map-b`, `${ORIGIN}/work/map-a`, `${ORIGIN}/about`]);
     });
 
-    it('lists Home, the Gallery, and About in legacy mode', async () => {
-        expect(await urls()).toEqual([`${ORIGIN}/`, `${ORIGIN}/gallery`, `${ORIGIN}/about`]);
+    it('lists only Home and About while nothing is published, and never the removed /gallery', async () => {
+        expect(await urls()).toEqual([`${ORIGIN}/`, `${ORIGIN}/about`]);
     });
 
     it('lists only Home and About while the catalog is unavailable, and never throws', async () => {
-        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' } satisfies ActiveCatalog;
+        state.catalog = { state: 'unavailable', reason: 'active-unreadable' } satisfies ActiveCatalog;
         expect(await urls()).toEqual([`${ORIGIN}/`, `${ORIGIN}/about`]);
     });
 

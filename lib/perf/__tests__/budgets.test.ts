@@ -43,7 +43,7 @@ function photoIdsIn(model: unknown): Set<string> {
 }
 
 function home(): PublishedHome {
-    const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader }, routes);
+    const result = homeRouteOf({ state: 'ok', reader }, routes);
     if (result.kind !== 'home') throw new Error(`Expected Home, got ${result.kind}`);
     return result.home;
 }
@@ -169,7 +169,7 @@ describe('payloads on the 5,000-photo fixture', () => {
         const content = structuredClone(fixture.content);
         content.site.featuredSeriesIds = content.series.slice(0, 10).map((series) => series.id);
         const looping = createCatalogReader(content, { revisionId: fixture.revisionId, revisionNumber: null });
-        const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader: looping }, routes, () => 0);
+        const result = homeRouteOf({ state: 'ok', reader: looping }, routes, () => 0);
         if (result.kind !== 'home' || !result.home.featuredSeries) throw new Error('Expected a featured series');
         const model = result.home;
         const loop = [model.featuredSeries!, ...(model.followingSeries ?? [])];

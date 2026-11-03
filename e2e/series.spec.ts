@@ -11,14 +11,14 @@ import { expect, test } from './support/test';
 import { expectSingleTapActivates } from './support/touch';
 
 // A series page (#5) on a published catalog, on both #1 projects: the 200,
-// the 308 from a former slug, one not-found for every case (catalog and
-// legacy mode alike), canonical and share metadata on SITE_URL, the title,
+// the 308 from a former slug, one not-found for every case, canonical and
+// share metadata on SITE_URL, the title,
 // statement, facts, cover, chapters, and authored sequence, the cover's box,
 // focal point, and crop at desktop and mobile sizes, nothing unpublished in
 // the HTML or the RSC payload, the #1 surface checks, Enter and a single tap
 // on an entry, and an entry whose image /media can't serve.
 // Each project's worker publishes its own fixture and serves it from a
-// second `next start`, so the harness server stays in legacy mode.
+// second `next start`, so the harness server publishes nothing.
 
 test.describe.configure({ mode: 'serial' });
 
@@ -159,10 +159,10 @@ test('the canonical slug answers 200 and a former slug 308 to it, neither cachea
     expect(moved.headers()['cache-control']).toContain('no-store');
 });
 
-test('every not-found case answers the same status, title, and page, in catalog and legacy mode', async ({ page, request, baseURL }) => {
+test('every not-found case answers the same status, title, and page', async ({ page, request }) => {
     const answers: { url: string; status: number; headers: Record<string, string | undefined>; title: string | undefined; robots: string | undefined; body: string }[] = [];
-    // The harness server is in legacy mode, where no series exists yet.
-    const urls = [...NOT_FOUND_PATHS.map((path) => `${origin()}${path}`), `${baseURL}/work/harbor`];
+    // The harness server has published nothing, so its series pages are #21's error page, not a not-found (e2e/cutover.spec.ts).
+    const urls = NOT_FOUND_PATHS.map((path) => `${origin()}${path}`);
     for (const url of urls) {
         const response = await request.get(url, { maxRedirects: 0 });
         const html = await response.text();

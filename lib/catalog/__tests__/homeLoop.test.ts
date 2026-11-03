@@ -346,7 +346,7 @@ describe('homeSeriesPhotosOf, the window for a (series, photograph) pair', () =>
 });
 
 describe('homeSeriesPhotosFrom, the continuation route\'s answer', () => {
-    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ mode: 'catalog', state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
+    const served = (state: 'ok' | 'degraded' = 'ok'): HomeActiveCatalog => ({ state, reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }) });
 
     it('answers a malformed series or photo ID not-found and a missing or malformed revision as a bad request, before reading the catalog', async () => {
         const load = vi.fn(async () => served());
@@ -358,9 +358,8 @@ describe('homeSeriesPhotosFrom, the continuation route\'s answer', () => {
         expect(load).not.toHaveBeenCalled();
     });
 
-    it('answers legacy mode not-found and passes an unavailable catalog on', async () => {
-        expect(await homeSeriesPhotosFrom(async () => ({ mode: 'legacy' }), 'ser_loop-x', X[0], REVISION_A)).toEqual({ kind: 'not-found' });
-        expect(await homeSeriesPhotosFrom(async () => ({ mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' }), 'ser_loop-x', X[0], REVISION_A)).toEqual({
+    it('passes an unavailable catalog on', async () => {
+        expect(await homeSeriesPhotosFrom(async () => ({ state: 'unavailable', reason: 'active-unreadable' }), 'ser_loop-x', X[0], REVISION_A)).toEqual({
             kind: 'unavailable',
             reason: 'active-unreadable',
         });
@@ -383,7 +382,7 @@ describe('homeRouteOf with a random source', () => {
     it('hands the pick to the projection, so the page and its test can choose the start', () => {
         const reader = createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 });
         for (const index of [0, 1, 2]) {
-            const result = homeRouteOf({ mode: 'catalog', state: 'ok', reader }, routes, always(index));
+            const result = homeRouteOf({ state: 'ok', reader }, routes, always(index));
             expect(result.kind === 'home' && result.home, String(index)).toEqual(homeOf(always(index)));
         }
     });

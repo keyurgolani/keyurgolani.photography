@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { mediaUrl } from '../../media/url';
 import { photoCountLabel } from '../labels';
-import { LEGACY_GALLERY_PATH, workCatalogOf, workRouteOf, type WorkActiveCatalog, type WorkCatalog, type WorkSeriesSummary } from '../projections/work';
+import { workCatalogOf, workRouteOf, type WorkActiveCatalog, type WorkCatalog, type WorkSeriesSummary } from '../projections/work';
 import { publish } from '../publish';
 import { createCatalogReader, createRouteBuilder } from '../reader';
 import { createTestCatalog, type TestCatalog } from '../testing';
@@ -398,54 +398,30 @@ describe('catalog revision consistency', () => {
     });
 });
 
-describe('workRouteOf, the /work and /gallery matrix', () => {
+describe('workRouteOf, the /work gate', () => {
     const okCatalog = (state: 'ok' | 'degraded' = 'ok'): WorkActiveCatalog => ({
-        mode: 'catalog',
         state,
         reader: createCatalogReader(content(), { revisionId: REVISION_A, revisionNumber: 3 }),
     });
-    /** A reader that fails the test if anything reads it. */
-    const trap: WorkActiveCatalog = {
-        mode: 'catalog',
-        state: 'ok',
-        reader: { getWorkSummaries: () => { throw new Error('The catalog was read'); } },
-    };
 
-    it('sends /work to the legacy /gallery with a 307 before the cutover, and leaves /gallery as it is', () => {
-        expect(workRouteOf('work', { mode: 'legacy' }, routes)).toEqual({ kind: 'redirect', location: LEGACY_GALLERY_PATH, status: 307 });
-        expect(LEGACY_GALLERY_PATH).toBe('/gallery');
-        expect(workRouteOf('gallery', { mode: 'legacy' }, routes)).toEqual({ kind: 'legacy-gallery' });
-    });
-
-    it('renders Work and sends /gallery to bare /work with a 308 once a revision is served', () => {
+    it('renders Work once a revision is served', () => {
         for (const state of ['ok', 'degraded'] as const) {
-            const work = workRouteOf('work', okCatalog(state), routes);
+            const work = workRouteOf(okCatalog(state), routes);
             expect(work.kind === 'work' && work.work.catalogRevision).toBe(REVISION_A);
             expect(work.kind === 'work' && work.work.series.map((summary) => summary.slug)).toEqual(['fixture-c', 'fixture-a', 'fixture-b']);
-            expect(workRouteOf('gallery', okCatalog(state), routes)).toEqual({ kind: 'redirect', location: '/work', status: 308 });
         }
     });
 
-    it('never sends a permanent redirect while the catalog is unavailable', () => {
-        for (const reason of ['catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
-            const unavailable: WorkActiveCatalog<typeof reason> = { mode: 'catalog', state: 'unavailable', reason };
-            expect(workRouteOf('work', unavailable, routes)).toEqual({ kind: 'unavailable', reason });
-            expect(workRouteOf('gallery', unavailable, routes)).toEqual({ kind: 'unavailable', reason });
+    it('reports an unavailable catalog, nothing published included, and never a redirect', () => {
+        for (const reason of ['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
+            const unavailable: WorkActiveCatalog<typeof reason> = { state: 'unavailable', reason };
+            expect(workRouteOf(unavailable, routes)).toEqual({ kind: 'unavailable', reason });
         }
     });
 
-    it('builds the /gallery 308 only from the public builder, in every mode, and still takes any builder for Work\'s links', () => {
-        const preview = createRouteBuilder({ basePath: '/preview/token' });
-        for (const catalog of [{ mode: 'legacy' } as const, okCatalog(), okCatalog('degraded'), { mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' } as const]) {
-            expect(() => workRouteOf('gallery', catalog, preview)).toThrow(TypeError);
-        }
-        const work = workRouteOf('work', okCatalog(), preview);
+    it('takes any builder for Work\'s links', () => {
+        const work = workRouteOf(okCatalog(), createRouteBuilder({ basePath: '/preview/token' }));
         expect(work.kind === 'work' && work.work.series[0].href).toBe('/preview/token/work/fixture-c');
-    });
-
-    it('reads the catalog only to render Work', () => {
-        expect(workRouteOf('gallery', trap, routes)).toEqual({ kind: 'redirect', location: '/work', status: 308 });
-        expect(() => workRouteOf('work', trap, routes)).toThrow('The catalog was read');
     });
 });
 
@@ -467,19 +443,18 @@ describe('Work on published revisions', { timeout: 60_000 }, () => {
         vi.resetModules();
         const { loadActiveCatalog, publicRoutes } = await import('../public-reader');
 
-        expect(workRouteOf('work', await loadActiveCatalog(root), publicRoutes)).toEqual({ kind: 'redirect', location: '/gallery', status: 307 });
-        expect(workRouteOf('gallery', await loadActiveCatalog(root), publicRoutes)).toEqual({ kind: 'legacy-gallery' });
+        // Nothing published yet: the unavailable state, never the legacy Gallery (#13's slice E).
+        expect(workRouteOf(await loadActiveCatalog(root), publicRoutes)).toEqual({ kind: 'unavailable', reason: 'not-published' });
 
         const one = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger });
         expect(one.outcome).toBe('PUBLISHED');
-        const atOne = workRouteOf('work', await loadActiveCatalog(root), publicRoutes);
+        const atOne = workRouteOf(await loadActiveCatalog(root), publicRoutes);
         if (atOne.kind !== 'work') throw new Error(`Expected Work, got ${JSON.stringify(atOne)}`);
         expect(atOne.work.catalogRevision).toBe(one.revisionId);
         expect(atOne.work.series.map((summary) => [summary.slug, summary.href, summary.derived.photoCount])).toEqual([['fixture-a', '/work/fixture-a', 2], ['fixture-b', '/work/fixture-b', 1]]);
         expect(atOne.work.series.every((summary) => summary.cover !== null)).toBe(true);
         const json = JSON.stringify(atOne);
         for (const planted of [SENTINELS.draftTitle, SENTINELS.draftShort, 'fixture-draft', 'Fixture statement', 'fixture-0001.jpg', 'data:image']) expect(json).not.toContain(planted);
-        expect(workRouteOf('gallery', await loadActiveCatalog(root), publicRoutes)).toEqual({ kind: 'redirect', location: '/work', status: 308 });
 
         const record = (await readWorkingLayer(root)).series.find((series) => series.slug === 'fixture-a');
         if (!record) throw new Error('No fixture-a record');
@@ -487,7 +462,7 @@ describe('Work on published revisions', { timeout: 60_000 }, () => {
         const two = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger });
         expect(two.outcome).toBe('PUBLISHED');
         expect(two.revisionId).not.toBe(one.revisionId);
-        const atTwo = workRouteOf('work', await loadActiveCatalog(root), publicRoutes);
+        const atTwo = workRouteOf(await loadActiveCatalog(root), publicRoutes);
         if (atTwo.kind !== 'work') throw new Error(`Expected Work, got ${JSON.stringify(atTwo)}`);
         expect([atTwo.work.catalogRevision, atTwo.work.series[0].shortStatement, atTwo.work.series[0].href]).toEqual([two.revisionId, 'A fixture short statement for revision two.', '/work/fixture-a']);
     });

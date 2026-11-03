@@ -34,7 +34,7 @@ const curationModules = (entry: string) =>
 
 describe('the public routes', () => {
     it('include every route handler and page', () => {
-        expect(publicEntries()).toEqual(expect.arrayContaining(['app/api/photos/route.ts', 'app/page.tsx', 'app/gallery/page.tsx', 'proxy.ts']));
+        expect(publicEntries()).toEqual(expect.arrayContaining(['app/api/ready/route.ts', 'app/page.tsx', 'app/work/page.tsx', 'proxy.ts']));
     });
 
     it.each(publicEntries())('%s reaches no curation module but the auth boundary', (entry) => {

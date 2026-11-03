@@ -4,13 +4,18 @@ import { expectHomeImmersive } from '../support/home';
 import { waitForHydration } from '../support/hydration';
 import { expectTabOrderMatchesVisualOrder } from '../support/keyboard';
 import { expectReflow } from '../support/reflow';
+import { CATALOG_ORIGIN } from '../support/catalog-home';
 import { checkSurface } from '../support/surface';
 import { expect, test } from '../support/test';
 
 // SiteNav on both #1 projects: order, names, and the current page per route,
 // the #1 surface checks, reflow, normal flow outside Home, and no motion
 // under reduce. On Home, its place in the chrome's nav region, above the
-// slideshow controls.
+// slideshow controls. On playwright.config.ts's catalog server, since Home
+// and Work need a published catalog (#13's slice E): Work stands where the
+// legacy Gallery did.
+
+test.use({ baseURL: CATALOG_ORIGIN });
 
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
 const navControls = (page: Page) => primary(page).locator('a, button');
@@ -40,7 +45,7 @@ const boxOf = (target: Locator) =>
     });
 const overlap = (a: Box, b: Box) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
 
-for (const [path, current] of [['/gallery', 'Work'], ['/about', 'About'], ['/does-not-exist', null]] as const) {
+for (const [path, current] of [['/work', 'Work'], ['/about', 'About'], ['/does-not-exist', null]] as const) {
     test(`on ${path} Tab goes wordmark, Home, Work, About, then the toggle, and ${current ?? 'no link'} is the current page`, async ({ page }) => {
         await open(page, path);
         const stops: string[] = [];
@@ -56,7 +61,7 @@ for (const [path, current] of [['/gallery', 'Work'], ['/about', 'About'], ['/doe
 }
 
 test('SiteNav reads left to right in DOM and Tab order', async ({ page }) => {
-    await open(page, '/gallery');
+    await open(page, '/work');
     await expectTabOrderMatchesVisualOrder(page, navControls(page));
 });
 
@@ -67,7 +72,7 @@ test('on / Home is the current page', async ({ page }) => {
 });
 
 test('the labels are visible text at rest, and the wordmark shows KG', async ({ page }) => {
-    await open(page, '/gallery');
+    await open(page, '/work');
     for (const name of ['Home', 'Work', 'About']) {
         await expect(primary(page).getByRole('link', { name, exact: true })).toHaveText(name);
         await expect(primary(page).getByRole('link', { name, exact: true })).toBeVisible();
@@ -76,7 +81,7 @@ test('the labels are visible text at rest, and the wordmark shows KG', async ({ 
 });
 
 for (const theme of ['dark', 'light'] as const) {
-    for (const path of ['/gallery', '/about', '/does-not-exist']) {
+    for (const path of ['/work', '/about', '/does-not-exist']) {
         test(`SiteNav passes the #1 checks on ${path} in the ${theme} theme`, async ({ page }) => {
             await open(page, path, theme);
             await checkSurface(page, { controls: [navControls(page)] });
@@ -85,7 +90,7 @@ for (const theme of ['dark', 'light'] as const) {
 }
 
 test('SiteNav reflows at 320 px with 200% text, with no horizontal scroll', async ({ page }) => {
-    await open(page, '/gallery');
+    await open(page, '/work');
     await expectReflow(navControls(page));
     await page.setViewportSize({ width: 320, height: 640 });
     await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
@@ -96,7 +101,7 @@ test('SiteNav reflows at 320 px with 200% text, with no horizontal scroll', asyn
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 });
 
-for (const path of ['/gallery', '/about']) {
+for (const path of ['/work', '/about']) {
     test(`SiteNav sits in normal flow on ${path}`, async ({ page }) => {
         await open(page, path);
         const positions = await primary(page).evaluate((nav) => {
@@ -140,7 +145,7 @@ test.describe('on /about at short screens, over the in-flow portrait', () => {
 
             for (const control of await navControls(page).all()) await expectNotObscured(control, [portraitImages(page)]);
 
-            for (const [name, path] of [['Home', '/'], ['Work', '/gallery'], ['About', '/about']] as const) {
+            for (const [name, path] of [['Home', '/'], ['Work', '/work'], ['About', '/about']] as const) {
                 const link = primary(page).getByRole('link', { name, exact: true });
                 const atCentre = await link.evaluate((el) => {
                     const { left, top, width: w, height: h } = el.getBoundingClientRect();
@@ -195,7 +200,7 @@ test.describe('on / on a short screen', () => {
                 await expectNotObscured(link, []);
             }
 
-            for (const [name, path] of [['Home', '/'], ['Work', '/gallery'], ['About', '/about']] as const) {
+            for (const [name, path] of [['Home', '/'], ['Work', '/work'], ['About', '/about']] as const) {
                 const link = primary(page).getByRole('link', { name, exact: true });
                 await tabTo(page, link);
                 expect(await takesItsCentre(link), `${name} is the element at its own centre`).toBe(true);
@@ -227,7 +232,7 @@ test.describe('under reduced motion', () => {
     });
 
     test('nothing in SiteNav transitions or transforms', async ({ page }) => {
-        await open(page, '/gallery');
+        await open(page, '/work');
         const moving = await primary(page).evaluate((nav) => {
             const found: string[] = [];
             for (const el of [nav, ...Array.from(nav.querySelectorAll('*'))]) {

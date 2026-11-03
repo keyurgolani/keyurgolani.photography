@@ -500,7 +500,6 @@ describe('catalog revision consistency', () => {
 
 describe('viewerPhotoFrom', () => {
     const okCatalog = (state: 'ok' | 'degraded' = 'ok'): ViewerCatalog => ({
-        mode: 'catalog',
         state,
         reader: createCatalogReader(revisionContent(), { revisionId: REVISION_A, revisionNumber: 3 }),
     });
@@ -515,12 +514,12 @@ describe('viewerPhotoFrom', () => {
         expect(load).toHaveBeenCalledTimes(1);
     });
 
-    it('answers a site with no active revision not-found, like an unknown photo', async () => {
-        expect(await viewerPhotoFrom(async () => ({ mode: 'legacy' }), 'fixture-a', P[0])).toEqual({ kind: 'not-found' });
+    it('reports a site with nothing published as unavailable, never a not-found', async () => {
+        expect(await viewerPhotoFrom(async () => ({ state: 'unavailable', reason: 'not-published' }), 'fixture-a', P[0])).toEqual({ kind: 'unavailable', reason: 'not-published' });
     });
 
     it('reports an unavailable catalog for the route to throw', async () => {
-        const unavailable: ViewerCatalog<'active-unreadable'> = { mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' };
+        const unavailable: ViewerCatalog<'active-unreadable'> = { state: 'unavailable', reason: 'active-unreadable' };
         expect(await viewerPhotoFrom(async () => unavailable, 'fixture-a', P[0])).toEqual({ kind: 'unavailable', reason: 'active-unreadable' });
     });
 
@@ -540,7 +539,8 @@ describe('the Viewer on published revisions', { timeout: 60_000 }, () => {
         const { loadActiveCatalog } = await import('../public-reader');
         const [first, second] = published.series[0].photoIds;
 
-        expect(await viewerPhotoFrom(() => loadActiveCatalog(root), 'fixture-a', first)).toEqual({ kind: 'not-found' });
+        // Nothing published yet: unavailable, never a not-found (#13's slice E).
+        expect(await viewerPhotoFrom(() => loadActiveCatalog(root), 'fixture-a', first)).toEqual({ kind: 'unavailable', reason: 'not-published' });
 
         const one = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger });
         expect(one.outcome).toBe('PUBLISHED');

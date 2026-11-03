@@ -26,7 +26,7 @@ const viewerFor = cache((slug: string, photoId: string) => viewerPhotoFrom(getAc
 
 /**
  * Share metadata from the published photo and its series only. Every
- * not-found, redirect, legacy, and unavailable answer gets `{}`, so title and
+ * not-found, redirect, and unavailable answer gets `{}`, so title and
  * body match whichever case it was, with Next's noindex on the not-found
  * page. URLs are paths Next resolves against the root layout's
  * getMetadataBase(). Without a valid SITE_URL that base is localhost, so the
@@ -59,10 +59,10 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
 /**
  * One published photograph in its series (#7). The canonical URL renders the
  * Viewer, a former series slug answers 308 to the canonical URL, and
- * everything else (malformed, unknown, unpublished, outside that series,
- * legacy mode) is the one public not-found. While the catalog is unavailable
- * it throws, so #21's error page answers with Try again, never a 404. No
- * SiteNav: the Viewer's own header holds Close.
+ * everything else (malformed, unknown, unpublished, outside that series) is
+ * the one public not-found. While the catalog is unavailable, nothing
+ * published included, it throws, so #21's error page answers with Try again,
+ * never a 404. No SiteNav: the Viewer's own header holds Close.
  */
 export default async function ViewerRoute({ params }: ViewerRouteProps) {
     const { slug, photoId } = await params;

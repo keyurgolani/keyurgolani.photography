@@ -1,12 +1,15 @@
 import { artist } from '../../data/artist';
 import { STAND_IN_PORTRAIT } from '../support/aboutPortrait';
+import { CATALOG_ORIGIN } from '../support/catalog-home';
 import { waitForHydration } from '../support/hydration';
 import { expect, test } from '../support/test';
 
 test.skip(({ isMobile }) => isMobile, 'The desktop project covers it. SiteNav runs on both in nav.spec.ts.');
 
 // The raw next start HTML, before any script runs: each visitor route sends
-// SiteNav and its content, on the dark theme.
+// SiteNav and its content, on the dark theme. Home is the catalog server's,
+// since the harness server has published nothing (e2e/cutover.spec.ts).
+// /gallery, a 308 to /work since #13's slice E, has no page of its own.
 
 const NAV = /<nav[^>]*aria-label="Primary"/;
 
@@ -34,8 +37,7 @@ const ABOUT = new RegExp(
 
 for (const [path, content] of [
     // Home's main carries the chrome's state, immersive from the first byte, and a wrapper inside it the playback's.
-    ['/', /<main[^>]*data-interface-state="immersive"[^>]*>[\s\S]*?<div[^>]*data-playback=/],
-    ['/gallery', /<h1[^>]*>Gallery<\/h1>/],
+    [`${CATALOG_ORIGIN}/`, /<main[^>]*data-interface-state="immersive"[^>]*>[\s\S]*?<div[^>]*data-playback=/],
     ['/about', ABOUT],
 ] as const) {
     test(`the server HTML for ${path} holds SiteNav and the page content`, async ({ request }) => {
@@ -58,16 +60,7 @@ test('an unknown path returns 404 with SiteNav and the not-found page', async ({
     expect(html).toMatch(/<a[^>]*href="\/work"[^>]*>Browse the work<\/a>/);
 });
 
-test('before the cutover /work answers 307 to /gallery, which serves the legacy page', async ({ request }) => {
-    const work = await request.get('/work', { maxRedirects: 0 });
-    expect(work.status()).toBe(307);
-    expect(work.headers()['location']).toBe('/gallery');
-    const gallery = await request.get('/gallery', { maxRedirects: 0 });
-    expect(gallery.status()).toBe(200);
-    expect(await gallery.text()).toMatch(/<h1[^>]*>Gallery<\/h1>/);
-});
-
-test('the fonts come from the site, headings take the serif at 400, and the legacy Gallery h1 keeps 700', async ({ page }) => {
+test('the fonts come from the site, and headings take the serif at 400', async ({ page }) => {
     const fontHosts = new Set<string>();
     page.on('request', (request) => {
         if (request.resourceType() === 'font') fontHosts.add(new URL(request.url()).host);
@@ -80,11 +73,6 @@ test('the fonts come from the site, headings take the serif at 400, and the lega
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Page not found' })).toHaveCSS('font-weight', '400');
     expect(await familyOf('Page not found')).toBe(await serifFamily());
-
-    await page.goto('/gallery');
-    await waitForHydration(page);
-    await expect(page.getByRole('heading', { level: 1, name: 'Gallery' })).toHaveCSS('font-weight', '700');
-    expect(await familyOf('Gallery')).toBe(await serifFamily());
     await page.evaluate(() => document.fonts.ready);
     expect([...fontHosts]).toEqual([new URL(page.url()).host]);
 });

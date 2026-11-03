@@ -1,7 +1,7 @@
 import 'server-only';
 import path from 'node:path';
 import { dataRoot } from '../storage/config';
-import { checkCatalogMode, readPointer } from './mode';
+import { checkPublished, readPointer } from './mode';
 import { createCatalogReader, type CatalogReader } from './reader';
 import { listActivations, readRevisionFile } from './repository';
 import { forRequest } from './request';
@@ -18,11 +18,14 @@ import type { PublicPhotoRecord, RevisionFile } from './types';
 export { publicRoutes } from './reader';
 
 /**
- * Why nothing can be served, with no revision loaded before: `catalog/`
- * can't be read well enough to tell whether the site cut over, the pointer
- * can't be read or is gone, or the revision it names can't be read.
+ * Why nothing can be served. `not-published`: no data root, or one that has
+ * published nothing yet, so there is no revision to serve, and since #13's
+ * slice E no legacy site to fall back to. With no revision loaded before:
+ * `catalog/` can't be read well enough to tell whether the site published,
+ * the pointer can't be read or is gone, or the revision it names can't be
+ * read.
  */
-export type CatalogUnavailableReason = 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable';
+export type CatalogUnavailableReason = 'not-published' | 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable';
 
 export interface ActiveRevision {
     revisionId: string;
@@ -34,12 +37,14 @@ export interface ActiveRevision {
 }
 
 export type ActiveCatalog =
-    | { mode: 'legacy' }
     /** `degraded` serves the last revision this process loaded, since the current pointer or revision can't be read. */
-    | { mode: 'catalog'; state: 'ok' | 'degraded'; reader: CatalogReader<PublicPhotoRecord>; active: ActiveRevision }
-    | { mode: 'catalog'; state: 'unavailable'; reason: CatalogUnavailableReason };
+    | { state: 'ok' | 'degraded'; reader: CatalogReader<PublicPhotoRecord>; active: ActiveRevision }
+    | { state: 'unavailable'; reason: CatalogUnavailableReason };
 
-/** What a page throws when the catalog is unavailable, so the visitor gets an error page, never the legacy site. */
+/** The answer for a data root with nothing to serve yet. */
+const NOT_PUBLISHED: ActiveCatalog = Object.freeze({ state: 'unavailable', reason: 'not-published' });
+
+/** What a page throws when the catalog is unavailable, so the visitor gets #21's error page, never a listing of the library. */
 export class CatalogUnavailableError extends Error {
     constructor(readonly reason: CatalogUnavailableReason) {
         super(`The catalog is unavailable: ${reason}.`);
@@ -149,15 +154,16 @@ function logFailure(root: string, failure: ReadFailure): void {
  * getActiveCatalog() instead, which reads once per request.
  */
 export async function loadActiveCatalog(root: string | null = dataRoot()): Promise<ActiveCatalog> {
-    if (root === null) return { mode: 'legacy' };
+    if (root === null) return NOT_PUBLISHED;
     const resolved = path.resolve(/*turbopackIgnore: true*/ root);
-    // The request's one read of the pointer, which the mode check reuses.
+    // The request's one read of the pointer, which the publish check reuses.
     const read = await readPointer(resolved);
-    const mode = await checkCatalogMode(resolved, read);
-    if (mode.mode === 'legacy') return { mode: 'legacy' };
+    const published = await checkPublished(resolved, read);
+    // Nothing to serve, and nothing this process loaded before: checkPublished() remembers a root that published.
+    if (published.state === 'unpublished') return NOT_PUBLISHED;
     try {
-        // Not known to have cut over, but it can't be ruled out, so serve nothing new.
-        if (mode.unreadable !== undefined) throw new ReadFailure('catalog-unreadable', mode.unreadable);
+        // Not known to have published, but it can't be ruled out, so serve nothing new.
+        if (published.state === 'unknown') throw new ReadFailure('catalog-unreadable', published.unreadable);
         if ('error' in read) throw new ReadFailure('active-unreadable', errorName(read.error));
         const { pointer } = read;
         if (pointer === null) throw new ReadFailure('active-unreadable', 'missing');
@@ -167,13 +173,13 @@ export async function loadActiveCatalog(root: string | null = dataRoot()): Promi
         const loaded: Loaded = { reader: createCatalogReader(revision.content, { revisionId: revision.revisionId, revisionNumber }), active };
         lastLoaded.set(resolved, loaded);
         failing.delete(resolved);
-        return { mode: 'catalog', state: 'ok', ...loaded };
+        return { state: 'ok', ...loaded };
     } catch (error) {
         if (!(error instanceof ReadFailure)) throw error;
         logFailure(resolved, error);
         const last = lastLoaded.get(resolved);
-        if (last) return { mode: 'catalog', state: 'degraded', ...last };
-        return { mode: 'catalog', state: 'unavailable', reason: error.reason };
+        if (last) return { state: 'degraded', ...last };
+        return { state: 'unavailable', reason: error.reason };
     }
 }
 
@@ -182,12 +188,12 @@ export const getActiveCatalog = forRequest(() => loadActiveCatalog());
 
 /**
  * Whether `/media` may serve this set publicly: only when the revision being
- * served holds the photo at that asset revision and profile. Always false in
- * legacy mode, and while the catalog is unavailable.
+ * served holds the photo at that asset revision and profile. Always false
+ * while the catalog is unavailable, nothing published included.
  */
 export async function isAssetPublic(photoId: string, assetRevision: string, profileId: string, catalog?: ActiveCatalog): Promise<boolean> {
     const active = catalog ?? await loadActiveCatalog();
-    if (active.mode !== 'catalog' || active.state === 'unavailable') return false;
+    if (active.state === 'unavailable') return false;
     const photo = active.reader.photo(photoId);
     return photo !== null && photo.assetRevision === assetRevision && photo.profileId === profileId;
 }

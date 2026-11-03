@@ -101,7 +101,7 @@ function violations(entry: string, source?: string): string[] {
 
 describe("#16's preview reader boundary", { timeout: 120_000 }, () => {
     it('walks every public route, page, and component, the proxy, and the register() hook', () => {
-        expect(PUBLIC_ENTRIES).toEqual(expect.arrayContaining(['app/page.tsx', 'app/work/page.tsx', 'app/api/photos/route.ts', 'components/home/HomeView.tsx', 'proxy.ts', 'instrumentation.ts']));
+        expect(PUBLIC_ENTRIES).toEqual(expect.arrayContaining(['app/page.tsx', 'app/work/page.tsx', 'app/api/ready/route.ts', 'components/home/CatalogHome.tsx', 'proxy.ts', 'instrumentation.ts']));
         expect(PUBLIC_ENTRIES.some((file) => file.startsWith('app/media/'))).toBe(true);
         expect(PUBLIC_ENTRIES.filter((file) => file.startsWith('app/curation/') || file.startsWith('components/curation/'))).toEqual([]);
     });

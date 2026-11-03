@@ -5,8 +5,8 @@ import { libraryRoot } from '../lib/storage/config';
 
 /**
  * Which sources write one set of legacy derivatives. No Sharp and no
- * pipeline here, so the web process can group sources, as `/api/photos`
- * does, without loading either. utils/imageOptimizer.ts re-exports these.
+ * pipeline here, so the legacy list (lib/catalog/legacy-photos.ts) can group
+ * sources without loading either. utils/imageOptimizer.ts re-exports these.
  */
 
 /** A source's name without its extension. Its derivatives share it, so `a.jpg` and `a.png` share one set. */

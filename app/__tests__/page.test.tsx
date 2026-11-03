@@ -29,10 +29,7 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
     };
 });
 
-// Stand-ins that show which Home rendered, and with what.
-vi.mock('@/components/home/LegacyHome', () => ({
-    default: ({ portrait }: { portrait: unknown }) => <div data-testid="legacy-home" data-portrait={JSON.stringify(portrait)} />,
-}));
+// A stand-in that shows what Home rendered with.
 vi.mock('@/components/home/CatalogHome', () => ({
     default: ({ home, portrait }: { home: PublishedHome; portrait: unknown }) => (
         <div data-testid="catalog-home" data-home={JSON.stringify(home)} data-portrait={JSON.stringify(portrait)} />
@@ -72,29 +69,20 @@ const ACTIVATION = { revisionId: REVISION, revisionNumber: 2, activationId: 'act
 
 function served(state: 'ok' | 'degraded', content = structuredClone(catalog.content) as RevisionContent) {
     const reader = createCatalogReader(content, { revisionId: REVISION, revisionNumber: 2 });
-    return { mode: 'catalog', state, reader, active: ACTIVATION } satisfies ActiveCatalog;
+    return { state, reader, active: ACTIVATION } satisfies ActiveCatalog;
 }
 
 const renderedHome = () => JSON.parse(screen.getByTestId('catalog-home').getAttribute('data-home')!) as PublishedHome;
 
-describe('app/page, the cutover gate', () => {
+describe('app/page', () => {
     it('renders per request', () => {
         expect(dynamic).toBe('force-dynamic');
-    });
-
-    it('renders today\'s Home in legacy mode, and nothing from the catalog', async () => {
-        active.catalog = { mode: 'legacy' } satisfies ActiveCatalog;
-        render(await HomePage());
-        expect(screen.getByTestId('legacy-home')).toBeInTheDocument();
-        expect(screen.queryByTestId('catalog-home')).toBeNull();
-        expect(active.reads).toBe(1);
     });
 
     for (const state of ['ok', 'degraded'] as const) {
         it(`renders the catalog Home from the served revision when the catalog is ${state}`, async () => {
             const { reader } = (active.catalog = served(state));
             render(await HomePage());
-            expect(screen.queryByTestId('legacy-home')).toBeNull();
             const home = renderedHome();
             const expected = publishedHomeOf({ revisionId: REVISION, site: reader.site, listSeries: reader.listSeries, photosOf: reader.photosOf }, createRouteBuilder());
             expect(home).toEqual(JSON.parse(JSON.stringify(expected)));
@@ -128,41 +116,38 @@ describe('app/page, the cutover gate', () => {
         }
     });
 
-    it('renders the catalog Home\'s empty state, never the legacy Home, when nothing is featured', async () => {
+    it('renders the catalog Home\'s empty state when nothing is featured', async () => {
         const content = structuredClone(catalog.content) as RevisionContent;
         content.site.featuredSeriesIds = [];
         active.catalog = served('ok', content);
         render(await HomePage());
         expect(renderedHome()).toEqual({ catalogRevision: REVISION, featuredSeries: null });
-        expect(screen.queryByTestId('legacy-home')).toBeNull();
     });
 
-    it("gives either Home About's portrait for the intro and the badge, read on each request, or null without one", async () => {
+    it("gives Home About's portrait for the intro and the badge, read on each request, or null without one", async () => {
         const { artist } = await import('@/data/artist');
-        for (const catalogState of [{ mode: 'legacy' } satisfies ActiveCatalog, served('ok')]) {
-            active.catalog = catalogState;
-            const testId = catalogState.mode === 'legacy' ? 'legacy-home' : 'catalog-home';
-            portraitSource.view = PORTRAIT_VIEW;
-            const first = render(await HomePage());
-            expect(JSON.parse(screen.getByTestId(testId).getAttribute('data-portrait')!)).toEqual(PORTRAIT_VIEW);
-            first.unmount();
-            portraitSource.view = null;
-            const second = render(await HomePage());
-            expect(JSON.parse(screen.getByTestId(testId).getAttribute('data-portrait')!)).toBeNull();
-            second.unmount();
-        }
-        expect(portraitSource.names).toEqual(Array(4).fill(artist.profile.name));
+        active.catalog = served('ok');
+        portraitSource.view = PORTRAIT_VIEW;
+        const first = render(await HomePage());
+        expect(JSON.parse(screen.getByTestId('catalog-home').getAttribute('data-portrait')!)).toEqual(PORTRAIT_VIEW);
+        first.unmount();
+        portraitSource.view = null;
+        const second = render(await HomePage());
+        expect(JSON.parse(screen.getByTestId('catalog-home').getAttribute('data-portrait')!)).toBeNull();
+        second.unmount();
+        expect(portraitSource.names).toEqual(Array(2).fill(artist.profile.name));
     });
 
     it("reads no portrait for an unavailable catalog, which throws first", async () => {
-        active.catalog = { mode: 'catalog', state: 'unavailable', reason: 'catalog-unreadable' } satisfies ActiveCatalog;
+        active.catalog = { state: 'unavailable', reason: 'catalog-unreadable' } satisfies ActiveCatalog;
         await expect(HomePage()).rejects.toBeInstanceOf(CatalogUnavailableError);
         expect(portraitSource.names).toEqual([]);
     });
 
-    for (const reason of ['catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
-        it(`throws CatalogUnavailableError for app/error.tsx when the catalog is unavailable (${reason}), never the legacy Home`, async () => {
-            active.catalog = { mode: 'catalog', state: 'unavailable', reason } satisfies ActiveCatalog;
+    // not-published: no data root, or nothing published yet. #13's slice E left no legacy Home to fall back to.
+    for (const reason of ['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const) {
+        it(`throws CatalogUnavailableError for app/error.tsx when the catalog is unavailable (${reason}), never a photo list`, async () => {
+            active.catalog = { state: 'unavailable', reason } satisfies ActiveCatalog;
             const page = HomePage();
             await expect(page).rejects.toBeInstanceOf(CatalogUnavailableError);
             await expect(page).rejects.toMatchObject({ reason });

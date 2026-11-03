@@ -74,7 +74,6 @@ afterEach(() => {
 
 function served(revisionId = fixture.revisionId, content: CatalogContent = fixture.content, servedState: 'ok' | 'degraded' = 'ok'): ActiveCatalog {
     return {
-        mode: 'catalog',
         state: servedState,
         reader: createCatalogReader(content, { revisionId, revisionNumber: 2 }),
         active: { revisionId, revisionNumber: 2, activationId: 'act_fixture', activatedAt: null },
@@ -170,19 +169,19 @@ describe('GET /api/catalog/series/[slug]/pages/[cursor]', () => {
         expect(state.loads).toBe(0);
     });
 
-    it('answers one identical 404 for every slug #5 doesn\'t serve, in catalog and legacy mode', async () => {
+    it('answers one identical 404 for every slug #5 doesn\'t serve', async () => {
         const answers = [];
         for (const slug of ['fixture-unknown', 'fixture-draft', 'old-fixture-long', 'Fixture-Long']) answers.push(await headersAndBody(await seriesGET(slug, cursor(100))));
-        state.catalog = { mode: 'legacy' };
-        answers.push(await headersAndBody(await seriesGET('fixture-long', cursor(100))));
         expect(answers[0].status).toBe(404);
         expect(JSON.parse(answers[0].body)).toEqual({ reason: 'not-found' });
         for (const answer of answers) expect(answer).toEqual(answers[0]);
     });
 
-    it('answers 503 with the reason while the catalog is unavailable', async () => {
-        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'active-unreadable' };
-        await expectError(await seriesGET('fixture-long', cursor(100)), 503, { reason: 'active-unreadable' });
+    it('answers 503 with the reason while the catalog is unavailable, nothing published included', async () => {
+        for (const reason of ['active-unreadable', 'not-published'] as const) {
+            state.catalog = { state: 'unavailable', reason };
+            await expectError(await seriesGET('fixture-long', cursor(100)), 503, { reason });
+        }
     });
 
     it('serves a degraded catalog\'s last revision', async () => {
@@ -231,19 +230,19 @@ describe('GET /api/catalog/home/photos/[photoId]', () => {
         expect(state.loads).toBe(0);
     });
 
-    it('answers one identical 404 for a photograph the featured series doesn\'t hold, a malformed ID, and legacy mode', async () => {
+    it('answers one identical 404 for a photograph the featured series doesn\'t hold, and a malformed ID', async () => {
         const answers = [];
         for (const photoId of [LONG[0], DRAFT[0], id(999), 'ph_x']) answers.push(await headersAndBody(await homeGET(photoId, revision())));
-        state.catalog = { mode: 'legacy' };
-        answers.push(await headersAndBody(await homeGET(FEATURED[0], revision())));
         expect(answers[0].status).toBe(404);
         expect(JSON.parse(answers[0].body)).toEqual({ reason: 'not-found' });
         for (const answer of answers) expect(answer).toEqual(answers[0]);
     });
 
     it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
-        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' };
+        state.catalog = { state: 'unavailable', reason: 'revision-unreadable' };
         await expectError(await homeGET(FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
+        state.catalog = { state: 'unavailable', reason: 'not-published' };
+        await expectError(await homeGET(FEATURED[0], revision()), 503, { reason: 'not-published' });
         state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
         await expectError(await homeGET(FEATURED[0], revision()), 500, { reason: 'internal' });
         expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/home/photos/[photoId]', error: 'ENOENT' });
@@ -297,7 +296,7 @@ describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
         for (const answer of answers) expect(answer).toEqual(answers[0]);
     });
 
-    it('answers the same 404 for a photograph its series doesn\'t hold, a malformed ID, and legacy mode', async () => {
+    it('answers the same 404 for a photograph its series doesn\'t hold, and a malformed ID', async () => {
         const answers = [];
         for (const [seriesId, photoId] of [
             ['ser_fixture-featured', SECOND[0]],
@@ -309,9 +308,6 @@ describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
         ]) {
             answers.push(await headersAndBody(await homeSeriesGET(seriesId, photoId, revision())));
         }
-        state.catalog = { mode: 'legacy' };
-        answers.push(await headersAndBody(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision())));
-        state.catalog = served();
         answers.push(await headersAndBody(await homeSeriesGET('ser_fixture-draft', DRAFT[0], revision())));
         expect(answers[0].status).toBe(404);
         for (const answer of answers) expect(answer).toEqual(answers[0]);
@@ -325,7 +321,7 @@ describe('GET /api/catalog/home/series/[seriesId]/photos/[photoId]', () => {
     });
 
     it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
-        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' };
+        state.catalog = { state: 'unavailable', reason: 'revision-unreadable' };
         await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
         state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
         await expectError(await homeSeriesGET('ser_fixture-featured', FEATURED[0], revision()), 500, { reason: 'internal' });
@@ -381,7 +377,7 @@ describe('GET /api/catalog/series/[slug]/photos/[photoId]', () => {
         expect(state.loads).toBe(0);
     });
 
-    it('answers one identical 404 for whatever the Viewer can\'t serve, a former slug, and legacy mode', async () => {
+    it('answers one identical 404 for whatever the Viewer can\'t serve, and a former slug', async () => {
         const answers = [];
         for (const [slug, photoId] of [
             // Another series' photograph, a draft series, an unknown photograph, a malformed ID, an unknown and a former slug.
@@ -394,16 +390,17 @@ describe('GET /api/catalog/series/[slug]/photos/[photoId]', () => {
         ]) {
             answers.push(await headersAndBody(await peekGET(slug, photoId, revision())));
         }
-        state.catalog = { mode: 'legacy' };
-        answers.push(await headersAndBody(await peekGET('fixture-featured', FEATURED[0], revision())));
         expect(answers[0].status).toBe(404);
         expect(JSON.parse(answers[0].body)).toEqual({ reason: 'not-found' });
         for (const answer of answers) expect(answer).toEqual(answers[0]);
     });
 
     it('answers 503 while the catalog is unavailable, and 500 with a path-free log line when reading it throws', async () => {
-        state.catalog = { mode: 'catalog', state: 'unavailable', reason: 'revision-unreadable' };
+        state.catalog = { state: 'unavailable', reason: 'revision-unreadable' };
         await expectError(await peekGET('fixture-featured', FEATURED[0], revision()), 503, { reason: 'revision-unreadable' });
+        // Nothing published yet: the same 503, never a 404 (#13's slice E).
+        state.catalog = { state: 'unavailable', reason: 'not-published' };
+        await expectError(await peekGET('fixture-featured', FEATURED[0], revision()), 503, { reason: 'not-published' });
         state.throws = Object.assign(new Error('/private/data is gone'), { code: 'ENOENT' });
         await expectError(await peekGET('fixture-featured', FEATURED[0], revision()), 500, { reason: 'internal' });
         expect(JSON.parse(String(logged.mock.calls[0][0]))).toEqual({ event: 'catalog.response.failed', route: '/api/catalog/series/[slug]/photos/[photoId]', error: 'ENOENT' });

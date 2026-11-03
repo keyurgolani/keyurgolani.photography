@@ -1,28 +1,15 @@
-import type { Locator, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { expectFocusRingVisible } from './support/focus';
-import { measure } from './support/measure';
 import { expect, test } from './support/test';
 
 // The focus token on the theme control, each SiteNav link, and the About source
 // link, in both themes and under hover, since Tailwind's dark: and hover:
-// shadow variants land after the token. Then the lightbox elements YARL
-// focuses on its own, which must not draw it.
+// shadow variants land after the token. They run on About, which the harness
+// server serves without a catalog. The legacy lightbox's checks went with it
+// (#13's slice E).
 
 const toggle = (page: Page) => page.getByRole('button', { name: /^Theme:/ });
 const source = (page: Page) => page.getByRole('navigation', { name: 'External profiles' }).getByRole('link', { name: 'Site source', exact: true });
-const firstPhoto = (page: Page) => page.getByRole('button', { name: 'Photograph 1 of 12', exact: true });
-
-/** Opens the lightbox with Enter, so the focus YARL moves matches :focus-visible. A click on a button tile doesn't. */
-async function openLightbox(page: Page) {
-    await firstPhoto(page).focus();
-    await page.keyboard.press('Enter');
-}
-
-/** Outline style and box-shadow, which are both none when an element draws no ring. */
-async function ringOf(target: Locator) {
-    const { focused, focusVisible, outline, boxShadow } = await measure(target);
-    return { focused, focusVisible, outline: outline.style, boxShadow };
-}
 
 for (const theme of ['dark', 'light'] as const) {
     test.describe(`${theme} theme`, () => {
@@ -33,14 +20,14 @@ for (const theme of ['dark', 'light'] as const) {
         }
 
         test('the theme control shows the focus ring', async ({ page }) => {
-            await open(page, '/gallery');
+            await open(page, '/about');
             await expectFocusRingVisible(toggle(page));
         });
 
         for (const name of ['KG, Keyur Golani', 'Home', 'Work', 'About']) {
             test(`the ${name} link shows the focus ring`, async ({ page }) => {
-                await open(page, '/gallery');
-                await expectFocusRingVisible(page.getByRole('link', { name, exact: true }));
+                await open(page, '/about');
+                await expectFocusRingVisible(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name, exact: true }));
             });
         }
 
@@ -50,7 +37,7 @@ for (const theme of ['dark', 'light'] as const) {
         });
 
         for (const [label, path, target] of [
-            ['the theme control', '/gallery', toggle],
+            ['the theme control', '/about', toggle],
             ['the About source link', '/about', source],
         ] as const) {
             test(`${label} keeps the band under hover`, async ({ page }, testInfo) => {
@@ -60,29 +47,5 @@ for (const theme of ['dark', 'light'] as const) {
                 await expectFocusRingVisible(target(page));
             });
         }
-
-        test('the lightbox container YARL focuses on open draws no ring', async ({ page }) => {
-            await open(page, '/gallery');
-            await openLightbox(page);
-            const container = page.locator('.yarl__container');
-            await expect(container).toBeFocused();
-            expect(await ringOf(container)).toEqual({ focused: true, focusVisible: true, outline: 'none', boxShadow: 'none' });
-        });
-
-        test('the thumbnail track YARL focuses draws no ring, and its active thumbnail draws the token', async ({ page }) => {
-            await open(page, '/gallery');
-            await openLightbox(page);
-            // The leftmost thumbnail leaves the track on ArrowRight, so YARL moves focus to the track.
-            await page.locator('.yarl__thumbnails_thumbnail').first().focus();
-            await page.keyboard.press('ArrowRight');
-            const track = page.locator('.yarl__thumbnails_track');
-            await expect(track).toBeFocused();
-            expect(await ringOf(track)).toEqual({ focused: true, focusVisible: true, outline: 'none', boxShadow: 'none' });
-            const active = await measure(page.locator('.yarl__thumbnails_thumbnail_active'));
-            expect(active.outline).toEqual({ style: 'solid', width: 3, offset: 3, alpha: 1 });
-            // The band is the theme's --focus-ring-dark: black on Dark, the paper's near-white on Light.
-            const band = theme === 'light' ? 'rgb\\(251, 248, 242\\)' : 'rgb\\(0, 0, 0\\)';
-            expect(active.boxShadow).toMatch(new RegExp(`^${band} 0px 0px 0px 3px`));
-        });
     });
 }

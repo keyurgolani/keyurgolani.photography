@@ -9,7 +9,6 @@ import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
-import { routePhotoFixtures } from '../support/test';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
 // Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
@@ -43,8 +42,8 @@ import { compare, failures, walk, type Allowance, type Comparison, type Walk } f
 // report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
 // with its style in before first paint (chrome with every photograph taken out, or a checkerboard under glass; then
 // the photographs alone), the base against itself beside the head against the base.
-// The visitor pages, the 404 and the error page; the legacy Gallery and its lightbox; the curator signed out and in,
-// and its 503.
+// The visitor pages, the 404 and the error page; the curator signed out and in, and its 503. The legacy Gallery and
+// its lightbox were pairs too, until #13's slice E took them off the visitor side (the note above CURATOR says why).
 
 const BASE = process.env.PARITY_BASE_DIR;
 const HEAD = process.cwd();
@@ -167,14 +166,12 @@ interface Pair {
     /** The page, as `name` in the table. */
     name: string;
     url: string;
-    /** After the load: reveal Home's chrome, scroll to the sequence, open the lightbox, hover or focus a photograph. */
+    /** After the load: reveal Home's chrome, scroll to the sequence, open the Viewer, hover or focus a photograph. */
     act?: (page: Page) => Promise<void>;
     /** Home's intro, at its settled frame: under reduced motion the intro never plays, and the badge fades in where it lands. */
     intro?: boolean;
     /** A signed-in curator page. */
     session?: boolean;
-    /** The legacy Gallery, on the e2e suite's photo fixtures. */
-    photos?: boolean;
     /** Home with its opening photograph failing to load, so the failure notice shows with Retry and Skip. */
     failOpening?: boolean;
     /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
@@ -182,7 +179,7 @@ interface Pair {
     addsControl?: boolean;
     /** A page that never hydrates (the 503). */
     bare?: boolean;
-    /** Glass over the photographs (Home's SiteNav, the lightbox's chrome): pass 1 paints each photo as a checkerboard (D1). */
+    /** Glass over the photographs (Home's SiteNav): pass 1 paints each photo as a checkerboard (D1). */
     glass?: boolean;
     /** CSS for the head's shots only: the self-test's deliberate change. */
     headStyle?: string;
@@ -252,7 +249,6 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
     }, { value: stored, sheet: css });
     const page = await context.newPage();
-    if (pair.photos) await routePhotoFixtures(page);
     if (pair.failOpening) await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.abort());
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
@@ -345,7 +341,7 @@ async function load(origin: string, stored: string, pair: Pair, viewport: { widt
                 const [left, top] = [Math.floor(box.left + dx), Math.floor(box.top + dy)];
                 boxes.push({ x: left, y: top, w: Math.ceil(box.right + dx) - left, h: Math.ceil(box.bottom + dy) - top });
             }
-            for (const el of doc.querySelectorAll('img, picture, canvas, video, [class$="_slide"]:not([class*="yarl"]), [class*="_slide "]:not([class*="yarl"])')) {
+            for (const el of doc.querySelectorAll('img, picture, canvas, video, [class$="_slide"], [class*="_slide "]')) {
                 const box = el.getBoundingClientRect();
                 if (box.width > 0) photoBoxes.push({ x: box.left + dx, y: box.top + dy, w: box.width, h: box.height });
             }
@@ -703,22 +699,14 @@ const VISITOR: Pair[] = [
         },
     },
 ];
-const LEGACY: Pair[] = [
-    { name: 'gallery', url: '/gallery', photos: true },
-    {
-        name: 'lightbox',
-        url: '/gallery',
-        photos: true,
-        glass: true,
-        act: async (page) => {
-            // Enter, as a keyboard visitor opens it.
-            await page.getByRole('button', { name: 'Photograph 1 of 12', exact: true }).focus();
-            await page.keyboard.press('Enter');
-            await expect(page.locator('.yarl__portal_open')).toHaveCSS('opacity', '1');
-            await expect.poll(() => page.locator('.yarl__portal').evaluate((root) => root.getAnimations({ subtree: true }).filter((a) => a.playState === 'running').length)).toBe(0);
-        },
-    },
-];
+// The legacy pairs are gone, on purpose (#13's slice E). The base (be35250a) still has legacy mode, and the gate used
+// to start it and the head on a data root with nothing published, to compare the legacy Gallery ('/gallery', on the
+// e2e photo fixtures) and its lightbox. The head no longer has either: on that root it answers every page with #21's
+// unavailable state, and '/gallery' with a 308 to '/work'. Nothing of the head's renders the base's Gallery, so a pair
+// could only compare unlike pages, and loosening the comparison to let one pass would hide a real change, so the pairs
+// went with the page. The Gallery's look has no successor to hold to it; Work, which '/gallery' reaches now, is in
+// VISITOR, compared as strictly as before. No catalog pair changed, and the base renders Home in catalog form on the
+// same fixture, so no pair needs a named entry for the base's legacy Home either.
 const CURATOR: Pair[] = [
     { name: 'signin', url: '/curation/login', addsControl: true },
     {
@@ -1020,19 +1008,18 @@ test.afterAll(async () => {
     );
 });
 
-test.describe('the visitor site and the legacy Gallery', () => {
+test.describe('the visitor site', () => {
     const servers: Server[] = [];
     let visitor = { base: '', head: '' };
-    let legacy = { base: '', head: '' };
 
+    // Both builds on the published Home fixture, so every visitor pair is the catalog site in both. The note above
+    // CURATOR says why the legacy servers, on a data root with nothing published, aren't started any more.
     test.beforeAll(async () => {
-        const common = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig };
-        const catalog = { ...common, PHOTOGRAPHY_DATA_DIR: visitorRoot };
-        const [a, b, c, d] = [port(0), port(1), port(2), port(3)];
-        const started = await Promise.all([serve(BASE!, a, catalog, '/api/ready'), serve(HEAD, b, catalog, '/api/ready'), serve(BASE!, c, common, '/'), serve(HEAD, d, common, '/')]);
+        const catalog = { PHOTOGRAPHY_LIBRARY_DIR: library, PHOTOGRAPHY_SITE_CONFIG_DIR: siteConfig, PHOTOGRAPHY_DATA_DIR: visitorRoot };
+        const [a, b] = [port(0), port(1)];
+        const started = await Promise.all([serve(BASE!, a, catalog, '/api/ready'), serve(HEAD, b, catalog, '/api/ready')]);
         servers.push(...started);
         visitor = { base: started[0].origin, head: started[1].origin };
-        legacy = { base: started[2].origin, head: started[3].origin };
     });
 
     test.afterAll(async () => {
@@ -1040,7 +1027,6 @@ test.describe('the visitor site and the legacy Gallery', () => {
     });
 
     parity('visitor', VISITOR, () => visitor, { legacy: true });
-    parity('legacy', LEGACY, () => legacy, { legacy: true });
 
     // Once, for the record (R2-P2-2): with the scrim on a layer of its own in both builds, does Home's old raster step
     // with its chrome show?

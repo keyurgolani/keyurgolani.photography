@@ -10,10 +10,10 @@ import { catalogError, catalogJson, errorName } from '@/lib/catalog/validators';
  *
  * | answer | when |
  * | --- | --- |
- * | 404 | a malformed, unknown, former, draft, hidden, or removed slug; legacy mode (#5's not-found set) |
+ * | 404 | a malformed, unknown, former, draft, hidden, or removed slug (#5's not-found set) |
  * | 400 | a malformed cursor, one for another series, or an offset out of range |
  * | 409 | the cursor's revision isn't the one being served |
- * | 503 | the catalog is unavailable |
+ * | 503 | the catalog is unavailable, or nothing is published yet |
  * | 200 | `{ revisionId, entries, nextHref }`, or 304 on `If-None-Match` |
  *
  * The 409 is checked before the series, so neither it nor the 404 says

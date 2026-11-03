@@ -13,10 +13,10 @@ import { catalogError, catalogJson, errorName } from '@/lib/catalog/validators';
  *
  * | answer | when |
  * | --- | --- |
- * | 404 | a malformed series or photo ID, a series that isn't featured and published, a photograph it doesn't hold, or legacy mode |
+ * | 404 | a malformed series or photo ID, a series that isn't featured and published, or a photograph it doesn't hold |
  * | 400 | no `revision`, more than one, or a malformed one |
  * | 409 | `revision` isn't the one being served, whatever the series |
- * | 503 | the catalog is unavailable |
+ * | 503 | the catalog is unavailable, or nothing is published yet |
  * | 200 | `{ revisionId, photos }`, or 304 on `If-None-Match` |
  *
  * On a 200 the body depends only on the path and the served revision, so

@@ -258,10 +258,10 @@ export type ViewerCatalog<Reason extends string = string> = ScreenCatalog<Pick<C
 /**
  * The Viewer's answer for the site as it stands, for the route to call with
  * getActiveCatalog. Malformed params are not-found before `load` runs, so
- * they never read the catalog. A site with no active revision (legacy mode)
- * is not-found too, the same as an unknown photo. An unavailable catalog is
- * its own kind, for the route to throw CatalogUnavailableError. A degraded
- * catalog serves the last revision it loaded.
+ * they never read the catalog. An unavailable catalog, one that has
+ * published nothing too, is its own kind, for the route to throw
+ * CatalogUnavailableError. A degraded catalog serves the last revision it
+ * loaded.
  */
 export async function viewerPhotoFrom<Reason extends string>(
     load: () => Promise<ViewerCatalog<Reason>>,
@@ -271,7 +271,6 @@ export async function viewerPhotoFrom<Reason extends string>(
     const params = viewerParams(slug, photoId);
     if (params === null) return NOT_FOUND;
     const catalog = await load();
-    if (catalog.mode === 'legacy') return NOT_FOUND;
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     return catalog.reader.getViewerPhoto(params.slug, params.photoId);
 }
@@ -314,9 +313,9 @@ export function viewerPeekOf(viewer: PublishedViewerPhoto): ViewerPeek {
  * The peek endpoint's answer for the site as it stands, for
  * `/api/catalog/series/<slug>/photos/<photoId>?revision=<revisionId>`. As
  * homePhotosFrom() does: malformed params are not-found and a missing or
- * malformed revision a bad request, both before the catalog is read; legacy
- * mode is not-found; an unavailable catalog is unavailable, for a 503; a
- * revision other than the one served is revision-changed, checked before
+ * malformed revision a bad request, both before the catalog is read; an
+ * unavailable catalog, one that has published nothing too, is unavailable,
+ * for a 503; a revision other than the one served is revision-changed, checked before
  * the photo, so neither answer says whether a photo it doesn't publish
  * exists. Anything else is viewerPhotoOf()'s answer on the served revision,
  * so a peek is not-found exactly when the photo's Viewer is (a former slug
@@ -332,7 +331,6 @@ export async function viewerPeekFrom<Reason extends string>(
     if (params === null) return { kind: 'not-found' };
     if (revisionId === null || !REVISION_ID_RE.test(revisionId)) return { kind: 'bad-request' };
     const catalog = await load();
-    if (catalog.mode === 'legacy') return { kind: 'not-found' };
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     const { reader } = catalog;
     if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
