@@ -188,7 +188,7 @@ plan=$(sed -n 's/^Plan: //p' <<<"$dry_run")
 in_image node dist/scripts/photos.mjs migrate --apply --plan "$plan" >/dev/null || fail "Applying $plan failed."
 
 # 3. One watcher pass builds every set, and writes nothing in the library.
-find "$LIB" -mindepth 1 -printf '%P %y %s %T@\n' | LC_ALL=C sort >"$TMP/library-before.txt"
+find "$LIB" -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort >"$TMP/library-before.txt"
 in_image node dist/scripts/imageWatcher.mjs --once >"$TMP/once.log" 2>&1 || {
   cat "$TMP/once.log"
   fail "The watcher's --once run failed."
@@ -199,7 +199,7 @@ in_image node dist/scripts/photos.mjs identity status --json >"$TMP/status.json"
 }
 jq -e '.dataRoot.state == "ready" and .photos.total == 3 and .pendingJobs == 0 and .failedProfiles == []' "$TMP/status.json" >/dev/null ||
   fail "After the --once run, photos identity status reported $(cat "$TMP/status.json")."
-find "$LIB" -mindepth 1 -printf '%P %y %s %T@\n' | LC_ALL=C sort >"$TMP/library-after.txt"
+find "$LIB" -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort >"$TMP/library-after.txt"
 diff -u "$TMP/library-before.txt" "$TMP/library-after.txt" || fail "The watcher's --once run changed the library, which it must never write."
 in_image cat /data/portfolio/status/watcher.json | jq -e '.legacyDerivatives == false' >/dev/null ||
   fail "The watcher's heartbeat does not say legacyDerivatives: false."

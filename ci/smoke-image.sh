@@ -126,13 +126,14 @@ plant_legacy() {
   printf '{}\n' >"$library/cache/upright-rebuild.json"
 }
 
-# Prints every file and folder under <library>, sorted: its path, its type,
-# and for a file its size, mtime, and SHA-256. Two equal listings mean nothing
-# was added, removed, rewritten, or touched.
+# Prints every file and folder under <library>, sorted: its path, type, size,
+# mtime, mode, owner and group, and ctime, and for a file its SHA-256. Two
+# equal listings mean nothing was added, removed, rewritten, touched,
+# chmodded, or chowned.
 library_listing() {
   (
     cd "$1" || exit 1
-    find . -mindepth 1 -printf '%P %y %s %T@\n' | LC_ALL=C sort
+    find . -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort
     find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
   )
 }

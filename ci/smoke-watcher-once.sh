@@ -94,17 +94,22 @@ run_once() {
   in_watcher "${WATCHER[@]}" --once
 }
 
-# Prints every file and folder under the library, sorted, with each file's
-# size, mtime, and SHA-256, so two equal listings mean nothing changed.
+# Prints every file and folder under the library, sorted, with its size,
+# mtime, mode, owner and group, and ctime, and each file's SHA-256, so two
+# equal listings mean nothing changed, a chmod or chown included.
 library_listing() {
   (
     cd "$LIB" || exit 1
-    find . -mindepth 1 -printf '%P %y %s %T@\n' | LC_ALL=C sort
+    find . -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort
     find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
   )
 }
 
 # Fails unless the library lists exactly as <listing file> does, and holds no legacy folder.
+# The watcher here mounts the library :ro, as production does, so this mostly
+# shows Docker keeps a read-only mount read-only. That the watcher itself
+# writes nothing with the library read-write is ci/smoke-image.sh's step 12
+# and utils/__tests__/imageWatcherScript.test.ts.
 require_library_unchanged() {
   local folder
   library_listing >"$TMP/listing-now.txt" || fail "Could not list the library."

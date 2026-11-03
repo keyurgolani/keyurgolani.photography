@@ -75,9 +75,10 @@ export interface TempLibrary {
     /** Every `.tmp` file under the root, relative to it. */
     tempFiles(): string[];
     /**
-     * Every entry under the root, by path relative to it: `dir` for a folder,
-     * else the file's SHA-256, size and mtime, so a test can tell that nothing
-     * was added, removed, rewritten or touched.
+     * Every entry under the root, by path relative to it: its type, mode,
+     * owner, group, mtime and ctime, and a file's size and SHA-256, so a test
+     * can tell that nothing was added, removed, rewritten, touched, chmodded
+     * or chowned.
      */
     snapshot(): Record<string, string>;
     /** Delete the temp root, then restore PHOTOGRAPHY_LIBRARY_DIR. */
@@ -133,9 +134,10 @@ export async function createTempLibrary({ fixtures = 'none', missingRoot = false
             for (const relativePath of fs.readdirSync(root, { recursive: true, encoding: 'utf8' }).sort()) {
                 const absolute = file(relativePath);
                 const stat = fs.lstatSync(absolute);
+                const meta = `${(stat.mode & 0o7777).toString(8)} ${stat.uid}:${stat.gid} ${stat.mtimeMs} ${stat.ctimeMs}`;
                 result[relativePath] = stat.isDirectory()
-                    ? 'dir'
-                    : `${createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')} ${stat.size} ${stat.mtimeMs}`;
+                    ? `dir ${meta}`
+                    : `${createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')} ${stat.size} ${meta}`;
             }
             return result;
         },
