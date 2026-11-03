@@ -40,6 +40,7 @@ vi.mock('@/components/home/CatalogHome', () => ({
 }));
 
 const { default: HomePage, dynamic } = await import('../page');
+const { resetHomeStartPickForTests } = await import('@/lib/catalog/homePick');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 let catalog: TestCatalog;
@@ -102,6 +103,30 @@ describe('app/page, the cutover gate', () => {
             expect(active.reads).toBe(1);
         });
     }
+
+    it('starts on the featured series the server render picks, here the test-only scripted pick, with the rest after it', async () => {
+        const content = structuredClone(catalog.content) as RevisionContent;
+        content.site.featuredSeriesIds = content.series.map((series) => series.id);
+        active.catalog = served('ok', content);
+        vi.stubEnv('PHOTOGRAPHY_TEST_HOME_PICK', '1,0,1');
+        resetHomeStartPickForTests();
+        try {
+            const starts: [string | undefined, string[] | undefined][] = [];
+            for (let load = 0; load < 3; load++) {
+                const view = render(await HomePage());
+                const home = renderedHome();
+                starts.push([home.featuredSeries?.slug, home.followingSeries?.map((series) => series.slug)]);
+                view.unmount();
+            }
+            expect(starts).toEqual([
+                ['fixture-b', ['fixture-a']],
+                ['fixture-a', ['fixture-b']],
+                ['fixture-b', ['fixture-a']],
+            ]);
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
 
     it('renders the catalog Home\'s empty state, never the legacy Home, when nothing is featured', async () => {
         const content = structuredClone(catalog.content) as RevisionContent;

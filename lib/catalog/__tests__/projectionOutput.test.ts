@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { homePhotosFrom, homeRouteOf, type HomeActiveCatalog } from '../projections/home';
+import { homePhotosFrom, homeRouteOf, homeSeriesPhotosFrom, type HomeActiveCatalog } from '../projections/home';
 import { createCatalogReader, createRouteBuilder, type CatalogContent, type CatalogReader, type RouteBuilder } from '../reader';
 import { buildTestCatalog, type TestCatalogContent } from '../testing';
 import type { RevisionContent } from '../types';
@@ -135,12 +135,21 @@ function served(reader: CatalogReader): HomeActiveCatalog & { mode: 'catalog' } 
     return { mode: 'catalog', state: 'ok', reader };
 }
 
+/** Every series ID a Home loop request could name: each the content holds, the draft's, and an unknown one. */
+function seriesIdsOf(content: CatalogContent): string[] {
+    return [...new Set([...content.series.map((series) => series.id), 'ser_pinned-draft', 'ser_pinned-unknown'])];
+}
+
 async function screens(routes: RouteBuilder): Promise<Record<string, unknown[]>> {
-    const out: Record<string, unknown[]> = { home: [], homePhotos: [], work: [], series: [], continuation: [], viewer: [] };
+    const out: Record<string, unknown[]> = { home: [], homePhotos: [], homeLoop: [], work: [], series: [], continuation: [], viewer: [] };
     for (const [name, content] of contents()) {
         const reader = createCatalogReader(content, { revisionId: REVISION, revisionNumber: 4 });
-        out.home.push([name, homeRouteOf(served(reader), routes)]);
+        // Home starting on each featured series in turn: a pick past the loop's end opens on its first.
+        for (const start of [0, 1]) out.home.push([name, start, homeRouteOf(served(reader), routes, () => start)]);
         for (const photoId of photoIdsOf(content)) out.homePhotos.push([name, photoId, await homePhotosFrom(async () => served(reader), photoId, REVISION)]);
+        for (const seriesId of seriesIdsOf(content)) {
+            for (const photoId of photoIdsOf(content)) out.homeLoop.push([name, seriesId, photoId, await homeSeriesPhotosFrom(async () => served(reader), seriesId, photoId, REVISION)]);
+        }
         out.work.push([name, reader.getWorkSummaries(routes)]);
         for (const slug of slugsOf(content)) {
             const page = reader.getSeriesPage(slug, routes);
@@ -155,6 +164,10 @@ async function screens(routes: RouteBuilder): Promise<Record<string, unknown[]>>
             for (const photoId of photoIdsOf(content)) out.viewer.push([name, slug, photoId, reader.getViewerPhoto(slug, photoId)]);
         }
     }
+    // Home's empty state: no featured series resolves. Only Home reads the site record's featured list.
+    const empty = revisionContent();
+    empty.site.featuredSeriesIds = ['ser_pinned-draft', 'ser_pinned-unknown'];
+    out.home.push(['nothing featured resolves', 0, homeRouteOf(served(createCatalogReader(empty, { revisionId: REVISION, revisionNumber: 4 })), routes, () => 0)]);
     return out;
 }
 
@@ -162,8 +175,11 @@ describe('every screen projection serializes byte for byte as pinned', () => {
     it('on the public routes', async () => {
         const out = await screens(publicRoutes);
         expect(Object.fromEntries(Object.entries(out).map(([screen, values]) => [screen, sha256(values)]))).toEqual({
-            home: '189b7bb2eba044af63dff21f590c52634b08b3b0179b3beb568eee1586439ca9',
+            // v1.5.0: Home plays every featured series as a loop from the one it picks, so a refused first one is skipped.
+            home: 'af0f2602377f16fc4db84f3fbf38fd2ae0cde8b6f84e469f37cf0963266099d6',
+            // v1.4.0's records route, unchanged for the pages already open, until v1.6.0 removes it.
             homePhotos: '8f69315859b0700845222df618546e45c05d7be6c5c7e909af128a184f377a67',
+            homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
             series: 'f4d331e31151bd9c2fe789acea02a746c5fcb026309e762287396071c0627123',
             continuation: '85b8afb6bc10a95477fff9b2cbb7c938de4b1a1ab793d2dc402754f4ddb237b0',
@@ -174,8 +190,9 @@ describe('every screen projection serializes byte for byte as pinned', () => {
     it('on a preview route builder', async () => {
         const out = await screens(previewRoutes);
         expect(Object.fromEntries(Object.entries(out).map(([screen, values]) => [screen, sha256(values)]))).toEqual({
-            home: 'f845063265e99c501e1b34aec4a5a11bf328956c557309bddd3efc3ec49f0abc',
+            home: 'fbe7025fd56a8204208693fd10e1a6e47ba0aa7d6c036538b9f2d00539650c0c',
             homePhotos: '8f69315859b0700845222df618546e45c05d7be6c5c7e909af128a184f377a67',
+            homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
             series: '1e5733d2c9fd8d57a584d21e0eb63cb8fd73f8733a39380e4915b02ce3a88dde',
@@ -198,13 +215,14 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         const out = await screens(publicRoutes);
         const kinds = (values: unknown[]) => new Set(values.map((entry) => ((entry as unknown[]).at(-1) as { kind: string }).kind));
         expect(kinds(out.home)).toEqual(new Set(['home']));
-        expect(out.home.some((entry) => ((entry as unknown[])[1] as { home: { featuredSeries: unknown } }).home.featuredSeries === null)).toBe(true);
+        expect(out.home.some((entry) => ((entry as unknown[]).at(-1) as { home: { featuredSeries: unknown } }).home.featuredSeries === null)).toBe(true);
         expect(kinds(out.homePhotos)).toEqual(new Set(['ok', 'not-found']));
+        expect(kinds(out.homeLoop)).toEqual(new Set(['ok', 'not-found']));
         expect(kinds(out.series)).toEqual(new Set(['ok', 'redirect', 'not-found']));
         expect(kinds(out.continuation)).toEqual(new Set(['ok']));
         expect(kinds(out.viewer)).toEqual(new Set(['ok', 'redirect', 'not-found']));
         const json = JSON.stringify(out);
-        for (const fragment of ['"image":null', '"cover":null', '"lqip":"data:image/webp', '"descriptionPending":true', '"startPosition":102', '"featuredSeries":null']) {
+        for (const fragment of ['"image":null', '"cover":null', '"lqip":"data:image/webp', '"descriptionPending":true', '"startPosition":102', '"featuredSeries":null', '"followingSeries":[']) {
             expect(json, fragment).toContain(fragment);
         }
     });

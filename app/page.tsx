@@ -1,6 +1,7 @@
 import CatalogHome from '../components/home/CatalogHome';
 import LegacyHome from '../components/home/LegacyHome';
 import { artist } from '../data/artist';
+import { homeStartPick } from '../lib/catalog/homePick';
 import { CatalogUnavailableError, getActiveCatalog, publicRoutes } from '../lib/catalog/public-reader';
 import { homeRouteOf } from '../lib/catalog/projections/home';
 import { aboutPortraitView } from '../lib/siteConfig/portraitVariants';
@@ -13,11 +14,14 @@ export const dynamic = 'force-dynamic';
  * `/` for the catalog as this request finds it. Legacy mode renders today's
  * Home. After the cutover it renders only from the served revision, and an
  * unavailable catalog throws to app/error.tsx, never back to the legacy Home.
+ * This render picks the featured series Home starts on, at random, so the
+ * first photograph, its preload and hydration all agree, with no cookie or
+ * stored state.
  * Either way the intro and the badge show About's portrait from the site
  * config folder, the same files About serves, or none without a usable one.
  */
 export default async function HomePage() {
-    const route = homeRouteOf(await getActiveCatalog(), publicRoutes);
+    const route = homeRouteOf(await getActiveCatalog(), publicRoutes, homeStartPick());
     if (route.kind === 'unavailable') throw new CatalogUnavailableError(route.reason);
     const portrait = await aboutPortraitView(artist.profile.name);
     if (route.kind === 'legacy') return <LegacyHome portrait={portrait} />;

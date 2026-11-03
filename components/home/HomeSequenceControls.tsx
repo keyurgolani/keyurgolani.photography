@@ -6,8 +6,11 @@ import { usePrefersReducedMotion } from '../motion/usePrefersReducedMotion';
 import styles from './HomeSequenceControls.module.css';
 
 interface HomeSequenceControlsProps {
+  /** The position shown, from 0, and what it's out of: the photograph's place in its own series. */
   index: number;
   count: number;
+  /** How many photographs Previous and Next move through, when that isn't `count`: Home's loop of featured series. Under two, no controls. */
+  steps?: number;
   /** From useHomePlayback. It alone picks the button's name, so holds and hidden tabs never change it. */
   wantsPlay: boolean;
   onPrev: () => void;
@@ -28,6 +31,7 @@ const pad = (value: number) => String(value).padStart(2, '0');
 const HomeSequenceControls: React.FC<HomeSequenceControlsProps> = ({
   index,
   count,
+  steps = count,
   wantsPlay,
   onPrev,
   onNext,
@@ -38,7 +42,7 @@ const HomeSequenceControls: React.FC<HomeSequenceControlsProps> = ({
   const reducedMotion = usePrefersReducedMotion();
   const hintId = useId();
 
-  if (count < 2) return null;
+  if (steps < 2) return null;
 
   return (
     <div

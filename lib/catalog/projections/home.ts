@@ -1,8 +1,9 @@
 import 'server-only';
+import { randomInt } from 'node:crypto';
 import { photoImageAlt } from '../../a11y/photoName';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
-import { REVISION_ID_RE } from '../schema';
+import { REVISION_ID_RE, SERIES_ID_RE } from '../schema';
 import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
 import { imageOf, type Ladder } from './ladder';
 import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
@@ -23,8 +24,16 @@ import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog }
  *
  * #6 narrows it to the ordered IDs plus records for the opening photograph
  * and its neighbors only. Home loads the rest as it moves, from
- * `/api/catalog/home/photos/<photoId>` (homePhotosOf()), bound to the
- * revision it rendered.
+ * `/api/catalog/home/series/<seriesId>/photos/<photoId>`
+ * (homeSeriesPhotosOf()), bound to the revision it rendered.
+ *
+ * v1.5.0 plays every featured series that resolves as one loop, in
+ * `featuredSeriesIds` order, each from its opening photograph through its
+ * whole authored order and round to the photographs before the opening one,
+ * then on into the next. Each render starts the loop on a series picked at
+ * random (HomePick), so the first paint, its preload and hydration all come
+ * from the one server render. One featured series gives the model today's
+ * Home had, field for field.
  */
 
 type Photo = CatalogContent['photos'][number];
@@ -50,8 +59,8 @@ export interface HomePhoto {
     image: HomeImage | null;
 }
 
-/** The featured series as Home shows it. */
-export interface HomeSeries {
+/** One featured series in Home's loop: what the chrome shows while one of its photographs is on screen, and the order they play in. */
+export interface HomeLoopSeries {
     id: string;
     /** The current canonical slug. */
     slug: string;
@@ -63,20 +72,34 @@ export interface HomeSeries {
     shortStatement: string | null;
     /** The whole authored order: the series' `photoIds` that resolve, in order. Never empty. */
     photoIds: string[];
-    /**
-     * Records for the opening photograph and its neighbor on each side, wrapping
-     * as Home does, and nothing else (#6). Later ones come from
-     * homePhotosOf() as Home moves.
-     */
-    records: HomePhoto[];
-    /** The series' `openingPhotoId` when it resolves (#8's `order.opening` keeps it in the series), else the first photograph. Always in `photoIds` and `records`. */
+    /** The series' `openingPhotoId` when it resolves (#8's `order.opening` keeps it in the series), else the first photograph. Always in `photoIds`. */
     openingPhotoId: string;
 }
+
+/** The featured series Home opens on, with the only records the page ships. */
+export interface HomeSeries extends HomeLoopSeries {
+    /**
+     * Records for the opening photograph and its neighbor on each side in
+     * Home's loop, wrapping as Home does, and nothing else (#6). With one
+     * featured series both neighbors are its own; with more, the one before
+     * may be the previous series' and the one after the next series'. Later
+     * ones come from homeSeriesPhotosOf() as Home moves. `openingPhotoId` is
+     * always among them.
+     */
+    records: HomePhoto[];
+}
+
+/**
+ * Which featured series Home starts on: a whole number from 0 to `count - 1`,
+ * for the `count` featured series that resolve. crypto.randomInt by default;
+ * tests inject their own, and the e2e harness scripts one (lib/catalog/homePick.ts).
+ */
+export type HomePick = (count: number) => number;
 
 /** The records Home asks for as it moves: one photograph and its neighbor on each side, from one revision. */
 export interface HomePhotosWindow {
     revisionId: string;
-    /** Previous, the named one, next, in authored order, wrapping, each once. No LQIP: only the opening photograph carries one. */
+    /** Previous, the named one, next, in Home's play order, wrapping, each once. No LQIP: only the opening photograph carries one. */
     photos: HomePhoto[];
 }
 
@@ -86,19 +109,26 @@ export type HomePhotosResult =
     | { kind: 'bad-request' }
     /** `revision` isn't the revision being served. */
     | { kind: 'revision-changed' }
-    /** A malformed photo ID, one the featured series doesn't hold, or nothing featured. */
+    /** A malformed ID, a series that isn't featured and published, a photo it doesn't hold, or nothing featured. */
     | { kind: 'not-found' };
 
 /**
  * The approved sketch's `PublishedHome`. `featuredSeries` null is the empty
- * state: nothing featured, or a featured series with no photograph that
- * resolves. A publish refuses both (`refs.non-empty`, `order.empty-series`),
- * so only a hand-built revision or a draft reaches it.
+ * state: nothing featured, or no featured series that resolves. A publish
+ * refuses both (`refs.non-empty`, `order.empty-series`), so only a
+ * hand-built revision or a draft reaches it.
  */
 export interface PublishedHome {
     /** The revision (or candidate) every field below came from. */
     catalogRevision: string;
+    /** The series Home opens on, picked at random among the featured series that resolve. */
     featuredSeries: HomeSeries | null;
+    /**
+     * The rest of the loop, in `featuredSeriesIds` order from the one after
+     * `featuredSeries`, wrapping round to the ones before it. Absent when
+     * nothing follows, so one featured series ships today's model exactly.
+     */
+    followingSeries?: HomeLoopSeries[];
 }
 
 /** What publishedHomeOf() reads. A CatalogReader has all of it. */
@@ -120,84 +150,159 @@ function altOf(alt: Photo['alt'] | undefined, position: number, total: number): 
     return alt?.kind === 'described' ? text(alt.text) ?? '' : '';
 }
 
+/** One featured series that resolves, with its members in authored order and where its opening photograph sits among them. */
+interface LoopEntry {
+    series: SeriesRecord;
+    members: readonly Photo[];
+    openingIndex: number;
+}
+
+/** One place in Home's loop: a photograph, and the entry it plays in. */
+interface Slot {
+    photo: Photo;
+    entry: LoopEntry;
+}
+
 /**
- * The Home of one source. The featured series is the first
- * `featuredSeriesIds` entry the source holds, as #8's featuredSeries()
- * reads it, and never rotates. One #5's page wouldn't open (a repeated
- * ID, no positive published count, or a slug the route refuses) gives the
- * empty state, never the next entry. Its photographs are the members that
- * resolve, in `photoIds` order, the list #5 and #7 count, so the position
- * Home shows matches the series page. The href comes from `routes`: #13's
+ * The Home of one source. Every `featuredSeriesIds` entry #5's page would
+ * open joins the loop, in that order: the source holds it, its ID appears
+ * once, it has a positive published count and a member that resolves, and
+ * the route takes its canonical slug. Any other entry is skipped, and none
+ * left is the empty state. `pick` chooses the one Home opens on, and the
+ * rest follow it. Each series' photographs are the members that resolve, in
+ * `photoIds` order, the list #5 and #7 count, so the position Home shows
+ * matches the series page. The href comes from `routes`: #13's
  * `publicRoutes` on the site, a preview's own builder in a preview.
  */
-export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, 'seriesHref'>): PublishedHome {
-    const empty: PublishedHome = { catalogRevision: source.revisionId, featuredSeries: null };
-    const featured = featuredOf(source);
-    if (featured === null) return empty;
-    const { series, members } = featured;
-    const openingIndex = Math.max(0, members.findIndex((photo) => photo.id === series.openingPhotoId));
-    const opening = members[openingIndex];
+export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, 'seriesHref'>, pick: HomePick = randomInt): PublishedHome {
+    const loop = loopOf(source);
+    if (loop.length === 0) return { catalogRevision: source.revisionId, featuredSeries: null };
+    // One featured series has nothing to choose between, so the random source isn't asked.
+    const picked = loop.length === 1 ? 0 : pick(loop.length);
+    const start = Number.isInteger(picked) && picked >= 0 && picked < loop.length ? picked : 0;
+    const ordered = [...loop.slice(start), ...loop.slice(0, start)];
+    const slots = slotsOf(ordered);
+    const opening = slots[0];
+    const { openingPhotoId, ...series } = loopSeriesOf(opening.entry, routes);
+    // v1.4.0's key order, which the JSON the page ships keeps: the records before the opening photograph.
+    const records = windowOf(slots, 0).map((slot) => recordOf(slot, slot === opening));
+    const home: PublishedHome = { catalogRevision: source.revisionId, featuredSeries: { ...series, records, openingPhotoId } };
+    if (ordered.length > 1) home.followingSeries = ordered.slice(1).map((entry) => loopSeriesOf(entry, routes));
+    return home;
+}
+
+/**
+ * The featured series that resolve, in `featuredSeriesIds` order, as
+ * publishedHomeOf() plays them. homeSeriesPhotosOf() reads the same, so it
+ * never serves a photograph Home wouldn't show. A series featured twice
+ * plays once, at its first place, and one that holds a photograph an earlier
+ * one already plays is skipped, so no photograph is in the loop twice.
+ * refs.featured and refs.membership refuse both, so only a hand-built
+ * revision reaches either. refs.membership is a render gate, so no publish
+ * and no preview ever holds a photograph in two featured series; the skip
+ * only keeps a hand-built revision's loop from playing one twice.
+ */
+function loopOf(source: HomeSource): LoopEntry[] {
+    const listed = source.listSeries();
+    const seen = new Set<string>();
+    const playing = new Set<string>();
+    const loop: LoopEntry[] = [];
+    for (const seriesId of source.site().featuredSeriesIds) {
+        if (seen.has(seriesId)) continue;
+        seen.add(seriesId);
+        const series = listed.find((entry) => entry.id === seriesId);
+        // The series page's own checks: openableSeries(), then the route's slug check on the canonical slug Home links.
+        if (!series || !openableSeries(source, series) || seriesParams(series.slug) === null) continue;
+        const members = source.photosOf(series.id);
+        if (members.some((photo) => playing.has(photo.id))) continue;
+        for (const photo of members) playing.add(photo.id);
+        loop.push({ series, members, openingIndex: Math.max(0, members.findIndex((photo) => photo.id === series.openingPhotoId)) });
+    }
+    return loop;
+}
+
+/** The loop in play order: each series from its opening photograph to its last, then its first up to the one before the opening. */
+function slotsOf(loop: readonly LoopEntry[]): Slot[] {
+    return loop.flatMap((entry) => [...entry.members.slice(entry.openingIndex), ...entry.members.slice(0, entry.openingIndex)].map((photo) => ({ photo, entry })));
+}
+
+function loopSeriesOf({ series, members, openingIndex }: LoopEntry, routes: Pick<RouteBuilder, 'seriesHref'>): HomeLoopSeries {
     return {
-        catalogRevision: source.revisionId,
-        featuredSeries: {
-            id: series.id,
-            slug: series.slug,
-            href: routes.seriesHref(series.slug),
-            title: series.title,
-            shortStatement: text(series.shortStatement),
-            photoIds: members.map((photo) => photo.id),
-            records: windowOf(members, openingIndex).map((photo) => recordOf(photo, photo === opening, members)),
-            openingPhotoId: opening.id,
-        },
+        id: series.id,
+        slug: series.slug,
+        href: routes.seriesHref(series.slug),
+        title: series.title,
+        shortStatement: text(series.shortStatement),
+        photoIds: members.map((photo) => photo.id),
+        openingPhotoId: members[openingIndex].id,
     };
 }
 
-/**
- * The featured series and its members that resolve, as publishedHomeOf()
- * picks them, or null for Home's empty state. homePhotosOf() reads the same,
- * so it never serves a photograph Home wouldn't show.
- */
-function featuredOf(source: HomeSource): { series: SeriesRecord; members: readonly Photo[] } | null {
-    const listed = source.listSeries();
-    const series = source.site().featuredSeriesIds.map((seriesId) => listed.find((entry) => entry.id === seriesId)).find((entry) => entry !== undefined);
-    // The series page's own checks: openableSeries(), then the route's slug check on the canonical slug Home links.
-    if (!series || !openableSeries(source, series) || seriesParams(series.slug) === null) return null;
-    return { series, members: source.photosOf(series.id) };
+/** The slot at `index` and its neighbor on each side, wrapping, as #2's Home wraps from the last to the first. Each once. */
+function windowOf<T>(slots: readonly T[], index: number): T[] {
+    const count = slots.length;
+    const picked = [index - 1, index, index + 1].map((at) => slots[((at % count) + count) % count]);
+    return picked.filter((slot, at) => picked.indexOf(slot) === at);
 }
 
-/** The member at `index` and its neighbor on each side, wrapping, as #2's Home wraps from the last to the first. Each once. */
-function windowOf(members: readonly Photo[], index: number): Photo[] {
-    const count = members.length;
-    const picked = [index - 1, index, index + 1].map((at) => members[((at % count) + count) % count]);
-    return picked.filter((photo, at) => picked.indexOf(photo) === at);
-}
-
-/** `members`: the featured series' photos, in order, for the place a carried-over photo is named by. */
-function recordOf(photo: Photo, withLqip: boolean, members: readonly Photo[]): HomePhoto {
+/** A photograph's record. A carried-over one is named by its place in its own series. */
+function recordOf({ photo, entry }: Slot, withLqip: boolean): HomePhoto {
     return {
         id: photo.id,
-        alt: altOf(photo.alt, members.indexOf(photo) + 1, members.length),
+        alt: altOf(photo.alt, entry.members.indexOf(photo) + 1, entry.members.length),
         focalPoint: { ...(focal(photo.focalPoint) ?? CENTER) },
         image: imageOf(photo, withLqip),
     };
 }
 
 /**
- * The window Home asks for as it moves: `photoId` and its neighbors in the
- * featured series of one source, built as publishedHomeOf() builds its
- * records, or not-found for a photo ID out of shape, one the featured series
- * doesn't hold, and an empty Home.
+ * The window Home asks for as it moves: `photoId` and its neighbors in
+ * Home's loop of one source, built as publishedHomeOf() builds its records.
+ * The neighbors don't depend on which series Home started on, since the loop
+ * is a circle. Anything but a series that is featured and resolves, and one
+ * of its own photographs, is not-found: a draft, hidden, unfeatured or
+ * unknown series, an ID out of shape, and an empty Home. So the route can
+ * never list a series Home doesn't play.
+ */
+export function homeSeriesPhotosOf(source: HomeSource, seriesId: unknown, photoId: unknown): HomePhotosResult {
+    if (typeof seriesId !== 'string' || !SERIES_ID_RE.test(seriesId)) return { kind: 'not-found' };
+    if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
+    const slots = slotsOf(loopOf(source));
+    const index = slots.findIndex((slot) => slot.entry.series.id === seriesId && slot.photo.id === photoId);
+    if (index === -1) return { kind: 'not-found' };
+    return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(slots, index).map((slot) => recordOf(slot, false)) } };
+}
+
+/**
+ * v1.4.0's featured series for homePhotosOf(): the first `featuredSeriesIds`
+ * entry the source holds, or nothing when that one wouldn't open. Goes in
+ * v1.6.0 with the old route.
+ */
+function firstFeaturedOf(source: HomeSource): LoopEntry | null {
+    const listed = source.listSeries();
+    const series = source.site().featuredSeriesIds.map((seriesId) => listed.find((entry) => entry.id === seriesId)).find((entry) => entry !== undefined);
+    if (!series || !openableSeries(source, series) || seriesParams(series.slug) === null) return null;
+    const members = source.photosOf(series.id);
+    return { series, members, openingIndex: Math.max(0, members.findIndex((photo) => photo.id === series.openingPhotoId)) };
+}
+
+/**
+ * v1.4.0's window, for `/api/catalog/home/photos/<photoId>`: `photoId` and
+ * its neighbors inside the first featured series alone, wrapping, as the
+ * Home that asks for it plays that one series. It stays one release, v1.5.0,
+ * for pages opened before it, and goes in v1.6.0 with the route.
  */
 export function homePhotosOf(source: HomeSource, photoId: unknown): HomePhotosResult {
     if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
-    const featured = featuredOf(source);
+    const featured = firstFeaturedOf(source);
     if (featured === null) return { kind: 'not-found' };
-    const index = featured.members.findIndex((photo) => photo.id === photoId);
+    const slots = featured.members.map((photo) => ({ photo, entry: featured }));
+    const index = slots.findIndex((slot) => slot.photo.id === photoId);
     if (index === -1) return { kind: 'not-found' };
-    return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(featured.members, index).map((photo) => recordOf(photo, false, featured.members)) } };
+    return { kind: 'ok', window: { revisionId: source.revisionId, photos: windowOf(slots, index).map((slot) => recordOf(slot, false)) } };
 }
 
-/** The parts of #13's ActiveCatalog that homeRouteOf() and homePhotosFrom() read. */
+/** The parts of #13's ActiveCatalog that homeRouteOf(), homeSeriesPhotosFrom() and homePhotosFrom() read. */
 export type HomeActiveCatalog<Reason extends string = string> = ScreenCatalog<Pick<CatalogReader, 'revision' | 'site' | 'listSeries' | 'photosOf'>, Reason>;
 
 export type HomeRouteResult<Reason extends string = string> =
@@ -225,10 +330,10 @@ export type HomeRouteResult<Reason extends string = string> =
  * degraded catalog serves the last revision it loaded, read once here, so
  * the whole Home comes from that one revision.
  */
-export function homeRouteOf<Reason extends string>(catalog: HomeActiveCatalog<Reason>, routes: Pick<RouteBuilder, 'seriesHref'>): HomeRouteResult<Reason> {
+export function homeRouteOf<Reason extends string>(catalog: HomeActiveCatalog<Reason>, routes: Pick<RouteBuilder, 'seriesHref'>, pick: HomePick = randomInt): HomeRouteResult<Reason> {
     if (catalog.mode === 'legacy') return { kind: 'legacy' };
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
-    return { kind: 'home', home: publishedHomeOf(homeSourceOf(catalog.reader), routes) };
+    return { kind: 'home', home: publishedHomeOf(homeSourceOf(catalog.reader), routes, pick) };
 }
 
 type HomeReader = Extract<HomeActiveCatalog, { reader: unknown }>['reader'];
@@ -239,12 +344,37 @@ function homeSourceOf(reader: HomeReader): HomeSource {
 
 /**
  * The Home records endpoint's answer for the site as it stands, for
- * `/api/catalog/home/photos/<photoId>?revision=<revisionId>`. A malformed
- * photo ID is not-found and a missing or malformed revision a bad request,
- * both before the catalog is read; legacy mode is not-found; an unavailable
- * catalog is unavailable, for a 503. A revision other than the one being
- * served is revision-changed, so Home replaces its sequence instead of
- * mixing two revisions; anything else is homePhotosOf() on the served one.
+ * `/api/catalog/home/series/<seriesId>/photos/<photoId>?revision=<revisionId>`.
+ * A malformed series or photo ID is not-found and a missing or malformed
+ * revision a bad request, all before the catalog is read; legacy mode is
+ * not-found; an unavailable catalog is unavailable, for a 503. A revision
+ * other than the one being served is revision-changed, whatever the series,
+ * so Home replaces its sequence instead of mixing two revisions; anything
+ * else is homeSeriesPhotosOf() on the served one, which answers only for a
+ * series that is featured and published in it.
+ */
+export async function homeSeriesPhotosFrom<Reason extends string>(
+    load: () => Promise<HomeActiveCatalog<Reason>>,
+    seriesId: unknown,
+    photoId: unknown,
+    revisionId: string | null,
+): Promise<HomePhotosResult | { kind: 'unavailable'; reason: Reason }> {
+    if (typeof seriesId !== 'string' || !SERIES_ID_RE.test(seriesId)) return { kind: 'not-found' };
+    if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return { kind: 'not-found' };
+    if (revisionId === null || !REVISION_ID_RE.test(revisionId)) return { kind: 'bad-request' };
+    const catalog = await load();
+    if (catalog.mode === 'legacy') return { kind: 'not-found' };
+    if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
+    const { reader } = catalog;
+    if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
+    return homeSeriesPhotosOf(homeSourceOf(reader), seriesId, photoId);
+}
+
+/**
+ * v1.4.0's records endpoint's answer, for
+ * `/api/catalog/home/photos/<photoId>?revision=<revisionId>`, with the same
+ * checks in the same order: homePhotosOf() on the served revision. Goes in
+ * v1.6.0 with the route.
  */
 export async function homePhotosFrom<Reason extends string>(
     load: () => Promise<HomeActiveCatalog<Reason>>,

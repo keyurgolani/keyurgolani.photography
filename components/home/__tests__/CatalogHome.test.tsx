@@ -87,6 +87,24 @@ function published({ order = ORDER, opening = 3, revision = 'a', photos }: { ord
 
 const EMPTY: PublishedHome = { catalogRevision: `rev_${'e'.repeat(64)}`, featuredSeries: null };
 
+/** Series B, which plays after A: 7, 8, 9, opening on 8. */
+const ORDER_B = [7, 8, 9];
+const SERIES_B = {
+  id: 'ser_fixture-b',
+  slug: 'fixture-b',
+  href: '/work/fixture-b',
+  title: 'Fixture series B',
+  shortStatement: 'Fixture short statement B.',
+  photoIds: ORDER_B.map(id),
+  openingPhotoId: id(8),
+};
+
+/** A loop of A, then B, with every record from the server unless `photos` says otherwise. */
+function looped({ revision = 'a', photos }: { revision?: string; photos?: HomePhoto[] } = {}): PublishedHome {
+  const home = published({ revision, photos: photos ?? [...ORDER, ...ORDER_B].map((n) => photo(n)) });
+  return { ...home, followingSeries: [SERIES_B] };
+}
+
 async function renderHome(home: PublishedHome = published()) {
   const { default: CatalogHome } = await import('../CatalogHome');
   const view = render(
@@ -572,6 +590,185 @@ describe('CatalogHome', () => {
     });
   });
 
+  describe('a loop of featured series', () => {
+    const heading = () => screen.getByRole('heading', { level: 1 }).textContent;
+    const enter = () => screen.getByRole('link', { name: 'Enter the series' }).getAttribute('href');
+    const status = () => screen.getByRole('status');
+    /** Walks Next `steps` times, loading each photograph Home moves to. */
+    const next = (...ns: number[]) => {
+      for (const n of ns) {
+        click('Next photograph');
+        load(n);
+      }
+    };
+
+    it('opens on the first series with its own chrome, and announces nothing', async () => {
+      await renderHome(looped());
+      load(3);
+      expect([heading(), enter(), position()]).toEqual(['Fixture series A', '/work/fixture-a', '03 / 04']);
+      expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
+      expect(status().textContent).toBe('');
+    });
+
+    it('plays the series through, wrapping to the photographs before its opening one, then crosses into the next series\' opening photograph, and the chrome follows', async () => {
+      await renderHome(looped());
+      load(3);
+      next(0, 4, 1);
+      expect([heading(), enter(), position()]).toEqual(['Fixture series A', '/work/fixture-a', '02 / 04']);
+      next(8);
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
+      expect([heading(), enter(), position()]).toEqual(['Fixture series B', '/work/fixture-b', '02 / 03']);
+      expect(screen.getByText('Fixture short statement B.')).toBeInTheDocument();
+      expect(screen.queryByText('Fixture short statement A.')).toBeNull();
+      next(9, 7);
+      expect([heading(), position()]).toEqual(['Fixture series B', '01 / 03']);
+      // After the last series, back to the first one's opening photograph.
+      next(3);
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      expect([heading(), enter(), position()]).toEqual(['Fixture series A', '/work/fixture-a', '03 / 04']);
+    });
+
+    it('announces the new series\' name once in the live region at each crossing, and nothing on a move inside a series', async () => {
+      await renderHome(looped());
+      load(3);
+      const changes: string[] = [];
+      const observer = new MutationObserver(() => changes.push(status().textContent ?? ''));
+      observer.observe(status(), { subtree: true, childList: true, characterData: true });
+      const settle = () => act(async () => await Promise.resolve());
+      next(0, 4, 1);
+      await settle();
+      expect(changes).toEqual([]);
+      next(8);
+      await settle();
+      expect(status()).toHaveTextContent('Now showing Fixture series B');
+      next(9, 7);
+      await settle();
+      expect(changes).toEqual(['Now showing Fixture series B']);
+      next(3);
+      await settle();
+      expect(changes).toEqual(['Now showing Fixture series B', 'Now showing Fixture series A']);
+      // The announcement is for assistive technology: the heading already shows the name.
+      expect(within(status()).getByText('Now showing Fixture series A')).toHaveClass('sr-only');
+      observer.disconnect();
+    });
+
+    it('steps back across the boundary with Previous, onto the last photograph the series before plays', async () => {
+      await renderHome(looped());
+      load(3);
+      click('Previous photograph');
+      load(7);
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(7));
+      expect([heading(), enter(), position()]).toEqual(['Fixture series B', '/work/fixture-b', '01 / 03']);
+      expect(status()).toHaveTextContent('Now showing Fixture series B');
+      click('Next photograph');
+      expect([heading(), position()]).toEqual(['Fixture series A', '03 / 04']);
+    });
+
+    it('autoplays across the boundary, a full interval per photograph', async () => {
+      await renderHome(looped());
+      load(3);
+      for (const n of [0, 4, 1]) {
+        advance(HOME_AUTO_ADVANCE_MS);
+        load(n);
+      }
+      expect(heading()).toBe('Fixture series A');
+      advance(HOME_AUTO_ADVANCE_MS);
+      load(8);
+      expect([heading(), position()]).toEqual(['Fixture series B', '02 / 03']);
+    });
+
+    it('shows the controls for a loop of one-photograph series', async () => {
+      const one = published({ order: [3], opening: 3, photos: [photo(3), photo(8)] });
+      await renderHome({ ...one, followingSeries: [{ ...SERIES_B, photoIds: [id(8)], openingPhotoId: id(8) }] });
+      load(3);
+      expect(position()).toBe('01 / 01');
+      next(8);
+      expect([heading(), position()]).toEqual(['Fixture series B', '01 / 01']);
+    });
+
+    it('keeps the chrome on the series of the photograph on screen while the next series\' opening loads, then follows it', async () => {
+      await renderHome(looped());
+      load(3);
+      next(0, 4, 1);
+      click('Next photograph');
+      // 8 is still loading, so A's last photograph stays up, and so do A's title, statement and link.
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
+      expect([heading(), enter()]).toEqual(['Fixture series A', '/work/fixture-a']);
+      expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
+      expect(status().textContent).toBe('');
+      // The position follows Previous and Next, as it always has.
+      expect(position()).toBe('02 / 03');
+      load(8);
+      expect([heading(), enter()]).toEqual(['Fixture series B', '/work/fixture-b']);
+      expect(status()).toHaveTextContent('Now showing Fixture series B');
+    });
+
+    it('names the series a failed photograph is in when it isn\'t the one on screen, and announces nothing for it', async () => {
+      await renderHome(looped({ photos: [...ORDER.map((n) => photo(n)), photo(7), photo(8, { image: null }), photo(9)] }));
+      load(3);
+      next(0, 4, 1);
+      click('Next photograph');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
+      expect(heading()).toBe('Fixture series A');
+      expect(status().textContent).toBe('Photograph 02 of 03 in Fixture series B couldn’t load.');
+      // Skip moves on to 9, which loads: now B is on screen, so the chrome and the announcement follow.
+      click('Skip');
+      load(9);
+      expect(heading()).toBe('Fixture series B');
+      expect(status().textContent).toBe('Now showing Fixture series B');
+    });
+
+    it('drops the announcement once a failure note shows, so the region reads the note alone', async () => {
+      await renderHome(looped({ photos: [...ORDER.map((n) => photo(n)), photo(7), photo(8), photo(9, { image: null })] }));
+      load(3);
+      next(0, 4, 1, 8);
+      expect(status().textContent).toBe('Now showing Fixture series B');
+      click('Next photograph');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
+      expect(status().textContent).toBe('Photograph 03 of 03 couldn’t load.');
+      // And it doesn't come back when the note goes.
+      click('Next photograph');
+      load(7);
+      expect(status().textContent).toBe('');
+    });
+
+    it('starts over on the new pick when the same revision renders again with another series first', async () => {
+      const view = await renderHome(looped());
+      load(3);
+      next(0);
+      const { featuredSeries, ...rest } = looped();
+      const { records, ...seriesA } = featuredSeries!;
+      view.rerender({ ...rest, featuredSeries: { ...SERIES_B, records }, followingSeries: [seriesA] });
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
+      expect([heading(), position()]).toEqual(['Fixture series B', '02 / 03']);
+      // The new opening photograph is the one the head preloads and the sequence opens on.
+      next(9, 7, 3);
+      expect(heading()).toBe('Fixture series A');
+    });
+
+    it('asks the loop route for the series each window is in, crossing into the next one', async () => {
+      const REVISION = `rev_${'a'.repeat(64)}`;
+      const href = (series: string, n: number) => `/api/catalog/home/series/${series}/photos/${id(n)}?revision=${REVISION}`;
+      const windows: Record<string, number[]> = { [href('ser_fixture-a', 1)]: [0, 1, 2], [href('ser_fixture-a', 2)]: [1, 2, 7], [href('ser_fixture-b', 7)]: [2, 7, 8] };
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => ({ ok: true, status: 200, json: async () => ({ revisionId: REVISION, photos: (windows[String(url)] ?? []).map((n) => photo(n)) }) }) as unknown as Response);
+      const flush = () =>
+        act(async () => {
+          for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+        });
+      const home = published({ order: [0, 1, 2], opening: 0, photos: [photo(9), photo(0), photo(1)] });
+      await renderHome({ ...home, followingSeries: [{ ...SERIES_B, openingPhotoId: id(7) }] });
+      await flush();
+      load(0);
+      click('Next photograph');
+      await flush();
+      load(1);
+      click('Next photograph');
+      await flush();
+      const live = fetch.mock.calls.filter(([, init]) => !(init as { signal: AbortSignal }).signal.aborted).map(([url]) => url);
+      expect(live).toEqual([href('ser_fixture-a', 1), href('ser_fixture-a', 2), href('ser_fixture-b', 7)]);
+    });
+  });
+
   describe('the empty state', () => {
     it('shows the navigation and a heading, with no intro, no photograph, and the chrome held up', async () => {
       await renderHome(EMPTY);
@@ -594,7 +791,7 @@ describe('CatalogHome', () => {
     const SIX = [0, 1, 2, 3, 4, 5];
     const narrowed = (revision = 'a') => published({ order: SIX, opening: 2, revision, photos: [photo(1), photo(2), photo(3)] });
     const REVISION = `rev_${'a'.repeat(64)}`;
-    const href = (n: number) => `/api/catalog/home/photos/${id(n)}?revision=${REVISION}`;
+    const href = (n: number) => `/api/catalog/home/series/ser_fixture-a/photos/${id(n)}?revision=${REVISION}`;
     type Init = { signal: AbortSignal };
     const ok = (ns: number[], revisionId = REVISION) => ({ ok: true, status: 200, json: async () => ({ revisionId, photos: ns.map((n) => photo(n)) }) }) as unknown as Response;
     const status = (code: number) => ({ ok: false, status: code, json: async () => ({}) }) as unknown as Response;

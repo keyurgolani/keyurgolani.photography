@@ -18,6 +18,12 @@ interface HeroRevealProps {
   onPhaseChange?: (phase: HeroRevealPhase) => void;
   /** About's portrait from the site config folder, or null when there's no usable one. */
   portrait?: AboutPortraitView | null;
+  /**
+   * Names the copy Home's story shows: the series on screen. When it changes
+   * the copy's elements and boxes change with it, so the badge's place and
+   * the copy's top are measured again on the new copy.
+   */
+  copyKey?: string;
 }
 
 /** At least two ripple cycles play before the reveal. */
@@ -63,7 +69,7 @@ const landingTransform = (p: number) =>
  * badge in place, and reduced motion fades it in there once loading ends.
  * With no usable portrait the intro plays without one and there's no badge.
  */
-export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portrait = null }: HeroRevealProps) {
+export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portrait = null, copyKey }: HeroRevealProps) {
   const reducedMotion = usePrefersReducedMotion();
   // Settled is terminal: once there, no preference change replays the intro.
   const [phase, setPhase] = useState<HeroRevealPhase>(() => (isLoading && !reducedMotion ? 'loading' : 'settled'));
@@ -266,7 +272,8 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   const handleUnusable = useCallback(() => setPortraitFailed(true), []);
 
   // The badge's place, from the chrome's own boxes, measured before the first paint and again whenever Home, the
-  // nav or the story changes size. The chrome is in the document while it's hidden, so its boxes are there to measure.
+  // nav or the story changes size, or the story's copy changes (`copyKey`). The chrome is in the document while it's
+  // hidden, so its boxes are there to measure.
   const portraitRef = useRef<HTMLDivElement>(null);
   const [placeKind, setPlaceKind] = useState<BadgePlace['kind'] | null>(null);
   useLayoutEffect(() => {
@@ -295,14 +302,15 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     observer.observe(root);
     for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
     return () => observer.disconnect();
-  }, [showPortrait]);
+  }, [showPortrait, copyKey]);
 
   // The copy's top, for the phone wash (HomeChrome.module.css), with or without a portrait. It's measured against the
   // scrim that paints it ([data-home-vignette], inside the stage's inset) and written there, again whenever Home, the
   // story or any of its copy changes size, and once the fonts are in, since a title that re-wraps in its own face
-  // changes no box the observer watches (M2). When the chrome scrolls, as large text can make it, the copy moves
-  // under a fixed scrim, so the hold covers the whole print instead (M1). With the text enlarged Home's root says so
-  // too, and Black's wash then follows the copy as the other themes' does (spec §10); at default text it doesn't.
+  // changes no box the observer watches (M2). New copy (`copyKey`) measures again and observes its own elements. When
+  // the chrome scrolls, as large text can make it, the copy moves under a fixed scrim, so the hold covers the whole
+  // print instead (M1). With the text enlarged Home's root says so too, and Black's wash then follows the copy as the
+  // other themes' does (spec §10); at default text it doesn't.
   useLayoutEffect(() => {
     const story = document.querySelector('[data-chrome-region="story"]');
     const root = story?.closest('main');
@@ -335,7 +343,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       scrim.style.removeProperty('--home-copy-top');
       root.removeAttribute('data-text-enlarged');
     };
-  }, []);
+  }, [copyKey]);
 
   if (phase === 'settled' && !showPortrait) return null;
 
