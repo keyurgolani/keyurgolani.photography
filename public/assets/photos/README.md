@@ -1,34 +1,31 @@
 # Photos Directory
 
-This directory is where gallery photos should be placed.
+This directory is the photo library: the originals the site's photos are made from.
 
 ## Usage
 
 1. Add your photos (JPG, JPEG, PNG, WEBP) to this directory
-2. The gallery loads them through `/api/photos` once the watcher has recorded them in the data root and written all seven of their derivatives. Until `photos:migrate --apply` has initialized the data root, `/api/photos` answers 503 and the gallery is empty. The original files are never served.
-3. Photos are sorted by date taken (newest first), extracted from EXIF metadata
+2. Once `photos:migrate --apply` has initialized the data root, the watcher gives each photo its ID and builds its `/media` set there, and the curator's Inbox shows it. A photo reaches the site only through a publish that places it in a series: visitors see only the `/media` sets the active catalog revision holds.
+3. Nothing in this folder is served. `/assets/photos` answers 404 for the originals and for the legacy derivatives the watcher still writes, and `/_next/image` refuses them with 400. The `/api/photos` list that once read them was removed with the legacy Gallery (#13's slice E): check the site with `/api/ready`, which names the revision being served.
 
 ## Replacing and Removing Photos
 
-- Saving over a photo under the same name regenerates its derivatives. The old ones keep serving until all seven new ones are written. `/_next/image` can serve the old version for up to a day, and a browser that cached it under the old `immutable` header may keep it for up to a year. Once a catalog revision is live, the site serves none of these files: `/assets/photos` answers 404 and `/_next/image` refuses it.
+- Saving over a photo under the same name regenerates its derivatives, once all seven new ones are written. The site serves none of these files: `/assets/photos` answers 404 and `/_next/image` refuses it.
 - Accepted risk: a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this.
-- Before the launch, deleting a photo hides it from the gallery once the watcher's next pass records it missing. Nothing deletes its derivative files, which stay reachable at their URLs, so restoring the file brings it back with nothing to rebuild. After the launch, deleting the file hides nothing: the active catalog revision keeps listing the photo, and `/media` keeps serving it.
-- To take a photo down:
+- Deleting a photo hides nothing: the active catalog revision keeps listing the photo, and `/media` keeps serving it. A takedown is the archive and publish below.
+- To clear a photo's legacy derivatives out of this folder, which only tidies it, since nothing serves them:
   1. Stop `image-watcher`, so a job already running can't write its derivatives back, then delete the photo.
   2. Delete its seven derivatives and `cache/set-sources/<name>.json`, where `<name>` is the photo's file name without its extension, such as `landscape`. Do the same for each earlier name the photo had, which the listing below finds.
-  3. Purge Next's image cache inside the `web` image, since its files belong to the containers' user, then start the stack.
-  4. Check that `/api/photos` no longer lists the photo. Once a catalog revision is active, `/media` keeps serving it until a publish leaves it out, as below.
+  3. Start `image-watcher` again.
 
 ```bash
 docker compose -f docker-compose.prod.yml stop image-watcher
 # Delete the photo, then, with its name for <name>:
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && rm -f -- thumbnails/"$1".webp medium/"$1".webp optimized/"$1".webp thumbnails-avif/"$1".avif medium-avif/"$1".avif optimized-avif/"$1".avif lqip/"$1".txt cache/set-sources/"$1".json' sh '<name>'
-docker compose -f docker-compose.prod.yml stop web
-docker compose -f docker-compose.prod.yml run --rm --no-deps web sh -c 'rm -rf /app/.next/cache/images/*'
-docker compose -f docker-compose.prod.yml start web image-watcher
+docker compose -f docker-compose.prod.yml start image-watcher
 ```
 
-- After the launch, once a catalog revision is active, a takedown is archive, then publish, run as `node dist/scripts/photos.mjs <command>` in `image-watcher` the same way. Deleting, moving, or renaming a file here takes nothing down: the active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox, which closes if the same file comes back. To take the photo down, move its file out of this folder and run `curation archive` on its `missing` item, which takes it out of every series in the draft. A publish then needs a new cover where it was the cover (`sequence cover`), and a chapter it alone made up removed first (`sequence chapter remove`), or archive refuses. The remove clears it as the opening photograph, so the series has none until `sequence opening` picks another. Where it was a series' only photograph, hide the series (set `visibility` to `"hidden"` on a host copy and save it with `edit <seriesId> --file <path> --expect-version <N>`, as the root README's "Curating the catalog" shows), and take a hidden series out of the featured list with `series featured <seriesId>...`, keeping at least one published. Run `validate`, check that `publish --dry-run --actor <name>` lists the photo under `Removed`, then publish. Check that `GET /api/ready` answers `"state":"ok"` with the new `revisionId`: `degraded` means `web` still serves the revision before. Purge the photo's `/media` URLs from any CDN, since `/media` sends `max-age=31536000, immutable` and a browser can keep the photo for up to a year. Archive deletes nothing. If the publish stops on errors in other records, the photo stays public. As a last resort, delete `assets/<photoId>/` in the data root inside `image-watcher`, so `/media` 404s it until a publish leaves it out. The project README's "Take a photo down after the launch" has the steps.
+- A takedown is archive, then publish, run as `node dist/scripts/photos.mjs <command>` in `image-watcher` the same way. Deleting, moving, or renaming a file here takes nothing down: the active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox, which closes if the same file comes back. To take the photo down, move its file out of this folder and run `curation archive` on its `missing` item, which takes it out of every series in the draft. A publish then needs a new cover where it was the cover (`sequence cover`), and a chapter it alone made up removed first (`sequence chapter remove`), or archive refuses. The remove clears it as the opening photograph, so the series has none until `sequence opening` picks another. Where it was a series' only photograph, hide the series (set `visibility` to `"hidden"` on a host copy and save it with `edit <seriesId> --file <path> --expect-version <N>`, as the root README's "Curating the catalog" shows), and take a hidden series out of the featured list with `series featured <seriesId>...`, keeping at least one published. Run `validate`, check that `publish --dry-run --actor <name>` lists the photo under `Removed`, then publish. Check that `GET /api/ready` answers `"state":"ok"` with the new `revisionId`: `degraded` means `web` still serves the revision before. Purge the photo's `/media` URLs from any CDN, since `/media` sends `max-age=31536000, immutable` and a browser can keep the photo for up to a year. Archive deletes nothing. If the publish stops on errors in other records, the photo stays public. As a last resort, delete `assets/<photoId>/` in the data root inside `image-watcher`, so `/media` 404s it until a publish leaves it out. The project README's "Take a photo down" has the steps.
 - To list legacy derivatives whose photo is gone, such as a renamed photo's earlier names, print each base name in `optimized/` that no photo in this folder has. Only `.jpg`, `.jpeg`, `.png`, and `.webp` count, in any case, so a sidecar such as `IMG_1.xmp` doesn't hide a deleted photo's old images:
 
 ```bash
