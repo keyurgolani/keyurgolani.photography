@@ -7,19 +7,24 @@
 #    answers the catalog's unavailable state: / is #21's error page, and
 #    /api/ready answers 503 with not-published, before the migration and
 #    after it. /api/photos is a 404 and /gallery a 308 to /work (#13's slice
-#    E). The watcher writes every legacy derivative, for the photos it starts
-#    with and for one added while it runs, and stays healthy, and none of
-#    them serves, directly or through /_next/image.
+#    E). The library is mounted read-only at /data/library in image-watcher
+#    and not at all in web (v1.7.0). The library starts with a v1.6 host's
+#    legacy derivatives in it, none of which serves, directly or through
+#    /_next/image, and the watcher stays healthy and writes nothing there:
+#    every file and folder in the library is the same at the end of the run
+#    as at its start, but for the one photo the run adds.
 # 2. The migration runbook in docs/data-root.md works as uid 1001: with the
 #    watcher stopped, a dry run and an apply in image-watcher initialize the
-#    data root. Once the watcher is back it builds every /media set and keeps
-#    its heartbeat fresh.
+#    data root. Once the watcher is back it builds every /media set, each with
+#    its manifest.json, for the photos it starts with and for one added while
+#    it runs, and keeps its heartbeat fresh, with legacyDerivatives: false.
 # 3. /media serves none of those sets before the first activation, #6's Home
 #    records endpoint answers 503 with not-published for each photo, an
 #    original source 404s, and the photo IDs, /media URLs, and set digests
 #    stay the same once the containers are recreated.
-# 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher says the identity step is
-#    off, writes the legacy derivatives, and writes no registry.
+# 4. With PHOTOGRAPHY_DATA_DIR unset, the watcher exits 1 and writes nothing,
+#    and with PHOTOGRAPHY_LIBRARY_DIR unset, as on v1.6's compose file, it
+#    exits 1 instead of reading the library at its old path.
 # 5. About shows the portrait in ./site-config, read-only, at a content-hashed
 #    URL that changes when the file is swapped, with no restart, and its name
 #    panel once the file is gone. The image itself holds no site config.
@@ -89,39 +94,54 @@ cleanup() {
   # The containers write the derivative folders and the data root as uid
   # 1001. Remove them with the image under test, so cleanup never pulls anything.
   docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" \
-    -rf /t/public /t/portfolio-data /t/unset-library /t/secrets
+    -rf /t/public /t/portfolio-data /t/unset-library /t/old-path-data /t/secrets
   rm -rf "$TMP"
   exit "$status"
 }
 trap cleanup EXIT
 
-# Prints the derivatives still missing under <library> for each photo name given.
-missing_outputs() {
-  local library=$1 base output
+# The seven legacy basename derivatives of <base>, as a v1.6 watcher wrote them.
+LEGACY_OUTPUTS=(
+  thumbnails/%s.webp medium/%s.webp optimized/%s.webp
+  thumbnails-avif/%s.avif medium-avif/%s.avif optimized-avif/%s.avif
+  lqip/%s.txt
+)
+
+# Writes all seven legacy derivatives of each name into <library>, and a
+# cache/ file, the way a host's library still holds them after v1.6. Any
+# non-empty bytes do: nothing reads them, and the checks are that nothing
+# serves them and nothing in the stack changes them.
+plant_legacy() {
+  local library=$1 base pattern output
   shift
   for base in "$@"; do
-    for output in \
-      "thumbnails/$base.webp" "medium/$base.webp" "optimized/$base.webp" \
-      "thumbnails-avif/$base.avif" "medium-avif/$base.avif" "optimized-avif/$base.avif" \
-      "lqip/$base.txt"; do
-      [ -s "$library/$output" ] || echo "$output"
+    for pattern in "${LEGACY_OUTPUTS[@]}"; do
+      # shellcheck disable=SC2059 # the pattern is ours, with one %s
+      output=$(printf "$pattern" "$base")
+      mkdir -p "$library/$(dirname "$output")"
+      printf 'legacy %s from v1.6\n' "$output" >"$library/$output"
     done
   done
+  mkdir -p "$library/cache/set-sources"
+  printf '{}\n' >"$library/cache/upright-v1.json"
 }
 
-# Waits up to OUTPUT_TIMEOUT seconds for all seven derivatives of each name.
-# The watcher's exit code says nothing about per-file errors, so check files.
-wait_for_outputs() {
-  local deadline missing
-  deadline=$((SECONDS + OUTPUT_TIMEOUT))
-  while missing=$(missing_outputs "$PHOTOS" "$@") && [ -n "$missing" ]; do
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "Still missing after ${OUTPUT_TIMEOUT}s:"
-      echo "$missing"
-      fail "The watcher did not write every derivative for: $*."
-    fi
-    sleep 2
-  done
+# Prints every file and folder under <library>, sorted: its path, its type,
+# and for a file its size, mtime, and SHA-256. Two equal listings mean nothing
+# was added, removed, rewritten, or touched.
+library_listing() {
+  (
+    cd "$1" || exit 1
+    find . -mindepth 1 -printf '%P %y %s %T@\n' | LC_ALL=C sort
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+  )
+}
+
+# Fails unless <library> lists exactly as <listing file> does.
+require_library_unchanged() {
+  local library=$1 before=$2 context=$3
+  library_listing "$library" >"$TMP/listing-now.txt" || fail "Could not list $library."
+  diff -u "$before" "$TMP/listing-now.txt" || fail "$context: the library changed, and nothing in the stack may write it."
 }
 
 # A crash would hide behind restart: always, so require zero restarts.
@@ -227,10 +247,12 @@ NOT_PUBLISHED='. == {mode: "catalog", state: "unavailable", revisionId: null, re
 
 # 1. A throwaway library and an empty data root. Both containers run as uid
 #    1001, and the override is the smoke test's only change to the Compose file.
+#    The library holds a v1.6 host's legacy derivatives too, and anyone on the
+#    host may write it, so only the read-only mounts can stop the stack
+#    writing it.
 mkdir -p "$PHOTOS" "$DATA" "$UNSET" "$SITE_CONFIG/about"
 cp ci/fixtures/library/*.jpg "$PHOTOS/"
 cp ci/fixtures/library/*.jpg "$UNSET/"
-chmod -R a+rwX "$PHOTOS" "$DATA" "$UNSET"
 # About's portrait: a generated stand-in carrying EXIF with GPS and a camera
 # serial, and XMP, made with the image's own Sharp, so step 3b's check that
 # none of it is served can fail. The folder is writable by anyone on the host,
@@ -266,6 +288,11 @@ fixtures=()
 for fixture in ci/fixtures/library/*.jpg; do
   fixtures+=("$(basename "$fixture" .jpg)")
 done
+plant_legacy "$PHOTOS" "${fixtures[@]}"
+chmod -R a+rwX "$PHOTOS" "$DATA" "$UNSET"
+library_listing "$PHOTOS" >"$TMP/listing-start.txt" || fail "Could not list the library."
+grep -q "^optimized/${fixtures[0]}.webp f " "$TMP/listing-start.txt" ||
+  fail "The library listing names no planted legacy derivative, so the checks on it would prove nothing."
 cat >"$OVERRIDE" <<YAML
 services:
   web:
@@ -443,13 +470,31 @@ unset SMOKE_PASSPHRASE
 compose rm --stop --force curator
 echo "web 404s the curator paths, and curator sent /curation to its login, served the login with its headers, refused another Host, an Origin-less POST and a sessionless handler, signed in only with the passphrase, ended the session at logout, and answered 503 without its session secret."
 
-# 6. The startup scan writes all seven derivatives for every fixture, and the
-#    watcher stays up.
-wait_for_outputs "${fixtures[@]}"
+# 6. The library is the owner's originals, and since v1.7.0 nothing writes it.
+#    image-watcher mounts it read-only at /data/library, with
+#    PHOTOGRAPHY_LIBRARY_DIR there, and can't write it even though the host
+#    folder lets anyone. web mounts no library at all, and its own
+#    public/assets/photos holds only what the image ships. The watcher, up
+#    since step 2, has written nothing in it: no derivative, no folder.
 require_watcher_running
-echo "The watcher wrote all seven derivatives for: ${fixtures[*]}."
-# None of them serves (#13's slice E): each legacy basename derivative 404s
-# with nothing cached, and /_next/image refuses it with its own 400.
+[ "$(compose exec -T image-watcher printenv PHOTOGRAPHY_LIBRARY_DIR)" = /data/library ] ||
+  fail "image-watcher does not set PHOTOGRAPHY_LIBRARY_DIR=/data/library."
+compose exec -T image-watcher test -f "/data/library/${fixtures[0]}.jpg" || fail "image-watcher has no /data/library/${fixtures[0]}.jpg: the library isn't mounted there."
+if compose exec -T image-watcher sh -c 'touch /data/library/written' 2>/dev/null; then
+  fail "image-watcher could write /data/library, which it must mount read-only."
+fi
+if compose exec -T image-watcher sh -c 'touch /data/library/optimized/written' 2>/dev/null; then
+  fail "image-watcher could write a legacy derivative folder in /data/library, which it must mount read-only."
+fi
+# shellcheck disable=SC2016 # web's shell expands it
+compose exec -T web sh -c '[ ! -e /data/library ] && [ -z "${PHOTOGRAPHY_LIBRARY_DIR:-}" ]' ||
+  fail "web has /data/library or sets PHOTOGRAPHY_LIBRARY_DIR, but it reads nothing in the library."
+web_photos=$(compose exec -T web sh -c 'ls -A /app/public/assets/photos | LC_ALL=C sort | tr "\n" " "') || fail "Could not list web's /app/public/assets/photos."
+[ "$web_photos" = ".gitkeep README.md " ] || fail "web's /app/public/assets/photos holds '$web_photos', expected only the image's .gitkeep and README.md."
+require_library_unchanged "$PHOTOS" "$TMP/listing-start.txt" "Before the migration"
+echo "image-watcher reads the library read-only at /data/library, web mounts none, and the watcher wrote nothing in it."
+# None of the legacy derivatives serves (#13's slice E): each 404s with
+# nothing cached, and /_next/image refuses it with its own 400.
 for base in "${fixtures[@]}"; do
   url=/assets/photos/optimized/$base.webp
   expect_code "$url" 404
@@ -458,12 +503,6 @@ for base in "${fixtures[@]}"; do
   [ "$(cat "$TMP/body.txt")" = '"url" parameter is not allowed' ] || fail "GET /_next/image for $url answered 400 with '$(cat "$TMP/body.txt")'."
 done
 echo "Every legacy derivative returned 404, and 400 through /_next/image."
-
-# 7. Watch mode picks up a photo added while it runs.
-cp "ci/fixtures/library/${fixtures[0]}.jpg" "$PHOTOS/ci-added.jpg"
-wait_for_outputs ci-added
-require_watcher_running
-echo "The watcher picked up ci-added.jpg and wrote all seven derivatives without restarting."
 
 # 8. The migration runbook: stop the watcher, dry-run, apply the printed plan,
 #    all as image-watcher's uid 1001.
@@ -485,28 +524,67 @@ expect_json /api/ready 503 no-store "$NOT_PUBLISHED"
 expect_code /api/photos 404
 echo "After the migration GET /api/ready still returned 503 with not-published, and /api/photos 404."
 
-# 9. Back up, the watcher builds every set, and its heartbeat stays fresh.
+# Waits up to OUTPUT_TIMEOUT seconds until photos identity status counts
+# <photos> photos, all built, then fails on a failed set or a hold.
+wait_for_sets() {
+  local deadline
+  deadline=$((SECONDS + OUTPUT_TIMEOUT))
+  until identity_status >"$TMP/status.json" && jq -e --argjson photos "$1" '
+      .dataRoot.state == "ready" and .photos.total == $photos and .pendingJobs == 0' "$TMP/status.json" >/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      cat "$TMP/status.json"
+      fail "The watcher did not build a /media set for each of $1 photos within ${OUTPUT_TIMEOUT}s."
+    fi
+    sleep 2
+  done
+  jq -e '.failedProfiles == [] and .holds == []' "$TMP/status.json" >/dev/null ||
+    fail "The photos have failed sets or holds: $(jq -c '{failedProfiles, holds}' "$TMP/status.json")."
+}
+
+# Fails unless each set in <sets>, media_sets' lines, has its #10
+# manifest.json in the data root, naming the w800 WebP the line's URL serves.
+require_manifests() {
+  local path photo url set
+  while read -r path photo url; do
+    set=${url#/media/}
+    set=${set%/w800.webp}
+    in_watcher cat "/data/portfolio/assets/$set/manifest.json" </dev/null >"$TMP/manifest.json" ||
+      fail "The set of $path, $set, has no manifest.json."
+    jq -e '.variants.w800.webp.sha256 | test("^[0-9a-f]{64}$")' "$TMP/manifest.json" >/dev/null ||
+      fail "The manifest.json of $path's set records no w800 WebP: $(cat "$TMP/manifest.json")"
+  done <"$1"
+}
+
+# 9. Back up, the watcher builds every set, each with its manifest.json, and
+#    its heartbeat stays fresh and says it writes no legacy derivatives.
 compose up -d --pull never --wait --wait-timeout 180 image-watcher
-deadline=$((SECONDS + OUTPUT_TIMEOUT))
-until identity_status >"$TMP/status.json" && jq -e --argjson photos "$((${#fixtures[@]} + 1))" '
-    .dataRoot.state == "ready" and .photos.total == $photos and .pendingJobs == 0' "$TMP/status.json" >/dev/null; do
-  if [ "$SECONDS" -ge "$deadline" ]; then
-    cat "$TMP/status.json"
-    fail "The watcher did not build every /media set within ${OUTPUT_TIMEOUT}s."
-  fi
-  sleep 2
-done
-jq -e '.failedProfiles == [] and .holds == []' "$TMP/status.json" >/dev/null ||
-  fail "The migrated photos have failed sets or holds: $(jq -c '{failedProfiles, holds}' "$TMP/status.json")."
+wait_for_sets "${#fixtures[@]}"
+media_sets "$TMP/sets.txt"
+require_manifests "$TMP/sets.txt"
 age=$(jq -r '.watcher.ageSeconds // empty' "$TMP/status.json")
 [ -n "$age" ] && [ "$age" -lt 120 ] || fail "The watcher's heartbeat is ${age:-missing} s old, expected under 120 s."
+in_watcher cat /data/portfolio/status/watcher.json | jq -e '.legacyDerivatives == false' >/dev/null ||
+  fail "The watcher's heartbeat does not say legacyDerivatives: false."
 require_watcher_running
-echo "The watcher built every /media set, and its heartbeat is ${age} s old."
+require_library_unchanged "$PHOTOS" "$TMP/listing-start.txt" "After the watcher built every set"
+echo "The watcher built every /media set with its manifest.json, its heartbeat is ${age} s old with legacyDerivatives: false, and the library is unchanged."
+
+# 9b. Watch mode picks up a photo added while it runs: it gets a set and its
+#     manifest.json, and still nothing else in the library changes.
+cp "ci/fixtures/library/${fixtures[0]}.jpg" "$PHOTOS/ci-added.jpg"
+chmod a+r "$PHOTOS/ci-added.jpg"
+library_listing "$PHOTOS" >"$TMP/listing-added.txt" || fail "Could not list the library."
+wait_for_sets "$((${#fixtures[@]} + 1))"
+media_sets "$TMP/sets.txt"
+grep -q '^ci-added\.jpg ' "$TMP/sets.txt" || fail "The watcher built no set for ci-added.jpg: $(cat "$TMP/sets.txt")"
+require_manifests "$TMP/sets.txt"
+require_watcher_running
+require_library_unchanged "$PHOTOS" "$TMP/listing-added.txt" "After the watcher picked up ci-added.jpg"
+echo "The watcher picked up ci-added.jpg and built its set and manifest.json without restarting or writing the library."
 
 # 10. Nothing is active yet, so /media serves none of the sets, #6's Home
 #     records endpoint answers 503 with not-published for each photo, and an
 #     original 404s.
-media_sets "$TMP/sets.txt"
 [ "$(wc -l <"$TMP/sets.txt")" -eq "$((${#fixtures[@]} + 1))" ] || fail "Expected a set per photo, got: $(cat "$TMP/sets.txt")"
 no_revision=rev_$(printf '0%.0s' {1..64})
 while read -r path photo url; do
@@ -532,22 +610,47 @@ if ! diff -u "$TMP/before.txt" "$TMP/after.txt"; then
   fail "The photo IDs, /media URLs, or set digests changed when the containers were recreated."
 fi
 require_watcher_running
-echo "After the containers were recreated, every photo kept its ID, /media URL, and set."
+require_library_unchanged "$PHOTOS" "$TMP/listing-added.txt" "After the containers were recreated"
+echo "After the containers were recreated, every photo kept its ID, /media URL, and set, and the library was unchanged."
 
-# 12. With PHOTOGRAPHY_DATA_DIR unset, the image's watcher runs only the legacy
-#     step. The image sets no default, so nothing names a data root.
-docker run --rm --pull never --user 1001:1001 -e PHOTOGRAPHY_LIBRARY_DIR=/library -v "$UNSET:/library" "$IMAGE" sh -c '
-  node dist/scripts/imageWatcher.mjs --once || exit 1
-  if [ -e /app/portfolio-data ] || [ -n "$(ls -A /data/portfolio)" ]; then
-    echo "The watcher wrote a data root."
-    exit 1
-  fi' >"$TMP/unset.log" 2>&1 || { cat "$TMP/unset.log"; fail "The watcher with PHOTOGRAPHY_DATA_DIR unset failed."; }
-grep -q 'Identity step off: the data root is unset' "$TMP/unset.log" || {
+# 12. With PHOTOGRAPHY_DATA_DIR unset, the image's watcher has nothing to do,
+#     since it writes nothing but the data root: it exits 1, names the
+#     variable, and writes nothing, in the library or anywhere else. The image
+#     sets no default, so nothing names a data root. The library is mounted
+#     read-write here, so only the watcher itself keeps it unchanged.
+library_listing "$UNSET" >"$TMP/listing-unset.txt" || fail "Could not list $UNSET."
+set +e
+docker run --rm --pull never --user 1001:1001 -e PHOTOGRAPHY_LIBRARY_DIR=/data/library -v "$UNSET:/data/library" "$IMAGE" \
+  node dist/scripts/imageWatcher.mjs --once >"$TMP/unset.log" 2>&1
+code=$?
+set -e
+[ "$code" = 1 ] || { cat "$TMP/unset.log"; fail "The watcher with PHOTOGRAPHY_DATA_DIR unset exited $code, expected 1."; }
+grep -q 'PHOTOGRAPHY_DATA_DIR is not set, and the watcher writes nothing but the data root' "$TMP/unset.log" || {
   cat "$TMP/unset.log"
-  fail "The watcher with PHOTOGRAPHY_DATA_DIR unset did not log that the identity step is off."
+  fail "The watcher with PHOTOGRAPHY_DATA_DIR unset did not say why it exited."
 }
-missing=$(missing_outputs "$UNSET" "${fixtures[@]}")
-[ -z "$missing" ] || fail "With PHOTOGRAPHY_DATA_DIR unset, the watcher did not write: $missing"
-registries=$(find "$UNSET" \( -name registry.json -o -path '*/identity/registry' \))
-[ -z "$registries" ] || fail "With PHOTOGRAPHY_DATA_DIR unset, the watcher wrote $registries."
-echo "With PHOTOGRAPHY_DATA_DIR unset, the watcher logged that the identity step is off, wrote the legacy derivatives, and no registry."
+require_library_unchanged "$UNSET" "$TMP/listing-unset.txt" "With PHOTOGRAPHY_DATA_DIR unset"
+echo "With PHOTOGRAPHY_DATA_DIR unset, the watcher exited 1, said why, and wrote nothing."
+
+# 13. A v1.7.0 image on v1.6's compose file: the library at its old path,
+#     /app/public/assets/photos, and no PHOTOGRAPHY_LIBRARY_DIR. The watcher
+#     and the CLI exit 1 naming the variable, and never read the old path,
+#     so no pass sees an empty or wrong folder and writes nothing.
+mkdir "$TMP/old-path-data"
+chmod a+rwX "$TMP/old-path-data"
+for command in "node dist/scripts/imageWatcher.mjs --once" "node dist/scripts/photos.mjs migrate --dry-run"; do
+  set +e
+  # shellcheck disable=SC2086 # the command is ours, split on purpose
+  docker run --rm --pull never --user 1001:1001 -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+    -v "$UNSET:/app/public/assets/photos" -v "$TMP/old-path-data:/data/portfolio" "$IMAGE" $command >"$TMP/old-path.log" 2>&1
+  code=$?
+  set -e
+  [ "$code" = 1 ] || { cat "$TMP/old-path.log"; fail "'$command' with PHOTOGRAPHY_LIBRARY_DIR unset exited $code, expected 1."; }
+  grep -q 'PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library' "$TMP/old-path.log" || {
+    cat "$TMP/old-path.log"
+    fail "'$command' with PHOTOGRAPHY_LIBRARY_DIR unset did not name the variable."
+  }
+done
+[ -z "$(ls -A "$TMP/old-path-data")" ] || fail "With PHOTOGRAPHY_LIBRARY_DIR unset, something wrote the data root: $(ls -A "$TMP/old-path-data")"
+require_library_unchanged "$UNSET" "$TMP/listing-unset.txt" "With PHOTOGRAPHY_LIBRARY_DIR unset"
+echo "With PHOTOGRAPHY_LIBRARY_DIR unset and the library at its old path, the watcher and photos.mjs exited 1 naming the variable, and wrote nothing."
