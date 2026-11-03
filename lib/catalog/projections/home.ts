@@ -198,7 +198,9 @@ export function publishedHomeOf(source: HomeSource, routes: Pick<RouteBuilder, '
  * plays once, at its first place, and one that holds a photograph an earlier
  * one already plays is skipped, so no photograph is in the loop twice.
  * refs.featured and refs.membership refuse both, so only a hand-built
- * revision reaches either.
+ * revision reaches either. refs.membership is a render gate, so no publish
+ * and no preview ever holds a photograph in two featured series; the skip
+ * only keeps a hand-built revision's loop from playing one twice.
  */
 function loopOf(source: HomeSource): LoopEntry[] {
     const listed = source.listSeries();

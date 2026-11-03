@@ -1,11 +1,13 @@
 // @vitest-environment node
 import { randomInt } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
-import { homeStartPick, TEST_HOME_PICK_ENV } from '../homePick';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { homeStartPick, resetHomeStartPickForTests, TEST_HOME_PICK_ENV } from '../homePick';
 
 // The test-only start pick the e2e harness scripts. Production never sets it.
 
 describe('homeStartPick', () => {
+    beforeEach(() => resetHomeStartPickForTests());
+
     it('is crypto.randomInt when the test-only variable is unset, empty, or malformed', () => {
         for (const value of [undefined, '', '  ', 'a', '1,', ',1', '1,,2', '-1', '1.5', '1 2', '0x1', '1234567']) {
             expect(homeStartPick({ [TEST_HOME_PICK_ENV]: value }), String(value)).toBe(randomInt);
@@ -28,5 +30,12 @@ describe('homeStartPick', () => {
         const a = { [TEST_HOME_PICK_ENV]: '1,2' };
         const b = { [TEST_HOME_PICK_ENV]: ' 0,1,2 ' };
         expect([homeStartPick(a)(3), homeStartPick(b)(3), homeStartPick(a)(3), homeStartPick(b)(3)]).toEqual([1, 0, 2, 1]);
+    });
+
+    it('starts every script over after the test-only reset, so no test inherits another\'s place', () => {
+        const env = { [TEST_HOME_PICK_ENV]: '1,2' };
+        expect(homeStartPick(env)(3)).toBe(1);
+        resetHomeStartPickForTests();
+        expect([homeStartPick(env)(3), homeStartPick(env)(3)]).toEqual([1, 2]);
     });
 });

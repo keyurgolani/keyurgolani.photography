@@ -40,6 +40,7 @@ vi.mock('@/components/home/CatalogHome', () => ({
 }));
 
 const { default: HomePage, dynamic } = await import('../page');
+const { resetHomeStartPickForTests } = await import('@/lib/catalog/homePick');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 let catalog: TestCatalog;
@@ -108,6 +109,7 @@ describe('app/page, the cutover gate', () => {
         content.site.featuredSeriesIds = content.series.map((series) => series.id);
         active.catalog = served('ok', content);
         vi.stubEnv('PHOTOGRAPHY_TEST_HOME_PICK', '1,0,1');
+        resetHomeStartPickForTests();
         try {
             const starts: [string | undefined, string[] | undefined][] = [];
             for (let load = 0; load < 3; load++) {

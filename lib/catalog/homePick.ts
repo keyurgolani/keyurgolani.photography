@@ -43,3 +43,8 @@ export function homeStartPick(env: Record<string, string | undefined> = process.
         return indexes[at] % count;
     };
 }
+
+/** TEST ONLY: forgets every script's place, so a test's first render takes its script's first index. */
+export function resetHomeStartPickForTests(): void {
+    cursors().clear();
+}
