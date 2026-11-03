@@ -1,17 +1,18 @@
 'use client';
 
 import Link from 'next/link';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { V110_LANE } from '@/components/badgePlace';
 import HeroReveal from '@/components/HeroReveal';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
 import LoadingState from '@/components/site/LoadingState';
 import SiteNav from '@/components/site/SiteNav';
-import type { HomeSeries, PublishedHome } from '@/lib/catalog/projections/home';
+import type { HomeLoopSeries, HomeSeries, PublishedHome } from '@/lib/catalog/projections/home';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { hasCompletedHomeHeroIntro, markHomeHeroIntroCompleted } from '@/utils/homeHeroCache';
 import CatalogSequence from './CatalogSequence';
 import HomeChromeController, { HomeChrome, HomeVignette } from './HomeChromeController';
+import { homeLoopOf } from './homeLoop';
 import HomeSequenceControls from './HomeSequenceControls';
 import { useHomeChrome } from './useHomeChrome';
 import { useHomePlayback } from './useHomePlayback';
@@ -23,10 +24,11 @@ import styles from './CatalogHome.module.css';
  * Home after the cutover, from one revision's PublishedHome and the later
  * records useHomeRecords() asks that same revision for (#6), and nothing
  * else: no /api/photos, no legacy photo list, no shuffle. The featured
- * series plays in its authored order from its opening photograph inside
- * #18's chrome, with #2's playback as the only timer. Nothing featured is
- * the empty state, with no intro and the chrome held up by #18's no-photo
- * hold. Every prop ships to visitors, so it takes only the projection and
+ * series play as one loop (v1.5.0), starting on the one the server picked:
+ * each in its authored order from its opening photograph, then the next,
+ * inside #18's chrome, which names the series on screen, with #2's playback
+ * as the only timer. Nothing featured is the empty state, with no intro and
+ * the chrome held up by #18's no-photo hold. Every prop ships to visitors, so it takes only the projection and
  * About's portrait view, whose URLs and alt About already shows.
  */
 export default function CatalogHome({ home, portrait = null }: { home: PublishedHome; portrait?: AboutPortraitView | null }) {
@@ -42,7 +44,7 @@ export default function CatalogHome({ home, portrait = null }: { home: Published
   return (
     <HomeChromeController initialLoading={!introCompleted} initialIntro={introCompleted ? 'settled' : 'loading'}>
       {/* A new revision starts over on its own opening photograph, so no screen mixes two revisions. */}
-      <FeaturedHome key={home.catalogRevision} revisionId={home.catalogRevision} series={series} portrait={portrait} />
+      <FeaturedHome key={home.catalogRevision} revisionId={home.catalogRevision} opening={series} following={home.followingSeries} portrait={portrait} />
     </HomeChromeController>
   );
 }
@@ -68,6 +70,9 @@ function EmptyHome() {
 /** At least two digits, as HomeSequenceControls shows the position. */
 const pad = (value: number) => String(value).padStart(2, '0');
 
+/** One featured series: nothing follows it. */
+const NONE: readonly HomeLoopSeries[] = [];
+
 const withoutId = (set: ReadonlySet<string>, id: string) => {
   if (!set.has(id)) return set;
   const next = new Set(set);
@@ -75,7 +80,16 @@ const withoutId = (set: ReadonlySet<string>, id: string) => {
   return next;
 };
 
-function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; series: HomeSeries; portrait: AboutPortraitView | null }) {
+interface FeaturedHomeProps {
+  revisionId: string;
+  /** The series Home opens on, with the server's records. */
+  opening: HomeSeries;
+  /** The rest of the loop, in the order they play after it. */
+  following?: readonly HomeLoopSeries[];
+  portrait: AboutPortraitView | null;
+}
+
+function FeaturedHome({ revisionId, opening, following = NONE, portrait }: FeaturedHomeProps) {
   const { reportPhoto, reportIntro, loading } = useHomeChrome();
   const reducedMotion = usePrefersReducedMotion();
   const [isSettled, setIsSettled] = useState(hasCompletedHomeHeroIntro);
@@ -83,14 +97,30 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const [attempts, setAttempts] = useState<Readonly<Record<string, number>>>({});
 
-  const photoIds = series.photoIds;
-  const opening = Math.max(0, photoIds.indexOf(series.openingPhotoId));
-  const playback = useHomePlayback({ photoIds, ready: shown && isSettled, initialIndex: opening });
+  // Every featured series in play order, from the opening photograph, so the sequence starts at its first position.
+  const loop = useMemo(() => homeLoopOf([opening, ...following]), [opening, following]);
+  const photoIds = loop.photoIds;
+  const seriesIds = useMemo(() => new Map([...loop.seriesOf].map(([photoId, entry]) => [photoId, entry.id] as const)), [loop]);
+  const playback = useHomePlayback({ photoIds, ready: shown && isSettled, initialIndex: 0 });
   const pointerHandlers = usePlaybackHolds(playback.setHold);
   // The server sent three records; the rest arrive as Home moves, from the revision it rendered (#6).
-  const { records: photos, failed: recordFailed, retry: retryRecord } = useHomeRecords({ revisionId, photoIds, initial: series.records, index: playback.index });
+  const { records: photos, failed: recordFailed, retry: retryRecord } = useHomeRecords({ revisionId, photoIds, seriesOf: seriesIds, initial: opening.records, index: playback.index });
 
   const currentId = photoIds[playback.index];
+  // The chrome names the series of the photograph Home is on, and counts its place in that series alone.
+  const series = (currentId !== undefined && loop.seriesOf.get(currentId)) || opening;
+  const position = currentId === undefined ? 0 : Math.max(0, series.photoIds.indexOf(currentId));
+  const count = series.photoIds.length;
+
+  // Crossing into another series says its name once in the live region. The one Home opens on isn't announced: the
+  // page's own heading names it.
+  const [announcedId, setAnnouncedId] = useState(series.id);
+  const [announcement, setAnnouncement] = useState<string | null>(null);
+  if (announcedId !== series.id) {
+    setAnnouncedId(series.id);
+    setAnnouncement(`Now showing ${series.title}`);
+  }
+
   const current = currentId === undefined ? undefined : photos.get(currentId);
   // A record still on its way isn't a failure: the photograph before it stays on screen meanwhile.
   const currentRecordFailed = currentId !== undefined && recordFailed.has(currentId);
@@ -128,12 +158,11 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
   }, [currentId, currentRecordFailed, retryRecord]);
 
   const handleSettled = useCallback(() => setIsSettled(true), []);
-  const count = photoIds.length;
 
   return (
     <div className="contents" data-playback={playback.playbackState}>
       {/* The intro is Home's loading state on a first visit with motion, and leaves About's portrait as the badge. */}
-      <HeroReveal isLoading={loading} onSettled={handleSettled} onPhaseChange={reportIntro} portrait={portrait} />
+      <HeroReveal isLoading={loading} onSettled={handleSettled} onPhaseChange={reportIntro} portrait={portrait} copyKey={series.id} />
 
       {/* This layer takes the pointer instead of the photograph, so a drag or a long press never picks up the image. */}
       <div className="absolute inset-0 z-0 [&>*]:pointer-events-none">
@@ -141,7 +170,7 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
           photoIds={photoIds}
           photos={photos}
           index={playback.index}
-          openingId={series.openingPhotoId}
+          openingId={opening.openingPhotoId}
           playbackState={playback.playbackState}
           attempts={attempts}
           onImageReady={handleImageReady}
@@ -176,10 +205,11 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
         }
         sequence={
           <div className={styles.sequence}>
-            <div role="status" className={styles.failure}>
+            <div role="status" className={styles.failure} data-failed={currentFailed ? '' : undefined}>
+              {announcement !== null && <p className="sr-only">{announcement}</p>}
               {currentFailed && (
                 <p>
-                  Photograph {pad(playback.index + 1)} of {pad(count)} couldn&rsquo;t load.
+                  Photograph {pad(position + 1)} of {pad(count)} couldn&rsquo;t load.
                 </p>
               )}
             </div>
@@ -190,7 +220,7 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
                     Retry
                   </button>
                 )}
-                {count > 1 && (
+                {photoIds.length > 1 && (
                   <button type="button" className={styles.action} onClick={playback.next}>
                     Skip
                   </button>
@@ -198,8 +228,9 @@ function FeaturedHome({ revisionId, series, portrait }: { revisionId: string; se
               </div>
             )}
             <HomeSequenceControls
-              index={playback.index}
+              index={position}
               count={count}
+              steps={photoIds.length}
               wantsPlay={playback.wantsPlay}
               onPrev={playback.prev}
               onNext={playback.next}

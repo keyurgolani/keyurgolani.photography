@@ -116,8 +116,9 @@
   gap: 0.5rem;
 }
 
-/* Over the same scrim as the controls, so the text holds 4.5:1 over a white photograph. */
-.failure:not(:empty) {
+/* Over the same scrim as the controls, so the text holds 4.5:1 over a white photograph. Only while the note shows:
+   the live region also holds the series announcement, which takes no box. */
+.failure[data-failed] {
   padding: 0.5rem 0.875rem;
   border-radius: var(--gah-radius);
   background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
