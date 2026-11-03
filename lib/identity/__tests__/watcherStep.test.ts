@@ -145,7 +145,7 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(profileStates(registry)).toEqual(['ready', 'ready']);
         expect(registry.pendingFacts).toEqual([]);
         expect(Object.keys(assetStore(s.data.root)).filter((file) => file.endsWith('manifest.json'))).toHaveLength(2);
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW) });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW), legacyDerivatives: false });
         expect(s.lines).toContain(`[identity] Identity step on: data root ${s.data.root}.`);
         expect(s.lines.filter((line) => line.includes('"event":"identity-fact"'))).toHaveLength(2);
         expect(s.requests).toEqual([]);
@@ -162,35 +162,33 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(assetStore(s.data.root)).toEqual(store);
     });
 
-    it('reads the library only after the legacy step has finished its queued jobs', async () => {
-        const legacy = deferred();
-        const s = await setup({ options: { legacyIdle: () => legacy.promise } });
+    it('reads the library only once beforePass resolves, and the healthcheck never times that wait', async () => {
+        const gate = deferred();
+        const s = await setup({ options: { beforePass: () => gate.promise } });
 
         const report = s.step.pass('startup');
         await new Promise((resolve) => setTimeout(resolve, 200));
         expect(fs.existsSync(s.data.file('identity', 'registry'))).toBe(false);
-        // A first start's legacy backlog can take hours, so the wait for it
-        // isn't part of the pass the healthcheck times.
         await s.step.check();
         expect(s.heartbeat()).toMatchObject({ passStartedAt: null });
 
-        legacy.resolve();
+        gate.resolve();
         expect((await report).status).toBe('committed');
     });
 
     it('never overlaps another: requests made while one runs share one pass after it', async () => {
-        const legacy = deferred();
-        let legacyWaits = 0;
-        const s = await setup({ options: { legacyIdle: () => { legacyWaits++; return legacy.promise; } } });
+        const gate = deferred();
+        let gateWaits = 0;
+        const s = await setup({ options: { beforePass: () => { gateWaits++; return gate.promise; } } });
 
         const first = s.step.pass('startup');
         const second = s.step.pass('event');
         const third = s.step.pass('event');
         expect(third).toBe(second);
-        legacy.resolve();
+        gate.resolve();
         await Promise.all([first, second]);
 
-        expect(legacyWaits).toBe(2);
+        expect(gateWaits).toBe(2);
     });
 
     it.each([
@@ -310,12 +308,12 @@ describe('an identity pass', { timeout: 60_000 }, () => {
     });
 
     it('after stop() finishes the pass under way without reading the library, and starts no new one', async () => {
-        const legacy = deferred();
-        const s = await setup({ options: { legacyIdle: () => legacy.promise } });
+        const gate = deferred();
+        const s = await setup({ options: { beforePass: () => gate.promise } });
 
         const report = s.step.pass('startup');
         s.step.stop();
-        legacy.resolve();
+        gate.resolve();
 
         expect(await report).toEqual({ status: 'stopped' });
         expect(await s.step.pass('event')).toEqual({ status: 'stopped' });
@@ -360,7 +358,7 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
         now += 30_000;
         await s.step.check();
 
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW + 30_000) });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW + 30_000), legacyDerivatives: false });
         expect(s.requests).toEqual([]);
     });
 
@@ -647,11 +645,17 @@ describe('runIdentityOnce', { timeout: 60_000 }, () => {
         expect(o.lines).toContain('[identity] The registry stayed busy, so the identity step did not run. Run it again.');
     });
 
-    it('returns 0 and logs one line while the data root is off', async () => {
+    it('returns 1 and logs one line while the data root is off, since nothing was processed', async () => {
         const o = await once({ state: 'missing' });
-        expect(await o.run()).toBe(0);
-        expect(offLines(o.lines)).toHaveLength(1);
+        expect(await o.run()).toBe(1);
+        expect(offLines(o.lines)).toEqual([expect.stringMatching(/^\[identity\] Identity step off: the data root is unavailable \(it does not exist\)\. Nothing is processed until it is ready\.$/)]);
         expect(fs.existsSync(o.data.root)).toBe(false);
+    });
+
+    it('returns 1 before the migration, on an uninitialized data root, and writes only the heartbeat there', async () => {
+        const o = await once({ state: 'uninitialized' });
+        expect(await o.run()).toBe(1);
+        expect(JSON.parse(fs.readFileSync(watcherStatusFile(o.data.root), 'utf8'))).toMatchObject({ lastPassResult: 'data-root-uninitialized', legacyDerivatives: false });
     });
 
     it('waits for a file still being written, and builds its set before it returns', async () => {
@@ -666,7 +670,7 @@ describe('runIdentityOnce', { timeout: 60_000 }, () => {
 
     it('returns 1 when a file is still changing after its last pass', async () => {
         let passes = 0;
-        const o = await once({ photos: 0, pass: { clock: Date.now }, sleep: async () => undefined, maxPasses: 2, legacyIdle: async () => { passes++; } });
+        const o = await once({ photos: 0, pass: { clock: Date.now }, sleep: async () => undefined, maxPasses: 2, beforePass: async () => { passes++; } });
         fs.writeFileSync(o.lib.file('fresh.jpg'), images[0]);
 
         expect(await o.run()).toBe(1);

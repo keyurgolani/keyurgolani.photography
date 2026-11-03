@@ -74,6 +74,12 @@ export interface TempLibrary {
     hashes(relativePaths: string[]): Record<string, string>;
     /** Every `.tmp` file under the root, relative to it. */
     tempFiles(): string[];
+    /**
+     * Every entry under the root, by path relative to it: `dir` for a folder,
+     * else the file's SHA-256, size and mtime, so a test can tell that nothing
+     * was added, removed, rewritten or touched.
+     */
+    snapshot(): Record<string, string>;
     /** Delete the temp root, then restore PHOTOGRAPHY_LIBRARY_DIR. */
     cleanup(): Promise<void>;
 }
@@ -122,9 +128,20 @@ export async function createTempLibrary({ fixtures = 'none', missingRoot = false
                 .filter((relativePath) => relativePath.endsWith('.tmp'))
                 .sort();
         },
+        snapshot() {
+            const result: Record<string, string> = {};
+            for (const relativePath of fs.readdirSync(root, { recursive: true, encoding: 'utf8' }).sort()) {
+                const absolute = file(relativePath);
+                const stat = fs.lstatSync(absolute);
+                result[relativePath] = stat.isDirectory()
+                    ? 'dir'
+                    : `${createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')} ${stat.size} ${stat.mtimeMs}`;
+            }
+            return result;
+        },
         async cleanup() {
             // Restored only after the delete, so a job still running meanwhile never
-            // resolves the default library under public/
+            // reads a library another test points PHOTOGRAPHY_LIBRARY_DIR at
             try {
                 await fs.promises.rm(parent, { recursive: true, force: true });
             } finally {
