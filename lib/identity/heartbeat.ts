@@ -9,7 +9,7 @@ import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
  * What the watcher's last pass did: committed a reconcile, found the registry
  * busy, failed, or found the data root not ready, by its state.
  */
-export type PassResult = 'committed' | 'locked' | 'failed' | `data-root-${Exclude<DataRootState, 'ready'>}`;
+export type PassResult = 'committed' | 'locked' | 'failed' | 'library-empty' | `data-root-${Exclude<DataRootState, 'ready'>}`;
 
 /** `status/watcher.json`, the watcher's sign of life for its healthcheck and `photos:identity status`. */
 export interface WatcherHeartbeat {
@@ -52,7 +52,7 @@ export async function writeWatcherHeartbeat(root: string, heartbeat: WatcherHear
  * heartbeat predates the field), or why it says nothing.
  */
 export type HeartbeatAge =
-    | { found: true; heartbeatAt: string; ageMs: number; passRunningMs: number | null }
+    | { found: true; heartbeatAt: string; ageMs: number; passRunningMs: number | null; libraryEmpty: boolean }
     | { found: false; reason: string };
 
 /** Read the heartbeat under `root`. Never throws. */
@@ -73,7 +73,8 @@ export async function watcherHeartbeatAge(root: string, clock: () => number = Da
         return { found: false, reason: `${file} has an invalid passStartedAt` };
     }
     const now = clock();
-    return { found: true, heartbeatAt: at, ageMs: now - Date.parse(at), passRunningMs: typeof started === 'string' ? now - Date.parse(started) : null };
+    const libraryEmpty = isRecord(heartbeat) && heartbeat.lastPassResult === 'library-empty';
+    return { found: true, heartbeatAt: at, ageMs: now - Date.parse(at), passRunningMs: typeof started === 'string' ? now - Date.parse(started) : null, libraryEmpty };
 }
 
 /** The watcher's healthcheck passes while its heartbeat is at most this old, four of the 30 s beats. */
@@ -88,7 +89,8 @@ export const WATCHER_PASS_LIMIT_MS = 30 * 60_000;
  * after this clock, and no identity pass has run longer than `passLimitMs`.
  * The watcher writes the heartbeat every 30 s while the data root exists and
  * is writable, initialized or not, so an unset, missing, or unwritable data
- * root reads as unhealthy too.
+ * root reads as unhealthy too. So does a last pass that refused an empty
+ * library while the registry has present photos, such as an unmounted NAS.
  */
 export async function checkWatcherHealth(
     { clock = Date.now, maxAgeMs = WATCHER_HEALTHY_WITHIN_MS, passLimitMs = WATCHER_PASS_LIMIT_MS }: { clock?: () => number; maxAgeMs?: number; passLimitMs?: number } = {},
@@ -103,6 +105,9 @@ export async function checkWatcherHealth(
     if (age.ageMs < -maxAgeMs) return { healthy: false, message: `The last heartbeat is stamped ${seconds} s after this clock, at ${age.heartbeatAt}.` };
     if (age.passRunningMs !== null && age.passRunningMs > passLimitMs) {
         return { healthy: false, message: `The identity pass under way has run for ${Math.round(age.passRunningMs / 60_000)} min, longer than ${Math.round(passLimitMs / 60_000)} min.` };
+    }
+    if (age.libraryEmpty) {
+        return { healthy: false, message: 'The last pass found no photo in the library while the registry has present ones, so it marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.' };
     }
     return { healthy: true, message: `The last heartbeat was ${age.ageMs < 0 ? 0 : seconds} s ago.` };
 }

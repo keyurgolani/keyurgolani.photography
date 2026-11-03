@@ -49,7 +49,7 @@ import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
-import { dataRoot, libraryRoot, LibraryRootUnsetError } from '../lib/storage/config';
+import { dataRoot, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { attachWatcher, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
 
 /** This script the way it was started: the bundle in the image, or the source under tsx. */
@@ -115,7 +115,7 @@ function requireRoots(): string {
     try {
         root = libraryRoot();
     } catch (error) {
-        if (!(error instanceof LibraryRootUnsetError)) throw error;
+        if (!(error instanceof LibraryRootConfigError)) throw error;
         console.error(`[ImageWatcher] ${error.message} Nothing was processed.`);
         process.exit(1);
     }

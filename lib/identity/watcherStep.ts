@@ -1,5 +1,5 @@
 import os from 'node:os';
-import { dataRootStatus, type DataRootState, type DataRootStatus } from '../storage/config';
+import { dataRootStatus, libraryRoot, type DataRootState, type DataRootStatus } from '../storage/config';
 import { readPendingDecisions } from './decisions';
 import { writeWatcherHeartbeat, type PassResult } from './heartbeat';
 import { jsonLogSink, runReconcilePass, type FactSink, type PassOptions } from './pass';
@@ -20,12 +20,13 @@ import { createWorker, onceExitCode, pendingJobs, summarizeResults, WorkerStartE
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
 
 /** Why a pass was asked for. */
-export type PassReason = 'startup' | 'event' | 'timer' | 'decisions' | 'facts' | 'pending-sets' | 'settling' | 'locked' | 'worker';
+export type PassReason = 'startup' | 'event' | 'timer' | 'decisions' | 'facts' | 'pending-sets' | 'settling' | 'locked' | 'worker' | 'library-empty';
 
 export type PassReport =
     | { status: 'committed'; facts: number; queued: number; retryAfterMs: number | null }
     | { status: 'off'; state: Exclude<DataRootState, 'ready'> }
     | { status: 'locked' }
+    | { status: 'refused'; reason: 'library-empty'; present: number }
     | { status: 'failed'; error: string }
     | { status: 'stopped' };
 
@@ -80,6 +81,9 @@ export interface IdentityStep {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/** How soon the watcher looks again after a pass found the library empty. */
+export const LIBRARY_EMPTY_RETRY_MS = 60_000;
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
@@ -178,6 +182,13 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
                 lastPassResult = 'locked';
                 requestPass('locked');
                 return { status: 'locked' };
+            }
+            if (outcome.reason === 'library-empty') {
+                // An unmounted or emptied library: committing would mark every photo missing. Look again soon, marking nothing.
+                logger.error(`[identity] The library at ${libraryRoot()} has no photos, but the registry has ${outcome.present} present. It looks unmounted or emptied, so this pass marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.`);
+                lastPassResult = 'library-empty';
+                requestPass('library-empty', LIBRARY_EMPTY_RETRY_MS);
+                return { status: 'refused', reason: 'library-empty', present: outcome.present };
             }
             // The data root changed since this pass looked, or its registry comes from a newer build. Never ready here.
             const state = outcome.state as Exclude<DataRootState, 'ready'>;

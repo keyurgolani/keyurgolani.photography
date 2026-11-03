@@ -43,12 +43,25 @@ export interface DataRootStatus {
     detail?: string;
 }
 
+/** PHOTOGRAPHY_LIBRARY_DIR doesn't name a library this process may read: unset, relative, or served. */
+export class LibraryRootConfigError extends Error {
+    constructor(message: string, readonly code: 'LIBRARY_ROOT_UNSET' | 'LIBRARY_ROOT_INVALID') {
+        super(message);
+        this.name = new.target.name;
+    }
+}
+
 /** PHOTOGRAPHY_LIBRARY_DIR is unset, so nothing can say where the photo library is. */
-export class LibraryRootUnsetError extends Error {
-    readonly code = 'LIBRARY_ROOT_UNSET';
+export class LibraryRootUnsetError extends LibraryRootConfigError {
     constructor() {
-        super('PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library in both compose files.');
-        this.name = 'LibraryRootUnsetError';
+        super('PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library in both compose files.', 'LIBRARY_ROOT_UNSET');
+    }
+}
+
+/** PHOTOGRAPHY_LIBRARY_DIR is relative, or sits in the app's public folder, where Next would serve the originals. */
+export class LibraryRootInvalidError extends LibraryRootConfigError {
+    constructor(message: string) {
+        super(message, 'LIBRARY_ROOT_INVALID');
     }
 }
 
@@ -72,11 +85,22 @@ export function configuredLibraryRoot(): string | null {
 /**
  * The photo library, for the callers that read it: the watcher, the identity
  * pass and builds, and the CLI. Throws LibraryRootUnsetError when
- * PHOTOGRAPHY_LIBRARY_DIR is unset, so it never falls back to another folder.
+ * PHOTOGRAPHY_LIBRARY_DIR is unset, so it never falls back to another folder,
+ * and LibraryRootInvalidError when it's relative, which would depend on the
+ * working directory, or at or inside the app's public folder (/app/public in
+ * the image), symlinks resolved, where Next would serve the originals.
  */
 export function libraryRoot(): string {
-    const root = configuredLibraryRoot();
-    if (root === null) throw new LibraryRootUnsetError();
+    const configured = process.env.PHOTOGRAPHY_LIBRARY_DIR;
+    if (!configured) throw new LibraryRootUnsetError();
+    if (!path.isAbsolute(configured)) {
+        throw new LibraryRootInvalidError(`PHOTOGRAPHY_LIBRARY_DIR must be an absolute path, such as /data/library, not ${configured}.`);
+    }
+    const root = path.resolve(/*turbopackIgnore: true*/ configured);
+    const served = path.join(/*turbopackIgnore: true*/ process.cwd(), 'public');
+    if (isInside(realpathLoose(root), realpathLoose(served))) {
+        throw new LibraryRootInvalidError(`PHOTOGRAPHY_LIBRARY_DIR is inside the app's public folder, where Next serves files: ${root}. Mount the library outside it, at /data/library.`);
+    }
     return root;
 }
 

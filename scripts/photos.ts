@@ -247,7 +247,7 @@ import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
 import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
-import { configuredLibraryRoot, dataRoot, dataRootStatus, libraryRoot, LibraryRootUnsetError } from '../lib/storage/config';
+import { configuredLibraryRoot, dataRoot, dataRootStatus, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { isInside } from '../lib/storage/fsx';
 
 /** This CLI the way it was started: the bundle in the image, or the source under tsx. */
@@ -399,6 +399,10 @@ async function decide(type: DecisionInput['type'], args: string[]): Promise<numb
         if (outcome.reason === 'locked') {
             console.log(`[photos] Saved ${file}. The registry is busy, so the watcher applies it on its next pass.`);
             return 0;
+        }
+        if (outcome.reason === 'library-empty') {
+            console.error(`[photos] The library has no photos, but the registry has ${outcome.present} present, so the pass marked nothing missing and applied nothing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
+            return 1;
         }
         console.error(`[photos] The data root is ${outcome.state}${outcome.detail ? `: ${outcome.detail}` : ''}. The decision is saved in ${file}.`);
         return 1;
@@ -648,7 +652,7 @@ async function main(argv: string[]): Promise<number> {
             console.error(`[photos] ${error.message}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. Nothing was written.`);
             return 1;
         }
-        if (error instanceof LibraryRootUnsetError) {
+        if (error instanceof LibraryRootConfigError) {
             console.error(`[photos] ${error.message} Nothing was written.`);
             return 1;
         }
