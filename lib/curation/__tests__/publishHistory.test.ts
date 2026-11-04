@@ -299,6 +299,9 @@ describe('the impact list', () => {
         expect(unknown?.rules[0].label).toBe("Accept a style today's checks flag");
         for (const view of [two, unknown]) for (const rule of view?.rules ?? []) expect(rule.label).not.toContain(rule.id);
         expect(editorialView([], [], names.seriesName, 4)).toBeUndefined();
+        // Two rules the copy doesn't know get distinct names: their series, or their place in the list.
+        const strange = editorialView([{ code: 'tone.mood', record: { kind: 'site', id: 'site' } }, { code: 'tone.grain', record: { kind: 'site', id: 'site' } }, { code: 'tone.hue', record: { kind: 'series', id: 'ser_s' } }], ['tone.grain', 'tone.hue', 'tone.mood'], names.seriesName, 4);
+        expect(strange?.rules.map((rule) => rule.label)).toEqual(["Accept a style today's checks flag, 1 of 2", "Accept Salt Roads' style, which today's checks flag", "Accept a style today's checks flag, 2 of 2"]);
         expect(editorialWords([contrast, format], ['accent.format'], names.seriesName)).toEqual(["Harbor Nights' accent color: it isn't a color the site can show"]);
     });
 });

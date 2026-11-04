@@ -166,4 +166,23 @@ describe('the restore dialog with editorial errors', () => {
         expect(sent.getAll('accept')).toEqual(['accent.contrast', 'accent.format']);
         expect(sent.get('reason')).toBe('Bring the accents back.');
     });
+
+    it('reports the boxes and the reason on the same press, and keeps focus on the first unchecked box while they are checked', async () => {
+        const post = vi.fn(async (previous: RestoreState) => previous);
+        const dialog = openDialog(post);
+        const submit = within(dialog).getByRole('button', { name: 'Restore revision 4' });
+        const [contrast, format] = within(dialog).getAllByRole('checkbox');
+        fireEvent.click(submit);
+        expect(within(dialog).getByText('Accept each one to restore it, or cancel.')).toBeInTheDocument();
+        expect(within(dialog).getByText("Say why in a few words. It's saved with the entry.")).toBeInTheDocument();
+        await waitFor(() => expect(contrast).toHaveFocus());
+        fireEvent.click(contrast);
+        // A press on a box focuses it, then checks it. Checking the last one moves nothing: focus stays where the owner is.
+        format.focus();
+        fireEvent.click(format);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(format).toHaveFocus();
+        expect(within(dialog).getByLabelText('Why are you restoring it?')).toHaveAttribute('aria-invalid', 'true');
+        expect(post).not.toHaveBeenCalled();
+    });
 });

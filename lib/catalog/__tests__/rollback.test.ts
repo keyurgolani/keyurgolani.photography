@@ -10,7 +10,7 @@ import { historyState, knownGood, readHistory } from '../history';
 import { historyLines, rollbackArgs, runHistoryCommand, runRollbackCommand, type RollbackArgs, type RollbackIo } from '../history-cli';
 import { CATALOG_LEASE_MS, publish, type PublishOptions, type PublishResult } from '../publish';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile, revisionFilePath } from '../repository';
-import { planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackResult } from '../rollback';
+import { acceptanceCheck, planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackResult } from '../rollback';
 import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { Activation, ActivePointer, AuthoredPhoto } from '../types';
@@ -321,8 +321,22 @@ describe('photos rollback', { timeout: 60_000 }, () => {
         expect(stored(root)).toEqual(files);
     });
 
-    /** Everything a refused rollback must leave as it was: the catalog (activations, pointer, revisions) and the working layer. */
-    const untouched = (root: string) => ({ catalog: folderBytes(catalogPaths(root).dir), authored: folderBytes(authoredPaths(root).dir) });
+    /** Everything a refused rollback must leave as it was: the catalog (activations, pointer, revisions), the working layer, and the locks. */
+    const untouched = (root: string) => ({ catalog: folderBytes(catalogPaths(root).dir), authored: folderBytes(authoredPaths(root).dir), locks: folderBytes(path.join(root, 'locks')) });
+
+    it('refuses anything unaccepted even on a plan with no target, and calls a READY plan without one an error', () => {
+        const revisionId = `rev_${'a'.repeat(64)}`;
+        const ready = { outcome: 'READY' as const, message: '', target: null, active: null, impact: null, seriesTitles: {}, issues: [], blocking: [], editorial: ['accent.contrast'] };
+        expect(acceptanceCheck(ready, [], revisionId)).toEqual({
+            outcome: 'ACCEPTANCE_REQUIRED',
+            unaccepted: ['accent.contrast'],
+            message: `${revisionId} has editorial errors a rollback brings back only when you accept each one: accent.contrast. Run it again with --accept accent.contrast. Nothing was rolled back.`,
+        });
+        expect(acceptanceCheck(ready, ['accent.contrast'], revisionId)).toMatchObject({ outcome: 'STORAGE_ERROR', message: expect.stringContaining('names no target') });
+        const target = { revisionId, revisionNumber: 4 };
+        expect(acceptanceCheck({ ...ready, target }, ['accent.contrast'], revisionId)).toBeNull();
+        expect(acceptanceCheck({ ...ready, target }, [], revisionId)).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', message: expect.stringMatching(/^Revision 4 \(rev_a+\) has editorial errors/) });
+    });
 
     it('refuses a target with editorial errors nobody accepted, ACCEPTANCE_REQUIRED, exit 1, writing nothing', async () => {
         const { root, rollTo, one, two, events } = await twoRevisions({ seed: 216 });

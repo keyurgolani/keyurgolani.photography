@@ -171,8 +171,10 @@ describe('photos rollback --accept', () => {
     });
 
     it('refuses an ID that is no rule, and an integrity rule, as usage errors', () => {
-        // Every registered editorial rule, sorted: #16's review.* rules are editorial too, though they never fire on a stored revision.
-        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toMatch(/^--accept takes an editorial rule ID \(accent\.contrast, accent\.format(, [a-z.-]+)*\), not contrast\.$/);
+        // Only the rules a rollback can flag: #16's review.* rules are editorial too, but never fire on a stored revision.
+        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format), not contrast.');
+        expect(usage(() => rollbackArgs([...base, '--accept=']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
+        expect(usage(() => rollbackArgs([...base, '--accept', 'accent.contrast', '--accept', ' ']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
         expect(usage(() => rollbackArgs([...base, '--accept', 'assets.size']))).toBe('assets.size is an integrity rule, which no rollback can accept.');
         expect(usage(() => rollbackArgs([...base, '--reason', 'again']))).toBe('--reason is given more than once. Give it once.');
     });
@@ -193,6 +195,13 @@ describe('photos rollback --accept', () => {
         expect(errors).toEqual([`[photos] ACCEPTANCE_REQUIRED: Revision 3 (${three}) has editorial errors a rollback brings back only when you accept each one: accent.contrast. Run it again with --accept accent.contrast. Nothing was rolled back.`]);
         expect(await listActivations(root)).toHaveLength(before);
         expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+
+        // Without a terminal, the hint to run it again keeps the accepts it was given, so it works as printed.
+        const headless: string[] = [];
+        const ask = { ...args, accept: ['accent.contrast', 'accent.format'] };
+        expect(await runRollbackCommand(root, ask, { out: () => undefined, err: (line) => headless.push(line), confirm: null, logger: quiet })).toBe(3);
+        expect(headless.at(-1)).toBe(`[photos] CONFIRMATION_REQUIRED: A rollback needs confirmation. Run it in a terminal to answer, or run it again with --yes --expect-active ${two} --accept accent.contrast --accept accent.format to roll back exactly this. --expect-active stops it if another revision goes live first.`);
+        expect(await listActivations(root)).toHaveLength(before);
 
         const accepted: string[] = [];
         expect(await runRollbackCommand(root, { ...args, accept: ['accent.contrast'] }, { out: (line) => accepted.push(line), err: (line) => accepted.push(line), confirm, logger: quiet })).toBe(0);
