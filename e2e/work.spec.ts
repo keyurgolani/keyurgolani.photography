@@ -8,7 +8,6 @@ import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { checkSurface } from './support/surface';
 import { expect, test } from './support/test';
-import { expectReflow } from './support/reflow';
 import { expectSingleTapActivates } from './support/touch';
 
 // Work (#3) on a published catalog, on both #1 projects: authored order and
@@ -353,11 +352,19 @@ const clippedText = (page: Page) =>
 test.describe('at 320 px with 200% text', () => {
     test.skip(({ isMobile }) => isMobile, 'It sets its own size. The desktop project covers it.');
 
-    test('the entries reflow, and no title, statement, or count is clipped or cut short', async ({ page }) => {
+    // An entry, cover and text, is taller than a 320 by 640 window at 200%, so it scrolls: what has to hold is its
+    // width, its neighbours, and its text.
+    test('the entries reflow into one column, clear of each other, and no title, statement, or count is clipped or cut short', async ({ page }) => {
         await openWork(page);
-        await expectReflow(entries(page));
         await page.setViewportSize({ width: 320, height: 640 });
         await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+        const boxes = await entries(page).evaluateAll((links) => links.map((link) => link.getBoundingClientRect().toJSON() as DOMRect));
+        const width = await page.evaluate(() => document.documentElement.clientWidth);
+        for (const [index, box] of boxes.entries()) {
+            expect(box.left, `entry ${index + 1}'s left edge`).toBeGreaterThanOrEqual(-0.5);
+            expect(box.right, `entry ${index + 1}'s right edge`).toBeLessThanOrEqual(width + 0.5);
+            if (index > 0) expect(box.top, `entry ${index + 1} starts below entry ${index}`).toBeGreaterThanOrEqual(boxes[index - 1].bottom - 0.5);
+        }
         expect(await clippedText(page)).toEqual([]);
         // Synthetic: a long title and statement, with a 40-character unbroken token, swapped into the live page.
         const first = entry(page, PUBLISHED[0].slug);
