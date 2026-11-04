@@ -311,6 +311,13 @@ verify_published --json >"$TMP/verify.json" || verify_code=$?
 jq -e '.outcome == "VERIFIED" and .exitCode == 0 and .recorded == true' "$TMP/verify.json" >/dev/null ||
   fail "photos verify --json printed $(cat "$TMP/verify.json")."
 [ -s "$PUBLISHED/status/verify.json" ] || fail "photos verify wrote no status/verify.json."
+for printed in "$TMP/verify.json" "$PUBLISHED/status/verify.json"; do
+  for absolute in /data/portfolio "$PUBLISHED" "$TMP"; do
+    if grep -qF -- "$absolute" "$printed"; then
+      fail "photos verify named the absolute path $absolute in ${printed##*/}: $(cat "$printed")"
+    fi
+  done
+done
 # shellcheck disable=SC2016 # $revision is jq's
 jq -e '.schemaVersion == 1 and .chain.ok and any(.revisions[]; .revisionId == $revision and .live and .ok)' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
   fail "status/verify.json doesn't pass $revision: $(cat "$PUBLISHED/status/verify.json")"
@@ -335,5 +342,8 @@ jq -e 'any(.revisions[]; .revisionId == $revision and (.ok | not))' --arg revisi
 verify_code=0
 verify_published >"$TMP/verify-again.txt" 2>&1 || verify_code=$?
 [ "$verify_code" = 0 ] || fail "photos verify exited $verify_code once the byte was back, expected 0: $(cat "$TMP/verify-again.txt")"
+# shellcheck disable=SC2016 # $revision is jq's
+jq -e 'any(.revisions[]; .revisionId == $revision and .live and .ok)' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
+  fail "status/verify.json doesn't pass $revision again once the byte was back: $(cat "$PUBLISHED/status/verify.json")"
 echo "photos verify passed $revision and recorded it, failed it with exit 1 for a byte flipped in ${active#/media/} with its size kept, and passed it again once the byte was back."
 echo "smoke-catalog passed."

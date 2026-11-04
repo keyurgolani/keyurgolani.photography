@@ -237,7 +237,8 @@ describe('facts by state', () => {
         const cases = [
             ['last-verify', "Revision 18 failed its last check, so it isn't rollback-ready. Run `photos verify` to see what to fix."],
             ['live-check', "Revision 18 fails the checks a restore runs, so it isn't rollback-ready. Run `photos verify` to see what to fix."],
-            ['record-damaged', "Revision 18 isn't rollback-ready: the record of its last check can't be read. Run `photos verify` to check it again."],
+            ['record-damaged', "Revision 18 isn't rollback-ready: the record of its last check can't be read. Run `photos verify` in the watcher's container to write it again."],
+            ['chain', "Revision 18 isn't rollback-ready: the activation records don't show it going live. Run `photos verify` to check the active pointer, or restore a revision from History, below."],
         ] as const;
         for (const [reason, warning] of cases) {
             const screen = view({ rollbackReady: { state: 'failed', reason } });

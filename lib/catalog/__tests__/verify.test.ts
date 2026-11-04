@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,8 +15,8 @@ import { loadActiveCatalog } from '../public-reader';
 import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { Activation } from '../types';
-import { runVerifyCommand, verifyArgs, type VerifyArgs } from '../verify-cli';
-import { lastKnownGood, readVerifyRecord, rollbackReadiness, verifyCatalog, verifyRecordPath, VERIFY_EXIT_CODES, type VerifyOptions } from '../verify';
+import { runVerifyCommand, verifyArgs, writeVerifyRecord, type VerifyArgs } from '../verify-cli';
+import { lastKnownGood, MAX_RECORD_BYTES, readVerifyRecord, rollbackReadiness, verifyCatalog, verifyRecordPath, VERIFY_EXIT_CODES, type VerifyOptions } from '../verify';
 import { catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
 import { rollback } from '../rollback';
@@ -155,7 +156,7 @@ describe('photos verify', { timeout: 60_000 }, () => {
         expect(text).toContain(`revision 2, ${two}: LIVE, FAILS`);
         expect(text).toContain(`${photoId}: w800.webp does not match its sha256`);
         // A set is never rebuilt in place, and photos identity retry requeues failed builds only, so the set comes back from the archive.
-        expect(text).toMatch(new RegExp(`Fix: Put assets/${photoId}/sha256-[0-9a-f]{64}/[^/\\s]+/ back from the archive the rest of the data root came from\\. Or roll back to a revision that passes\\.`));
+        expect(text).toMatch(new RegExp(`Fix: Put assets/${photoId}/sha256-[0-9a-f]{64}/[^/\\s]+/ back from your backup\\. Or roll back to a revision that passes\\.`));
         expect(text).not.toContain('identity retry');
         expect(result.errors.at(-1)).toMatch(/^\[photos\] VERIFY_FAILED: Revision 2, the live one, fails/);
         const record = recordOf(root);
@@ -341,6 +342,44 @@ describe('photos verify', { timeout: 60_000 }, () => {
         expectNoAbsolutePath(result.all(), root);
     });
 
+    // Review: verify refuses what /media refuses, so a symlinked file or set folder fails instead of being hashed through its target.
+    it('fails a symlinked variant, which /media refuses, even one pointing at the same bytes', async () => {
+        const { root, two } = await twoRevisions();
+        const { photoId, file } = await variantOf(root, two);
+        const elsewhere = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'verify-link-')), 'w800.webp');
+        cleanups.push(() => fs.rmSync(path.dirname(elsewhere), { recursive: true, force: true }));
+        fs.copyFileSync(file, elsewhere);
+        fs.rmSync(file);
+        fs.symlinkSync(elsewhere, file);
+        const result = await run(root);
+        expect(result.code).toBe(1);
+        expect(result.all()).toContain(`${photoId}: w800.webp is a symlink, which /media refuses`);
+        expectNoAbsolutePath(result.all(), root);
+        expect(result.all()).not.toContain(path.dirname(elsewhere));
+    });
+
+    it('fails a symlinked set folder without reading or hashing through it', async () => {
+        const { root, two } = await twoRevisions();
+        const { photoId, file } = await variantOf(root, two);
+        const dir = path.dirname(file);
+        const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'verify-set-')), 'set');
+        cleanups.push(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }));
+        fs.renameSync(dir, outside);
+        fs.symlinkSync(outside, dir);
+        const checked: string[] = [];
+        const checkSet: typeof verifyDirectory = async (folder, identity) => {
+            checked.push(identity.photoId);
+            return verifyDirectory(folder, identity);
+        };
+        const report = await verifyCatalog({ dataRoot: root, checkSet });
+        expect(report.outcome).toBe('VERIFY_FAILED');
+        expect(checked).not.toContain(photoId);
+        const live = report.record?.revisions.find((entry) => entry.revisionId === two);
+        expect(live?.problems).toContain(`${photoId}: the set's folder is a symlink, or resolves outside assets/, so /media serves none of it`);
+        expectNoAbsolutePath(JSON.stringify(report), root);
+        expect(JSON.stringify(report)).not.toContain(outside);
+    });
+
     it('restore drill: a copy of the data root in an empty folder verifies, and the public reader serves its live revision', async () => {
         const { root, two } = await twoRevisions();
         const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'verify-restore-')), 'data');
@@ -417,6 +456,74 @@ describe('lastKnownGood()', { timeout: 60_000 }, () => {
         fs.writeFileSync(verifyRecordPath(root), JSON.stringify({ schemaVersion: 99, revisions: [] }));
         expect((await readVerifyRecord(root)).state).toBe('damaged');
         expect(await lastKnownGood(root)).toBeNull();
+    });
+
+    // Review: a record that isn't a small regular file is damaged, and reading it never blocks or reads without bound.
+    it('calls a FIFO, a symlink, or an oversized record damaged, without blocking on the FIFO', async () => {
+        const { root } = await twoRevisions();
+        expect((await run(root)).code).toBe(0);
+        const file = verifyRecordPath(root);
+        const good = fs.readFileSync(file);
+
+        fs.rmSync(file);
+        execFileSync('mkfifo', [file]);
+        const started = Date.now();
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged' });
+        expect(Date.now() - started).toBeLessThan(2_000);
+        expect(await rollbackReadiness(root)).toMatchObject({ state: 'failed', reason: 'record-damaged' });
+
+        fs.rmSync(file);
+        const elsewhere = path.join(path.dirname(root), 'verify-elsewhere.json');
+        fs.writeFileSync(elsewhere, good);
+        fs.symlinkSync(elsewhere, file);
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged' });
+
+        fs.rmSync(file);
+        const record = JSON.parse(good.toString('utf8')) as Record<string, unknown>;
+        fs.writeFileSync(file, JSON.stringify({ ...record, padding: 'x'.repeat(MAX_RECORD_BYTES) }));
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged' });
+
+        fs.writeFileSync(file, good);
+        expect((await readVerifyRecord(root)).state).toBe('ok');
+    });
+
+    it('keeps a record with many long problems under the reader\'s cap, so a big catalog never reads as damaged', async () => {
+        const { root, two } = await twoRevisions();
+        const problems = Array.from({ length: 20 }, (_, index) => `problem ${index} ${'y'.repeat(400)}`);
+        const revisions = Array.from({ length: 400 }, () => ({ revisionId: two, revisionNumber: 2, live: false, eligible: true, ok: false, problems, problemCount: 20, warnings: problems, failedSets: [], fix: null }));
+        await writeVerifyRecord(root, { schemaVersion: 1, checkedAt: new Date().toISOString(), durationMs: 1, pointer: null, chain: { ok: true, problems: [], warnings: [] }, revisions, sets: { checked: 0, failed: 0 } });
+        expect(fs.statSync(verifyRecordPath(root)).size).toBeLessThanOrEqual(MAX_RECORD_BYTES);
+        const read = await readVerifyRecord(root);
+        expect(read.state).toBe('ok');
+        expect(read.state === 'ok' && read.record.revisions.every((entry) => entry.ok === false)).toBe(true);
+    });
+
+    it("gives the record the data root's owner when it runs as root, so the curator can read it", async () => {
+        const { root } = await twoRevisions();
+        const owner = fs.statSync(root);
+        const chowned: [string, number, number][] = [];
+        const record = { schemaVersion: 1 as const, checkedAt: new Date().toISOString(), durationMs: 1, pointer: null, chain: { ok: true, problems: [], warnings: [] }, revisions: [], sets: { checked: 0, failed: 0 } };
+        await writeVerifyRecord(root, record, { uid: 0, chown: async (file, uid, gid) => void chowned.push([path.relative(root, file), uid, gid]) });
+        expect(chowned).toEqual([['status', owner.uid, owner.gid], ['status/verify.json', owner.uid, owner.gid]]);
+        expect(fs.statSync(verifyRecordPath(root)).mode & 0o777).toBe(0o600);
+        const plain: string[] = [];
+        await writeVerifyRecord(root, record, { uid: owner.uid, chown: async (file) => void plain.push(file) });
+        expect(plain).toEqual([]);
+    });
+
+    // Review: a pointer chain that shows nothing went live properly is evidence too, so the warning shows, never just a gap.
+    it('fails on the chain when the pointer names a missing or set-aside activation', async () => {
+        const { root, two } = await twoRevisions();
+        const pointer = await readActivePointer(root);
+        await writeActivePointer(root, { revisionId: two, activationId: 'act_00000000-0000-4000-8000-000000000000' }, pointer?.version ?? 0);
+        expect(await lastKnownGood(root)).toBeNull();
+        expect(await rollbackReadiness(root)).toEqual({ state: 'failed', reason: 'chain', revisionId: two, revisionNumber: 2 });
+
+        const other = await twoRevisions(123);
+        const live = (await listActivations(other.root)).at(-1) as Activation;
+        await writeActivation(other.root, { ...live, status: 'abandoned' });
+        expect(await lastKnownGood(other.root)).toBeNull();
+        expect(await rollbackReadiness(other.root)).toMatchObject({ state: 'failed', reason: 'chain', revisionId: other.two });
     });
 
     it('is null with no pointer', async () => {

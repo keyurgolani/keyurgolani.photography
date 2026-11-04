@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashValue } from '@/lib/catalog/review';
-import { readRevisionFile } from '@/lib/catalog/repository';
+import { readRevisionFile, writeActivePointer } from '@/lib/catalog/repository';
 import { rollback } from '@/lib/catalog/rollback';
 import { runVerifyCommand } from '@/lib/catalog/verify-cli';
 import { mediaFilePath } from '@/lib/media/path';
@@ -515,6 +515,17 @@ describe('the rollback-ready line', () => {
         const valid = await act(screen, 'validate');
         expect(valid.answer).toMatchObject({ kind: 'valid', stakes: expect.stringMatching(/^Publishing makes these \d+ changes live on every page\. Revision 2 failed its last check, so it isn't rollback-ready\. Run `photos verify` to see what to fix\.$/) });
         expect(resultCopy(answerOf(valid), screen)?.body.join(' ')).not.toContain('stays rollback-ready');
+    });
+
+    it('warns, naming the fix, when the active pointer names an activation no record holds', async () => {
+        const pointer = await readActivePointer(fixture.root);
+        await writeActivePointer(fixture.root, { revisionId: fixture.revisions[1], activationId: 'act_00000000-0000-4000-8000-000000000000' }, pointer?.version ?? 0);
+        const screen = await view();
+        expect(screen.rollbackReady).toEqual({ state: 'failed', reason: 'chain' });
+        expect(displayFacts(screen, null, null).panel).toMatchObject({
+            rollback: "Revision 2 isn't rollback-ready: the activation records don't show it going live. Run `photos verify` to check the active pointer, or restore a revision from History, below.",
+            rollbackTone: 'alert',
+        });
     });
 
     it('warns when the live check fails, with nothing recorded', async () => {
