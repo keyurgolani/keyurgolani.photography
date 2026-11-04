@@ -122,6 +122,30 @@
  *     on a usage error, 4 when a catalog file is damaged or an I/O error
  *     stops it, and 3 on any other stop. Logs one JSON line per event.
  *
+ *   npx tsx scripts/photos.ts diff [--json]
+ *     What a publish of the working layer would change for visitors: #16's
+ *     ledger against the active revision, grouped as the Publish screen
+ *     groups it, with the candidate ID, the live revision, each row's change
+ *     ID and review state, and what a row that waits on a review needs.
+ *     --json prints the same rows. Takes no lock and writes nothing. Exits 0,
+ *     3 when the data root isn't ready, and 4 when a catalog file is damaged
+ *     or can't be read.
+ *
+ *   npx tsx scripts/photos.ts review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+ *     Mark rows photos diff printed reviewed, through the Publish screen's
+ *     own writer, after checking them against what is live. --expect and
+ *     --expect-active are the candidate and the live revision photos diff
+ *     printed, and it writes nothing once either moved. It stamps each field
+ *     a row waits on with the value it holds, under the authored lock, and
+ *     refuses a value or record that moved. It never clears a suggested
+ *     description (write one with photos edit), a row whose Inbox item needs
+ *     a decision again, or a rebase conflict, and it names every row: there
+ *     is no --all. The actor is --actor or PHOTOS_ACTOR, and one is
+ *     required. Publishes nothing. Exits 0 when marked or nothing was left
+ *     to mark, 1 when a row can't be marked here, so nothing was written, 2
+ *     on a usage error, 3 when the draft, the live revision or a record
+ *     moved, or the authored lock stays busy, and 4 for I/O.
+ *
  *   npx tsx scripts/photos.ts history
  *     Every activation, oldest first by sequence, with its revision number
  *     and ID, actor, reason, time, validation result, and what its revision
@@ -252,6 +276,7 @@ import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
 import { rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
+import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
 import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
@@ -305,6 +330,9 @@ const USAGE = `Usage:
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
         --confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site.
+  ${PROGRAM} diff [--json]
+  ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+        Marks the rows photos diff printed reviewed, each named; there is no --all.
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
         --accept, once per editorial rule flagged on the target, brings it back with that error; it's the only flag that repeats.
@@ -520,6 +548,14 @@ async function publishCommand(args: string[]): Promise<number> {
     return exitCode;
 }
 
+/** A catalog command from lib/catalog: its arguments first, then the data root, as validate takes it. */
+async function catalogCommand<T>(parse: () => T, run: (root: string, args: T) => Promise<CommandResult>): Promise<number> {
+    const parsed = parse();
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return printed(await run(root, parsed));
+}
+
 async function historyCommand(args: string[]): Promise<number> {
     parseFlags({ args, options: {} });
     const root = catalogRoot();
@@ -656,6 +692,8 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'series') return await orderCommand(() => seriesArgs(args));
         if (command === 'validate') return await validate(args);
         if (command === 'publish') return await publishCommand(args);
+        if (command === 'diff') return await catalogCommand(() => diffArgs(args), runDiffCommand);
+        if (command === 'review') return await catalogCommand(() => reviewArgs(args), runReviewCommand);
         if (command === 'history') return await historyCommand(args);
         if (command === 'rollback') return await rollbackCommand(args);
         if (command === 'verify') return await verifyCommand(args);
