@@ -264,8 +264,9 @@ describe('CatalogHome', () => {
       expect(links).toHaveLength(1);
       const avif = host.querySelector(`[data-photo-id="${id(3)}"] source[type="image/avif"]`)!;
       expect(links[0].getAttribute('imagesrcset')).toBe(avif.getAttribute('srcset'));
-      expect(links[0].getAttribute('imagesizes')).toBe('100vw');
-      expect(avif.getAttribute('sizes')).toBe('100vw');
+      // #6's size rule for the viewport-filling slide: the 2400 by 1600 fixture covers it at 150vh wide below 3:2.
+      expect(links[0].getAttribute('imagesizes')).toBe('(min-aspect-ratio: 1500/1000) 100vw, 150vh');
+      expect(avif.getAttribute('sizes')).toBe(links[0].getAttribute('imagesizes'));
       expect(links[0].getAttribute('type')).toBe('image/avif');
       expect(links[0].hasAttribute('href')).toBe(false);
     });

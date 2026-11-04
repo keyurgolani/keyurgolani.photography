@@ -5,7 +5,7 @@ import { mediaUrl } from '@/lib/media/url';
 import type { WorkCatalog, WorkCover, WorkSeriesSummary } from '@/lib/catalog/projections/work';
 import SeriesCatalog, { WORK_TITLE } from '../SeriesCatalog';
 import WorkCoverImage from '../WorkCoverImage';
-import { COVER_SIZES, coverSpan } from '../coverSizes';
+import { coverSizes, coverSpan } from '../coverSizes';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
 const REF = (n: number) => ({ photoId: `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, assetRevision: `sha256-${String(n % 10).repeat(64)}`, profileId: 'p_0123456789abcdef' });
@@ -103,10 +103,15 @@ describe('SeriesCatalog', () => {
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(WORK_TITLE);
     });
 
-    it('loads the first cover at once and the rest lazily', () => {
-        render(<SeriesCatalog work={work([series(1), series(2), series(3)])} />);
+    it('loads the first two covers at once, only the first at high priority and preloaded, and the rest lazily (#3)', () => {
+        const entries = work([series(1), series(2), series(3), series(4)]);
+        render(<SeriesCatalog work={entries} />);
         const images = [...document.querySelectorAll('img')];
-        expect(images.map((image) => image.getAttribute('loading'))).toEqual(['eager', 'lazy', 'lazy']);
+        expect(images.map((image) => image.getAttribute('loading'))).toEqual(['eager', 'eager', 'lazy', 'lazy']);
+        expect(images.map((image) => image.getAttribute('fetchpriority'))).toEqual(['high', null, null, null]);
+        const links = preloadsIn(serverHtml(<SeriesCatalog work={entries} />));
+        expect(links).toHaveLength(1);
+        expect(links[0].getAttribute('imagesrcset')).toContain(REF(1).photoId);
     });
 
     it('renders a series with no cover text-led, with its link intact and no image', () => {
@@ -139,11 +144,19 @@ describe('SeriesCatalog', () => {
     });
 
     // The stylesheet's 768 px grid: the 1st and 4th of every four entries span 7 of 12 columns, the 2nd and 3rd span 5.
-    it('gives each cover the sizes of its own span, wide for the 1st and 4th of every four, narrow for the 2nd and 3rd', () => {
+    it('gives each cover the sizes of its own span and its own crop, wide for the 1st and 4th of every four, narrow for the 2nd and 3rd', () => {
         expect([0, 1, 2, 3, 4, 5, 6, 7].map(coverSpan)).toEqual(['wide', 'narrow', 'narrow', 'wide', 'wide', 'narrow', 'narrow', 'wide']);
-        render(<SeriesCatalog work={work([1, 2, 3, 4, 5].map((n) => series(n)))} />);
+        const entries = [
+            series(1),
+            series(2, { cover: cover(2, { width: 1600, height: 2400 }) }),
+            series(3, { cover: cover(3, { crop: 'contain' }) }),
+            series(4, { cover: cover(4, { width: 3000, height: 1000 }) }),
+            series(5),
+        ];
+        render(<SeriesCatalog work={work(entries)} />);
         const sizes = [...document.querySelectorAll('picture')].map((picture) => picture.querySelector('source')?.getAttribute('sizes'));
-        expect(sizes).toEqual([COVER_SIZES.wide, COVER_SIZES.narrow, COVER_SIZES.narrow, COVER_SIZES.wide, COVER_SIZES.wide]);
+        expect(sizes).toEqual(entries.map((entry, index) => coverSizes(entry.cover!, coverSpan(index))));
+        expect(new Set(sizes).size, 'each shape, crop and span its own').toBe(4);
     });
 
     it('drops a failed cover\'s fallback when a refresh brings the series a new cover, and keeps it for the same one', () => {
@@ -169,7 +182,7 @@ describe('WorkCoverImage', () => {
         expect(image).toHaveAttribute('width', '2400');
         expect(image).toHaveAttribute('height', '1600');
         expect(image).toHaveAttribute('loading', 'lazy');
-        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES.wide);
+        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', coverSizes(cover(4), 'wide'));
         const frame = container.firstElementChild as HTMLElement;
         expect(frame.style.getPropertyValue('--focal-x')).toBe('25%');
         expect(frame.style.getPropertyValue('--focal-y')).toBe('75%');
@@ -191,14 +204,28 @@ describe('WorkCoverImage', () => {
         const links = preloadsIn(serverHtml(<WorkCoverImage cover={cover(7)} eager />));
         expect(links).toHaveLength(1);
         expect(links[0].getAttribute('imagesrcset')).toBe(eager.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
-        expect(links[0].getAttribute('imagesizes')).toBe(COVER_SIZES.wide);
+        expect(links[0].getAttribute('imagesizes')).toBe(coverSizes(cover(7), 'wide'));
     });
 
     it('sizes a narrow cover for its 5 of 12 columns, and never asks a phone for less than its width', () => {
         const { container } = render(<WorkCoverImage cover={cover(8)} span="narrow" />);
-        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES.narrow);
-        expect(COVER_SIZES.narrow).toBe('(min-width: 768px) 42vw, 100vw');
-        expect(COVER_SIZES.wide).toBe('(min-width: 768px) 59vw, 100vw');
+        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', coverSizes(cover(8), 'narrow'));
+    });
+
+    // #6's size rule, per crop: a cover crop asks for the wider of the box and the photograph at the box's height, a
+    // contain one for the narrower. Boxes: 7 or 5 of the 12 columns at 3:2 or 4:5 above 768 px, the column at 4:3 below,
+    // the column being the window less its two gutters (2rem under 485 px, 6.6vw over it).
+    it('sizes each cover by its crop and its box, not by its span alone (#6)', () => {
+        // A 3:2 photograph fills a wide 3:2 box exactly, and is 1.125 times a phone's 4:3 box wide.
+        expect(coverSizes(cover(1), 'wide')).toBe('(min-width: 768px) calc(54.48vw - 1.46rem), (min-width: 485px) 105.07vw, calc(112.5vw - 2.25rem)');
+        // In a narrow 4:5 box it's 1.875 boxes wide, so it asks for more than the box.
+        expect(coverSizes(cover(1), 'narrow')).toBe('(min-width: 768px) calc(72.97vw - 3.83rem), (min-width: 485px) 105.07vw, calc(112.5vw - 2.25rem)');
+        // A 2:3 photograph shown whole sits at the box's height: five sixths of the 4:5 box, half the 4:3 one.
+        expect(coverSizes(cover(1, { width: 1600, height: 2400, crop: 'contain' }), 'narrow')).toBe(
+            '(min-width: 768px) calc(32.43vw - 1.7rem), (min-width: 485px) 46.7vw, calc(50vw - 1rem)',
+        );
+        // A 2:3 photograph cropped to cover is cut to the box's width.
+        expect(coverSizes(cover(1, { width: 1600, height: 2400 }), 'wide')).toBe('(min-width: 768px) calc(54.48vw - 1.46rem), (min-width: 485px) 93.4vw, calc(100vw - 2rem)');
     });
 
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {
