@@ -19,7 +19,9 @@ import { expect, test } from './support/test';
 // fixture's declared AVIF and WebP sizes for the rungs asked for (lib/perf/fixture.ts), as first-viewport.spec.ts
 // counts them, since the decodable files are flat colour.
 
-test.describe.configure({ mode: 'serial' });
+// In order, but each test runs whatever failed before it, so one red screen still reports the rest. Each opens up
+// to a dozen fresh contexts.
+test.describe.configure({ mode: 'default', timeout: 5 * 60_000 });
 
 const HOOK_TIMEOUT = READY_TIMEOUT + 3 * 60_000;
 const KIB = 1024;
@@ -97,11 +99,12 @@ const origin = () => {
     return server.origin;
 };
 
+// Dark, as the suite's own projects paint it (playwright.config.ts), so Home's slide is the viewport.
 const WIDTHS = {
-    390: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-    768: { viewport: { width: 768, height: 1024 }, deviceScaleFactor: 2, isMobile: false, hasTouch: true },
-    1280: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
-    1440: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
+    390: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: 'dark' },
+    768: { viewport: { width: 768, height: 1024 }, deviceScaleFactor: 2, isMobile: false, hasTouch: true, colorScheme: 'dark' },
+    1280: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
+    1440: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
 } satisfies Record<number, BrowserContextOptions>;
 type Width = keyof typeof WIDTHS;
 
@@ -282,7 +285,7 @@ test('Work: the first two covers load at once, only the first at high priority, 
 });
 
 test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more than the 800w rung (#3)', async ({ browser }) => {
-    const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark' });
     const page = await context.newPage();
     try {
         await page.goto(`${origin()}/work`);
