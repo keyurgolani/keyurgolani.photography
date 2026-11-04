@@ -223,7 +223,7 @@ expect_exit() {
   code=$?
   set -e
   [ "$code" -eq "$expected" ] || { cat "$TMP/exit.log"; fail "'$*' exited $code, expected $expected."; }
-  grep -qF "$message" "$TMP/exit.log" || { cat "$TMP/exit.log"; fail "'$*' did not say: $message"; }
+  grep -qF -- "$message" "$TMP/exit.log" || { cat "$TMP/exit.log"; fail "'$*' did not say: $message"; }
 }
 expect_exit 1 'Library root not found: /tmp/missing-library' \
   docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/tmp/missing-library -e PHOTOGRAPHY_DATA_DIR=/data/portfolio -v "$ROOT:/data/portfolio" "$IMAGE" "${WATCHER[@]}" --once
