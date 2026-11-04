@@ -1,10 +1,12 @@
 import { readRevisionFile } from './repository';
 import { readReviewContext } from './review-context';
 import { fieldReview, hashValue, inboxReviewOf, type FieldReviewState, type ReviewEnv } from './review';
+import { INBOX_REASONS, inConflict, restampReason } from './review-reasons';
 import type { AuthoredKind } from './schema';
 import type { AuthoredRecord, IssueRecord } from './types';
+import { LockTimeoutError, withLock } from '../storage/lock';
 import { readActivePointer, readAuthoredRecord, readWorkingLayer } from './working-layer';
-import { AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
+import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
 
 /**
  * #16's stamp-only review: the one writer behind the Publish screen's "Still
@@ -14,26 +16,10 @@ import { AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer'
  * live revision, the record's version, or a value moved since the caller
  * read them, and when a field waits on something a review can't clear: a
  * suggested description, which is its own fix, an Inbox item that needs a
- * decision again, or a record that's gone.
+ * decision again, a rebase conflict, or a record that's gone.
  */
 
-type Reason = NonNullable<FieldReviewState['reason']>;
-
-const RESTAMP_LIST = ['active-moved', 'base-unreadable', 'asset-replaced', 'cover-replaced', 'edited', 'no-stamp', 'generated'] as const satisfies readonly Reason[];
-export type RestampReason = (typeof RESTAMP_LIST)[number];
-/** The reasons a stamp-only review may clear (16-3's decision 2). */
-export const RESTAMP_REASONS: ReadonlySet<string> = new Set<string>(RESTAMP_LIST);
-
-/** The reasons only the Inbox settles. */
-export const INBOX_REASONS: ReadonlySet<string> = new Set(['item-reopened', 'newer-item', 'item-unreadable', 'inbox-unread']);
-
-/** A described alt nobody has reviewed: marking it ready is its own fix, never a stamp-only review. */
-export const isGeneratedAlt = (entry: Pick<FieldReviewState, 'reason' | 'record' | 'field'>) => entry.reason === 'generated' && entry.record.kind === 'photo' && entry.field === 'alt';
-
-/** Whether a stamp-only review may clear this field's state: its reason is one it restamps, and it isn't a generated description. */
-export function restampReason(state: FieldReviewState): boolean {
-    return state.state !== 'reviewed' && state.reason !== undefined && RESTAMP_REASONS.has(state.reason) && !isGeneratedAlt(state);
-}
+export { INBOX_REASONS, isGeneratedAlt, restampReason, RESTAMP_REASONS, type RestampReason } from './review-reasons';
 
 /**
  * Each of `fields` of one record as review reads it now, from a fresh read:
@@ -53,10 +39,11 @@ export async function reviewNow(root: string, record: IssueRecord, fields: reado
 /**
  * Why a review wrote nothing: `active-moved`, the live revision isn't the
  * one the caller compared against; `inbox`, a field's Inbox item needs a
- * decision again; `not-clearable`, a field waits on something else.
+ * decision again; `conflict`, a rebase left a field in conflict;
+ * `not-clearable`, a field waits on something else.
  */
 export class ReviewRefusedError extends Error {
-    constructor(readonly code: 'active-moved' | 'inbox' | 'not-clearable', message: string) {
+    constructor(readonly code: 'active-moved' | 'inbox' | 'conflict' | 'not-clearable', message: string) {
         super(message);
         this.name = 'ReviewRefusedError';
     }
@@ -89,26 +76,59 @@ export interface MarkReviewedInput {
 }
 
 /**
- * Stamp `hashes`' fields of one record as reviewed, or throw: a
- * ReviewRefusedError, or AuthoredWriteError with VERSION_CONFLICT when the
- * version or a value moved, AUTHORED_LOCKED when the lock stays busy. The
- * writer checks the version under the authored lock and stamps each field
- * only while it still holds the value whose hash it was given.
+ * Stamp `hashes`' fields of one record as reviewed, or throw: see
+ * markAllReviewed().
  */
 export async function markFieldsReviewed(input: MarkReviewedInput): Promise<AuthoredRecord> {
-    const { root, record: ref, version, hashes, baseRevisionId, actor } = input;
-    const fields = Object.keys(hashes);
-    if (fields.length === 0) throw new ReviewRefusedError('not-clearable', 'A review names at least one field.');
-    const pointer = await readActivePointer(root);
-    if ((pointer?.revisionId ?? null) !== baseRevisionId) {
-        throw new ReviewRefusedError('active-moved', `The live revision is ${pointer?.revisionId ?? 'none'} now, not ${baseRevisionId ?? 'none'}.`);
+    const [record] = await markAllReviewed([input]);
+    return record;
+}
+
+/**
+ * Stamp each input's fields as reviewed, all or none. One hold on the
+ * authored lock covers every check and every write: the live revision, then
+ * for each record its version, the hash of each value, rebase conflicts, and
+ * what each field waits on, all before the first write. So a refusal writes
+ * nothing, and only an I/O error part way can leave earlier records stamped.
+ * Throws a ReviewRefusedError, or AuthoredWriteError with VERSION_CONFLICT
+ * when a version or a value moved, AUTHORED_LOCKED when the lock stays busy.
+ * The writer stamps each field only while it holds the value whose hash it
+ * was given.
+ */
+export async function markAllReviewed(inputs: readonly MarkReviewedInput[], options: { waitMs?: number } = {}): Promise<AuthoredRecord[]> {
+    if (inputs.length === 0) return [];
+    const { root, baseRevisionId } = inputs[0];
+    if (inputs.some((input) => input.root !== root || input.baseRevisionId !== baseRevisionId)) throw new RangeError('A review stamps one data root against one live revision.');
+    for (const input of inputs) if (Object.keys(input.hashes).length === 0) throw new ReviewRefusedError('not-clearable', 'A review names at least one field.');
+    try {
+        return await withLock(AUTHORED_LOCK, { root, leaseMs: AUTHORED_LEASE_MS, waitMs: options.waitMs ?? AUTHORED_WAIT_MS }, async (lock) => {
+            const pointer = await readActivePointer(root);
+            if ((pointer?.revisionId ?? null) !== baseRevisionId) {
+                throw new ReviewRefusedError('active-moved', `The live revision is ${pointer?.revisionId ?? 'none'} now, not ${baseRevisionId ?? 'none'}.`);
+            }
+            // `reviewedAt` is taken before the fresh reads that check the fields, so an inbox replacement observed after
+            // them is newer than the stamp and still reads as `newer-item` (16-3's high review N2).
+            const reviewedAt = new Date().toISOString();
+            const checked: AuthoredRecord[] = [];
+            for (const { record: ref, version, hashes } of inputs) {
+                const fields = Object.keys(hashes);
+                const record = (await readAuthoredRecord(root, ref.kind, ref.id)) as AuthoredRecord | null;
+                const moved = record === null || record.version !== version || fields.some((field) => hashValue((record as unknown as Record<string, unknown>)[field]) !== hashes[field]);
+                if (moved) throw new AuthoredWriteError('VERSION_CONFLICT', ref, 'The value moved.');
+                const conflicted = fields.find((field) => inConflict(record as { conflicts?: { field: string }[] }, field));
+                if (conflicted) throw new ReviewRefusedError('conflict', `A restore's rebase left the ${conflicted} of ${ref.kind} ${ref.id} in conflict. Keep one value with photos edit, which clears the conflict.`);
+                await checkReviewable(root, ref, fields, restampReason);
+                checked.push(record);
+            }
+            const written: AuthoredRecord[] = [];
+            for (const [index, { hashes, version, actor }] of inputs.entries()) {
+                lock.signal.throwIfAborted();
+                written.push(await writeAuthoredRecord(checked[index] as never, { expectedVersion: version, lock, root, review: { baseRevisionId, origin: 'curator', actor, reviewedAt, reviewedValues: hashes } }));
+            }
+            return written;
+        });
+    } catch (error) {
+        if (error instanceof LockTimeoutError) throw new AuthoredWriteError('AUTHORED_LOCKED', inputs[0].record, error.message, { holder: error.holder });
+        throw error;
     }
-    const record = (await readAuthoredRecord(root, ref.kind, ref.id)) as AuthoredRecord | null;
-    const moved = record === null || record.version !== version || fields.some((field) => hashValue((record as unknown as Record<string, unknown>)[field]) !== hashes[field]);
-    if (moved) throw new AuthoredWriteError('VERSION_CONFLICT', ref, 'The value moved.');
-    // `reviewedAt` is taken before the fresh read that checks the fields, so an inbox replacement observed after that
-    // read is newer than the stamp and still reads as `newer-item` (16-3's high review N2).
-    const reviewedAt = new Date().toISOString();
-    await checkReviewable(root, ref, fields, restampReason);
-    return writeAuthoredRecord(record as never, { expectedVersion: version, root, review: { baseRevisionId, origin: 'curator', actor, reviewedAt, reviewedValues: hashes } });
 }

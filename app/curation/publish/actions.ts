@@ -228,6 +228,7 @@ const INBOX_FIRST = 'Its Inbox item needs a decision again, so nothing was writt
 function reviewRefused(previous: PublishState, intent: Intent, rowId: string, what: string, error: ReviewRefusedError): PublishState {
     if (error.code === 'inbox') return next(previous, intent, { kind: 'fix-refused', rowId, text: INBOX_FIRST });
     if (error.code === 'active-moved') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'The live revision changed since the page loaded, so nothing was written.' });
+    if (error.code === 'conflict') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'This field changed both here and in the live revision, so nothing was written. Keep one value with photos edit, which clears the conflict.' });
     return refused(previous, intent, rowId, what);
 }
 

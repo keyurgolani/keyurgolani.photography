@@ -1,6 +1,6 @@
 import type { CatalogChange, CatalogDiff } from '../catalog/diff';
 import { hashValue, inboxReviewOf, type FieldReviewState, type InboxItem, type ReviewContext } from '../catalog/review';
-import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-write';
+import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-reasons';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
 import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
@@ -73,7 +73,7 @@ const DERIVED_FIELD: Record<string, string> = {
 
 const TEXT_FIELDS = new Set(['title', 'statement', 'shortStatement', 'caption', 'credit', 'location']);
 
-/** The action's label for each reason a stamp-only review may clear (decision 2, review-write.ts's RESTAMP_REASONS). */
+/** The action's label for each reason a stamp-only review may clear (decision 2, review-reasons.ts's RESTAMP_REASONS). */
 const RESTAMP: Record<RestampReason, string> = {
     'active-moved': 'Still right, mark reviewed',
     'base-unreadable': 'Still right, mark reviewed',
