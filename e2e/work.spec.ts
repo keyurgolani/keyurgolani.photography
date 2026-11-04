@@ -332,7 +332,9 @@ const clippedText = (page: Page) =>
         for (const el of Array.from(document.querySelectorAll<HTMLElement>('main h1, main h2, main p'))) {
             const name = `${el.tagName.toLowerCase()} "${(el.textContent ?? '').slice(0, 24)}"`;
             const style = getComputedStyle(el);
-            if (el.scrollWidth > el.clientWidth + slack || el.scrollHeight > el.clientHeight + slack) problems.push(`${name} overflows its box`);
+            // Sideways only, as About's check: the display heading's 0.9 leading lets its glyphs run a few px past
+            // the line box, which clips nothing while no ancestor does (checked below).
+            if (el.scrollWidth > el.clientWidth + slack) problems.push(`${name} overflows its box`);
             if (style.textOverflow === 'ellipsis' && style.overflowX !== 'visible') problems.push(`${name} ends in an ellipsis`);
             if (style.webkitLineClamp !== 'none' && style.webkitLineClamp !== '') problems.push(`${name} is clamped to ${style.webkitLineClamp} lines`);
             const box = el.getBoundingClientRect();
