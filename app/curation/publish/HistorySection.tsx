@@ -21,7 +21,10 @@ import publish from './publish.module.css';
  * done appears in the dialog, its heading focused and its box in view; done
  * loads `?restored=<sequence>`, whose notice takes focus. Without JavaScript
  * the list reads in full and `?restore=N` opens the dialog in place, but the
- * curator boundary refuses the post, as 16-3's.
+ * curator boundary refuses the post, as 16-3's. #117: a target that brings
+ * back editorial errors shows one native checkbox per flagged rule, in a
+ * fieldset, and Restore stays aria-disabled until every one is checked; the
+ * server refuses a post without them all the same.
  */
 
 const PUBLISH_PAGE = '/curation/publish';
@@ -159,12 +162,18 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
     const [reason, setReason] = useState('');
     // An empty reason caught here, before any post; the server's own check answers `reason-missing` too.
     const [missing, setMissing] = useState(0);
+    // #117: the editorial rules checked so far, and the presses made before every one was.
+    const rules = plan.editorial?.rules ?? [];
+    const [accepted, setAccepted] = useState<string[]>([]);
+    const [unacceptedTries, setUnacceptedTries] = useState(0);
+    const unchecked = rules.filter((rule) => !accepted.includes(rule.id));
     const answer = state.answer;
     const result = answer?.kind === 'result' ? answer.result : null;
+    const acceptMissing = unchecked.length > 0 && !pending && unacceptedTries > 0;
     const reasonMissing = !/\S/.test(reason) && !pending && (missing > 0 || answer?.kind === 'reason-missing');
     const moved = result?.moved;
     const n = plan.revision;
-    const phase = pending ? 'pending' : result ? 'result' : reasonMissing ? 'missing' : 'review';
+    const phase = pending ? 'pending' : result ? 'result' : acceptMissing ? 'unaccepted' : reasonMissing ? 'missing' : 'review';
     const opened = useRef(false);
 
     // Open as a modal: on mount, or after a `?restore=` page load opened it in place.
@@ -186,22 +195,32 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
         if (answer?.kind === 'restored') window.location.assign(`${PUBLISH_PAGE}?restored=${answer.sequence}${answer.rebased ? '' : '&rebased=0'}#history-result-heading`);
     }, [answer]);
 
-    // Focus by phase: the empty reason, the pending button, or the answer's heading with its whole box in view.
+    // Focus by phase: the first unchecked box, the empty reason, the pending button, or the answer's heading with its whole box in view.
+    const firstUnchecked = unchecked.length ? rules.indexOf(unchecked[0]) : -1;
     useEffect(() => {
         if (!opened.current || phase === 'review') return;
         requestAnimationFrame(() => {
-            if (phase === 'missing') document.getElementById('restore-reason')?.focus();
+            if (phase === 'unaccepted') document.getElementById(`restore-accept-${firstUnchecked}`)?.focus();
+            else if (phase === 'missing') document.getElementById('restore-reason')?.focus();
             else if (phase === 'pending') document.getElementById('restore-submit')?.focus();
             else {
                 document.getElementById('restore-result')?.scrollIntoView({ block: 'start', behavior: 'instant' });
                 document.getElementById('restore-result-heading')?.focus({ preventScroll: true });
             }
         });
-    }, [phase, state.serial, missing]);
+        // Only a new press or answer moves focus: checking a box never does.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [phase, state.serial, missing, unacceptedTries]);
 
     const submit = (event: FormEvent<HTMLFormElement>) => {
         if (pending) {
             event.preventDefault();
+            return;
+        }
+        // The boxes first, as they come first: a press with one unchecked posts nothing and goes to it.
+        if (unchecked.length > 0) {
+            event.preventDefault();
+            setUnacceptedTries((count) => count + 1);
             return;
         }
         if (!/\S/.test(reason)) {
@@ -231,8 +250,19 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
             );
         }
         const label = action === 'finish' ? `Finish restoring revision ${n}` : `Restore revision ${n}`;
+        // Until every editorial rule is accepted, it stays focusable but unavailable, and a press says why.
+        const off = !pending && unchecked.length > 0;
         return (
-            <button key={action} id="restore-submit" type="submit" className={`${curator.button} ${curator.primary}`} aria-disabled={pending || undefined} data-pending={pending ? 'true' : undefined} data-primary="true">
+            <button
+                key={action}
+                id="restore-submit"
+                type="submit"
+                className={`${curator.button} ${curator.primary}`}
+                aria-disabled={pending || off || undefined}
+                data-off={off ? 'true' : undefined}
+                data-pending={pending ? 'true' : undefined}
+                data-primary="true"
+            >
                 <Undo2 size={16} aria-hidden="true" />
                 {pending ? `Restoring revision ${n}…` : label}
             </button>
@@ -315,10 +345,35 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
                         </div>
                     ) : null}
                     {plan.editorial ? (
-                        <div className={`${curator.notice} ${styles.editorial}`} data-tone="change">
-                            <p>{plan.editorial}</p>
-                            <p>Restoring brings it back as it was, and History records that you accepted it.</p>
-                        </div>
+                        <fieldset className={`${curator.notice} ${styles.editorial}`} data-tone="change" aria-describedby="restore-accept-note">
+                            <legend>{plan.editorial.lead}</legend>
+                            {plan.editorial.rules.map((rule, index) => {
+                                const checked = accepted.includes(rule.id);
+                                return (
+                                    <label key={rule.id} className={`${curator.check} ${styles.accept}`}>
+                                        <input
+                                            type="checkbox"
+                                            id={`restore-accept-${index}`}
+                                            name="accept"
+                                            value={rule.id}
+                                            checked={checked}
+                                            disabled={pending || settledReason}
+                                            aria-invalid={(acceptMissing && !checked) || undefined}
+                                            aria-describedby={acceptMissing && !checked ? 'restore-accept-error' : undefined}
+                                            onChange={(event) => setAccepted((current) => (event.target.checked ? [...current, rule.id] : current.filter((id) => id !== rule.id)))}
+                                        />
+                                        <span>{rule.label}</span>
+                                    </label>
+                                );
+                            })}
+                            <p id="restore-accept-note">{plan.editorial.note}</p>
+                            {acceptMissing ? (
+                                <p id="restore-accept-error" className={styles.fieldError}>
+                                    <CircleAlert size={15} aria-hidden="true" />
+                                    Accept each one to restore it, or cancel.
+                                </p>
+                            ) : null}
+                        </fieldset>
                     ) : null}
                     <div className={styles.field}>
                         <label htmlFor="restore-reason">Why are you restoring it?</label>

@@ -8,7 +8,7 @@ import {
     blockingReasons,
     doneView,
     draftNoteFor,
-    editorialText,
+    editorialView,
     HISTORY_CAP,
     HISTORY_STEP,
     historyView,
@@ -178,7 +178,7 @@ async function planView(plan: RollbackPlan, names: Names, contentOf: (revisionId
         featuredChanged: Boolean(targetContent && activeContent && !same(targetContent.site.featuredSeriesIds, activeContent.site.featuredSeriesIds)),
         orderChanged: Boolean(targetContent && activeContent && !same(order(targetContent), order(activeContent))),
     });
-    const editorial = editorialText(plan.issues, plan.editorial, names.series);
+    const editorial = editorialView(plan.issues, plan.editorial, names.series, target.revisionNumber ?? 0);
     return {
         revisionId: target.revisionId,
         revision: target.revisionNumber ?? 0,

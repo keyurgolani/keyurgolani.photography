@@ -89,14 +89,16 @@ describe('the restore dialog with editorial errors', () => {
     const withPlan: HistoryView = { ...historyOf([entry(5, 3, true), entry(4, 4, false)]), plans: { 4: plan } };
 
     beforeEach(() => {
-        // jsdom has HTMLDialogElement but no showModal(), close() or :modal.
-        vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function (this: HTMLDialogElement) {
-            this.setAttribute('open', '');
-            this.dataset.modal = 'true';
-        });
-        vi.spyOn(HTMLDialogElement.prototype, 'close').mockImplementation(function (this: HTMLDialogElement) {
-            this.removeAttribute('open');
-            delete this.dataset.modal;
+        // jsdom has HTMLDialogElement but no showModal(), close() or :modal, so these stand in.
+        Object.assign(HTMLDialogElement.prototype, {
+            showModal(this: HTMLDialogElement) {
+                this.setAttribute('open', '');
+                this.dataset.modal = 'true';
+            },
+            close(this: HTMLDialogElement) {
+                this.removeAttribute('open');
+                delete this.dataset.modal;
+            },
         });
         const matches = Element.prototype.matches;
         vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
@@ -110,6 +112,9 @@ describe('the restore dialog with editorial errors', () => {
     afterEach(() => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
+        const prototype = HTMLDialogElement.prototype as unknown as Record<string, unknown>;
+        delete prototype.showModal;
+        delete prototype.close;
     });
 
     function openDialog(post: (previous: RestoreState, form: FormData) => Promise<RestoreState>) {

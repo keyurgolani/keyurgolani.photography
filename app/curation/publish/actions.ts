@@ -15,7 +15,7 @@ import { AuthoredWriteError, writeAuthoredRecord } from '@/lib/catalog/working-l
 import { requireCurator } from '@/lib/curation/auth';
 import { WEB_ACTOR } from '@/lib/curation/inbox-form';
 import { countLine, type Answer, type Intent, type Publisher, type PublishState } from '@/lib/curation/publish-facts';
-import { blockingReasons, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
+import { blockingReasons, editorialWords, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
 import { INBOX_REASONS, restampReason } from '@/lib/curation/publish-view';
 import { dataRootStatus } from '@/lib/storage/config';
 import { loadHistoryView, numberFrom } from './history-load';
@@ -291,6 +291,21 @@ export async function publishAction(previous: PublishState, form: FormData): Pro
 // 15-4's restore.
 
 const RESTORE_REASON_MAX = 500;
+/** A rule ID's shape, `accent.contrast`; the dialog posts one `accept` per box it showed checked. */
+const RULE_ID_RE = /^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*$/;
+const ACCEPT_LENGTH_MAX = 64;
+const ACCEPTS_MAX = 16;
+
+/**
+ * The `accept` fields as rollback()'s acceptedRules: strings shaped like a
+ * rule ID, at most 64 characters and at most 16 of them, deduplicated. The
+ * rest are dropped, never echoed. rollback() then accepts only the flagged
+ * editorial rules among them, so this shapes the input and isn't the gate.
+ */
+function acceptedFrom(form: FormData): string[] {
+    const ids = form.getAll('accept').filter((value): value is string => typeof value === 'string' && value.length <= ACCEPT_LENGTH_MAX && RULE_ID_RE.test(value));
+    return [...new Set(ids)].slice(0, ACCEPTS_MAX);
+}
 
 const restoreState = (previous: RestoreState, answer: RestoreAnswer): RestoreState => ({ serial: previous.serial + 1, answer });
 
@@ -304,12 +319,16 @@ const restoreState = (previous: RestoreState, answer: RestoreAnswer): RestoreSta
  * publish() takes it), so a held lock answers at once. A done restore
  * returns the new activation's sequence, and the screen loads
  * `?restored=<sequence>`; every other outcome is an answer in the dialog.
+ * #117: the dialog's checked boxes post as `accept`, and rollback() is the
+ * gate: a post missing an accept for any flagged editorial rule answers
+ * ACCEPTANCE_REQUIRED and writes nothing, whatever the dialog did.
  */
 export async function restoreAction(previous: RestoreState, form: FormData): Promise<RestoreState> {
     await requireCurator();
     const revisionId = text(form, 'revisionId') ?? '';
     const expected = text(form, 'expectedActive') ?? '';
     const reason = (text(form, 'reason') ?? '').trim();
+    const acceptedRules = acceptedFrom(form);
     const status = dataRootStatus({ write: true });
     const root = status.root;
     const activations = root ? await listActivations(root).catch(() => []) : [];
@@ -319,7 +338,7 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
     if (!/\S/.test(reason) || reason.length > RESTORE_REASON_MAX) return restoreState(previous, { kind: 'reason-missing' });
     if (status.state !== 'ready' || root === null) return restoreState(previous, { kind: 'result', result: restoreResult('DATA_ROOT_NOT_READY', facts) });
 
-    const result = await rollback({ dataRoot: root, revisionId, expectedActiveRevisionId: expected, actor: WEB_ACTOR, reason, waitMs: 0 });
+    const result = await rollback({ dataRoot: root, revisionId, expectedActiveRevisionId: expected, actor: WEB_ACTOR, reason, acceptedRules, waitMs: 0 });
     if (result.outcome === 'ROLLED_BACK' && result.activation) return restoreState(previous, { kind: 'restored', sequence: result.activation.sequence, rebased: result.rebased !== false });
 
     // Every other answer reads the pointer again, as Publish's do, so the dialog says what's live now.
@@ -332,7 +351,13 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
         const blocking = result.plan?.blocking ?? result.issues.filter((issue) => issue.severity === 'error');
         reasons = blockingReasons(blocking, (photoId) => titles.get(photoId) || `Photograph ${photoId.slice(3, 11)}`);
     }
-    if (result.outcome !== 'NO_CHANGES' && result.outcome !== 'ACTIVE_CHANGED' && result.outcome !== 'CATALOG_LOCKED' && result.outcome !== 'VALIDATION_FAILED') {
+    if (result.outcome === 'ACCEPTANCE_REQUIRED') {
+        const titles = result.plan?.seriesTitles ?? {};
+        reasons = editorialWords(result.plan?.issues ?? [], result.unaccepted ?? [], (seriesId) => titles[seriesId] || `Series ${seriesId.slice(4, 12)}`);
+    }
+    // The expected stops, which the dialog explains, aren't logged.
+    const expectedStops = ['NO_CHANGES', 'ACTIVE_CHANGED', 'CATALOG_LOCKED', 'VALIDATION_FAILED', 'ACCEPTANCE_REQUIRED'];
+    if (!expectedStops.includes(result.outcome)) {
         console.error(`[curation] A restore from the Publish screen stopped: ${result.outcome}: ${result.message}`);
     }
     return restoreState(previous, {
