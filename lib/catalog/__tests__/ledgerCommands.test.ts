@@ -1,10 +1,13 @@
 // @vitest-environment node
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
     BREAKWATER,
     createPublishFixture,
     editBehindThePage,
     LOW_TIDE,
+    LOW_TIDE_IDS,
     PIER_LAMPS,
     reopenBreakwater,
     SALT_ROADS,
@@ -17,8 +20,9 @@ import { UsageError } from '../owner-cli';
 import { validateWorkingLayer } from '../publish';
 import { hashValue } from '../review';
 import { markFieldsReviewed, ReviewRefusedError } from '../review-write';
+import { identityPaths } from '../../identity/registry';
 import { readAuthoredRecord } from '../working-layer';
-import { AuthoredWriteError } from '../working-layer-writer';
+import { AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
 
 /**
  * #16's `photos diff` and `photos review` on the Publish screen's fixture:
@@ -48,15 +52,27 @@ async function candidateId(): Promise<string> {
     return result.candidateId;
 }
 
-async function json(): Promise<{ candidateId: string; activeRevisionId: string | null; empty: boolean; changes: CatalogChange[] }> {
+type JsonRow = Pick<CatalogChange, 'id' | 'record' | 'field' | 'category' | 'summary'> & { review: { state: string }; reviewable: boolean; reason: string | null; sharedWith: string[] } & Record<string, unknown>;
+
+async function json(): Promise<{ schemaVersion: number; candidateId: string; activeRevisionId: string | null; empty: boolean; rows: JsonRow[] }> {
     const result = await runDiffCommand(fixture.root, { json: true });
     expect(result.exitCode).toBe(0);
     return JSON.parse(result.output);
 }
 
-async function review(changeIds: string[], overrides: Partial<ReviewArgs> = {}) {
-    return runReviewCommand(fixture.root, { changeIds, expect: await candidateId(), expectActive: fixture.revisions[1], actor: 'keyur', ...overrides });
+async function review(changeIds: string[], overrides: Partial<ReviewArgs> = {}, hooks?: Parameters<typeof runReviewCommand>[2]) {
+    return runReviewCommand(fixture.root, { changeIds, expect: await candidateId(), expectActive: fixture.revisions[1], actor: 'keyur', ...overrides }, hooks);
 }
+
+/** Write a record through the tools, with `review` as the stamp's inputs. */
+async function rewrite(kind: 'series' | 'photo', id: string, change: (record: never) => object, review?: Parameters<typeof writeAuthoredRecord>[1]['review']) {
+    const record = await readAuthoredRecord(fixture.root, kind, id);
+    if (record === null) throw new Error(`No ${kind} ${id}`);
+    await writeAuthoredRecord(change(record as never) as never, { expectedVersion: record.version, root: fixture.root, ...(review ? { review } : {}) });
+}
+
+/** Both real paths of the fixture's data root, which a report must never print. */
+const absolute = () => [fixture.root, fs.realpathSync(fixture.root)];
 
 const versionOf = async (kind: 'series' | 'photo', id: string) => (await readAuthoredRecord(fixture.root, kind, id))?.version;
 
@@ -86,8 +102,44 @@ describe('photos diff', () => {
         expect(data.empty).toBe(false);
         const listed = [...text.matchAll(/^ {2}([0-9a-f]{16}) {2}/gm)].map((match) => match[1]);
         // The text lists the rows by group, the JSON in the diff's order; both have every row once.
-        expect([...listed].sort()).toEqual(data.changes.map((change) => change.id).sort());
-        expect(data.changes.find((change) => change.id === MOVED)).toMatchObject({ category: 'moved', review: { state: 'stale' }, stale: true });
+        expect([...listed].sort()).toEqual(data.rows.map((row) => row.id).sort());
+        expect(data.rows.find((row) => row.id === MOVED)).toMatchObject({ category: 'moved', review: { state: 'stale' }, stale: true });
+    });
+
+    it('gives JSON a versioned shape of its own, with whether photos review can mark each row and why not', async () => {
+        const data = await json();
+        expect(data.schemaVersion).toBe(1);
+        expect(Object.keys(data).sort()).toEqual(['activeRevisionId', 'activeRevisionNumber', 'candidateId', 'empty', 'rows', 'schemaVersion']);
+        const moved = data.rows.find((row) => row.id === MOVED);
+        expect(Object.keys(moved ?? {}).sort()).toEqual(['after', 'before', 'category', 'field', 'group', 'id', 'provenance', 'reason', 'record', 'review', 'reviewable', 'sharedWith', 'stale', 'summary', 'surfaces', 'visible']);
+        expect(moved).toMatchObject({ group: 'authored', reviewable: true, reason: null, sharedWith: [] });
+        expect(Object.keys((moved?.review as { fields: object[] }).fields[0]).sort()).toEqual(['detail', 'field', 'reason', 'record', 'state']);
+        expect(data.rows.find((row) => row.id === ADDED)).toMatchObject({ reviewable: false, reason: expect.stringMatching(/photos edit/) });
+        expect(data.rows.find((row) => row.category === 'derived')).toMatchObject({ group: 'derived', reviewable: false, reason: 'needs no review' });
+    });
+
+    it('shows the before and after of authored and route rows, cut at 200 characters, and no absolute path', async () => {
+        const photoId = LOW_TIDE_IDS[0];
+        await rewrite('photo', photoId, (photo: object) => ({ ...photo, caption: 'A'.repeat(450) }));
+        const output = (await runDiffCommand(fixture.root, { json: false })).output;
+        const lines = output.split('\n');
+        const short = lines.findIndex((line) => line.startsWith(`  ${changeId({ kind: 'series', id: LOW_TIDE }, 'shortStatement', 'authored')}  authored  `));
+        expect(lines.slice(short + 1, short + 3)).toEqual(['      Before: "Five mornings on the estuary before the water comes back."', '      After:  "Six mornings on the estuary before the water comes back."']);
+        const caption = lines.findIndex((line) => line.startsWith(`  ${changeId({ kind: 'photo', id: photoId }, 'caption', 'authored')}  authored  `));
+        expect(lines.slice(caption + 1, caption + 3)).toEqual(['      Before: (none)', `      After:  "${'A'.repeat(200)}…" (200 of 450 characters)`]);
+        for (const root of absolute()) expect(output).not.toContain(root);
+    });
+
+    it('names a file it cannot read relative to the data root, never by its absolute path', async () => {
+        // A damaged registry: the storage layer's error starts with the file's absolute path.
+        const dir = identityPaths(fixture.root).registry;
+        const newest = fs.readdirSync(dir).filter((name) => /^v\d+\.json$/.test(name)).sort((a, b) => Number(a.slice(1, -5)) - Number(b.slice(1, -5))).pop() as string;
+        fs.writeFileSync(path.join(dir, newest), '{damaged');
+        for (const result of [await runDiffCommand(fixture.root, { json: false }), await runReviewCommand(fixture.root, { changeIds: [MOVED], expect: `rev_${'a'.repeat(64)}`, expectActive: fixture.revisions[1], actor: 'keyur' })]) {
+            expect(result.exitCode).toBe(4);
+            expect(result.output).toMatch(/^\[photos\] STORAGE_ERROR: identity\/registry\/v\d+\.json is not a valid document/);
+            for (const root of absolute()) expect(result.output).not.toContain(root);
+        }
     });
 
     it('takes --json and nothing else', () => {
@@ -110,7 +162,7 @@ describe('photos review', () => {
         expect(series?.version).toBe((before ?? 0) + 1);
         expect(series?.review?.fields.photoIds).toMatchObject({ valueHash: hashValue(series?.photoIds), baseRevisionId: fixture.revisions[1], actor: 'keyur', origin: 'curator' });
         expect(await candidateId()).toBe(candidate);
-        expect((await json()).changes.find((change) => change.id === MOVED)?.review.state).toBe('reviewed');
+        expect((await json()).rows.find((row) => row.id === MOVED)?.review.state).toBe('reviewed');
         // Again: nothing left to do, and nothing written.
         const again = await review([MOVED]);
         expect(again.exitCode).toBe(0);
@@ -157,6 +209,40 @@ describe('photos review', () => {
         expect(await versionOf('series', SALT_ROADS)).toBe(before);
     });
 
+    it('refuses a move until every row that shares its review is named, and names them', async () => {
+        // A second move in Salt Roads, reviewed against revision 1 as the first was: both rows rest on one stamp of the order.
+        await rewrite('series', SALT_ROADS, (series: { photoIds: string[] }) => ({ ...series, photoIds: [series.photoIds[series.photoIds.length - 1], ...series.photoIds.slice(0, -1)] }), { baseRevisionId: fixture.revisions[0], actor: 'keyur', reviewedAt: '2026-10-24T09:12:00.000Z' });
+        const moves = (await json()).rows.filter((row) => row.category === 'moved' && row.record.id === SALT_ROADS);
+        expect(moves.length).toBeGreaterThanOrEqual(2);
+        const ids = moves.map((row) => row.id);
+        expect(moves[0].sharedWith).toEqual(ids.slice(1));
+        const text = (await runDiffCommand(fixture.root, { json: false })).output;
+        expect(text).toContain(`Once it's checked: photos review ${ids.join(' ')} --expect `);
+        const before = await versionOf('series', SALT_ROADS);
+        const one = await review([ids[0]]);
+        expect(one.exitCode).toBe(1);
+        expect(one.output).toMatch(/^\[photos\] REFUSED: /);
+        for (const id of ids.slice(1)) expect(one.output).toContain(id);
+        expect(one.output).toContain('Name them too');
+        expect(await versionOf('series', SALT_ROADS)).toBe(before);
+        const all = await review(ids);
+        expect(all.exitCode).toBe(0);
+        expect(all.output).toMatch(new RegExp(`^\\[photos\\] REVIEWED: Marked ${ids.length} rows reviewed`));
+    });
+
+    it('checks every record under one hold before it writes any, so a record that moves writes nothing', async () => {
+        // The Low Tide statement, written as a suggestion nobody reviewed: a row photos review may clear, in another record than the order.
+        await rewrite('series', LOW_TIDE, (series: object) => ({ ...series, statement: 'Mornings on the estuary, an hour before the tide.' }), { baseRevisionId: fixture.revisions[1], origin: 'generated', actor: 'rules', reviewedAt: '2026-10-25T08:30:00.000Z' });
+        const statement = changeId({ kind: 'series', id: LOW_TIDE }, 'statement', 'authored');
+        expect((await json()).rows.find((row) => row.id === statement)).toMatchObject({ reviewable: true });
+        const lowTide = await versionOf('series', LOW_TIDE);
+        // Salt Roads moves after photos review read the draft and before it writes.
+        const result = await review([statement, MOVED], {}, { afterRead: () => rewrite('series', SALT_ROADS, (series: object) => ({ ...series, title: 'Salt Roads, again' })) });
+        expect(result.exitCode).toBe(3);
+        expect(result.output).toContain('Nothing was written.');
+        expect(await versionOf('series', LOW_TIDE)).toBe(lowTide);
+    });
+
     it('refuses a change ID the diff does not have', async () => {
         const result = await review(['0123456789abcdef']);
         expect(result.exitCode).toBe(1);
@@ -201,6 +287,13 @@ describe("markFieldsReviewed(), the Publish screen's and photos review's one wri
         expect(await versionOf('photo', BREAKWATER)).toBe(photo.version);
     });
 
+    it("refuses a field a restore's rebase left in conflict, which only an edit settles", async () => {
+        await rewrite('series', SALT_ROADS, (series: object) => ({ ...series, conflicts: [{ field: 'photoIds', base: [], active: [] }] }));
+        const input = await target();
+        await expect(markFieldsReviewed(input)).rejects.toMatchObject({ constructor: ReviewRefusedError, code: 'conflict' });
+        expect(await versionOf('series', SALT_ROADS)).toBe(input.version);
+    });
+
     it('stamps what the caller saw', async () => {
         const input = await target();
         await markFieldsReviewed(input);
@@ -220,5 +313,16 @@ describe('photos diff and photos review, as commands', { timeout: 120_000 }, () 
         const done = await runTsx('scripts/photos.ts', ['review', MOVED, '--expect', candidate, '--expect-active', fixture.revisions[1]], { env });
         expect(done.code).toBe(0);
         expect(done.stdout).toContain('[photos] REVIEWED: ');
+    });
+});
+
+describe('module boundaries', () => {
+    it("keeps the Publish screen's view on the pure review reasons, away from the writer", () => {
+        const source = (file: string) => fs.readFileSync(path.join(__dirname, '..', '..', file), 'utf8');
+        const imports = (file: string) => [...source(file).matchAll(/^import (type )?[^;]*? from '([^']+)';$/gm)].map((match) => ({ type: Boolean(match[1]), from: match[2] }));
+        expect(imports('curation/publish-view.ts').map((entry) => entry.from)).not.toContain('../catalog/review-write');
+        expect(imports('curation/publish-view.ts').map((entry) => entry.from)).toContain('../catalog/review-reasons');
+        // Types only: no fs, no lock, no writer.
+        expect(imports('catalog/review-reasons.ts').every((entry) => entry.type)).toBe(true);
     });
 });

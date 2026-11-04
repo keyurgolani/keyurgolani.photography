@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { diffCatalog, type CatalogChange } from '../diff';
-import { fieldClass, PHOTO_FIELDS, SERIES_FIELDS, SITE_FIELDS, type FieldRegistry } from '../fields';
+import { AUTHORED_PHOTO_FIELDS, fieldClass, PHOTO_FIELDS, SERIES_FIELDS, SITE_FIELDS, type FieldRegistry } from '../fields';
 import { candidatePhotoRecordSchema, publicPhotoRecordSchema, revisionIdOf, seriesRecordSchema, siteRecordSchema } from '../schema';
 import { createTestCatalog, type TestCatalog } from '../testing';
 import type { CandidateContent, RevisionFile, SeriesRecord, WorkingLayer } from '../types';
@@ -71,9 +71,33 @@ function changed<T>(record: T, path: (string | number)[]): T {
 }
 
 const diffOf = (candidate: CandidateContent, authored: WorkingLayer | null = layer) => diffCatalog({ active, candidate, authored, registry: catalog.registry, review: EMPTY_REVIEW });
-/** Whether a change covers `field` of the record: its own row, a derived row listing it, or a move for the photo order. */
-const covers = (change: CatalogChange, kind: string, id: string, field: string) =>
-    change.record.kind === kind && change.record.id === id && (change.field === field || change.fields?.includes(field) || (field === 'photoIds' && change.field.startsWith('photoIds[')));
+/**
+ * Whether a change covers `field` of the record the way its class says: an
+ * authored or route field by its own row, a derived one in the derived row's
+ * list, the photo order by a move, the bytes by an asset row, and the capture
+ * date either way, since it's authored only while the record overrides it.
+ */
+function covers(change: CatalogChange, kind: 'site' | 'series' | 'photo', id: string, field: string): boolean {
+    if (change.record.kind !== kind || change.record.id !== id) return false;
+    const own = change.field === field;
+    switch (fieldClass(kind, field)) {
+        case 'authored':
+            return own && change.category === 'authored';
+        case 'route':
+            return own && change.category === 'route';
+        case 'members':
+            return change.category === 'moved' && change.field.startsWith('photoIds[');
+        case 'asset':
+            return own && change.category === 'asset';
+        case 'derived':
+            // A series' `derived` is its own row, listing the counts and dates inside it.
+            return change.category === 'derived' && (own || change.fields?.includes(field) === true);
+        case 'capture':
+            return (own && change.category === 'authored') || (change.category === 'derived' && change.fields?.includes(field) === true);
+        default:
+            return false;
+    }
+}
 
 beforeAll(async () => {
     catalog = await createTestCatalog({ photos: 6, series: 2 });
@@ -93,6 +117,22 @@ describe('the field registry', () => {
         expect(Object.keys(PHOTO_FIELDS).sort()).toEqual(Object.keys(candidatePhotoRecordSchema.shape).sort());
         expect(Object.keys(SERIES_FIELDS).sort()).toEqual(Object.keys(seriesRecordSchema.shape).sort());
         expect(Object.keys(SITE_FIELDS).sort()).toEqual(Object.keys(siteRecordSchema.shape).sort());
+    });
+
+    it('pins each class, so moving a field to another class fails here first', () => {
+        expect(PHOTO_FIELDS).toEqual({
+            id: 'id', assetRevision: 'asset',
+            alt: 'authored', title: 'authored', caption: 'authored', focalPoint: 'authored', crop: 'authored', accent: 'authored', credit: 'authored', location: 'authored',
+            capturedAt: 'capture',
+            profileId: 'derived', width: 'derived', height: 'derived', aspectRatio: 'derived', variants: 'derived', lqip: 'derived', technical: 'derived',
+        });
+        expect(AUTHORED_PHOTO_FIELDS).toEqual(['alt', 'title', 'caption', 'focalPoint', 'crop', 'accent', 'credit', 'location']);
+        expect(SERIES_FIELDS).toEqual({
+            id: 'id', slug: 'route', slugAliases: 'route',
+            title: 'authored', statement: 'authored', shortStatement: 'authored', chapters: 'authored', openingPhotoId: 'authored', cover: 'authored', accent: 'authored', carryOver: 'authored',
+            photoIds: 'members', derived: 'derived',
+        });
+        expect(SITE_FIELDS).toEqual({ featuredSeriesIds: 'authored' });
     });
 
     it("is a mapped type, so a table that leaves a field out or adds one doesn't compile", () => {
