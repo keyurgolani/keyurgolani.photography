@@ -176,7 +176,8 @@ test('two automatic failures in a row suspend playback with a polite note, and P
     await expectShown(page, HOME_OPENING);
     // The first tick finds after(1) failed and skips to after(2) at once, which fails too: playback suspends.
     await expect(status(page)).toHaveText('Some photographs couldn’t load.', { timeout: 20_000 });
-    await expect(status(page)).not.toHaveAttribute('aria-live', 'assertive');
+    // A polite notice: the status region, never an alert.
+    await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.locator('[data-playback]')).toHaveAttribute('data-playback', 'held');
     await expectShown(page, HOME_OPENING);
     await expect(play(page)).toBeAttached();

@@ -8,6 +8,7 @@ import type { HomeImage, HomePhoto, PublishedHome } from '@/lib/catalog/projecti
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from '../homeChromeConfig';
 import { HOME_AUTO_ADVANCE_MS } from '../homePlayback';
+import { setDocumentVisibility } from '@/test/visibility';
 
 // Like the real intro without its timers: loading while Home loads, revealing after, then settled.
 vi.mock('@/components/HeroReveal', async () => {
@@ -1132,7 +1133,9 @@ describe('CatalogHome', () => {
         fail(4);
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
         expect(failure()).toBe('Some photographs couldn’t load.');
-        expect(screen.getByRole('status')).not.toHaveAttribute('aria-live', 'assertive');
+        // A polite notice: in the status region, never an alert.
+        expect(screen.getByText('Some photographs couldn’t load.').closest('[role="status"]')).not.toBeNull();
+        expect(screen.queryByRole('alert')).toBeNull();
         expect(playback()).toBe('held');
         expect(holds()).toBe('');
         advance(HOME_AUTO_ADVANCE_MS * 3);
@@ -1189,12 +1192,15 @@ describe('CatalogHome', () => {
         expect(homeState()).toBe('ready');
       });
 
-      it('the opening walk never counts toward the suspension', async () => {
-        await renderHome();
-        fail(3);
-        load(0);
-        tick();
-        fail(4);
+      it('a walk past two failures never suspends, and photographs with no image files cost no request', async () => {
+        // 3 and 0 have no derivative set, so the walk passes both without asking for a file, and 4 is the first it fetches.
+        await renderHome(published({ photos: ORDER.map((n) => photo(n, n === 3 || n === 0 ? { image: null } : {})) }));
+        expect(failure()).toBe('');
+        expect(homeState()).toBe('ready');
+        expect(playback()).not.toBe('held');
+        expect(slideImage(4)).not.toBeNull();
+        load(4);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
         expect(playback()).toBe('advancing');
         expect(failure()).toBe('');
       });
@@ -1382,16 +1388,170 @@ describe('CatalogHome', () => {
       });
     });
 
-    describe('markers', () => {
-      it('marks the state and the revision on Home', async () => {
+    describe('review fixes', () => {
+      it('a photograph that hit the 6 s bound is tried again next time round, not skipped as failed (1)', async () => {
         await renderHome();
+        load(3);
+        tick();
+        advance(HOME_LOADING_TIMEOUT_MS);
+        // 0 timed out on Home's own move, so it skipped to 4.
+        load(4);
+        for (const n of [1, 3]) {
+          tick();
+          load(n);
+        }
+        tick();
+        // Back on 0, which now loads fine: Home waits for it instead of skipping it again.
+        expect(slideImage(0)).not.toBeNull();
+        load(0);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+        expect(failure()).toBe('');
+      });
+
+      it('a failure left behind clears, so coming back fetches it again (1)', async () => {
+        await renderHome();
+        load(3);
+        click('Next photograph');
+        fail(0);
+        const failedImage = slideImage(0);
+        click('Skip');
+        load(4);
+        click('Previous photograph');
+        expect(failure()).toBe('');
+        expect(slideImage(0)).not.toBe(failedImage);
+        load(0);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      });
+
+      for (const name of ['Next photograph', 'Pause slideshow']) {
+        it(`a walk that ends in image-unavailable keeps focus on ${name}, never on the body (2)`, async () => {
+          await renderHome();
+          focus(name);
+          fail(3);
+          fail(0);
+          expect(homeState()).toBe('image-unavailable');
+          expect(document.activeElement).not.toBe(document.body);
+          expect(document.activeElement).toBe(button(name));
+        });
+      }
+
+      it('a Retry that lands while suspended lifts the suspension and clears the notice (3)', async () => {
+        await renderHome();
+        load(3);
+        tick();
+        fail(0);
+        fail(4);
+        expect(failure()).toBe('Some photographs couldn’t load.');
+        click('Retry');
+        load(4);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
+        expect(failure()).toBe('');
+        expect(queryButton('Retry')).toBeNull();
+        expect(playback()).toBe('advancing');
+      });
+
+      it('image-unavailable keeps Next, and the visitor\'s Next that lands brings Home back (4)', async () => {
+        await renderHome();
+        fail(3);
+        fail(0);
+        expect(homeState()).toBe('image-unavailable');
+        click('Next photograph');
+        load(4);
         expect(homeState()).toBe('ready');
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
+        expect(holds()).toBe('');
+      });
+
+      it('the 6 s bound waits while the tab is hidden, counting only visible time from the move (5)', async () => {
+        await renderHome();
+        load(3);
+        click('Next photograph');
+        advance(3000);
+        act(() => setDocumentVisibility('hidden'));
+        advance(HOME_LOADING_TIMEOUT_MS * 3);
+        act(() => setDocumentVisibility('visible'));
+        advance(HOME_LOADING_TIMEOUT_MS - 3000 - 1);
+        expect(failure()).toBe('');
+        advance(1);
+        expect(failure()).toBe('Couldn’t load photograph 04 of 04');
+      });
+
+      it('a focused Skip that lands gives focus to Next, whichever control started the earlier move (6)', async () => {
+        await renderHome();
+        load(3);
+        focus('Previous photograph');
+        click('Previous photograph');
+        fail(1);
+        focus('Skip');
+        click('Skip');
+        // Skip moves on from 1 to 3, already decoded: it lands at once.
+        expect(queryButton('Skip')).toBeNull();
+        expect(document.activeElement).toBe(button('Next photograph'));
+      });
+
+      it('a focused Skip whose move fails too keeps focus on Skip (6)', async () => {
+        await renderHome();
+        load(3);
+        click('Next photograph');
+        fail(0);
+        focus('Skip');
+        click('Skip');
+        fail(4);
+        expect(document.activeElement).toBe(button('Skip'));
+      });
+
+      it('a focused Retry that leaves because the record came back with no image gives focus to Skip (7)', async () => {
+        const SIX = [0, 1, 2, 3, 4, 5];
+        const REVISION = `rev_${'a'.repeat(64)}`;
+        const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ({ ok: false, status: 503, json: async () => ({}) }) as unknown as Response);
+        await renderHome(published({ order: SIX, opening: 2, photos: [photo(1), photo(2), photo(3)] }));
+        const flushAll = () =>
+          act(async () => {
+            for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+          });
+        await flushAll();
+        load(2);
+        click('Next photograph');
+        load(3);
+        click('Next photograph');
+        await flushAll();
+        expect(failure()).toBe('Couldn’t load photograph 05 of 06');
+        fetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({ revisionId: REVISION, photos: [photo(3), photo(4, { image: null }), photo(5)] }) }) as unknown as Response);
+        focus('Retry');
+        click('Retry');
+        await flushAll();
+        expect(queryButton('Retry')).toBeNull();
+        expect(document.activeElement).toBe(button('Skip'));
+      });
+
+      it('says nothing when Home crosses into another series by itself, and names it after the visitor\'s move (8)', async () => {
+        await renderHome(looped());
+        load(3);
+        for (const n of [0, 4, 1, 8]) {
+          tick();
+          load(n);
+        }
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Fixture series B');
+        expect(screen.getByRole('status').textContent).toBe('');
+        for (const n of [9, 7, 3]) {
+          click('Next photograph');
+          load(n);
+        }
+        expect(screen.getByRole('status')).toHaveTextContent('Now showing Fixture series A');
+      });
+    });
+
+    describe('markers', () => {
+      it('marks the state and the revision on Home\'s main', async () => {
+        await renderHome();
+        expect(main()).toHaveAttribute('data-home-state', 'ready');
+        expect(document.querySelectorAll('[data-home-state]')).toHaveLength(1);
         expect(main()).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
       });
 
       it('marks the empty state, with the revision', async () => {
         await renderHome(EMPTY);
-        expect(homeState()).toBe('empty');
+        expect(main()).toHaveAttribute('data-home-state', 'empty');
         expect(main()).toHaveAttribute('data-catalog-revision', `rev_${'e'.repeat(64)}`);
       });
 
@@ -1399,7 +1559,7 @@ describe('CatalogHome', () => {
         const { default: CatalogHome } = await import('../CatalogHome');
         const host = document.createElement('div');
         host.innerHTML = renderToString(<CatalogHome home={published()} />);
-        expect(host.querySelector('[data-home-state]')).toHaveAttribute('data-home-state', 'ready');
+        expect(host.querySelector('main')).toHaveAttribute('data-home-state', 'ready');
         expect(host.querySelector('main')).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
       });
     });
