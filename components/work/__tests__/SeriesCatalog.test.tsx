@@ -108,7 +108,8 @@ describe('SeriesCatalog', () => {
         render(<SeriesCatalog work={entries} />);
         const images = [...document.querySelectorAll('img')];
         expect(images.map((image) => image.getAttribute('loading'))).toEqual(['eager', 'eager', 'lazy', 'lazy']);
-        expect(images.map((image) => image.getAttribute('fetchpriority'))).toEqual(['high', null, null, null]);
+        // The second at low priority, so the lead has the link to itself first on a slow phone (#172's LCP bar).
+        expect(images.map((image) => image.getAttribute('fetchpriority'))).toEqual(['high', 'low', null, null]);
         const links = preloadsIn(serverHtml(<SeriesCatalog work={entries} />));
         expect(links).toHaveLength(1);
         expect(links[0].getAttribute('imagesrcset')).toContain(REF(1).photoId);
@@ -215,18 +216,19 @@ describe('WorkCoverImage', () => {
     // #6's size rule, per crop: a cover crop asks for the wider of the box and the photograph at the box's height, a
     // contain one for the narrower. Boxes: 7 or 5 of the 12 columns at 3:2 or 4:5 above 768 px, less their share of the
     // column gaps, and the column at 4:3 below, the column being the window less its two gutters (2rem under 485 px,
-    // 6.6vw over it).
-    it('sizes each cover by its crop and its box, not by its span alone (#6)', () => {
+    // 6.6vw over it). Work then takes the one rung smaller the rule allows (rule 5): two thirds of what the box needs,
+    // under the next rung down but never two, since each rung is at least 1.5 times the one before.
+    it('sizes each cover by its crop and its box, a rung under the rule\'s, not by its span alone (#6)', () => {
         // A 3:2 photograph fills a wide 3:2 box exactly, and is 1.125 times a phone's 4:3 box wide.
-        expect(coverSizes(cover(1), 'wide')).toBe('(min-width: 768px) calc(53.44vw - 0.63rem), (min-width: 485px) 105.08vw, calc(112.5vw - 2.25rem)');
+        expect(coverSizes(cover(1), 'wide')).toBe('(min-width: 768px) calc(35.63vw - 0.42rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
         // In a narrow 4:5 box it's 1.875 boxes wide, so it asks for more than the box.
-        expect(coverSizes(cover(1), 'narrow')).toBe('(min-width: 768px) calc(70.23vw - 1.64rem), (min-width: 485px) 105.08vw, calc(112.5vw - 2.25rem)');
+        expect(coverSizes(cover(1), 'narrow')).toBe('(min-width: 768px) calc(46.82vw - 1.09rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
         // A 2:3 photograph shown whole sits at the box's height: five sixths of the 4:5 box, half the 4:3 one.
         expect(coverSizes(cover(1, { width: 1600, height: 2400, crop: 'contain' }), 'narrow')).toBe(
-            '(min-width: 768px) calc(31.22vw - 0.73rem), (min-width: 485px) 46.7vw, calc(50vw - 1rem)',
+            '(min-width: 768px) calc(20.81vw - 0.49rem), (min-width: 485px) 31.13vw, calc(33.33vw - 0.67rem)',
         );
         // A 2:3 photograph cropped to cover is cut to the box's width.
-        expect(coverSizes(cover(1, { width: 1600, height: 2400 }), 'wide')).toBe('(min-width: 768px) calc(53.44vw - 0.63rem), (min-width: 485px) 93.4vw, calc(100vw - 2rem)');
+        expect(coverSizes(cover(1, { width: 1600, height: 2400 }), 'wide')).toBe('(min-width: 768px) calc(35.63vw - 0.42rem), (min-width: 485px) 62.27vw, calc(66.67vw - 1.33rem)');
     });
 
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {

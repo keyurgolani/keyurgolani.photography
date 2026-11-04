@@ -278,7 +278,8 @@ test('Work: the first two covers load at once, only the first at high priority, 
     const { page } = await open(browser, 1280, '/work', TARGETS.work);
     try {
         const attributes = await page.locator(TARGETS.work).evaluateAll((images) => images.map((img) => [img.getAttribute('loading'), img.getAttribute('fetchpriority')]));
-        expect(attributes).toEqual(attributes.map((_, index) => [index < 2 ? 'eager' : 'lazy', index === 0 ? 'high' : null]));
+        // The second at low priority, so the lead has the link first (#172's LCP bar).
+        expect(attributes).toEqual(attributes.map((_, index) => [index < 2 ? 'eager' : 'lazy', index === 0 ? 'high' : index === 1 ? 'low' : null]));
     } finally {
         await page.context().close();
     }
@@ -291,7 +292,8 @@ test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more tha
         await page.goto(`${origin()}/work`);
         await waitForHydration(page);
         await page.waitForLoadState('networkidle');
-        // A 3:1 panorama cropped to cover is 2.25 boxes wide, so the rule itself gives it 1920w: it's left out here.
+        // A stated exception to #3's 800w cap: a 3:1 panorama cropped to cover is 2.25 boxes wide, so even a rung under
+        // the rule's it asks for 1200w here. Panoramas are left out of this case, and only of this one.
         const images = (await readImages(page, TARGETS.work)).filter((image) => lookOf.get(image.photoId)?.shape !== 'panorama');
         expect(images.length).toBeGreaterThan(4);
         for (const image of images) {
@@ -300,6 +302,20 @@ test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more tha
         }
     } finally {
         await context.close();
+    }
+});
+
+test('Work at 390 px and DPR 3: a 3:2 cover asks for w1200, the rung under the rule\'s w1920 (rule 5, #172\'s LCP bar)', async ({ browser }) => {
+    const { page, images } = await open(browser, 390, '/work', TARGETS.work);
+    try {
+        const landscape = images.filter((image) => lookOf.get(image.photoId)?.shape === 'landscape' && image.fit === 'cover');
+        expect(landscape.length).toBeGreaterThan(0);
+        for (const image of landscape) {
+            expect(rungFor(image.candidates, needed(image, 3)), 'the rule\'s rung').toBe(1920);
+            expect(rungFor(image.candidates, image.sizesPx * 3), image.length).toBe(1200);
+        }
+    } finally {
+        await page.context().close();
     }
 });
 
