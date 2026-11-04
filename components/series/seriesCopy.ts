@@ -5,15 +5,26 @@
  * the value).
  */
 
-import { heightCappedSizes } from '@/components/photoSizes';
+import { photoSizes, type PhotoBox } from '@/components/photoSizes';
 
 /**
- * The cover's sizes: the column (100vw less gutters), until the stylesheet's
- * 82svh height cap makes the box narrower than that, as it does for most
- * photographs on a wide screen (#6). Without its dimensions, the column.
+ * The cover's box: the column, the window less its two gutters, which are
+ * clamp(1rem, 3.3vw, 3rem) each (styles/tokens.css), so 2rem off under 485 px
+ * and 6.6vw off over it, and at most 82svh tall (SeriesPage.module.css).
+ */
+const COVER_BOXES: PhotoBox[] = [
+    { media: '(min-width: 485px)', vw: 93.4, heightVh: 82 },
+    { vw: 100, lessRem: 2, heightVh: 82 },
+];
+
+/**
+ * The cover's sizes by #6's size rule: drawn at its own shape, it's shown
+ * whole, so it asks for the column until the height cap makes the box
+ * narrower than that, as it does for most photographs on a wide screen.
+ * Without its dimensions, the column.
  */
 export const coverSizes = (image: { width: number; height: number } | null) =>
-    image === null ? '100vw' : heightCappedSizes(image.width, image.height, 82, [{ vw: 100 }]);
+    image === null ? '(min-width: 485px) 93.4vw, calc(100vw - 2rem)' : photoSizes(image, 'contain', COVER_BOXES);
 
 /** Sequence thumbnails, about a fifth of the row on wide screens, a third on tablets, and half on phones. */
 export const ENTRY_SIZES = '(min-width: 64rem) 20vw, (min-width: 40rem) 33vw, 50vw';

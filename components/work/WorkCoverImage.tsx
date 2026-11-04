@@ -4,14 +4,17 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection modules pull node:crypto in through lib/media/url.ts, which must stay out of the client bundle.
 import type { WorkCover } from '@/lib/catalog/projections/work';
-import { COVER_SIZES, type CoverSpan } from './coverSizes';
+import { coverSizes, type CoverSpan } from './coverSizes';
 import styles from './SeriesCatalog.module.css';
 
 export interface WorkCoverImageProps {
     /** The projection's cover, or null when it can't be shown. */
     cover: WorkCover | null;
-    /** The first cover: load at once at high priority, preloaded from the head, instead of lazily. */
-    eager?: boolean;
+    /**
+     * `lead` for the first cover: at once, at high priority, preloaded from the head. `eager` for the second: at once.
+     * The rest load lazily (#3).
+     */
+    loading?: 'lead' | 'eager' | 'lazy';
     /** Its entry's share of the row above 768 px (coverSpan()). */
     span?: CoverSpan;
 }
@@ -24,7 +27,7 @@ export interface WorkCoverImageProps {
  * the mount check looks too. An empty currentSrc means a lazy image that
  * hasn't started, which isn't a failure.
  */
-export default function WorkCoverImage({ cover, eager = false, span = 'wide' }: WorkCoverImageProps) {
+export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' }: WorkCoverImageProps) {
     const image = useRef<HTMLImageElement>(null);
     const [failed, setFailed] = useState(false);
 
@@ -51,10 +54,10 @@ export default function WorkCoverImage({ cover, eager = false, span = 'wide' }: 
                 ref={image}
                 asset={cover}
                 alt=""
-                sizes={COVER_SIZES[span]}
-                loading={eager ? 'eager' : 'lazy'}
-                fetchPriority={eager ? 'high' : undefined}
-                preload={eager}
+                sizes={coverSizes(cover, span)}
+                loading={loading === 'lazy' ? 'lazy' : 'eager'}
+                fetchPriority={loading === 'lead' ? 'high' : undefined}
+                preload={loading === 'lead'}
                 onError={() => setFailed(true)}
                 className={styles.cover}
             />
