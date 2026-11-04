@@ -126,8 +126,12 @@
  *     What a publish of the working layer would change for visitors: #16's
  *     ledger against the active revision, grouped as the Publish screen
  *     groups it, with the candidate ID, the live revision, each row's change
- *     ID and review state, and what a row that waits on a review needs.
- *     --json prints the same rows. Takes no lock and writes nothing. Exits 0,
+ *     ID and review state, an authored or route row's value before and
+ *     after (text cut at 200 characters), and what a row that waits on a
+ *     review needs. --json prints the same rows in a versioned shape,
+ *     schemaVersion 1, with whether photos review can mark each one
+ *     (README, "Reviewing what a publish changes"). Takes no lock and
+ *     writes nothing. Exits 0,
  *     3 when the data root isn't ready, and 4 when a catalog file is damaged
  *     or can't be read.
  *
@@ -140,8 +144,11 @@
  *     refuses a value or record that moved. It never clears a suggested
  *     description (write one with photos edit), a row whose Inbox item needs
  *     a decision again, or a rebase conflict, and it names every row: there
- *     is no --all. The actor is --actor or PHOTOS_ACTOR, and one is
- *     required. Publishes nothing. Exits 0 when marked or nothing was left
+ *     is no --all, and rows that share a stamp, such as two moves in one
+ *     series, are marked only with all of them named. It checks every
+ *     record under one hold on the authored lock before it writes any. The
+ *     actor is --actor or PHOTOS_ACTOR, and one is required. Publishes
+ *     nothing. Exits 0 when marked or nothing was left
  *     to mark, 1 when a row can't be marked here, so nothing was written, 2
  *     on a usage error, 3 when the draft, the live revision or a record
  *     moved, or the authored lock stays busy, and 4 for I/O.
@@ -332,7 +339,7 @@ const USAGE = `Usage:
         --confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site.
   ${PROGRAM} diff [--json]
   ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
-        Marks the rows photos diff printed reviewed, each named; there is no --all.
+        Marks the rows photos diff printed reviewed, each named, and rows that share a stamp together; there is no --all.
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
         --accept, once per editorial rule flagged on the target, brings it back with that error; it's the only flag that repeats.

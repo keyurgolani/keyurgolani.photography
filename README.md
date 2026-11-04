@@ -264,9 +264,11 @@ The first publish is the launch, so it stops and prints what it would change, wi
 
 #### Reviewing what a publish changes
 
-`photos diff` prints what publishing the draft would change for visitors, against the live revision: the Publish screen's ledger, in its groups (Authored, Derived, Source health), one row per change. Each row has its change ID, its kind, its review state and one line about it. A row that waits on a review says why under it, and either the `photos review` command that clears it or what clears it instead. The first lines give the candidate ID and the live revision. `--json` prints the same rows with every field. It takes no lock and writes nothing.
+`photos diff` prints what publishing the draft would change for visitors, against the live revision: the Publish screen's ledger, in its groups (Authored, Derived, Source health), one row per change. Each row has its change ID, its kind, its review state and one line about it. An authored or route row shows its value before and after, with text over 200 characters cut and its full length given. A row that waits on a review says why under it, and either the `photos review` command that clears it or what clears it instead. The first lines give the candidate ID and the live revision. It takes no lock and writes nothing.
 
-`photos review <changeId>... --expect <candidateId> --expect-active <revisionId | none> --actor <name>` marks rows reviewed once you've checked them, as the Publish screen's **Still right, mark reviewed** does, through the same code. Use it for a review that went stale (a rollback published the field differently, or the photograph got new bytes) or a change made by hand, when the value is still right:
+`--json` prints the same rows as one object, `{ schemaVersion: 1, candidateId, activeRevisionId, activeRevisionNumber, empty, rows }`. Each row has `id`, `group` (`authored`, `derived` or `health`), `record` (`kind` and `id`), `field`, `category`, `before`, `after`, `fields` and `causedBy` where they apply, `visible`, `surfaces`, `provenance`, `review` (its `state`, and each field it rests on with its `record`, `field`, `state`, `reason` and `detail`), `stale`, `summary`, `reviewable` (whether `photos review` can mark it), `reason` (why not, or null), and `sharedWith` (the rows marked with it). A new field keeps `schemaVersion` at 1; one that goes or changes meaning moves it on.
+
+`photos review <changeId>... --expect <candidateId> --expect-active <revisionId | none> --actor <name>` marks rows reviewed once you've checked them, as the Publish screen's **Mark reviewed** and **Still right, mark reviewed** do, through the same code. Use it for a review that went stale (a rollback published the field differently, or the photograph got new bytes) or a change made by hand, when the value is still right:
 
 ```bash
 photos diff
@@ -274,10 +276,11 @@ photos review ac623795a52b1646 --expect rev_<candidate> --expect-active rev_<liv
 photos diff
 ```
 
-- `--expect` and `--expect-active` are the candidate and the live revision `photos diff` printed. If the draft or the live revision changed since, it writes nothing and exits 3: run `photos diff` again and check what changed. A record that moves while it writes stops it the same way.
+- `--expect` and `--expect-active` are the candidate and the live revision `photos diff` printed. If the draft or the live revision changed since, it writes nothing and exits 3: run `photos diff` again and check what changed.
 - It stamps each field a row waits on with the value the draft holds, against the live revision. It writes no value and publishes nothing, and the candidate stays the same, so `publish --expect` still takes it.
-- It refuses a suggested description (write the one you want with `photos edit`), a row whose Inbox item needs a decision again (decide it with `curation`), and a field a restore left in conflict (settle it with `photos edit`). If any row named can't be marked, it marks none of them and exits 1.
-- Name each row. There is no `--all`, so a publish never goes out on rows nobody looked at.
+- It refuses a suggested description (write the one you want with `photos edit`), a row whose Inbox item needs a decision again (decide it with `curation`), and a field a restore left in conflict (settle it with `photos edit`). If any row named can't be marked, it writes nothing and exits 1.
+- Name each row. There is no `--all`, so a publish never goes out on rows nobody looked at. Rows that rest on one stamp are marked together: two moves in one series share its order's stamp, and so does a new photograph placed in it. `photos review` refuses one of them until every one is named, and lists the IDs it also needs. `photos diff` puts them all in the row's command.
+- It checks every record under one hold on the authored lock before it writes any, so a refusal, a record that moved since `photos diff`, or a busy lock writes nothing. Only an I/O error part way through the writes can leave some records marked. It then names the records it was writing, and `photos diff` shows which got marked.
 - It exits 0 when it marked the rows or there was nothing left to mark, 1 when a row can't be marked here, 2 on a usage error, 3 when the draft, the live revision or a record moved, the authored lock stays busy, or the data root isn't ready, and 4 for I/O. `diff` exits 0 once it reads the catalog, 3 when the data root isn't ready, and 4 when a catalog file is damaged.
 
 #### History and rollback
