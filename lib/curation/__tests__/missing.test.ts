@@ -882,12 +882,22 @@ describe('an ambiguous item (#14)', { timeout: 60_000 }, () => {
         expect((await listEvents(w.root)).events).toEqual(before);
     });
 
-    it('closes once its photos identity bind is applied', async () => {
+    it('closes once its photos identity bind is applied, and so does the other path once the bind leaves it unheld', async () => {
         const w = await world();
         await inDoubt(w);
+        const [copyId, otherId] = [(await itemAt(w, COPY_PATH)).id, (await itemAt(w, P_PATH)).id];
         await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
         await w.pass();
-        expect(await itemAt(w, COPY_PATH)).toMatchObject({ status: 'resolved' });
+        const registry = await w.registry();
+        expect(registry.photos[w.p].source).toMatchObject({ path: COPY_PATH, observedRevision: w.a });
+        expect(registry.holds).toEqual([]);
+        expect(await w.event(copyId)).toMatchObject({ status: 'resolved', derivedFacts: { sourcePath: COPY_PATH } });
+        expect((await w.event(copyId)).decisions.at(-1)).toMatchObject({ reason: CLOSE_REASONS.identified(w.p) });
+        // With P gone from its old path, the other bytes there are a photograph of their own.
+        const other = photoAt(registry, P_PATH) as string;
+        expect(other).toBeDefined();
+        expect(other).not.toBe(w.p);
+        expect((await w.event(otherId)).decisions.at(-1)).toMatchObject({ action: 'close', reason: CLOSE_REASONS.identified(other) });
         await inStep(w);
     });
 
