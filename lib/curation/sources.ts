@@ -35,6 +35,9 @@ import { SINK_WAIT_MS } from './sink';
  *   anything shows the photo.
  * - A `new` item closes once a `bind` merged its photo into the missing one.
  * - A `new` item closes once its photo is archived, approved or not.
+ * - An `ambiguous` item closes once #10 holds its bytes in doubt no more:
+ *   a `photos identity bind` or `new` applied, or the held file changed or
+ *   left. #14's sink opens it again if #10 holds the same bytes again.
  * - A build #10's worker left failed, after its retry at start, gets a
  *   `processing-failure` item, unless a replacement item already carries it.
  *   It closes once the set builds, as after #14's retry, or once the photo
@@ -45,7 +48,8 @@ import { SINK_WAIT_MS } from './sink';
  * the registry once and settles only the photos the pass's facts name, the
  * photos whose settle after a build failed, and the photos retired since
  * the last delivery, since an archive or a merge #10 applies names no fact
- * of its own.
+ * of its own. A delivery after a hold ended looks at every item, since an
+ * ambiguous item's subject is its bytes, which no photo's items list.
  *
  * Nothing here deletes, archives, unpublishes, or writes anything outside
  * `curation/`. It reads the registry without its lock and takes only the
@@ -135,6 +139,24 @@ export function archivedChange(event: CurationEvent, registry: Registry, at: str
     const photo = photoOf(registry, event.photoId);
     if (photo?.sourceHealth !== 'archived' || photo.mergedInto !== undefined) return null;
     return withDecision(event, watcherDecision('close', at, CLOSE_REASONS.archived), { status: 'resolved' });
+}
+
+/**
+ * An open, deferred, or failed `ambiguous` item whose bytes no hold of #10's
+ * registry has any more, resolved, or null. Deferred too: once nothing is in
+ * doubt, there is no question left to leave for later. A deferred
+ * replacement, by contrast, stays deferred (lib/curation/candidates.ts).
+ * While the same bytes are held at another path, the item stays open. A decision ends the hold, and so
+ * does the held file changing or leaving. The close names the photograph
+ * present on those bytes, the one at the item's path first, when there is one.
+ */
+export function ambiguousChange(event: CurationEvent, registry: Registry, at: string): CurationEvent | null {
+    if (event.type !== 'ambiguous' || event.assetRevision === null || !STILL_OPEN.has(event.status)) return null;
+    if (registry.holds.some((held) => held.assetRevision === event.assetRevision)) return null;
+    const owners = Object.values(registry.photos).filter((photo) => isPresent(photo) && photo.source.observedRevision === event.assetRevision);
+    const owner = owners.find((photo) => photo.source.path === event.derivedFacts.sourcePath) ?? owners.sort((a, b) => (a.photoId < b.photoId ? -1 : 1))[0];
+    const reason = owner ? CLOSE_REASONS.identified(owner.photoId) : CLOSE_REASONS.unheld;
+    return withDecision(event, watcherDecision('close', at, reason), { status: 'resolved' });
 }
 
 const sameFailure = (a: Candidate | undefined, b: Candidate) => a?.state === b.state && a.profileId === b.profileId && a.failure === b.failure;
@@ -235,7 +257,8 @@ function changesFor(events: readonly CurationEvent[], registry: Registry, at: st
     const byId = new Map(events.map((event) => [event.id, event]));
     const changes: CurationEvent[] = [];
     for (const event of events) {
-        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? archivedChange(event, registry, at) ?? staleFailureChange(event, registry, at);
+        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? archivedChange(event, registry, at) ?? staleFailureChange(event, registry, at)
+            ?? ambiguousChange(event, registry, at);
         if (next) changes.push(next);
     }
     const photos = only === undefined ? Object.values(registry.photos) : only.map((photoId) => photoOf(registry, photoId)).filter((photo): photo is PhotoRecord => photo !== undefined);
@@ -350,6 +373,9 @@ export function namedPhotos(facts: readonly IdentityFact[]): string[] {
 }
 
 const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos).filter(isRetired).map((photo) => photo.photoId));
+const heldIn = (registry: Registry) => new Set(registry.holds.map((held) => `${held.assetRevision}|${held.path}`));
+/** Whether a delivered `ambiguous` fact's bytes are held by no hold now: one that started and ended between deliveries. */
+const unheldFact = (facts: readonly IdentityFact[], registry: Registry) => facts.some((fact) => fact.type === 'ambiguous' && !registry.holds.some((held) => held.assetRevision === fact.assetRevision));
 
 /**
  * A fact sink that runs after #14's sink has opened the pass's items. Its
@@ -358,7 +384,10 @@ const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos)
  * photos the facts name, those `owed` holds, whose settle after a build
  * failed, and those retired since the last delivery that succeeded, since
  * #10 applies an archive, or retires a merged photo, without a fact for it.
- * The pass delivers its pending facts until every sink has them, so a
+ * One after a hold ended settles every item, as the first does, so the
+ * ambiguous item it held closes: a hold this sink saw last time and doesn't
+ * now, or the bytes of a delivered `ambiguous` fact that no hold has, as
+ * when the hold started and ended between two of this sink's deliveries. The pass delivers its pending facts until every sink has them, so a
  * delivery that failed names them again, and an owed photo stays owed until
  * a delivery settles it. Like #14's sink, an I/O or lock error fails the
  * delivery.
@@ -366,19 +395,23 @@ const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos)
 export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
     const { root, owed, ...rest } = options;
     let retired: Set<string> | null = null;
+    let held: Set<string> | null = null;
     return async (facts) => {
         const at = readyRoot(root);
         const registry = await readRegistry(at);
         const now = retiredIn(registry);
+        const holding = heldIn(registry);
         const known = retired;
+        const ended = held === null || [...held].some((hold) => !holding.has(hold)) || unheldFact(facts, registry);
         const taken = owed?.take();
-        if (known === null) await settleSources(at, { ...rest, registry });
+        if (known === null || ended) await settleSources(at, { ...rest, registry });
         else {
             const owedPhotos = (taken?.refs ?? []).map((ref) => ref.photoId);
             await settleSources(at, { ...rest, registry, only: [...namedPhotos(facts), ...owedPhotos, ...[...now].filter((photoId) => !known.has(photoId))] });
         }
         taken?.settled();
         retired = now;
+        held = holding;
     };
 }
 
