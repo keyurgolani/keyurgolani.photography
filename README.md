@@ -212,7 +212,7 @@ The commands:
 - `edit <record>`: any other change to a record, below.
 - `curation list | show | edit | approve | defer | dismiss | retry | reopen`: the draft inbox the watcher fills as photographs arrive, change, or go missing. `approve` places a new photograph in the draft, and nothing publishes until `publish`. A new photograph you place with `sequence set` or `insert`, or one already published, needs no judgment while a series' sequence or the live revision holds it, until its file changes: `list` counts it as already placed and leaves it out unless you pass `--all` or `--status`. `photos` with no command prints each form, and [docs/data-root.md](docs/data-root.md#curation-inbox) has the suggestion rules.
 - `validate`, then `publish --actor <name>`, as above. Both refuse a change visitors would see that nobody reviewed or whose review went stale, such as a field edited by hand, or a description reviewed for bytes a replacement since changed. [docs/data-root.md](docs/data-root.md#review-state) says what makes a review stale and how to clear it.
-- `history` and `rollback`, below.
+- `history`, `rollback` and `verify`, below.
 
 `status` to `series`, and `edit` below, exit 0 when they worked, 1 when they refused or the data root isn't ready or isn't set, 2 on a usage error, 3 while another command holds the authored records or when a record changed underneath it, and 4 on an I/O error. `validate` and `publish` keep slice B's codes: 0 when valid or published, 1 on validation errors, 2 on a usage error, 4 when a catalog file is damaged or an I/O error stops them, and 3 on any other stop, such as a data root that isn't ready or isn't set, a busy lock, or the first publish's launch stop. A flag given twice is refused, and an argument that starts with `-`, such as a chapter title, goes after `--`: `photos sequence chapter add <seriesId> --start <photoId> -- "-30 at dawn"`. Every `sequence` and `series` change takes `--expect-version <N>`, the version `sequence show` or the last change printed, so it stops if someone else changed the record in between.
 
@@ -286,6 +286,22 @@ In production both run in `image-watcher`'s container like the other commands. `
 ```bash
 docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs history
 docker compose -f docker-compose.prod.yml run --rm --no-deps -T -e PHOTOS_ACTOR=<name> image-watcher node dist/scripts/photos.mjs rollback --to 3 --reason "revert the caption change" --yes --expect-active <revisionId> --accept <ruleId>
+```
+
+#### Verify
+
+`photos verify` checks the catalog the way a restore needs it. For every revision file, and every revision an activation names, it checks that the file parses and hashes to its name, and that every rule passes on it: an integrity error fails the revision, and an editorial one, which a rollback can accept, only warns. Then it checks every `/media` set the revision publishes: each file its manifest lists is there, at its size, with its SHA-256. A set that several revisions share is hashed once. Last it checks the chain: the active pointer names an activation record for its revision, every earlier activation a record names exists, and committed activations have a pointer. It prints one line per revision, oldest first, says whether a rollback can return to it, and names the fix for anything that fails, such as the set folder to put back from your archive. It reads the data root only, never the library, takes no lock, and runs only when you run it: nothing runs it on a schedule or after a publish.
+
+```bash
+photos verify
+photos verify --revision <revisionId>   # one revision, recorded nowhere
+photos verify --json
+```
+
+A full run records its result in `status/verify.json`, which the curator's Publish screen reads for its rollback-ready line ([docs/curator.md](docs/curator.md)). `--revision` checks one revision without the chain and writes nothing, so it can't replace a recorded failure. If the data root can't be written, it says so, and the exit code stays what the checks say. It exits 0 when the live revision and the chain pass, even if an older revision fails, 1 when either fails, 2 on a usage error, 3 when the data root isn't ready, and 4 when the registry or an activation record can't be read, or an I/O error stops it. Run it after a restore ([docs/data-root.md](docs/data-root.md#restoring)) and after upgrading. It reads every set, so it takes a while on a large library:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs verify
 ```
 
 #### Cleanup
