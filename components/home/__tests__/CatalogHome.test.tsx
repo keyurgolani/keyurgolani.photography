@@ -1243,6 +1243,39 @@ describe('CatalogHome', () => {
         expect(failure()).toBe('');
       });
 
+      it('a photograph still loading at #18\'s 6 s bound counts as failed, so a stalled one never stops Home', async () => {
+        await renderHome();
+        load(3);
+        tick();
+        advance(HOME_LOADING_TIMEOUT_MS - 1);
+        expect(mountedIds()).not.toContain(id(1));
+        advance(1);
+        // Home's own move: skipped past at once, to 4, whose next is 1.
+        expect(mountedIds()).toContain(id(4));
+        expect(failure()).toBe('');
+        load(4);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
+      });
+
+      it('the visitor\'s move still loading at 6 s says so, and a late arrival still lands', async () => {
+        await renderHome();
+        load(3);
+        click('Next photograph');
+        advance(HOME_LOADING_TIMEOUT_MS);
+        expect(failure()).toBe('Couldn’t load photograph 04 of 04');
+        load(0);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+        expect(failure()).toBe('');
+      });
+
+      it('the opening has no such bound: a slow opening keeps loading, and nothing walks past it', async () => {
+        await renderHome();
+        advance(HOME_LOADING_TIMEOUT_MS * 3);
+        expect(mountedIds()).toEqual([id(3)]);
+        load(3);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      });
+
       it('a failure while paused is offered, never skipped on Home\'s own account', async () => {
         await renderHome();
         load(3);
