@@ -37,6 +37,8 @@ interface Options {
   initial: readonly HomePhoto[];
   /** The position useHomePlayback is on. */
   index: number;
+  /** Ask a step ahead of `index` in the direction of travel. Off, only a missing record at `index` is asked for: Home's opening walk. */
+  ahead?: boolean;
 }
 
 const mod = (value: number, count: number) => ((value % count) + count) % count;
@@ -59,7 +61,7 @@ const mod = (value: number, count: number) => ((value % count) + count) % count;
  * - Anything else that fails marks the photos it was for as failed, which
  *   Home shows with Retry and Skip. Already loaded photographs stay usable.
  */
-export function useHomeRecords({ revisionId, photoIds, seriesOf, initial, index }: Options): HomeRecords {
+export function useHomeRecords({ revisionId, photoIds, seriesOf, initial, index, ahead = true }: Options): HomeRecords {
   const router = useRouter();
   const routes = useSiteRoutes();
   const [records, setRecords] = useState<ReadonlyMap<string, HomePhoto>>(() => new Map(initial.map((record) => [record.id, record] as const)));
@@ -162,12 +164,12 @@ export function useHomeRecords({ revisionId, photoIds, seriesOf, initial, index 
     previous.current = index;
     // Backwards on Previous, including the wrap from the first photograph to the last; forwards otherwise.
     const step = (from === 0 && index === count - 1 && count > 2) || (index === from - 1) ? -1 : 1;
-    const wanted = [index - step, index, index + step, index + 2 * step].map((value) => photoIds[mod(value, count)]);
+    const wanted = (ahead ? [index - step, index, index + step, index + 2 * step] : [index]).map((value) => photoIds[mod(value, count)]);
     const missing = (id: string) => !records.has(id) && !pending.current.has(id) && !failed.has(id);
     if (!wanted.some(missing)) return;
     const current = photoIds[index];
     request(missing(current) ? current : photoIds[mod(index + step, count)]);
-  }, [index, photoIds, records, failed, request]);
+  }, [index, photoIds, records, failed, request, ahead]);
 
   const retry = useCallback(
     (photoId: string) => {

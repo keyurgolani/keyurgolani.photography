@@ -225,10 +225,13 @@ describe('CatalogHome', () => {
       }
       expect(seen).toEqual([3, 0, 4, 1, 3].map(id));
       click('Previous photograph');
+      load(1);
       expect(position()).toBe('02 / 04');
       click('Previous photograph');
+      load(4);
       expect(position()).toBe('01 / 04');
       click('Previous photograph');
+      load(0);
       expect(position()).toBe('04 / 04');
     });
 
@@ -288,9 +291,8 @@ describe('CatalogHome', () => {
       click('Next photograph');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
       expect(within(shownSlide() as HTMLElement).getByRole('img')).toHaveAttribute('alt', 'Described photograph 0');
-      // The opening loading late, off screen, doesn't end loading: the photograph on screen hasn't come.
-      load(3);
-      expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      // The opening never showed, so it leaves at once, with nothing to fade, and stops fetching.
+      expect(slideImage(3)).toBeNull();
       expect(loading()).toBe('true');
       load(0);
       expect(loading()).toBe('false');
@@ -371,6 +373,8 @@ describe('CatalogHome', () => {
       advance(HOME_AUTO_ADVANCE_MS - 1);
       expect(position()).toBe('03 / 04');
       advance(1);
+      // The next one was mounted, and loads: the move lands.
+      load(0);
       expect(position()).toBe('04 / 04');
     });
 
@@ -408,8 +412,9 @@ describe('CatalogHome', () => {
           expect(holds()).toBe('');
           expect(screen.getByRole('status').textContent).toBe('');
         } else {
+          // Every image failed before hydration: the opening walk tries the next, which failed too.
           expect(holds()).toBe('no-photo');
-          expect(failure()).toBe('Photograph 03 of 04 couldn’t load.');
+          expect(failure()).toBe('These photographs can’t be shown right now.');
         }
       });
     }
@@ -423,6 +428,7 @@ describe('CatalogHome', () => {
       expect(position()).toBe('03 / 04');
       click('Play slideshow');
       advance(HOME_AUTO_ADVANCE_MS);
+      load(0);
       expect(position()).toBe('04 / 04');
     });
 
@@ -497,6 +503,7 @@ describe('CatalogHome', () => {
         outside.focus();
       });
       advance(HOME_AUTO_ADVANCE_MS);
+      load(0);
       expect(position()).toBe('04 / 04');
       expect(document.activeElement).toBe(outside);
     });
@@ -514,6 +521,7 @@ describe('CatalogHome', () => {
       expect(holds()).toBe('');
       expect(playback()).toBe('advancing');
       advance(HOME_AUTO_ADVANCE_MS);
+      load(0);
       expect(position()).toBe('04 / 04');
     });
 
@@ -531,13 +539,13 @@ describe('CatalogHome', () => {
       await renderHome();
       load(3);
       click('Next photograph');
-      expect(position()).toBe('04 / 04');
-      // Until the next one loads, the one before stays on screen.
+      // Until the next one loads, the one before stays on screen, and the position with it.
+      expect(position()).toBe('03 / 04');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
       fail(0);
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
       expect(slideImage(3)).toBeInTheDocument();
-      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 04 of 04');
       expect(button('Retry')).toBeInTheDocument();
       expect(button('Skip')).toBeInTheDocument();
       expect(loading()).toBe('false');
@@ -551,13 +559,15 @@ describe('CatalogHome', () => {
       fail(0);
       const failed = slideImage(0);
       click('Retry');
-      expect(failure()).toBe('');
-      expect(queryButton('Retry')).toBeNull();
+      // Retry stays, with its note, until its photograph lands.
+      expect(button('Retry')).toBeInTheDocument();
       // A new element, since a failed image's decode() doesn't fetch again.
       expect(slideImage(0)).not.toBe(failed);
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
       load(0);
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      expect(failure()).toBe('');
+      expect(queryButton('Retry')).toBeNull();
     });
 
     it('Skip moves on in authored order, and a failure stays offered when the visitor comes back to it', async () => {
@@ -566,23 +576,23 @@ describe('CatalogHome', () => {
       click('Next photograph');
       fail(0);
       click('Skip');
+      load(4);
       expect(position()).toBe('01 / 04');
       expect(failure()).toBe('');
-      load(4);
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
       click('Previous photograph');
-      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 04 of 04');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
     });
 
-    it('a failed opening ends loading with the chrome held up, and the next photograph that loads releases it', async () => {
+    it('a walk that gives up ends loading with the chrome held up, and the photograph Retry brings releases it', async () => {
       await renderHome();
       fail(3);
+      fail(0);
       expect(loading()).toBe('false');
       expect(holds()).toBe('no-photo');
       expect(main()).toHaveAttribute('data-interface-state', 'interactive');
-      expect(failure()).toBe('Photograph 03 of 04 couldn’t load.');
-      click('Skip');
+      click('Retry');
       load(0);
       expect(holds()).toBe('');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
@@ -594,31 +604,30 @@ describe('CatalogHome', () => {
       load(3);
       click('Next photograph');
       fail(0);
-      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 04 of 04');
       load(0);
       expect(failure()).toBe('');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
     });
 
-    it('a missing opening set is already offered in the server HTML', async () => {
+    it('a missing opening set says nothing in the server HTML, since the client walks past it', async () => {
       const { default: CatalogHome } = await import('../CatalogHome');
       const photos = ORDER.map((n) => photo(n, n === 3 ? { image: null } : {}));
       const host = document.createElement('div');
       host.innerHTML = renderToString(<CatalogHome home={published({ photos })} />);
-      expect(host.querySelector('[role="status"]')?.textContent).toBe('Photograph 03 of 04 couldn’t load.');
-      expect([...host.querySelectorAll('button')].map((button) => button.textContent)).toContain('Skip');
+      expect(host.querySelector('[role="status"]')?.textContent).toBe('');
+      expect([...host.querySelectorAll('button')].map((button) => button.textContent)).not.toContain('Skip');
     });
 
-    it('a missing derivative set shows the missing image with Skip, and no Retry', async () => {
+    it('a missing opening derivative set walks on to the next photograph, which ends loading', async () => {
       const photos = ORDER.map((n) => photo(n, n === 3 ? { image: null } : {}));
       await renderHome(published({ photos }));
       expect(slideImage(3)).toBeNull();
-      expect(loading()).toBe('false');
-      expect(holds()).toBe('no-photo');
-      expect(failure()).toBe('Photograph 03 of 04 couldn’t load.');
-      expect(queryButton('Retry')).toBeNull();
-      click('Skip');
+      expect(loading()).toBe('true');
+      expect(failure()).toBe('');
       load(0);
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      expect(loading()).toBe('false');
       expect(holds()).toBe('');
     });
 
@@ -628,8 +637,10 @@ describe('CatalogHome', () => {
       load(3);
       click('Next photograph');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
-      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 04 of 04');
       expect(button('Skip')).toBeInTheDocument();
+      // Nothing to fetch again.
+      expect(queryButton('Retry')).toBeNull();
     });
 
     it('a one-photograph series that fails offers Retry alone', async () => {
@@ -770,9 +781,10 @@ describe('CatalogHome', () => {
       expect([heading(), enter()]).toEqual(['Fixture series A', '/work/fixture-a']);
       expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
       expect(status().textContent).toBe('');
-      // The position follows Previous and Next, as it always has.
-      expect(position()).toBe('02 / 03');
+      // The position stays with the photograph on screen too (#4's commit model).
+      expect(position()).toBe('02 / 04');
       load(8);
+      expect(position()).toBe('02 / 03');
       expect([heading(), enter()]).toEqual(['Fixture series B', '/work/fixture-b']);
       expect(status()).toHaveTextContent('Now showing Fixture series B');
     });
@@ -784,7 +796,7 @@ describe('CatalogHome', () => {
       click('Next photograph');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
       expect(heading()).toBe('Fixture series A');
-      expect(status().textContent).toBe('Photograph 02 of 03 in Fixture series B couldn’t load.');
+      expect(status().textContent).toBe('Couldn’t load photograph 02 of 03 in Fixture series B');
       // Skip moves on to 9, which loads: now B is on screen, so the chrome and the announcement follow.
       click('Skip');
       load(9);
@@ -799,7 +811,7 @@ describe('CatalogHome', () => {
       expect(status().textContent).toBe('Now showing Fixture series B');
       click('Next photograph');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
-      expect(status().textContent).toBe('Photograph 03 of 03 couldn’t load.');
+      expect(status().textContent).toBe('Couldn’t load photograph 03 of 03');
       // And it doesn't come back when the note goes.
       click('Next photograph');
       load(7);
@@ -917,7 +929,7 @@ describe('CatalogHome', () => {
       load(3);
       click('Next photograph');
       await flush();
-      expect(position()).toBe('05 / 06');
+      expect(position()).toBe('04 / 06');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
       expect(failure()).toBe('');
       expect(queryButton('Retry')).toBeNull();
@@ -932,15 +944,16 @@ describe('CatalogHome', () => {
       load(3);
       click('Next photograph');
       await flush();
-      expect(failure()).toBe('Photograph 05 of 06 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 05 of 06');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
       fetch.mockImplementation(async () => ok([3, 4, 5]));
       const before = live(fetch).length;
       click('Retry');
       await flush();
       expect(live(fetch).slice(before)).toEqual([href(4)]);
-      expect(failure()).toBe('');
       expect(document.querySelector(`[data-photo-id="${id(4)}"] img`)).not.toBeNull();
+      load(4);
+      expect(failure()).toBe('');
     });
 
     it('ignores records from another revision, so two revisions never mix', async () => {
@@ -953,7 +966,7 @@ describe('CatalogHome', () => {
       click('Next photograph');
       await flush();
       expect(document.querySelector(`[data-photo-id="${id(4)}"] img`)).toBeNull();
-      expect(failure()).toBe('Photograph 05 of 06 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 05 of 06');
     });
 
     it('re-renders from the new revision once on a 409, however many requests get one', async () => {
@@ -1012,7 +1025,10 @@ describe('CatalogHome', () => {
       });
       const settle = (n: number, how: 'resolve' | 'reject') =>
         act(async () => {
-          for (const entry of waiting.get(id(n)) ?? []) (how === 'resolve' ? entry.resolve() : entry.reject(new Error('EncodingError')));
+          for (const entry of waiting.get(id(n)) ?? []) {
+            if (how === 'resolve') entry.resolve();
+            else entry.reject(new Error('EncodingError'));
+          }
           waiting.delete(id(n));
           await Promise.resolve();
         });
@@ -1058,9 +1074,8 @@ describe('CatalogHome', () => {
         advance(HOME_AUTO_ADVANCE_MS - 10);
         click('Next photograph');
         advance(HOME_AUTO_ADVANCE_MS * 3);
-        // Still waiting on 0, with 3 on screen: nothing moved on by itself.
+        // Still waiting on 0, with 3 on screen: nothing moved on by itself, or 0's load wouldn't bring it on.
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
-        expect(mountedIds()).not.toContain(id(4));
         load(0);
         advance(HOME_AUTO_ADVANCE_MS - 1);
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
@@ -1121,7 +1136,8 @@ describe('CatalogHome', () => {
         expect(playback()).toBe('held');
         expect(holds()).toBe('');
         advance(HOME_AUTO_ADVANCE_MS * 3);
-        expect(mountedIds()).not.toContain(id(1));
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+        expect(failure()).toBe('Some photographs couldn’t load.');
         // Suspended, the button offers Play, and Play takes it up again a full interval later.
         click('Play slideshow');
         expect(playback()).toBe('advancing');
