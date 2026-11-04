@@ -914,6 +914,41 @@ describe('an ambiguous item (#14)', { timeout: 60_000 }, () => {
         await inStep(w);
     });
 
+    /** The hold #10 starts for the copy, while P's own path holds other bytes. Nothing delivered sees it. */
+    const doubt = (w: MissingWorld) => {
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        fs.writeFileSync(w.lib.file(COPY_PATH), images.original);
+    };
+    const bindCopy = (w: MissingWorld) => writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+
+    it('closes when the hold starts and ends between two of the sources sink\'s deliveries, after only the inbox sink saw it', async () => {
+        const w = await world();
+        await w.pass();
+        doubt(w);
+        // The inbox sink opens the items, and the sources sink misses that delivery, as on a busy lock: the facts stay pending.
+        const outcome = await runReconcilePass({ clock, logger: quiet, sinks: [createCurationSink({ logger: quiet, clock })], clearDelivered: false });
+        expect(outcome.status).toBe('committed');
+        expect((await itemAt(w, COPY_PATH)).status).toBe('open');
+        await bindCopy(w);
+        await w.pass();
+        expect((await w.registry()).holds).toEqual([]);
+        expect(await itemAt(w, COPY_PATH)).toMatchObject({ status: 'resolved' });
+        await inStep(w);
+    });
+
+    it('closes when every sink missed the pass that started the hold', async () => {
+        const w = await world();
+        await w.pass();
+        doubt(w);
+        await w.bareRegistryPass();
+        expect((await ambiguousItems(w))).toEqual([]);
+        await bindCopy(w);
+        await w.pass();
+        expect((await w.registry()).holds).toEqual([]);
+        expect((await ambiguousItems(w)).map((event) => event.status)).toEqual(['resolved', 'resolved']);
+        await inStep(w);
+    });
+
     it('is settled by the first pass after the upgrade when a decision already left it stuck open', async () => {
         const w = await world();
         await inDoubt(w);

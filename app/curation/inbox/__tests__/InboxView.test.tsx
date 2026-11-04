@@ -468,7 +468,9 @@ describe('the detail', () => {
         const none = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false };
         const { unmount } = renderInbox(view({ selected: detail({ type: 'ambiguous', can: { ...none, dismiss: true }, primaryUnavailable: null }) }));
         expect(screen.getByRole('heading', { name: 'Identity question' })).toBeInTheDocument();
-        expect(screen.getByText(/The watcher's next pass applies the decision and closes this item\./)).toBeInTheDocument();
+        const question = screen.getByRole('heading', { name: 'Identity question' }).closest('section') as HTMLElement;
+        expect(question).toHaveTextContent(/photos identity bind or photos identity new records the decision, and the watcher's next pass applies it and closes this item\./);
+        expect(question).toHaveTextContent(/It stays open while the same bytes are still in doubt at another path\./);
         unmount();
         renderInbox(view({ selected: detail({ type: 'ambiguous', status: 'resolved', group: 'settled', resolvedBy: { kind: 'identified' }, can: none, primaryUnavailable: null }) }));
         expect(screen.queryByRole('heading', { name: 'Identity question' })).toBeNull();

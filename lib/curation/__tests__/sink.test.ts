@@ -309,24 +309,27 @@ describe('evidence again for an item the watcher closed', () => {
         expect(await readEvent(f.root, dismissedId)).toMatchObject({ status: 'dismissed' });
     });
 
-    it('reopens a superseded replacement without its failed set once its bytes are back, and no other closed replacement (#17)', async () => {
+    it('reopens a superseded or moved replacement without its failed set once its bytes are back, and no other closed replacement (#17)', async () => {
         const f = await fixture();
         const photoId = f.catalog.photos[0].id;
         const superseded = f.fact('replaced', photoId, { assetRevision: `sha256-${'c'.repeat(64)}` });
         const built = f.fact('replaced', photoId, { assetRevision: `sha256-${'d'.repeat(64)}` });
-        await sinkFor(f.root)([superseded, built]);
-        for (const [fact, reason] of [[superseded, CLOSE_REASONS.superseded], [built, CLOSE_REASONS.built('p_test')]] as const) {
+        const moved = f.fact('replaced', photoId, { assetRevision: `sha256-${'e'.repeat(64)}` });
+        await sinkFor(f.root)([superseded, built, moved]);
+        for (const [fact, reason] of [[superseded, CLOSE_REASONS.superseded], [built, CLOSE_REASONS.built('p_test')], [moved, CLOSE_REASONS.moved]] as const) {
             const id = eventIdOf(eventKey('replacement', fact));
             const stored = await readEvent(f.root, id) as CurationEvent;
             const candidate = { state: 'failed' as const, profileId: `p_${'0'.repeat(16)}`, failure: 'superseded' as const, at: '2026-02-01T00:00:01.000Z' };
             await holdingCuration(f.root, (hold) => writeEvent(f.root, { ...closedByWatcher(stored, reason), candidate }, stored.version, hold));
         }
 
-        await sinkFor(f.root)([{ ...superseded, factId: 'back-c', revert: true }, { ...built, factId: 'back-d', revert: true }]);
-        const back = await readEvent(f.root, eventIdOf(eventKey('replacement', superseded)));
-        expect(back).toMatchObject({ status: 'open' });
-        expect(back?.candidate).toBeUndefined();
-        expect(back?.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: 'The source holds these bytes again.' });
+        await sinkFor(f.root)([{ ...superseded, factId: 'back-c', revert: true }, { ...built, factId: 'back-d', revert: true }, { ...moved, factId: 'back-e', revert: true }]);
+        for (const fact of [superseded, moved]) {
+            const back = await readEvent(f.root, eventIdOf(eventKey('replacement', fact)));
+            expect(back).toMatchObject({ status: 'open' });
+            expect(back?.candidate).toBeUndefined();
+            expect(back?.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: 'The source holds these bytes again.' });
+        }
         expect(await readEvent(f.root, eventIdOf(eventKey('replacement', built)))).toMatchObject({ status: 'resolved' });
     });
 });
