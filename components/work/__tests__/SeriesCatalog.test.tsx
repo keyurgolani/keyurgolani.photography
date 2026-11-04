@@ -216,19 +216,34 @@ describe('WorkCoverImage', () => {
     // #6's size rule, per crop: a cover crop asks for the wider of the box and the photograph at the box's height, a
     // contain one for the narrower. Boxes: 7 or 5 of the 12 columns at 3:2 or 4:5 above 768 px, less their share of the
     // column gaps, and the column at 4:3 below, the column being the window less its two gutters (2rem under 485 px,
-    // 6.6vw over it). Work then takes the one rung smaller the rule allows (rule 5): two thirds of what the box needs,
-    // under the next rung down but never two, since each rung is at least 1.5 times the one before.
-    it('sizes each cover by its crop and its box, a rung under the rule\'s, not by its span alone (#6)', () => {
+    // 6.6vw over it). Under 768 px Work then takes the one rung smaller the rule allows (rule 5): two thirds of what
+    // the box needs, under the next rung down but never two, since each rung is at least 1.5 times the one before.
+    it('sizes each cover by its crop and its box, a rung under the rule\'s only under 768 px (#6)', () => {
         // A 3:2 photograph fills a wide 3:2 box exactly, and is 1.125 times a phone's 4:3 box wide.
-        expect(coverSizes(cover(1), 'wide')).toBe('(min-width: 768px) calc(35.63vw - 0.42rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
+        expect(coverSizes(cover(1), 'wide')).toBe('(min-width: 768px) calc(53.44vw - 0.63rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
         // In a narrow 4:5 box it's 1.875 boxes wide, so it asks for more than the box.
-        expect(coverSizes(cover(1), 'narrow')).toBe('(min-width: 768px) calc(46.82vw - 1.09rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
+        expect(coverSizes(cover(1), 'narrow')).toBe('(min-width: 768px) calc(70.23vw - 1.64rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
         // A 2:3 photograph shown whole sits at the box's height: five sixths of the 4:5 box, half the 4:3 one.
         expect(coverSizes(cover(1, { width: 1600, height: 2400, crop: 'contain' }), 'narrow')).toBe(
-            '(min-width: 768px) calc(20.81vw - 0.49rem), (min-width: 485px) 31.13vw, calc(33.33vw - 0.67rem)',
+            '(min-width: 768px) calc(31.22vw - 0.73rem), (min-width: 485px) 31.13vw, calc(33.33vw - 0.67rem)',
         );
         // A 2:3 photograph cropped to cover is cut to the box's width.
-        expect(coverSizes(cover(1, { width: 1600, height: 2400 }), 'wide')).toBe('(min-width: 768px) calc(35.63vw - 0.42rem), (min-width: 485px) 62.27vw, calc(66.67vw - 1.33rem)');
+        expect(coverSizes(cover(1, { width: 1600, height: 2400 }), 'wide')).toBe('(min-width: 768px) calc(53.44vw - 0.63rem), (min-width: 485px) 62.27vw, calc(66.67vw - 1.33rem)');
+    });
+
+    // The rung-down pays for 3x phones (#172's LCP bar). On a 1x desktop a cover asks for at least its box's own width,
+    // so a 2:3 cover in a 542 px box never comes from the 400 px file.
+    it('asks a desktop-width cover crop for at least its box\'s width, whatever its shape and span', () => {
+        for (const span of ['wide', 'narrow'] as const) {
+            for (const shape of [{ width: 2400, height: 1600 }, { width: 1600, height: 2400 }, { width: 3000, height: 1000 }]) {
+                const desktop = coverSizes(cover(1, shape), span).split(', ')[0];
+                const box = span === 'wide' ? 'calc(53.44vw - 0.63rem)' : 'calc(37.46vw - 0.88rem)';
+                const [vw, rem] = (/calc\(([\d.]+)vw - ([\d.]+)rem\)/.exec(desktop) ?? []).slice(1).map(Number);
+                const [boxVw, boxRem] = (/calc\(([\d.]+)vw - ([\d.]+)rem\)/.exec(box) ?? []).slice(1).map(Number);
+                expect(vw, `${span} ${shape.width}x${shape.height}: ${desktop}`).toBeGreaterThanOrEqual(boxVw);
+                expect(vw / rem, `${span} ${shape.width}x${shape.height}: the box's own proportions`).toBeCloseTo(boxVw / boxRem, 0);
+            }
+        }
     });
 
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {

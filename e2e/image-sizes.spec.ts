@@ -328,6 +328,24 @@ test('Work at 390 px and DPR 3: a 3:2 cover asks for w1200, the rung under the r
     }
 });
 
+for (const width of [1280, 1440] as const) {
+    // The width the photograph is drawn at in its box: the box's for a cover crop, less for a photograph shown whole.
+    test(`Work at ${width} px and DPR 1: every cover asks for a file at least as wide as it's drawn (the rung-down is for phones)`, async ({ browser }) => {
+        const { page, images } = await open(browser, width, '/work', TARGETS.work);
+        try {
+            expect(images.length).toBeGreaterThan(4);
+            for (const image of images) {
+                const asked = rungFor(image.candidates, image.sizesPx);
+                const file = image.candidates.find((candidate) => candidate.rung === asked)?.width ?? 0;
+                const drawn = Math.min(needed(image, 1), Math.max(...image.candidates.map((candidate) => candidate.width)));
+                expect(file, `${describeLook(image.photoId)} drawn ${Math.round(drawn)} px wide asks for w${asked} (${image.length})`).toBeGreaterThanOrEqual(drawn);
+            }
+        } finally {
+            await page.context().close();
+        }
+    });
+}
+
 /** Collects layout shifts from the first paint, each with whether input came just before it. */
 async function watchShifts(page: Page): Promise<void> {
     await page.addInitScript(() => {
