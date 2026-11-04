@@ -96,8 +96,17 @@ export interface PlanView {
     impact: ImpactLine[];
     /** "The live revision can't be read, so this lists everything revision 5 publishes." */
     impactNote?: string;
-    editorial?: string;
+    /** #117: the editorial rules the restore brings back, one box each to accept. */
+    editorial?: EditorialView;
     draftNote?: string;
+}
+
+/** The dialog's accept boxes: the fieldset's legend, one box per flagged rule in plain words, and the note under them. */
+export interface EditorialView {
+    lead: string;
+    /** `id` is the rule ID the box posts as `accept`; `label` names it without it. */
+    rules: { id: string; label: string }[];
+    note: string;
 }
 
 export interface DoneView {
@@ -468,15 +477,42 @@ const ACCENT_WORDS: Record<string, string> = {
     'accent.format': "accent color: it isn't a color the site can show",
 };
 
-/** The editorial notice: "Today's checks flag Salt Roads' accent color: …". */
-export function editorialText(issues: readonly Pick<Issue, 'code' | 'record'>[], editorial: readonly string[], seriesName: (id: string) => string): string | undefined {
-    if (editorial.length === 0) return undefined;
-    const parts = editorial.map((code) => {
-        const records = issues.filter((issue) => issue.code === code && issue.record.kind === 'series').map((issue) => seriesName(issue.record.id));
-        const owner = records.length ? `${records.join(' and ')}' ` : 'an ';
-        return `${owner}${ACCENT_WORDS[code] ?? `style (${code})`}`;
+/**
+ * Each editorial rule in `codes`, in the owner's words with no rule ID:
+ * "Salt Roads' accent color: it's hard to read on the Viewer's dark bands".
+ * A rule the copy doesn't know yet names its series, "Salt Roads' style,
+ * which today's checks flag", or reads "a style today's checks flag". Words
+ * two rules would share get their place among them, ", 1 of 2", so every
+ * box has a name of its own.
+ */
+export function editorialWords(issues: readonly Pick<Issue, 'code' | 'record'>[], codes: readonly string[], seriesName: (id: string) => string): string[] {
+    const words = codes.map((code) => {
+        const records = [...new Set(issues.filter((issue) => issue.code === code && issue.record.kind === 'series').map((issue) => seriesName(issue.record.id)))];
+        const owner = records.length ? `${records.join(' and ')}'` : '';
+        const known = ACCENT_WORDS[code];
+        if (known !== undefined) return `${owner ? `${owner} ` : 'an '}${known}`;
+        return owner ? `${owner} style, which today's checks flag` : "a style today's checks flag";
     });
-    return `Today's checks flag ${parts.join('; and ')}.`;
+    const seen = new Map<string, number>();
+    return words.map((text) => {
+        const total = words.filter((other) => other === text).length;
+        if (total === 1) return text;
+        const place = (seen.get(text) ?? 0) + 1;
+        seen.set(text, place);
+        return `${text}, ${place} of ${total}`;
+    });
+}
+
+/** The dialog's accept boxes for a restore of revision `target` that brings back `editorial`, or nothing when it brings back none. */
+export function editorialView(issues: readonly Pick<Issue, 'code' | 'record'>[], editorial: readonly string[], seriesName: (id: string) => string, target: number): EditorialView | undefined {
+    if (editorial.length === 0) return undefined;
+    const words = editorialWords(issues, editorial, seriesName);
+    const one = editorial.length === 1;
+    return {
+        lead: `Today's checks flag ${one ? 'one style' : `${editorial.length} styles`} on revision ${target}.`,
+        rules: editorial.map((id, index) => ({ id, label: `Accept ${words[index]}` })),
+        note: one ? 'Restoring brings it back as it was, and History records that you accepted it.' : 'Restoring brings them back as they were, and History records that you accepted them.',
+    };
 }
 
 // The restore's answers.
@@ -492,6 +528,7 @@ export interface OutcomeFacts {
     /** Who made the revision that's live now, and when, for "You published it from the command line at 09:10." */
     liveBy: { actor: string; kind: 'publish' | 'rollback'; at: string } | null;
     holderSince: string | null;
+    /** VALIDATION_FAILED's refusal reasons, or ACCEPTANCE_REQUIRED's unaccepted rules, in the owner's words. */
     reasons: string[];
     /** NO_CHANGES settled an interrupted record on the way. */
     settled: boolean;
@@ -540,6 +577,15 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
                 heading: `Revision ${n} can't come back`,
                 body: [`Today's checks refuse it, so nothing was restored. Revision ${m} stays live.`],
                 ...(facts.reasons.length ? { list: facts.reasons.slice(0, 5).map((reason) => `${capitalised(reason)}.`) } : {}),
+                actions: ['close', 'reload'],
+            };
+        case 'ACCEPTANCE_REQUIRED':
+            // Only a post that skipped the dialog's boxes, or rules that changed after the page loaded (a deploy), gets here.
+            return {
+                tone: 'alert',
+                heading: `Revision ${n} needs you to accept what today's checks flag`,
+                body: [`Nothing was restored. Revision ${m} stays live.`],
+                ...(facts.reasons.length ? { list: facts.reasons.map((reason) => `${capitalised(reason)}.`) } : {}),
                 actions: ['close', 'reload'],
             };
         case 'NOT_ELIGIBLE':

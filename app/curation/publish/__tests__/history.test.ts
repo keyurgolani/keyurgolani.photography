@@ -9,7 +9,7 @@ import { resetSessionsForTests } from '@/lib/curation/auth/sessions';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '@/test/helpers/curatorSecrets';
 import { folderBytes } from '@/test/helpers/folderBytes';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
-import { createHistoryFixture, createPublishFixture, createRemovalsFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
+import { createEditorialFixture, createHistoryFixture, createPublishFixture, createRemovalsFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
 
 // #15's 15-4 on real data roots, through the real curator boundary: the
 // page's History read, the restore action's guards (anonymous, a wrong
@@ -392,5 +392,86 @@ describe('a restore that removes many photographs', () => {
                 { text: `Removes 8 photographs: ${SALT_ROADS_TITLES.slice(0, 5).join(', ')}`, more: SALT_ROADS_TITLES.slice(5) },
             ]),
         );
+    });
+});
+
+describe('a restore that brings back editorial errors (#117)', () => {
+    beforeEach(async () => {
+        await onRoot(() => createEditorialFixture());
+        // The fixture's own restore to revision 3 ran through the spy.
+        vi.mocked(rollback).mockClear();
+    });
+
+    /** Restore revision 4, as the dialog posts it, with one `accept` field per value. */
+    async function restoreFlagged(history: HistoryView, accepts: readonly (string | File)[], reason = 'Bring the dark accent back.'): Promise<RestoreState> {
+        const plan = history.plans[4];
+        if (!plan) throw new Error(`No plan for revision 4: ${Object.keys(history.plans).join(', ')}`);
+        const data = form({ revisionId: plan.revisionId, expectedActive: plan.activeRevisionId, reason });
+        for (const value of accepts) data.append('accept', value);
+        return restoreAction(RESTORE_IDLE, data);
+    }
+
+    it('plans one box per flagged rule, labelled in plain words', async () => {
+        const { history } = await page();
+        expect(history.plans[4].editorial).toEqual({
+            lead: "Today's checks flag one style on revision 4.",
+            rules: [{ id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" }],
+            note: 'Restoring brings it back as it was, and History records that you accepted it.',
+        });
+    });
+
+    it('refuses a post without the accept, whatever the dialog did: ACCEPTANCE_REQUIRED, unlogged, and nothing written', async () => {
+        const { history } = await page();
+        const before = folderBytes(fixture.root);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const result = resultOf(await restoreFlagged(history, []));
+            expect(result).toEqual({
+                tone: 'alert',
+                heading: "Revision 4 needs you to accept what today's checks flag",
+                body: ['Nothing was restored. Revision 3 stays live.'],
+                list: ["Salt Roads' accent color: it's hard to read on the Viewer's dark bands."],
+                actions: ['close', 'reload'],
+            });
+            expect(vi.mocked(rollback).mock.calls[0][0]).toMatchObject({ acceptedRules: [] });
+            expect(logged).not.toHaveBeenCalled();
+        } finally {
+            logged.mockRestore();
+        }
+        expect(folderBytes(fixture.root)).toEqual(before);
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe((fixture as PublishFixture & { live: string }).live);
+    });
+
+    it('restores with the accept, and the new entry says what was accepted', async () => {
+        const { history } = await page();
+        const state = await restoreFlagged(history, ['accent.contrast']);
+        expect(state.answer).toEqual({ kind: 'restored', sequence: 6, rebased: true });
+        const flagged = (fixture as PublishFixture & { flagged: string }).flagged;
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(flagged);
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ kind: 'rollback', actor: 'curator:web', revisionId: flagged, acceptedRules: ['accent.contrast'] });
+        const after = await page({ restored: 6 });
+        expect(after.history.entries[0]).toMatchObject({ title: 'Revision 4', extra: "Accepted at restore: an accent color that's hard to read on the Viewer's dark bands." });
+    });
+
+    it('drops junk accept values before rollback() sees them, and keeps at most 16', async () => {
+        const { history } = await page();
+        const junk = ['../../etc', 'ACCENT.CONTRAST', '', `accent.${'x'.repeat(60)}`, 'accent contrast', new File(['x'], 'accent.contrast')];
+        const many = Array.from({ length: 20 }, (_, index) => `test.rule-${index}`);
+        const result = resultOf(await restoreFlagged(history, [...junk, 'accent.format', 'accent.format', ...many]));
+        expect(result.heading).toBe("Revision 4 needs you to accept what today's checks flag");
+        expect(vi.mocked(rollback).mock.calls[0][0].acceptedRules).toEqual(['accent.format', ...many.slice(0, 15)]);
+        const state = await restoreFlagged(history, [...junk, 'accent.contrast']);
+        expect(state.answer?.kind).toBe('restored');
+        expect((await listActivations(fixture.root)).at(-1)?.acceptedRules).toEqual(['accent.contrast']);
+    });
+
+    it('runs requireCurator() first: an anonymous post that accepts everything is refused before a field is read', async () => {
+        const { history } = await page();
+        requestHeaders = new Headers({ ...ACTION });
+        const before = folderBytes(fixture.root);
+        const outcome = await restoreFlagged(history, ['accent.contrast']).catch((error: unknown) => error);
+        expect(isNotFound(outcome)).toBe(true);
+        expect(rollback).not.toHaveBeenCalled();
+        expect(folderBytes(fixture.root)).toEqual(before);
     });
 });

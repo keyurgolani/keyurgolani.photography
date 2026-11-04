@@ -29,9 +29,12 @@ import { readActivePointer } from './working-layer';
  * stored revision: an error from an `integrity` rule blocks it, the asset
  * and privacy rules included, so a rollback can't bring back a set that
  * broke or a published string the rules now refuse. Errors from `editorial`
- * rules print with the plan and don't block, and the activation records
- * them in `acceptedRules`. The rollback copies, edits, renumbers, and erases
- * nothing: the target keeps the number it first went live under.
+ * rules print with the plan, and #117 makes the caller accept each one: a
+ * rollback without an accept for every flagged rule ends
+ * ACCEPTANCE_REQUIRED and writes nothing. The activation records exactly the
+ * flagged rules in `acceptedRules`, never an accept for a rule that isn't
+ * flagged. The rollback copies, edits, renumbers, and erases nothing: the
+ * target keeps the number it first went live under.
  */
 
 export type RollbackOutcome =
@@ -40,6 +43,7 @@ export type RollbackOutcome =
     | 'NO_CHANGES'
     | 'NOT_ELIGIBLE'
     | 'VALIDATION_FAILED'
+    | 'ACCEPTANCE_REQUIRED'
     | 'CONFIRMATION_REQUIRED'
     | 'DECLINED'
     | 'NOTHING_ACTIVE'
@@ -50,13 +54,14 @@ export type RollbackOutcome =
     | 'INTEGRITY_MISMATCH'
     | 'STORAGE_ERROR';
 
-/** The CLI's exit codes, #13's: 1 for a target that may not go live, 4 for a damaged file or I/O, 3 for any other stop. Usage errors, 2, are the CLI's own. */
+/** The CLI's exit codes, #13's: 1 for a target that may not go live (or not without an accept), 4 for a damaged file or I/O, 3 for any other stop. Usage errors, 2, are the CLI's own. */
 export const ROLLBACK_EXIT_CODES: Record<RollbackOutcome, 0 | 1 | 3 | 4> = {
     READY: 0,
     ROLLED_BACK: 0,
     NO_CHANGES: 0,
     NOT_ELIGIBLE: 1,
     VALIDATION_FAILED: 1,
+    ACCEPTANCE_REQUIRED: 1,
     CONFIRMATION_REQUIRED: 3,
     DECLINED: 3,
     NOTHING_ACTIVE: 3,
@@ -99,7 +104,7 @@ export interface RollbackPlan {
     issues: Issue[];
     /** The errors that keep the target from going live. */
     blocking: Issue[];
-    /** The editorial rules with errors on the target, which a rollback accepts. */
+    /** The editorial rules with errors on the target, which a rollback brings back only when each one is accepted. */
     editorial: string[];
 }
 
@@ -116,6 +121,12 @@ export interface RollbackOptions {
     expectedActiveRevisionId: string;
     actor: string;
     reason: string;
+    /**
+     * The editorial rule IDs the curator accepts. Every rule flagged on the
+     * target must be here, or the rollback ends ACCEPTANCE_REQUIRED and writes
+     * nothing. None by default, so a caller that names none is refused.
+     */
+    acceptedRules?: readonly string[];
     hooks?: RollbackHooks;
     logger?: CatalogLogger;
     clock?: () => number;
@@ -139,6 +150,8 @@ export interface RollbackResult {
     holder?: LockRecord | null;
     recovery?: RecoveryReport;
     issues: Issue[];
+    /** ACCEPTANCE_REQUIRED: the flagged editorial rules the caller didn't accept. */
+    unaccepted?: string[];
 }
 
 const jsonLogger: CatalogLogger = { log: (line) => console.log(line) };
@@ -195,9 +208,35 @@ async function stored(root: string, revisionId: string): Promise<RevisionFile | 
     }
 }
 
-/** The rule IDs whose errors a rollback prints and doesn't block on. */
-function editorialRuleIds(): Set<string> {
+/** The rule IDs whose errors a rollback brings back once they're accepted, one by one. Every other rule's error blocks it. */
+export function editorialRuleIds(): Set<string> {
     return new Set(registeredRules().filter((rule) => rule.rollbackClass === 'editorial').map((rule) => rule.id));
+}
+
+/** The editorial rules flagged on the plan's target that `accepted` doesn't name, sorted. */
+export function unacceptedRules(plan: Pick<RollbackPlan, 'editorial'>, accepted: readonly string[]): string[] {
+    const given = new Set(accepted);
+    return plan.editorial.filter((rule) => !given.has(rule)).sort();
+}
+
+/**
+ * Whether the plan's acceptances hold: null when every flagged editorial
+ * rule is accepted, ACCEPTANCE_REQUIRED when any isn't, whatever else the
+ * plan says, and STORAGE_ERROR for a READY plan that names no target, which
+ * planRollback() never returns, so the rollback fails closed on it.
+ */
+export function acceptanceCheck(plan: RollbackPlan, accepted: readonly string[], revisionId: string): { outcome: 'ACCEPTANCE_REQUIRED'; message: string; unaccepted: string[] } | { outcome: 'STORAGE_ERROR'; message: string } | null {
+    const unaccepted = unacceptedRules(plan, accepted);
+    if (unaccepted.length > 0) return { outcome: 'ACCEPTANCE_REQUIRED', message: acceptanceMessage(plan.target ?? { revisionId, revisionNumber: null }, unaccepted), unaccepted };
+    if (plan.target === null) return { outcome: 'STORAGE_ERROR', message: `The rollback's plan for ${revisionId} names no target. Nothing was rolled back.` };
+    return null;
+}
+
+/** ACCEPTANCE_REQUIRED's message, which the CLI prints as it is. */
+export function acceptanceMessage(target: RevisionRef, unaccepted: readonly string[]): string {
+    // "Revision 3 (rev_…)" leads the sentence; a bare revision ID keeps its lower-case prefix.
+    const name = target.revisionNumber === null ? target.revisionId : `Revision ${target.revisionNumber} (${target.revisionId})`;
+    return `${name} has editorial errors a rollback brings back only when you accept each one: ${unaccepted.join(', ')}. Run it again with ${unaccepted.map((rule) => `--accept ${rule}`).join(' ')}. Nothing was rolled back.`;
 }
 
 /**
@@ -306,6 +345,7 @@ function leaseEnd(holder: LockRecord | null, ownLeaseMs: number): string {
 export async function rollback(options: RollbackOptions): Promise<RollbackResult> {
     const root = path.resolve(options.dataRoot);
     const { actor, reason, hooks = {}, logger = jsonLogger, clock = Date.now } = options;
+    const acceptedRules = [...new Set(options.acceptedRules ?? [])];
     if (!/\S/.test(actor)) throw new TypeError('A rollback needs an actor.');
     if (!/\S/.test(reason)) throw new TypeError('A rollback needs a reason.');
     assertRevisionId(options.revisionId);
@@ -314,14 +354,14 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
     const finish = (outcome: RollbackOutcome, message: string, details: Partial<RollbackResult> = {}): RollbackResult => {
         Object.assign(result, details, { outcome, message });
         const fields = { outcome, revisionId: options.revisionId, revisionNumber: result.activation?.revisionNumber ?? result.plan?.target?.revisionNumber ?? null, activationId: result.activation?.activationId ?? null };
-        if (outcome === 'ROLLED_BACK') logEvent(logger, 'catalog.rollback.activated', { ...fields, previousRevisionId: result.activation?.previousRevisionId ?? null });
-        else if (ROLLBACK_EXIT_CODES[outcome] !== 0) logEvent(logger, 'catalog.rollback.failed', fields);
+        if (outcome === 'ROLLED_BACK') logEvent(logger, 'catalog.rollback.activated', { ...fields, previousRevisionId: result.activation?.previousRevisionId ?? null, acceptedRules: result.activation?.acceptedRules ?? [] });
+        else if (ROLLBACK_EXIT_CODES[outcome] !== 0) logEvent(logger, 'catalog.rollback.failed', { ...fields, ...(result.unaccepted ? { unaccepted: result.unaccepted } : {}) });
         return result;
     };
 
     const status = dataRootStatus({ write: true, root });
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was rolled back.`);
-    logEvent(logger, 'catalog.rollback.started', { actor, reason, revisionId: options.revisionId, expectedActiveRevisionId: options.expectedActiveRevisionId });
+    logEvent(logger, 'catalog.rollback.started', { actor, reason, revisionId: options.revisionId, expectedActiveRevisionId: options.expectedActiveRevisionId, acceptedRules });
 
     let held: RollbackResult | null = null;
     try {
@@ -399,7 +439,12 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
             return finish('ACTIVE_CHANGED', why);
         }
         if (planned.outcome !== 'READY') return finish(planned.outcome, planned.message);
+        // #117: every editorial rule flagged on the target needs its own accept, checked under the lock against the
+        // plan made there, so rules that changed since the caller looked can't slip through. Nothing is written yet.
+        const refused = acceptanceCheck(planned, acceptedRules, options.revisionId);
+        if (refused) return finish(refused.outcome, refused.message, 'unaccepted' in refused ? { unaccepted: refused.unaccepted } : {});
 
+        // Exactly the flagged rules, every one accepted above. An accept for a rule that isn't flagged isn't recorded.
         const activated = await activateRevision({
             lock,
             dataRoot: root,

@@ -99,6 +99,14 @@ describe('sequence and series argv', () => {
         expect(usage(() => parseFlags({ args: ['--json', '--json'], options: { json: { type: 'boolean' } } }))).toBe('--json is given more than once. Give it once.');
         expect(parseFlags({ args: ['--import', 'a.csv'], options: { import: { type: 'string' } } }).values).toEqual({ import: 'a.csv' });
     });
+
+    it('lets only an option declared multiple repeat, and still refuses a repeat of every other one', () => {
+        const options = { accept: { type: 'string', multiple: true }, reason: { type: 'string' }, yes: { type: 'boolean' } } as const;
+        expect(parseFlags({ args: ['--accept', 'accent.format', '--accept=accent.contrast', '--reason', 'r'], options }).values).toEqual({ accept: ['accent.format', 'accent.contrast'], reason: 'r' });
+        expect(parseFlags({ args: ['--accept', 'accent.format'], options }).values).toEqual({ accept: ['accent.format'] });
+        expect(usage(() => parseFlags({ args: ['--accept', 'a', '--reason', 'r', '--reason=s'], options }))).toBe('--reason is given more than once. Give it once.');
+        expect(usage(() => parseFlags({ args: ['--accept', 'a', '--yes', '--yes'], options }))).toBe('--yes is given more than once. Give it once.');
+    });
 });
 
 describe('the publish report', () => {

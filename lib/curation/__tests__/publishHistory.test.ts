@@ -5,7 +5,8 @@ import {
     blockedText,
     blockingReasons,
     doneView,
-    editorialText,
+    editorialView,
+    editorialWords,
     historyView,
     HISTORY_LEAD,
     impactLines,
@@ -276,9 +277,32 @@ describe('the impact list', () => {
         expect(same.lines).toEqual([{ text: "Its series and photographs are the same as revision 6's." }]);
     });
 
-    it('names an editorial rule the restore accepts', () => {
-        expect(editorialText([{ code: 'accent.contrast', record: { kind: 'series', id: 'ser_s' } }], ['accent.contrast'], names.seriesName)).toBe("Today's checks flag Salt Roads' accent color: it's hard to read on the Viewer's dark bands.");
-        expect(editorialText([], [], names.seriesName)).toBeUndefined();
+    it('gives each editorial rule the restore must accept its own label, in plain words with no rule ID', () => {
+        const contrast = { code: 'accent.contrast', record: { kind: 'series' as const, id: 'ser_s' } };
+        const format = { code: 'accent.format', record: { kind: 'series' as const, id: 'ser_h' } };
+        expect(editorialView([contrast], ['accent.contrast'], names.seriesName, 4)).toEqual({
+            lead: "Today's checks flag one style on revision 4.",
+            rules: [{ id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" }],
+            note: 'Restoring brings it back as it was, and History records that you accepted it.',
+        });
+        const two = editorialView([contrast, format], ['accent.contrast', 'accent.format'], names.seriesName, 4);
+        expect(two).toEqual({
+            lead: "Today's checks flag 2 styles on revision 4.",
+            rules: [
+                { id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" },
+                { id: 'accent.format', label: "Accept Harbor Nights' accent color: it isn't a color the site can show" },
+            ],
+            note: 'Restoring brings them back as they were, and History records that you accepted them.',
+        });
+        // No rule ID reaches the words, even for a rule the copy doesn't know yet.
+        const unknown = editorialView([{ code: 'tone.mood', record: { kind: 'site', id: 'site' } }], ['tone.mood'], names.seriesName, 4);
+        expect(unknown?.rules[0].label).toBe("Accept a style today's checks flag");
+        for (const view of [two, unknown]) for (const rule of view?.rules ?? []) expect(rule.label).not.toContain(rule.id);
+        expect(editorialView([], [], names.seriesName, 4)).toBeUndefined();
+        // Two rules the copy doesn't know get distinct names: their series, or their place in the list.
+        const strange = editorialView([{ code: 'tone.mood', record: { kind: 'site', id: 'site' } }, { code: 'tone.grain', record: { kind: 'site', id: 'site' } }, { code: 'tone.hue', record: { kind: 'series', id: 'ser_s' } }], ['tone.grain', 'tone.hue', 'tone.mood'], names.seriesName, 4);
+        expect(strange?.rules.map((rule) => rule.label)).toEqual(["Accept a style today's checks flag, 1 of 2", "Accept Salt Roads' style, which today's checks flag", "Accept a style today's checks flag, 2 of 2"]);
+        expect(editorialWords([contrast, format], ['accent.format'], names.seriesName)).toEqual(["Harbor Nights' accent color: it isn't a color the site can show"]);
     });
 });
 
@@ -331,6 +355,16 @@ describe("the dialog's answers", () => {
         expect(local(restoreResult('NOT_ELIGIBLE', facts())).heading).toBe("Revision 5 never went live, so it can't come back");
         expect(local(restoreResult('NOTHING_ACTIVE', facts())).actions).toEqual(['reload']);
         expect(local(restoreResult('DATA_ROOT_NOT_READY', facts())).heading).toBe("The catalog folder isn't ready");
+    });
+
+    it('acceptance required: nothing restored, what is still unaccepted in owner words, and Load the updated page', () => {
+        expect(local(restoreResult('ACCEPTANCE_REQUIRED', facts({ reasons: ["Salt Roads' accent color: it's hard to read on the Viewer's dark bands"] })))).toEqual({
+            tone: 'alert',
+            heading: "Revision 5 needs you to accept what today's checks flag",
+            body: ['Nothing was restored. Revision 6 stays live.'],
+            list: ["Salt Roads' accent color: it's hard to read on the Viewer's dark bands."],
+            actions: ['close', 'reload'],
+        });
     });
 
     it('already live: moved facts, nothing more to do, and Load the updated page', () => {

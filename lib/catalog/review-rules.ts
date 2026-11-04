@@ -107,3 +107,6 @@ const REVIEW_RULES: Rule[] = [
 ];
 
 for (const rule of REVIEW_RULES) registerRule(rule);
+
+/** These rules read the authored draft, so they never report on a stored revision, and a rollback never has one of them to accept. */
+export const AUTHORED_ONLY_RULE_IDS: ReadonlySet<string> = new Set(REVIEW_RULES.map((rule) => rule.id));

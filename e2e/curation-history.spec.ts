@@ -5,6 +5,7 @@ import type { Page } from '@playwright/test';
 import { listActivations } from '../lib/catalog/repository';
 import { readActivePointer } from '../lib/catalog/working-layer';
 import {
+    createEditorialFixture,
     createHistoryFixture,
     createPublishFixture,
     createRemovalsFixture,
@@ -20,7 +21,9 @@ import {
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { waitForHydration } from './support/hydration';
+import { expectFocusRingVisible, expectRingNotClipped } from './support/focus';
 import { checkSurface } from './support/surface';
+import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
 
 // #15's 15-4: History and restore on #16's Publish screen, on both #1
@@ -373,4 +376,142 @@ test("a Check revision link's address plans that revision and lands on its entry
     await open(page, '?check=1#entry-1-title');
     await expect(page.locator('#entry-1-title')).toBeFocused();
     await expect(restoreLink(page, 1)).toBeVisible();
+});
+
+// #117: a restore that brings back editorial errors asks the owner to accept
+// each one, and the server is the gate. Revision 4 went live under older rules
+// with Salt Roads' accent at #202020, which today's accent.contrast flags.
+
+const acceptBox = (page: Page, name: RegExp) => dialog(page).getByRole('checkbox', { name });
+const CONTRAST = /^Accept Salt Roads' accent color: it's hard to read/;
+const FORMAT = /^Accept Low Tide Hours' accent color: it isn't a color the site can show$/;
+
+/** A multipart body without its `field` parts, whatever prefix Next gives their names. */
+function withoutField(body: Buffer, contentType: string, field: string): Buffer {
+    const boundary = /boundary=([^;]+)/.exec(contentType)?.[1];
+    if (!boundary) throw new Error(`No multipart boundary in ${contentType}`);
+    const parts = body.toString('utf8').split(`--${boundary}`);
+    const named = new RegExp(`name="(?:[^"]*_)?${field}"`);
+    const kept = parts.filter((part) => !named.test(part));
+    if (kept.length === parts.length) throw new Error(`The post has no ${field} field`);
+    return Buffer.from(kept.join(`--${boundary}`), 'utf8');
+}
+
+test.describe('accepting what today’s checks flag', () => {
+    test('Restore is blocked until the box is checked: the message, focus on the box, and nothing written', async ({ page }) => {
+        fixture = await createEditorialFixture({ dir: DIR });
+        await open(page);
+        await openDialog(page, 4);
+        const box = acceptBox(page, CONTRAST);
+        await expect(dialog(page).getByRole('group', { name: "Today's checks flag one style on revision 4." })).toBeVisible();
+        await expect(box).not.toBeChecked();
+        await expect(dialog(page).getByText('accent.contrast')).toHaveCount(0);
+        await expect(submit(page)).toHaveAttribute('aria-disabled', 'true');
+        const before = (await listActivations(fixture.root)).length;
+        let posted = 0;
+        page.on('request', (request) => {
+            if (request.method() === 'POST') posted++;
+        });
+        await page.locator('#restore-reason').fill('Bring the dark accent back.');
+        // Restore is aria-disabled, not disabled, so it stays focusable and a keyboard press reaches it, as it does here.
+        await submit(page).focus();
+        await page.keyboard.press('Enter');
+        await expect(dialog(page).getByText('Accept each one to restore it, or cancel.')).toBeVisible();
+        await expect(box).toBeFocused();
+        // And Space, from the button again: the same answer, still nothing posted.
+        await submit(page).focus();
+        await page.keyboard.press('Space');
+        await expect(box).toBeFocused();
+        expect(posted).toBe(0);
+        expect((await listActivations(fixture.root)).length).toBe(before);
+    });
+
+    test('checked, it restores: the done notice, and the new entry says what was accepted', async ({ page }) => {
+        fixture = await createEditorialFixture({ dir: DIR });
+        await open(page);
+        await openDialog(page, 4);
+        await acceptBox(page, CONTRAST).check();
+        await expect(submit(page)).not.toHaveAttribute('aria-disabled');
+        await confirm(page, 'Bring the dark accent back.');
+        await page.waitForURL(/\?restored=6#history-result-heading$/);
+        await expect(page.locator('#history-result-heading')).toHaveText('Revision 4 is live again');
+        await expect(page.locator('#history-result-heading')).toBeFocused();
+        await expect(page.locator('#entry-6').getByText("Accepted at restore: an accent color that's hard to read on the Viewer's dark bands.")).toBeVisible();
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ kind: 'rollback', acceptedRules: ['accent.contrast'] });
+    });
+
+    test('the server is the gate: the same post replayed signed in without accept restores nothing', async ({ page }) => {
+        fixture = await createEditorialFixture({ dir: DIR });
+        await open(page);
+        await openDialog(page, 4);
+        let captured: { headers: Record<string, string>; body: Buffer } | null = null;
+        await page.route(`${origin()}/curation/publish**`, async (route) => {
+            if (route.request().method() !== 'POST') return route.continue();
+            captured = { headers: route.request().headers(), body: route.request().postDataBuffer() ?? Buffer.alloc(0) };
+            await route.abort();
+        });
+        await acceptBox(page, CONTRAST).check();
+        await confirm(page, 'Bring the dark accent back.');
+        await expect.poll(() => captured).not.toBeNull();
+        const sent = captured as unknown as { headers: Record<string, string>; body: Buffer };
+        expect(sent.body.toString('utf8')).toContain('accent.contrast');
+        const before = (await listActivations(fixture.root)).length;
+        const replay = await page.request.post(`${origin()}/curation/publish`, {
+            headers: { 'next-action': sent.headers['next-action'], 'content-type': sent.headers['content-type'], origin: origin(), accept: 'text/x-component' },
+            data: withoutField(sent.body, sent.headers['content-type'], 'accept'),
+            maxRedirects: 0,
+        });
+        expect(replay.status()).toBe(200);
+        expect(await replay.text()).toContain("Revision 4 needs you to accept what today's checks flag");
+        expect((await listActivations(fixture.root)).length).toBe(before);
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe((fixture as PublishFixture & { live: string }).live);
+    });
+
+    test('with two rules on two series, both boxes are needed', async ({ page }) => {
+        fixture = await createEditorialFixture({ dir: DIR, rules: 2 });
+        await open(page);
+        await openDialog(page, 4);
+        await expect(dialog(page).getByRole('checkbox')).toHaveCount(2);
+        await acceptBox(page, CONTRAST).check();
+        await expect(submit(page)).toHaveAttribute('aria-disabled', 'true');
+        await page.locator('#restore-reason').fill('Bring both accents back.');
+        const before = (await listActivations(fixture.root)).length;
+        // force: Playwright won't click an aria-disabled button, but a mouse press does reach it, which is what this checks.
+        await submit(page).click({ force: true });
+        await expect(dialog(page).getByText('Accept each one to restore it, or cancel.')).toBeVisible();
+        await expect(acceptBox(page, FORMAT)).toBeFocused();
+        expect((await listActivations(fixture.root)).length).toBe(before);
+        await acceptBox(page, FORMAT).check();
+        await submit(page).click();
+        await page.waitForURL(/\?restored=6/);
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ acceptedRules: ['accent.contrast', 'accent.format'] });
+    });
+
+    for (const [width, height] of [
+        [1440, 900],
+        [390, 844],
+    ] as const) {
+        test(`Space and the label toggle the box, and the #1 checks pass on the dialog at ${width} px`, async ({ page }) => {
+            fixture = await createEditorialFixture({ dir: DIR });
+            await page.setViewportSize({ width, height });
+            await open(page);
+            await openDialog(page, 4);
+            const box = acceptBox(page, CONTRAST);
+            // The box's label: a `has` locator is resolved inside the label, so it can't start from the dialog.
+            const row = dialog(page).locator('label', { has: page.getByRole('checkbox', { name: CONTRAST }) });
+            // A press on the label's words toggles it, and so does Space on the box; the keyboard last, so focus shows as it would.
+            await row.getByText(/accent color/).click();
+            await expect(box).toBeChecked();
+            await expect(box).toBeFocused();
+            await page.keyboard.press('Space');
+            await expect(box).not.toBeChecked();
+            await page.keyboard.press('Space');
+            await expect(box).toBeChecked();
+            await checkSurface(page, { controls: [dialog(page).getByRole('button', { name: 'Cancel' }), submit(page)] });
+            // The box's whole row is its target, and the box itself takes the focus ring.
+            await expectMinTargetSize(row, 44);
+            await expectFocusRingVisible(box);
+            await expectRingNotClipped(box);
+        });
+    }
 });

@@ -2,8 +2,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { publishByHand } from '../../../test/helpers/handPublish';
 import { runTsx, type TsxRun } from '../../../test/helpers/runTsx';
+import { rollbackArgs, runRollbackCommand, type RollbackArgs } from '../history-cli';
+import { UsageError } from '../owner-cli';
 import { publish } from '../publish';
 import { listActivations } from '../repository';
 import { rollback } from '../rollback';
@@ -131,5 +134,101 @@ describe('photos history and photos rollback, as commands', { timeout: 180_000 }
         expect(notReady.code).toBe(3);
         expect(notReady.stderr).toContain('[photos] DATA_ROOT_NOT_READY');
         expect((await photos(missing, ['history', '--json'])).code).toBe(2);
+    });
+});
+
+/**
+ * #117: two published revisions, then revision 3 written by hand with the
+ * series' accent at #202020, which today's accent.contrast flags, and a
+ * rollback back to revision 2. Revision 3 comes back only once it's accepted.
+ */
+async function flaggedRevision(seed: number): Promise<{ catalog: TestCatalog; two: string; three: string }> {
+    const { catalog, two } = await twoRevisions(seed);
+    const three = await publishByHand(catalog.root, (content) => {
+        content.series[0].accent = '#202020';
+    });
+    const back = await rollback({ dataRoot: catalog.root, revisionId: two, expectedActiveRevisionId: three, actor: 'test', reason: 'back to 2', logger: quiet });
+    if (back.outcome !== 'ROLLED_BACK') throw new Error(`The rollback to revision 2 ended ${back.outcome}: ${back.message}`);
+    return { catalog, two, three };
+}
+
+const usage = (run: () => unknown): string => {
+    try {
+        run();
+    } catch (error) {
+        if (error instanceof UsageError) return error.message;
+        throw error;
+    }
+    throw new Error('No usage error.');
+};
+
+describe('photos rollback --accept', () => {
+    const base = ['--to', '3', '--reason', 'accent', '--actor', 'curator'];
+
+    it('takes --accept once per editorial rule, deduplicated, and none by default', () => {
+        expect(rollbackArgs(base).accept).toEqual([]);
+        expect(rollbackArgs([...base, '--accept', 'accent.contrast', '--accept=accent.format', '--accept', 'accent.contrast']).accept).toEqual(['accent.contrast', 'accent.format']);
+    });
+
+    it('refuses an ID that is no rule, and an integrity rule, as usage errors', () => {
+        // Only the rules a rollback can flag: #16's review.* rules are editorial too, but never fire on a stored revision.
+        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format), not contrast.');
+        expect(usage(() => rollbackArgs([...base, '--accept=']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
+        expect(usage(() => rollbackArgs([...base, '--accept', 'accent.contrast', '--accept', ' ']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
+        expect(usage(() => rollbackArgs([...base, '--accept', 'assets.size']))).toBe('assets.size is an integrity rule, which no rollback can accept.');
+        expect(usage(() => rollbackArgs([...base, '--reason', 'again']))).toBe('--reason is given more than once. Give it once.');
+    });
+
+    it('refuses before it asks when a flagged rule is not accepted, and marks each one in the plan', { timeout: 60_000 }, async () => {
+        const { catalog, two, three } = await flaggedRevision(311);
+        const root = catalog.root;
+        const before = (await listActivations(root)).length;
+        const args: RollbackArgs = { to: { revisionNumber: 3 }, reason: 'accent', actor: 'curator', accept: ['accent.format'], yes: false };
+        const confirm = vi.fn(async () => true);
+        const lines: string[] = [];
+        const errors: string[] = [];
+        const code = await runRollbackCommand(root, args, { out: (line) => lines.push(line), err: (line) => errors.push(line), confirm, logger: quiet });
+        expect(code).toBe(1);
+        expect(confirm).not.toHaveBeenCalled();
+        expect(lines).toContain('Editorial errors, which a rollback brings back only with --accept for each: accent.contrast (not accepted)');
+        expect(lines).toContain("accent.format isn't flagged on revision 3, so there's nothing to accept.");
+        expect(errors).toEqual([`[photos] ACCEPTANCE_REQUIRED: Revision 3 (${three}) has editorial errors a rollback brings back only when you accept each one: accent.contrast. Run it again with --accept accent.contrast. Nothing was rolled back.`]);
+        expect(await listActivations(root)).toHaveLength(before);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+
+        // Without a terminal, the hint to run it again keeps the accepts it was given, so it works as printed.
+        const headless: string[] = [];
+        const ask = { ...args, accept: ['accent.contrast', 'accent.format'] };
+        expect(await runRollbackCommand(root, ask, { out: () => undefined, err: (line) => headless.push(line), confirm: null, logger: quiet })).toBe(3);
+        expect(headless.at(-1)).toBe(`[photos] CONFIRMATION_REQUIRED: A rollback needs confirmation. Run it in a terminal to answer, or run it again with --yes --expect-active ${two} --accept accent.contrast --accept accent.format to roll back exactly this. --expect-active stops it if another revision goes live first.`);
+        expect(await listActivations(root)).toHaveLength(before);
+
+        const accepted: string[] = [];
+        expect(await runRollbackCommand(root, { ...args, accept: ['accent.contrast'] }, { out: (line) => accepted.push(line), err: (line) => accepted.push(line), confirm, logger: quiet })).toBe(0);
+        expect(confirm).toHaveBeenCalledOnce();
+        expect(accepted).toContain('Editorial errors, which a rollback brings back only with --accept for each: accent.contrast (accepted)');
+        expect((await listActivations(root)).at(-1)).toMatchObject({ kind: 'rollback', revisionId: three, acceptedRules: ['accent.contrast'] });
+    });
+
+    it('as a command: exits 1 without --accept and 2 on a bad one, writing nothing, then 0 with --yes --expect-active --accept', { timeout: 180_000 }, async () => {
+        const { catalog, two, three } = await flaggedRevision(312);
+        const root = catalog.root;
+        const before = (await listActivations(root)).length;
+        const yes = ['rollback', '--to', '3', '--reason', 'accent', '--actor', 'curator', '--yes', '--expect-active', two];
+
+        const refused = await photos(root, yes);
+        expect(refused.code, refused.stderr).toBe(1);
+        expect(refused.stderr).toContain(`[photos] ACCEPTANCE_REQUIRED: Revision 3 (${three}) has editorial errors a rollback brings back only when you accept each one: accent.contrast. Run it again with --accept accent.contrast. Nothing was rolled back.`);
+        const integrity = await photos(root, [...yes, '--accept', 'assets.size']);
+        expect(integrity.code).toBe(2);
+        expect(integrity.stderr).toContain('assets.size is an integrity rule, which no rollback can accept.');
+        expect(await listActivations(root)).toHaveLength(before);
+
+        const rolled = await photos(root, [...yes, '--accept', 'accent.contrast']);
+        expect(rolled.code, rolled.stderr).toBe(0);
+        expect(rolled.stdout).toContain(`[photos] ROLLED_BACK: Rolled back to revision 3 (${three}) from revision 2 (${two}).`);
+        expect((await listActivations(root)).at(-1)).toMatchObject({ kind: 'rollback', revisionId: three, acceptedRules: ['accent.contrast'] });
+        const history = await photos(root, ['history']);
+        expect(history.stdout).toContain('    Accepted editorial errors: accent.contrast');
     });
 });

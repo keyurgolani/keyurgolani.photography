@@ -31,13 +31,16 @@ type Strict<T extends ParseArgsConfig> = T & { strict: true };
  * Parse flags strictly: an unknown flag, a stray argument, a missing value,
  * or a flag given twice is a usage error. parseArgs() alone keeps the last
  * of a repeated flag, so `--import a.csv --import b.csv` would import b.csv.
- * A positional that starts with `-` goes after `--`.
+ * Only an option declared `multiple: true`, such as rollback's `--accept`,
+ * may repeat, and it parses to an array. A positional that starts with `-`
+ * goes after `--`.
  */
 export function parseFlags<T extends ParseArgsConfig>(config: T): ReturnType<typeof parseArgs<Strict<T>>> {
     const parsed = strictly(() => parseArgs({ ...config, strict: true, tokens: true }));
+    const repeatable = new Set(Object.entries(config.options ?? {}).filter(([, option]) => option.multiple === true).map(([name]) => name));
     const seen = new Set<string>();
     for (const token of parsed.tokens ?? []) {
-        if (token.kind !== 'option') continue;
+        if (token.kind !== 'option' || repeatable.has(token.name)) continue;
         if (seen.has(token.name)) throw new UsageError(`--${token.name} is given more than once. Give it once.`);
         seen.add(token.name);
     }
