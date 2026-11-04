@@ -4,6 +4,7 @@ import Link from 'next/link';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { V110_LANE } from '@/components/badgePlace';
 import HeroReveal from '@/components/HeroReveal';
+import { useDocumentVisible } from '@/components/motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
 import LoadingState from '@/components/site/LoadingState';
 import SiteNav from '@/components/site/SiteNav';
@@ -36,14 +37,19 @@ export default function CatalogHome({ home, portrait = null }: { home: Published
   const series = home.featuredSeries;
   if (series === null) {
     return (
-      <HomeChromeController initialLoading={false} initialIntro="settled" data-catalog-revision={home.catalogRevision}>
+      <HomeChromeController initialLoading={false} initialIntro="settled" initialHomeState="empty" data-catalog-revision={home.catalogRevision}>
         <EmptyHome />
       </HomeChromeController>
     );
   }
   const introCompleted = hasCompletedHomeHeroIntro();
   return (
-    <HomeChromeController initialLoading={!introCompleted} initialIntro={introCompleted ? 'settled' : 'loading'} data-catalog-revision={home.catalogRevision}>
+    <HomeChromeController
+      initialLoading={!introCompleted}
+      initialIntro={introCompleted ? 'settled' : 'loading'}
+      initialHomeState="ready"
+      data-catalog-revision={home.catalogRevision}
+    >
       {/* A new revision, or a new pick on the same one, starts over on its own opening photograph, so no screen mixes
           two revisions and the preload, the timer and the records all start from the photograph the server picked. */}
       <FeaturedHome key={`${home.catalogRevision} ${series.id}`} revisionId={home.catalogRevision} opening={series} following={home.followingSeries} portrait={portrait} />
@@ -58,16 +64,14 @@ function EmptyHome() {
     reportPhoto('none');
   }, [reportPhoto]);
   return (
-    <div className="contents" data-home-state="empty">
-      <HomeChrome
-        nav={<SiteNav />}
-        story={
-          <div className={styles.story}>
-            <h1 className={styles.title}>Nothing is featured right now.</h1>
-          </div>
-        }
-      />
-    </div>
+    <HomeChrome
+      nav={<SiteNav />}
+      story={
+        <div className={styles.story}>
+          <h1 className={styles.title}>Nothing is featured right now.</h1>
+        </div>
+      }
+    />
   );
 }
 
@@ -78,9 +82,10 @@ const pad = (value: number) => String(value).padStart(2, '0');
 const NONE: readonly HomeLoopSeries[] = [];
 
 /**
- * How many photographs the opening walk tries before Home says they can't be
- * shown: the opening and the next, #6's first-load cap, so a dead media route
- * costs two requests rather than the whole loop. Retry tries two more.
+ * How many image requests the opening walk makes before Home says the
+ * photographs can't be shown: #6's first-load cap of two full-size files, so a
+ * dead media route costs two requests rather than the whole loop. A photograph
+ * with no image files costs no request and doesn't count. Retry tries two more.
  */
 const OPENING_ATTEMPTS = 2;
 
@@ -108,19 +113,21 @@ interface FeaturedHomeProps {
  * decodes. Each move waits on its photograph, and each commit gets a full
  * interval. When a photograph fails:
  * - before anything is on screen, the opening walk tries the next one, inside
- *   loading, and after OPENING_ATTEMPTS Home is `image-unavailable`, with the
- *   story and Retry;
+ *   loading, and after OPENING_ATTEMPTS failed image requests Home is
+ *   `image-unavailable`, with the story, Retry and the controls;
  * - on Home's own move, it skips to the next at once, and SUSPEND_AFTER in a
- *   row suspend playback with a polite note, until the visitor's own move
- *   lands or they press Play;
+ *   row suspend playback with a polite note, until the visitor's own move or a
+ *   Retry lands, or they press Play;
  * - on the visitor's move, or while Home is paused or held, it says which
  *   photograph, with Retry and Skip, which stay until a move lands.
- * When a focused Retry or Skip leaves because its move landed, focus goes to
- * the Previous or Next that started the move, else to "Enter the series".
+ * A failure belongs to its visit: a move away clears it. When a focused Retry
+ * or Skip leaves because its move landed, focus goes to the Previous or Next
+ * that started the move (Next, for Skip), else to "Enter the series".
  */
 function FeaturedHome({ revisionId, opening, following = NONE, portrait }: FeaturedHomeProps) {
-  const { reportPhoto, reportIntro, loading } = useHomeChrome();
+  const { reportPhoto, reportIntro, reportHomeState, loading } = useHomeChrome();
   const reducedMotion = usePrefersReducedMotion();
+  const visible = useDocumentVisible();
   const [isSettled, setIsSettled] = useState(hasCompletedHomeHeroIntro);
   /** Something has committed: the opening walk is over. */
   const [shown, setShown] = useState(false);
@@ -162,9 +169,10 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   // page's own heading names it.
   const [announcedId, setAnnouncedId] = useState(series.id);
   const [announcement, setAnnouncement] = useState<string | null>(null);
+  // Only the visitor's own move announces it: while Home moves by itself its announcements are off (#4).
   if (announcedId !== series.id) {
     setAnnouncedId(series.id);
-    setAnnouncement(`Now showing ${series.title}`);
+    setAnnouncement(playback.source === 'manual' ? `Now showing ${series.title}` : null);
   }
 
   const current = currentId === undefined ? undefined : photos.get(currentId);
@@ -179,7 +187,9 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   /** The move whose failure was last decided, so each visit to a photograph decides once, and again after a Retry. */
   const handled = useRef<number | null>(null);
   const autoFailures = useRef(0);
-  const walkFailures = useRef(0);
+  /** The opening walk's image requests that failed, toward OPENING_ATTEMPTS, and the photographs it has tried. */
+  const walkRequests = useRef(0);
+  const walkTried = useRef(0);
 
   const note = unavailable
     ? 'These photographs can’t be shown right now.'
@@ -197,11 +207,17 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
     handled.current = playback.moves;
     setSettledId(currentId);
     if (!shown) {
-      // The opening walk: nothing is on screen, so try the next photograph, inside loading, up to OPENING_ATTEMPTS.
-      walkFailures.current += 1;
-      if (walkFailures.current >= OPENING_ATTEMPTS || photoIds.length < 2) {
-        setUnavailable(true);
-        reportPhoto('none');
+      // The visitor's own move from image-unavailable isn't part of the first load: it stays there, and Next goes on.
+      if (unavailable && playback.source === 'manual') return;
+      // The opening walk: nothing is on screen, so try the next photograph, inside loading, up to OPENING_ATTEMPTS image
+      // requests. A photograph with no image files asked for nothing.
+      walkTried.current += 1;
+      if (current?.image !== null && playback.source !== 'manual') walkRequests.current += 1;
+      if (walkRequests.current >= OPENING_ATTEMPTS || walkTried.current >= photoIds.length || photoIds.length < 2) {
+        if (!unavailable) {
+          setUnavailable(true);
+          reportPhoto('none');
+        }
       } else {
         playback.skipFailed('opening');
       }
@@ -214,18 +230,45 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
       return;
     }
     setNoticeId(currentId);
-  }, [currentFailed, currentId, shown, photoIds.length, playback, reportPhoto]);
+  }, [currentFailed, currentId, current, shown, unavailable, photoIds.length, playback, reportPhoto]);
+
+  // A failure belongs to the visit it happened on: once a move leaves the photograph, it's cleared and its image
+  // remounts, so coming back fetches it again instead of skipping a photograph that may load fine now.
+  const lastId = useRef(currentId);
+  useEffect(() => {
+    const left = lastId.current;
+    lastId.current = currentId;
+    if (left === undefined || left === currentId) return;
+    setFailed((set) => {
+      if (!set.has(left)) return set;
+      setAttempts((attempt) => ({ ...attempt, [left]: (attempt[left] ?? 0) + 1 }));
+      return withoutId(set, left);
+    });
+  }, [currentId]);
+
+  useEffect(() => {
+    reportHomeState(unavailable ? 'image-unavailable' : 'ready');
+  }, [reportHomeState, unavailable]);
 
   // #18's loading bound, once something is on screen: a move whose photograph is still loading at HOME_LOADING_TIMEOUT_MS
   // counts as failed, so a stalled media route never stops Home now that each move waits on its commit. The image keeps
   // loading, and lands if it arrives while it's still the one Home is on. The opening has no such bound: #18 ends
   // loading at it, and the photograph still shows when it comes.
+  // It counts only time the tab is visible, from the move, so a frozen background tab doesn't fire it on return.
   const waitingOn = shown && currentId !== undefined && currentId !== settledId && !currentFailed ? currentId : null;
+  const bound = useRef({ key: '', elapsed: 0 });
   useEffect(() => {
     if (waitingOn === null) return;
-    const timer = setTimeout(() => handleImageFailed(waitingOn), HOME_LOADING_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [waitingOn, playback.moves, handleImageFailed]);
+    const key = `${playback.moves} ${waitingOn}`;
+    if (bound.current.key !== key) bound.current = { key, elapsed: 0 };
+    if (!visible) return;
+    const start = Date.now();
+    const timer = setTimeout(() => handleImageFailed(waitingOn), Math.max(0, HOME_LOADING_TIMEOUT_MS - bound.current.elapsed));
+    return () => {
+      clearTimeout(timer);
+      if (bound.current.key === key) bound.current.elapsed += Date.now() - start;
+    };
+  }, [waitingOn, playback.moves, visible, handleImageFailed]);
 
   // Suspension holds the timer, without touching the visitor's Pause or Play.
   const { setHold } = playback;
@@ -238,18 +281,28 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   const previousRef = useRef<HTMLButtonElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
   const enterRef = useRef<HTMLAnchorElement>(null);
+  const skipRef = useRef<HTMLButtonElement>(null);
   /** Retry or Skip had focus as they left: a move landed under them. */
   const focusLeft = useRef(false);
   const handleActionsLeft = useCallback(() => {
     focusLeft.current = true;
   }, []);
+  /** Retry alone had focus as it left, with Skip staying: its record came back with nothing to fetch. */
+  const retryLeft = useRef(false);
+  const handleRetryLeft = useCallback(() => {
+    retryLeft.current = true;
+  }, []);
+  /** A Retry is on its way: its landing ends a suspension, as the visitor's move does. */
+  const retried = useRef(false);
 
   const commit = useLatest((photoId: string) => {
     setFailed((set) => withoutId(set, photoId));
     setSettledId(photoId);
     autoFailures.current = 0;
-    walkFailures.current = 0;
-    if (playback.source === 'manual' || !shown) setSuspended(false);
+    walkRequests.current = 0;
+    walkTried.current = 0;
+    if (playback.source === 'manual' || !shown || retried.current) setSuspended(false);
+    retried.current = false;
     setNoticeId(null);
     setUnavailable(false);
     if (shown) return;
@@ -264,7 +317,10 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
     if (currentId === undefined) return;
     // The attempt starts over, so the timer waits on it and its result decides again.
     handled.current = null;
-    walkFailures.current = 0;
+    walkRequests.current = 0;
+    walkTried.current = 0;
+    retried.current = true;
+    bound.current = { key: '', elapsed: 0 };
     setSettledId(null);
     if (currentRecordFailed) {
       retryRecord(currentId);
@@ -279,6 +335,11 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
     playback.prev();
   }, [playback]);
   const next = useCallback(() => {
+    origin.current = 'next';
+    playback.next();
+  }, [playback]);
+  // Skip moves on as Next does, so focus comes back to Next once it lands, whichever control started the move before.
+  const skip = useCallback(() => {
     origin.current = 'next';
     playback.next();
   }, [playback]);
@@ -305,17 +366,24 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   // When Retry or Skip held focus and left because a move landed, focus goes back where the move started, in the same
   // commit, so #18's keyboard-focus hold never drops.
   useLayoutEffect(() => {
-    if (!focusLeft.current) return;
-    focusLeft.current = false;
-    const back = origin.current === 'prev' ? previousRef.current : origin.current === 'next' ? nextRef.current : null;
-    (back ?? enterRef.current)?.focus();
+    if (focusLeft.current) {
+      focusLeft.current = false;
+      retryLeft.current = false;
+      const back = origin.current === 'prev' ? previousRef.current : origin.current === 'next' ? nextRef.current : null;
+      (back ?? enterRef.current)?.focus();
+      return;
+    }
+    if (retryLeft.current) {
+      retryLeft.current = false;
+      (skipRef.current ?? nextRef.current ?? enterRef.current)?.focus();
+    }
   });
 
   const handleSettled = useCallback(() => setIsSettled(true), []);
   const announce = playback.source === 'manual' ? 'polite' : 'off';
 
   return (
-    <div className="contents" data-playback={playback.playbackState} data-home-state={unavailable ? 'image-unavailable' : 'ready'}>
+    <div className="contents" data-playback={playback.playbackState}>
       {/* The intro is Home's loading state on a first visit with motion, and leaves About's portrait as the badge. */}
       <HeroReveal isLoading={loading} onSettled={handleSettled} onPhaseChange={reportIntro} portrait={portrait} copyKey={series.id} />
 
@@ -370,32 +438,27 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
             </div>
             {(showActions || unavailable) && (
               <FailureActions onLeftWithFocus={handleActionsLeft}>
-                {showRetry && (
-                  <button type="button" className={styles.action} onClick={retry}>
-                    Retry
-                  </button>
-                )}
+                {showRetry && <RetryButton onClick={retry} onLeftWithFocus={handleRetryLeft} />}
                 {showActions && photoIds.length > 1 && (
-                  <button type="button" className={styles.action} onClick={playback.next}>
+                  <button ref={skipRef} type="button" className={styles.action} onClick={skip}>
                     Skip
                   </button>
                 )}
               </FailureActions>
             )}
-            {!unavailable && (
-              <HomeSequenceControls
-                index={onScreen.position}
-                count={onScreen.count}
-                steps={photoIds.length}
-                wantsPlay={playback.wantsPlay && !suspended}
-                onPrev={prev}
-                onNext={next}
-                onTogglePlayback={togglePlayback}
-                previousRef={previousRef}
-                nextRef={nextRef}
-                {...pointerHandlers}
-              />
-            )}
+            {/* Kept on image-unavailable too: Next is the visitor's own way on, and focus on a control never drops. */}
+            <HomeSequenceControls
+              index={onScreen.position}
+              count={onScreen.count}
+              steps={photoIds.length}
+              wantsPlay={playback.wantsPlay && !suspended}
+              onPrev={prev}
+              onNext={next}
+              onTogglePlayback={togglePlayback}
+              previousRef={previousRef}
+              nextRef={nextRef}
+              {...pointerHandlers}
+            />
           </div>
         }
       />
@@ -420,6 +483,22 @@ function FailureActions({ children, onLeftWithFocus }: { children: React.ReactNo
     <div ref={ref} className={styles.failureActions}>
       {children}
     </div>
+  );
+}
+
+/** Retry, which says as it leaves alone, with focus, so focus can go to Skip instead of the body. */
+function RetryButton({ onClick, onLeftWithFocus }: { onClick: () => void; onLeftWithFocus: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    return () => {
+      if (element !== null && element === document.activeElement) onLeftWithFocus();
+    };
+  }, [onLeftWithFocus]);
+  return (
+    <button ref={ref} type="button" className={styles.action} onClick={onClick}>
+      Retry
+    </button>
   );
 }
 

@@ -571,7 +571,7 @@ describe('CatalogHome', () => {
       expect(queryButton('Retry')).toBeNull();
     });
 
-    it('Skip moves on in authored order, and a failure stays offered when the visitor comes back to it', async () => {
+    it('Skip moves on in authored order, and coming back tries the photograph again, offering it once it fails again', async () => {
       await renderHome();
       load(3);
       click('Next photograph');
@@ -582,6 +582,9 @@ describe('CatalogHome', () => {
       expect(failure()).toBe('');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
       click('Previous photograph');
+      // The failure was that visit's: 0 fetches again, with 4 still on screen.
+      expect(failure()).toBe('');
+      fail(0);
       expect(failure()).toBe('Couldn’t load photograph 04 of 04');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
     });
@@ -1213,7 +1216,8 @@ describe('CatalogHome', () => {
         expect(failure()).toBe('These photographs can’t be shown right now.');
         expect(button('Retry')).toBeInTheDocument();
         expect(queryButton('Skip')).toBeNull();
-        expect(queryButton('Next photograph')).toBeNull();
+        // Next stays, the visitor's own way on.
+        expect(button('Next photograph')).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Fixture series A');
         expect(screen.getByRole('link', { name: 'Enter the series' })).toBeInTheDocument();
         expect(loading()).toBe('false');
