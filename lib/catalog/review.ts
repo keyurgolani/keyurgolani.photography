@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { canonicalJson } from '../storage/canonical';
+import { canonicalJson, sameCanonical } from '../storage/canonical';
 import { authoredPhotoSchema, authoredSeriesSchema, authoredSiteSchema, type AuthoredKind } from './schema';
 import type { AuthoredPhoto, AuthoredRecord, AuthoredSeries, AuthoredSite, FieldReview, IssueRecord, ReviewStamp, RevisionContent, WorkingLayer } from './types';
 
@@ -530,7 +530,7 @@ export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
             return { ...ref, ...seen, state: 'stale', reason: 'base-unreadable', detail: `It was reviewed against ${short(stamp.baseRevisionId)}, whose revision file can't be read, so nothing shows whether the active revision changed it since.` };
         }
         const activeContent = env.active?.content ?? EMPTY;
-        if (hashValue(publishedValue(base, ref, env.published?.(base))) !== hashValue(publishedValue(activeContent, ref, env.published?.(activeContent)))) {
+        if (!sameCanonical(publishedValue(base, ref, env.published?.(base)), publishedValue(activeContent, ref, env.published?.(activeContent)))) {
             return { ...ref, ...seen, state: 'stale', reason: 'active-moved', detail: `It was reviewed against ${short(stamp.baseRevisionId)}, and the active revision ${short(activeId)} publishes ${ref.field} differently.` };
         }
     }

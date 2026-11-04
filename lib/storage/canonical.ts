@@ -37,3 +37,38 @@ function canonicalize(value: unknown, at: string): unknown {
 export function canonicalJson(value: unknown): string {
     return JSON.stringify(canonicalize(value, 'the value'));
 }
+
+/** Equal as plain JSON with every string the same, absent optionals left out: a cheap check before canonicalJson()'s. */
+function identical(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+    if (Array.isArray(a)) {
+        if (!Array.isArray(b) || a.length !== b.length) return false;
+        for (let index = 0; index < a.length; index++) if (!identical(a[index], b[index])) return false;
+        return true;
+    }
+    if (Array.isArray(b)) return false;
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    let count = 0;
+    for (const key in left) {
+        if (!Object.hasOwn(left, key) || left[key] === undefined) continue;
+        if (!Object.hasOwn(right, key) || !identical(left[key], right[key])) return false;
+        count++;
+    }
+    for (const key in right) if (Object.hasOwn(right, key) && right[key] !== undefined) count--;
+    return count === 0;
+}
+
+/**
+ * Whether two values have the same canonicalJson(), with null standing in
+ * for an absent one. Values that are the same plain JSON, string for
+ * string, answer at once, so comparing large unchanged records doesn't
+ * build their canonical text. Anything else is compared as canonicalJson()
+ * would, NFC and all.
+ */
+export function sameCanonical(a: unknown, b: unknown): boolean {
+    const left = a ?? null;
+    const right = b ?? null;
+    return identical(left, right) || canonicalJson(left) === canonicalJson(right);
+}

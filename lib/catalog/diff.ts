@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Registry } from '../identity/types';
-import { canonicalJson } from '../storage/canonical';
+import { canonicalJson, sameCanonical } from '../storage/canonical';
 import { AUTHORED_PHOTO_FIELDS, fieldClass } from './fields';
 import { fieldReview, hashValue, publishedIndexes, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
 import type { AuthoredPhoto, AuthoredSeries, CandidateContent, CandidatePhotoRecord, IssueRecord, PublicPhotoRecord, RevisionFile, SeriesRecord, WorkingLayer } from './types';
@@ -96,7 +96,7 @@ type PhotoLike = CandidatePhotoRecord | PublicPhotoRecord;
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const canon = (value: unknown) => canonicalJson(value ?? null);
-const same = (a: unknown, b: unknown) => canon(a) === canon(b);
+const same = (a: unknown, b: unknown) => sameCanonical(a, b);
 const json = (value: unknown): Json => (value === undefined ? null : (JSON.parse(canon(value)) as Json));
 const RECORD_ORDER: Record<IssueRecord['kind'], number> = { site: 0, series: 1, photo: 2 };
 
