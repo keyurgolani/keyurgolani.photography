@@ -1375,7 +1375,7 @@ describe('CatalogHome', () => {
         const host = document.createElement('div');
         host.innerHTML = renderToString(<CatalogHome home={published()} />);
         const region = host.querySelector('[data-home-carousel]')!;
-        expect(region.tagName).toBe('SECTION');
+        expect(region).toHaveAttribute('role', 'region');
         expect(region).toHaveAttribute('aria-roledescription', 'carousel');
         expect(region).toHaveAttribute('aria-label', 'Fixture series A');
         expect(host.querySelector(`[data-photo-id="${id(3)}"]`)).toHaveAttribute('aria-label', '3 of 4');

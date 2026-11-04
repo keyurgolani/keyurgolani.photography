@@ -86,7 +86,7 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
   const markGone = useCallback((id: string) => setDecoded((current) => removeFrom(current, id)), []);
 
   // The tone of the photograph on screen under the copy, for Light's and Bright's scrim.
-  const carouselRef = useRef<HTMLElement>(null);
+  const carouselRef = useRef<HTMLDivElement>(null);
   const shownDecoded = shownId !== undefined && decoded.has(shownId);
   useCopyTone(carouselRef, shownId, shownDecoded);
 
@@ -113,9 +113,11 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
   const shownRecord = shownId === undefined ? undefined : photos.get(shownId);
 
   return (
-    <section
+    // A div with the region role, not a <section>: the same semantics, and the element Dark's parity gate walks.
+    <div
       ref={carouselRef}
       className={styles.carousel}
+      role="region"
       aria-roledescription="carousel"
       aria-label={label}
       data-home-carousel=""
@@ -163,7 +165,7 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
       <p className="sr-only" aria-live={announce} aria-atomic="true">
         {shownId === undefined ? '' : `${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`}
       </p>
-    </section>
+    </div>
   );
 }
 

@@ -6,7 +6,7 @@ import { chromium, expect, test, type Browser, type Locator, type Page } from '@
 import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
 import { retryOnAddrInUse } from '../../test/helpers/ports';
-import { HOME_OPENING, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
+import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
@@ -172,8 +172,11 @@ interface Pair {
     intro?: boolean;
     /** A signed-in curator page. */
     session?: boolean;
-    /** Home with its opening photograph failing to load, so the failure notice shows with Retry and Skip. */
-    failOpening?: boolean;
+    /**
+     * Home with the photograph after the opening one failing to load, so Next from the keyboard brings the failure
+     * notice with Retry and Skip. Since #4's opening walk (v2.0.0) a failed opening moves on instead of showing it.
+     */
+    failNext?: boolean;
     /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
      * takes the control out of the layout, as no JavaScript does, so the rest must match. */
     addsControl?: boolean;
@@ -249,7 +252,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
     }, { value: stored, sheet: css });
     const page = await context.newPage();
-    if (pair.failOpening) await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.abort());
+    if (pair.failNext) await page.route(`**/media/${HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + 1) % HOME_ORDER.length]}/**`, (route) => route.abort());
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
     const timedOut: string[] = [];
@@ -499,6 +502,13 @@ const keyboardFocus = async (page: Page, target: Locator) => {
 const homeNext = (page: Page) => page.getByRole('button', { name: 'Next photograph' });
 const homeEnter = (page: Page) => page.getByRole('link', { name: /^Enter the series/ });
 const homeRetry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
+/** Next from the keyboard onto the photograph failNext fails, which both builds answer with the notice, Retry and Skip. */
+const failNextFromKeyboard = async (page: Page) => {
+    await revealChrome(page);
+    await keyboardFocus(page, homeNext(page));
+    await page.keyboard.press('Enter');
+    await expect(homeRetry(page), 'the failure notice is up').toBeVisible();
+};
 const aboutLink = (page: Page) => page.locator('main article a').first();
 /**
  * The Inbox streams in after hydration, behind its loading state: an act before the list is in would focus a row that
@@ -676,9 +686,9 @@ const VISITOR: Pair[] = [
         url: '/',
         gateOnly: true,
         glass: true,
-        failOpening: true,
+        failNext: true,
         act: async (page) => {
-            await expect(homeRetry(page), 'the failure notice is up').toBeVisible();
+            await failNextFromKeyboard(page);
         },
     },
     {
@@ -686,8 +696,11 @@ const VISITOR: Pair[] = [
         url: '/',
         gateOnly: true,
         glass: true,
-        failOpening: true,
-        act: (page) => hoverOn(homeRetry(page)),
+        failNext: true,
+        act: async (page) => {
+            await failNextFromKeyboard(page);
+            await hoverOn(homeRetry(page));
+        },
     },
     // The controls' hover is only with motion allowed and a fine pointer.
     {
@@ -788,6 +801,7 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: 'header nav a[href="/curation/series"]', why: "#150: the curator header's Series link" },
     // The series header's first child, its only <p>, so nothing after it in the header changes its path.
     { selector: 'main > article > header > p:first-child:has(> a[href="/work"])', why: "#173 (B4): the series page's All work link above the title" },
+    { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
 ];
 
 /**
