@@ -1,6 +1,6 @@
 # Showcase
 
-A tour of the site as it's live at v1.6.0, with the catalog launched. The photographs hang as bodies of work now: ten series, 115 photographs. Each series has its own page with a statement and a sequence, and any photograph in it opens in the story Viewer. Home plays the featured series, starting on one of them at random, Work lists them all, and About says who took them.
+A tour of the site as it's live at v1.7.0, with the catalog launched. The photographs hang as bodies of work now: ten series, 115 photographs. Each series has its own page with a statement and a sequence, and any photograph in it opens in the story Viewer. Home plays the featured series, starting on one of them at random, Work lists them all, and About says who took them.
 
 ---
 
