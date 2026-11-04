@@ -184,13 +184,14 @@ test('two automatic failures in a row suspend playback with a polite note, and P
     await expect(status(page)).toHaveText('');
     await expect(page.locator('[data-playback]')).toHaveAttribute('data-playback', 'advancing');
     // A full interval later it moves on past the failed one.
+    await expect(shownSlide(page)).toHaveAttribute('data-photo-id', after(3), { timeout: 20_000 });
     await expectShown(page, after(3));
 });
 
 test('with every photograph failing, Home says so with Retry, and a focused Retry that lands gives focus to Enter the series', async ({ page }, testInfo) => {
     runsOn(testInfo, 'desktop', 'mobile');
     const asked = new Set<string>();
-    await page.route('**/media/**', (route) => {
+    await page.route('**/media/ph_*/**', (route) => {
         asked.add(new URL(route.request().url()).pathname.split('/')[2]);
         return route.abort();
     });
@@ -204,7 +205,7 @@ test('with every photograph failing, Home says so with Retry, and a focused Retr
     await expect(enter(page)).toBeVisible();
     // The walk stops at two photographs: the opening and the next.
     expect([...asked].sort()).toEqual([HOME_OPENING, after(1)].sort());
-    await page.unroute('**/media/**');
+    await page.unroute('**/media/ph_*/**');
     await tabTo(page, retry(page));
     await page.keyboard.press('Enter');
     await expect(homeState(page)).toHaveAttribute('data-home-state', 'ready');
