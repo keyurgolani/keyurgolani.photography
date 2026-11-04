@@ -51,7 +51,10 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
                 <main className={styles.state}>
                     <p role="status" className={styles.visuallyHidden} />
                     <h1>Nothing is live yet</h1>
-                    <p>The first publish replaces the legacy Home and Gallery, and it runs from the command line, where it prints what changes and asks you to confirm the launch. History starts with that first publish.</p>
+                    <p>
+                        Until the first publish, Home and Work show an error page. The first publish runs from the command line, where it prints what changes and asks
+                        you to confirm the launch. History starts with that first publish.
+                    </p>
                     <p>
                         <code className={publish.command}>photos publish --confirm-launch</code>
                     </p>
