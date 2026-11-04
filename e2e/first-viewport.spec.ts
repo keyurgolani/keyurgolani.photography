@@ -89,9 +89,9 @@ const POLICY: Record<Screen, Policy> = {
     // wide for 3:2, 610 for 2:3) at 2.625. The opening, then the next once it shows: two at most.
     home: { images: 2, api: 1, lead: { desktop: 1920, phone: 1920 }, rest: { desktop: 1920, phone: 1920 } },
     // coverSizes(): 7/12 of the column at 3:2 for a wide entry, 5/12 at 4:5 for a narrow one above 768 px, the column at 4:3
-    // below, each times what a cover crop overhangs. A 3:2 cover in a narrow box is 1.875 boxes wide. Only covers near
-    // the first viewport, never the hundred.
-    work: { reach: true, api: 0, lead: { desktop: 800, phone: 1200 }, rest: { desktop: 1200, phone: 1200 } },
+    // below, each times what a cover crop overhangs, at the rung under the rule's (rule 5). A 3:2 cover in a narrow box
+    // needs 874 px, so 583 px asked; on the phone 1,122 device px, so 748. Only covers near the first viewport, never the hundred.
+    work: { reach: true, api: 0, lead: { desktop: 800, phone: 800 }, rest: { desktop: 800, phone: 800 } },
     // The cover at its 82vh-capped width, then thumbnails at 20vw or 50vw, only near the first viewport.
     series: { reach: true, api: 0, lead: { desktop: 1200, phone: 1200 }, rest: { desktop: 400, phone: 800 } },
     // One photograph, at 80vw or 100vw capped by the screen's height. Nothing else.

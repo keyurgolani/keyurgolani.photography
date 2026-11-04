@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { heightCappedSizes, photoSizes } from '../photoSizes';
+import { heightCappedSizes, ONE_RUNG_DOWN, photoSizes } from '../photoSizes';
 
 describe('heightCappedSizes', () => {
     it('switches to the height cap once the viewport is wider than the photograph allows', () => {
@@ -55,6 +55,13 @@ describe('photoSizes', () => {
         expect(photoSizes(portrait, 'cover', [{ vw: 100, heightVh: 100 }])).toBe('(min-aspect-ratio: 667/1000) 100vw, 66.67vh');
         // Shown whole, the height caps it on any screen wider than its shape, as heightCappedSizes() has it.
         expect(photoSizes(landscape, 'contain', [{ vw: 100, heightVh: 82 }])).toBe(heightCappedSizes(2400, 1600, 82, [{ vw: 100 }]));
+    });
+
+    it('scales every length, for the one rung smaller rule 5 allows', () => {
+        expect(ONE_RUNG_DOWN).toBeCloseTo(2 / 3);
+        expect(photoSizes(landscape, 'cover', [{ vw: 100, lessRem: 2, ratio: 4 / 3 }], { scale: ONE_RUNG_DOWN })).toBe('calc(75vw - 1.5rem)');
+        // The switch stays where the box's width and the photograph at its height meet; only the lengths shrink.
+        expect(photoSizes(landscape, 'cover', [{ vw: 100, heightVh: 100 }], { scale: 0.5 })).toBe('(min-aspect-ratio: 1500/1000) 50vw, 75vh');
     });
 
     it('takes each box in order, the media ones first and the last with none', () => {

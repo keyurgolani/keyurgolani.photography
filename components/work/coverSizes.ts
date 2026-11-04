@@ -1,6 +1,6 @@
 // The Work covers' sizes, by their entry's span and their crop. Its own module, so the two components keep exporting
 // components only (fast refresh).
-import { photoSizes, type Fit, type PhotoBox } from '@/components/photoSizes';
+import { ONE_RUNG_DOWN, photoSizes, type Fit, type PhotoBox } from '@/components/photoSizes';
 
 export type CoverSpan = 'wide' | 'narrow';
 
@@ -29,9 +29,14 @@ const BOXES: Record<CoverSpan, PhotoBox[]> = {
     narrow: [{ media: '(min-width: 768px)', vw: (5 / 12) * COLUMN_VW - (7 / 12) * GAP.vw, lessRem: (7 / 12) * GAP.rem, ratio: 4 / 5 }, ...PHONE_BOX],
 };
 
-/** A cover's sizes by #6's size rule: its box for the span, and its own shape and crop. */
+/**
+ * A cover's sizes by #6's size rule: its box for the span, and its own shape
+ * and crop, at the one rung smaller rule 5 allows. Work shows several covers
+ * at once, and on a 3x phone the rule's rung for a 3:2 cover is w1920, which
+ * put Work's LCP behind v1.7.0's (#172).
+ */
 export function coverSizes(cover: { width: number; height: number; crop: Fit }, span: CoverSpan): string {
-    return photoSizes(cover, cover.crop, BOXES[span]);
+    return photoSizes(cover, cover.crop, BOXES[span], { scale: ONE_RUNG_DOWN });
 }
 
 /** The entry's span above 768 px, as SeriesCatalog.module.css sets it: the 1st and 4th of every four are wide. */

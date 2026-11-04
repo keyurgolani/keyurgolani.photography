@@ -11,8 +11,8 @@ export interface WorkCoverImageProps {
     /** The projection's cover, or null when it can't be shown. */
     cover: WorkCover | null;
     /**
-     * `lead` for the first cover: at once, at high priority, preloaded from the head. `eager` for the second: at once.
-     * The rest load lazily (#3).
+     * `lead` for the first cover: at once, at high priority, preloaded from the head. `eager` for the second: at once,
+     * at low priority, so the lead has a slow link to itself first (#172's LCP bar). The rest load lazily (#3).
      */
     loading?: 'lead' | 'eager' | 'lazy';
     /** Its entry's share of the row above 768 px (coverSpan()). */
@@ -56,7 +56,7 @@ export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' 
                 alt=""
                 sizes={coverSizes(cover, span)}
                 loading={loading === 'lazy' ? 'lazy' : 'eager'}
-                fetchPriority={loading === 'lead' ? 'high' : undefined}
+                fetchPriority={loading === 'lead' ? 'high' : loading === 'eager' ? 'low' : undefined}
                 preload={loading === 'lead'}
                 onError={() => setFailed(true)}
                 className={styles.cover}

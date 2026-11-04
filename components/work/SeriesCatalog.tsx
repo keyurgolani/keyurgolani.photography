@@ -33,8 +33,8 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                         <li key={series.id} className={styles.item}>
                             {/* data-ring-room: the focus ring clears the cover's surround (--ring-room, the module). */}
                             <Link href={series.href} className={styles.entry} data-ring-room="">
-                                {/* The first two covers load at once, the first at high priority, the rest as they near
-                                    the viewport (#3). Keyed on the cover's file, so a refresh that brings a new cover
+                                {/* The first two covers load at once, the first at high priority and the second at low,
+                                    the rest as they near the viewport (#3). Keyed on the cover's file, so a refresh that brings a new cover
                                     clears a failure. */}
                                 <WorkCoverImage
                                     key={series.cover?.variants.w1200.webp.url ?? 'none'}
