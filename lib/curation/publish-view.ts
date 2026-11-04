@@ -1,5 +1,6 @@
 import type { CatalogChange, CatalogDiff } from '../catalog/diff';
 import { hashValue, inboxReviewOf, type FieldReviewState, type InboxItem, type ReviewContext } from '../catalog/review';
+import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-write';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
 import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
@@ -72,8 +73,8 @@ const DERIVED_FIELD: Record<string, string> = {
 
 const TEXT_FIELDS = new Set(['title', 'statement', 'shortStatement', 'caption', 'credit', 'location']);
 
-/** The reasons a stamp-only review on the screen may clear (decision 2), and the action's label. */
-const RESTAMP: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> = {
+/** The action's label for each reason a stamp-only review may clear (decision 2, review-write.ts's RESTAMP_REASONS). */
+const RESTAMP: Record<RestampReason, string> = {
     'active-moved': 'Still right, mark reviewed',
     'base-unreadable': 'Still right, mark reviewed',
     'asset-replaced': 'Still right, mark reviewed',
@@ -82,14 +83,6 @@ const RESTAMP: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> 
     'no-stamp': 'Mark reviewed',
     generated: 'Mark reviewed',
 };
-
-/** The reasons only the Inbox settles. */
-export const INBOX_REASONS: ReadonlySet<string> = new Set(['item-reopened', 'newer-item', 'item-unreadable', 'inbox-unread']);
-
-/** Whether "Mark reviewed" may clear this field's state: its reason is one the screen restamps, and it isn't a generated description, whose review is its own fix. */
-export function restampReason(state: FieldReviewState): boolean {
-    return state.state !== 'reviewed' && state.reason !== undefined && RESTAMP[state.reason] !== undefined && !isGeneratedAlt(state);
-}
 
 /** What the CLI or a restore has to do, for a reason the screen can't clear. */
 const HINT_ONLY: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> = {
@@ -100,7 +93,6 @@ const HINT_ONLY: Partial<Record<NonNullable<FieldReviewState['reason']>, string>
 
 const valueOf = (record: AuthoredRecord, field: string): unknown => (record as unknown as Record<string, unknown>)[field];
 const pad = (n: number) => String(n).padStart(2, '0');
-const isGeneratedAlt = (entry: FieldReviewState) => entry.reason === 'generated' && entry.record.kind === 'photo' && entry.field === 'alt';
 const keyOf = (record: IssueRecord, field: string) => `${record.kind}:${record.id}:${field}`;
 
 /** The page's names for records, read from the candidate, then the active revision, then the working layer and the registry. */
@@ -462,12 +454,12 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
         };
     }
     if (first.reason && INBOX_REASONS.has(first.reason) && first.eventId) return { type: 'inbox', record: names.record(change.record), eventId: first.eventId };
-    const label = first.reason ? RESTAMP[first.reason] : undefined;
+    const label = restampReason(first) ? RESTAMP[first.reason as RestampReason] : undefined;
     if (label) {
         const record = recordIn(input.layer, first.record);
         if (!record) return { type: 'hint', text: HINT_ONLY['no-record'] as string };
         // Every field this row waits on in the same record, that a review here may clear.
-        const fields = open.filter((entry) => keyOf(entry.record, '') === keyOf(first.record, '') && entry.reason && RESTAMP[entry.reason] && !isGeneratedAlt(entry)).map((entry) => entry.field);
+        const fields = open.filter((entry) => keyOf(entry.record, '') === keyOf(first.record, '') && restampReason(entry)).map((entry) => entry.field);
         const target: ReviewTarget = {
             kind: first.record.kind,
             id: first.record.id,
