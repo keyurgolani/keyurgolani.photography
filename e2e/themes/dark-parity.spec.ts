@@ -505,10 +505,11 @@ const homeNext = (page: Page) => page.getByRole('button', { name: 'Next photogra
 const homeEnter = (page: Page) => page.getByRole('link', { name: /^Enter the series/ });
 const homeRetry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
 /**
- * The slide stack, left out of the failure pairs' walks: on a failed Next the base puts the failed slide (its LQIP) on
- * screen, and #4 keeps the photograph that showed (v2.0.0). Every other Home pair compares the stack.
+ * The slides, left out of the failure pairs' walks: on a failed Next the base puts the failed slide (its LQIP) on screen,
+ * and #4 keeps the photograph that showed (v2.0.0). The carousel itself is still compared, and every other Home pair
+ * compares the slides too.
  */
-const FAILED_NEXT_STACK = [{ selector: '[class$="_carousel"], [class*="_carousel "]', why: '#4: a failed Next keeps the photograph on screen' }];
+const FAILED_NEXT_STACK = [{ selector: '[data-photo-id]', why: '#4: a failed Next keeps the photograph on screen' }];
 /** Next from the keyboard onto the photograph failNext fails, which both builds answer with the notice, Retry and Skip. */
 const failNextFromKeyboard = async (page: Page) => {
     await revealChrome(page);
@@ -775,6 +776,11 @@ const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
  * The gate's named allowances (spec §10). The Inbox's KG ring at 390 is back to 0 and its allowance is gone (the curator
  * PR). One sanctioned departure from today's site remains: the curator's selected row and tab take P2-8's 1 px outline
  * in every theme, Dark included, an accessibility fix, since today's fill alone is 1.32:1 against the list.
+ *
+ * Not compared, as a sanctioned departure: #4's `image-unavailable` Home (v2.0.0), where the opening walk gave up. The
+ * base has no such screen: with every photograph failing it offers the opening's notice with Retry and Skip, and the
+ * head says "These photographs can't be shown right now." with Retry alone. The notice, Retry and the controls it keeps
+ * are the ones home-failure and home-failure-hover compare.
  */
 /**
  * #145, the owner's request: on the wide layout the Inbox is one screen tall, its list and its form each scroll on
