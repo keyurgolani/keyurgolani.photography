@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CatalogChange, CatalogDiff } from '../../catalog/diff';
 import type { FieldReviewReason, FieldReviewState, ReviewContext } from '../../catalog/review';
 import type { CandidateContent, RevisionContent, WorkingLayer } from '../../catalog/types';
-import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, timeOf, type Ledger, type ScreenView } from '../publish-facts';
+import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, rollbackStakes, rollbackWarning, timeOf, type Ledger, type ScreenView } from '../publish-facts';
 import { localize } from '../publish-history';
 import { buildLedger } from '../publish-view';
 
@@ -121,6 +121,7 @@ const view = (overrides: Partial<ScreenView> = {}): ScreenView => ({
     ledger: { authored: [row(true), row()], derived: [row()], health: [row()] },
     blockers: [],
     panel: { count: 'Low Tide Hours: 6 photographs, was 5', copyLine: 'The short statement changes.', draftSrc: '/curation/preview/x/site/work/a/photo/b', liveSrc: '/work/a/photo/b' },
+    rollbackReady: { state: 'live-ok' },
     ...overrides,
 });
 const live19 = { revisionId: REV(3), number: 19, hash: '33333333' };
@@ -220,6 +221,43 @@ describe('facts by state', () => {
     it('says No visitor-visible changes for a candidate visitors would see no difference in, with no bar', () => {
         const facts = displayFacts({ ...view(), kind: 'no-visible-change' }, null, null);
         expect(facts).toMatchObject({ mode: 'nothing', heading: 'Nothing to publish', lead: 'No visitor-visible changes. Edits to hidden or draft series stay saved and publish when the series becomes visible.', bar: null, showFixes: false });
+    });
+
+    // #117: the line shows while the live checks pass, verified or not, and a warning that names the fix takes its place on any evidence of a problem.
+    it('shows the rollback-ready line while the live revision passes, verified or never checked', () => {
+        for (const rollbackReady of [{ state: 'verified' }, { state: 'live-ok' }] as const) {
+            const facts = displayFacts(view({ rollbackReady }), null, null);
+            expect(facts.panel.rollback).toBe('Last-known-good revision 18 remains rollback-ready.');
+            expect(facts.panel.rollbackTone).toBeUndefined();
+            expect(rollbackStakes(18, rollbackReady)).toBe(' Revision 18 stays rollback-ready.');
+        }
+    });
+
+    it('replaces the line with a warning that names the fix, on the draft and the out-of-date ledger, and in the Validate stakes', () => {
+        const cases = [
+            ['last-verify', "Revision 18 failed its last check, so it isn't rollback-ready. Run `photos verify` to see what to fix."],
+            ['live-check', "Revision 18 fails the checks a restore runs, so it isn't rollback-ready. Run `photos verify` to see what to fix."],
+            ['record-damaged', "Revision 18 isn't rollback-ready: the record of its last check can't be read. Run `photos verify` in the watcher's container to write it again."],
+            ['chain', "Revision 18 isn't rollback-ready: the activation records don't show it going live. Run `photos verify` to check the active pointer, or restore a revision from History, below."],
+        ] as const;
+        for (const [reason, warning] of cases) {
+            const screen = view({ rollbackReady: { state: 'failed', reason } });
+            expect(displayFacts(screen, null, null).panel).toMatchObject({ rollback: warning, rollbackTone: 'alert' });
+            expect(displayFacts(screen, { kind: 'changed', body: 'b' }, null).panel).toMatchObject({ rollback: warning, rollbackTone: 'alert' });
+            expect(rollbackWarning(18, reason)).toBe(warning);
+            expect(rollbackStakes(18, { state: 'failed', reason })).toBe(` ${warning}`);
+        }
+        expect(displayFacts(view({ rollbackReady: { state: 'failed', reason: 'last-verify' } }), null, null).panel.rollback).not.toContain('remains rollback-ready');
+    });
+
+    it("drops the line and the stakes clause when it can't tell, and keeps the restore line once nothing is pending", () => {
+        const unknown = view({ rollbackReady: { state: 'unknown' } });
+        expect(displayFacts(unknown, null, null).panel.rollback).toBeNull();
+        expect(rollbackStakes(18, { state: 'unknown' })).toBe('');
+        // Live and Nothing name the revision before the active one, which the gate doesn't cover.
+        const failed = view({ rollbackReady: { state: 'failed', reason: 'last-verify' } });
+        expect(displayFacts({ ...failed, kind: 'nothing' }, null, null).panel).toMatchObject({ rollback: 'Revision 17 is kept. Restore it from History, below.' });
+        expect(displayFacts(failed, { kind: 'published', live: live19, previous: was18 }, null).panel.rollbackTone).toBeUndefined();
     });
 
     it('says who did a thing without a producer ID', () => {

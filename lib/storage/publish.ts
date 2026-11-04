@@ -67,23 +67,76 @@ function isManifest(value: unknown): value is DirectoryManifest {
             typeof entry.sha256 === 'string' && SHA256_HEX.test(entry.sha256)));
 }
 
+/** A file `photos verify` refuses to read through: a symlink, or not a regular file. */
+class NotServableFileError extends Error {}
+
+/**
+ * Open `file` for reading without following a symlink at its name, and
+ * without blocking on a FIFO, as /media opens what it serves. Throws when
+ * it is a symlink or not a regular file.
+ */
+async function openNoFollow(file: string): Promise<fs.promises.FileHandle> {
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    } catch (error) {
+        if (hasErrorCode(error, 'ELOOP')) throw new NotServableFileError(`${path.basename(file)} is a symlink, which /media refuses`);
+        throw error;
+    }
+    try {
+        if (!(await handle.stat()).isFile()) throw new NotServableFileError(`${path.basename(file)} is not a regular file`);
+    } catch (error) {
+        await handle.close();
+        throw error;
+    }
+    return handle;
+}
+
+export interface VerifyDirectoryOptions {
+    /**
+     * Refuse a symlinked manifest or variant file instead of reading through
+     * it, as /media does. `photos verify` sets it; the build and publish
+     * paths keep following, as they always have.
+     */
+    noFollow?: boolean;
+}
+
 /** Read `<dir>/manifest.json`. Null when the directory or manifest is missing; throws when it is malformed. */
-export async function readDirectoryManifest(dir: string): Promise<DirectoryManifest | null> {
+export async function readDirectoryManifest(dir: string, { noFollow = false }: VerifyDirectoryOptions = {}): Promise<DirectoryManifest | null> {
+    const file = path.join(dir, MANIFEST_FILE);
     let text: string;
     try {
-        text = await fs.promises.readFile(path.join(dir, MANIFEST_FILE), 'utf8');
+        if (noFollow) {
+            const handle = await openNoFollow(file);
+            try {
+                text = await handle.readFile('utf8');
+            } finally {
+                await handle.close();
+            }
+        } else {
+            text = await fs.promises.readFile(file, 'utf8');
+        }
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
         throw error;
     }
     const value: unknown = JSON.parse(text);
-    if (!isManifest(value)) throw new Error(`${path.join(dir, MANIFEST_FILE)} is not a valid manifest`);
+    if (!isManifest(value)) throw new Error(`${file} is not a valid manifest`);
     return value;
 }
 
-async function sha256Of(file: string): Promise<string> {
+async function sha256Of(file: string, noFollow: boolean): Promise<string> {
     const hash = createHash('sha256');
-    for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
+    if (!noFollow) {
+        for await (const chunk of fs.createReadStream(file)) hash.update(chunk as Buffer);
+        return hash.digest('hex');
+    }
+    const handle = await openNoFollow(file);
+    try {
+        for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk as Buffer);
+    } finally {
+        await handle.close();
+    }
     return hash.digest('hex');
 }
 
@@ -91,12 +144,13 @@ async function sha256Of(file: string): Promise<string> {
  * List what is wrong with `dir` as the derivative set for `identity`: a
  * missing or malformed manifest, a manifest for another photo, revision, or
  * profile, or a listed file that is missing or whose size or SHA-256 differs.
- * An empty list means the set is valid.
+ * With `noFollow`, a symlinked manifest or file is wrong too. An empty list
+ * means the set is valid.
  */
-export async function verifyDirectory(dir: string, identity: AssetIdentity): Promise<string[]> {
+export async function verifyDirectory(dir: string, identity: AssetIdentity, { noFollow = false }: VerifyDirectoryOptions = {}): Promise<string[]> {
     let manifest: DirectoryManifest | null;
     try {
-        manifest = await readDirectoryManifest(dir);
+        manifest = await readDirectoryManifest(dir, { noFollow });
     } catch (error) {
         return [`unreadable manifest: ${(error as Error).message}`];
     }
@@ -117,17 +171,28 @@ export async function verifyDirectory(dir: string, identity: AssetIdentity): Pro
         const target = path.join(dir, file.name);
         let stat: fs.Stats;
         try {
-            stat = await fs.promises.stat(target);
+            stat = noFollow ? await fs.promises.lstat(target) : await fs.promises.stat(target);
         } catch {
             problems.push(`${file.name} is missing`);
             continue;
         }
-        if (!stat.isFile()) {
+        if (stat.isSymbolicLink()) {
+            problems.push(`${file.name} is a symlink, which /media refuses`);
+        } else if (!stat.isFile()) {
             problems.push(`${file.name} is not a file`);
         } else if (stat.size !== file.bytes) {
             problems.push(`${file.name} is ${stat.size} bytes, expected ${file.bytes}`);
-        } else if ((await sha256Of(target)) !== file.sha256) {
-            problems.push(`${file.name} does not match its sha256`);
+        } else {
+            let digest: string;
+            try {
+                digest = await sha256Of(target, noFollow);
+            } catch (error) {
+                // Swapped for a symlink or a FIFO between the lstat and the open.
+                if (!(error instanceof NotServableFileError)) throw error;
+                problems.push(error.message);
+                continue;
+            }
+            if (digest !== file.sha256) problems.push(`${file.name} does not match its sha256`);
         }
     }
     return problems;

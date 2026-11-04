@@ -21,6 +21,11 @@
 #    restart on the same published root, /api/ready answers exactly as before
 #    it, naming the same revision, the set still serves, and the legacy WebPs
 #    stay closed.
+# 3. #117's `photos verify`, in the image, on the published root: exit 0 and
+#    a status/verify.json that passes the live revision. Then one byte of the
+#    served set flipped in place, its size kept, which only the digest check
+#    sees: exit 1, naming the file, and a record that fails the revision. The
+#    byte goes back, and a third run passes again.
 #
 #   ci/smoke-catalog.sh <tag>
 #
@@ -112,6 +117,24 @@ start_web() {
 stop_web() {
   docker rm -f "$WEB" >/dev/null
   WEB_STARTED=false
+}
+
+# Runs photos verify in the image on the published root, with any further
+# arguments, as this machine's user, who owns that root here, so the run can
+# write its record. Production runs it in image-watcher, as uid 1001.
+verify_published() {
+  docker run --rm --pull never --user "$(id -u):$(id -g)" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+    -v "$PUBLISHED:/data/portfolio" "$IMAGE" node dist/scripts/photos.mjs verify "$@"
+}
+
+# The SHA-256 of file <file>.
+sha256_of() {
+  node -e 'console.log(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$1"
+}
+
+# Flips the first byte of file <file> in place, keeping its size. A second call puts it back.
+flip_byte() {
+  node -e 'const fs = require("fs"); const fd = fs.openSync(process.argv[1], "r+"); const b = Buffer.alloc(1); fs.readSync(fd, b, 0, 1, 0); b[0] ^= 0xff; fs.writeSync(fd, b, 0, 1, 0); fs.closeSync(fd);' "$1"
 }
 
 # The value of header <name> in $TMP/headers.txt, or nothing.
@@ -276,4 +299,51 @@ code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code
 [ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the restart."
 check_closed
 echo "After a restart on the published root, /api/ready named $revision as before, its set still served, and the legacy WebPs stayed closed."
+
+# 9. photos verify on the published root: it passes and records, fails a set
+#    whose byte flipped with its size kept, and passes again once it's back.
+media_file=$PUBLISHED/assets/${active#/media/}
+[ -s "$media_file" ] || fail "There is no ${active#/media/} under the published root, so flipping a byte in it would prove nothing."
+before=$(sha256_of "$media_file")
+verify_code=0
+verify_published --json >"$TMP/verify.json" || verify_code=$?
+[ "$verify_code" = 0 ] || fail "photos verify --json exited $verify_code on the published root, expected 0: $(cat "$TMP/verify.json")"
+jq -e '.outcome == "VERIFIED" and .exitCode == 0 and .recorded == true' "$TMP/verify.json" >/dev/null ||
+  fail "photos verify --json printed $(cat "$TMP/verify.json")."
+[ -s "$PUBLISHED/status/verify.json" ] || fail "photos verify wrote no status/verify.json."
+for printed in "$TMP/verify.json" "$PUBLISHED/status/verify.json"; do
+  for absolute in /data/portfolio "$PUBLISHED" "$TMP"; do
+    if grep -qF -- "$absolute" "$printed"; then
+      fail "photos verify named the absolute path $absolute in ${printed##*/}: $(cat "$printed")"
+    fi
+  done
+done
+# shellcheck disable=SC2016 # $revision is jq's
+jq -e '.schemaVersion == 1 and .chain.ok and any(.revisions[]; .revisionId == $revision and .live and .ok)' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
+  fail "status/verify.json doesn't pass $revision: $(cat "$PUBLISHED/status/verify.json")"
+
+flip_byte "$media_file"
+[ "$(sha256_of "$media_file")" != "$before" ] || fail "Flipping a byte left ${active#/media/} as it was, so verify's failure would prove nothing."
+[ "$(wc -c <"$media_file")" -eq "$(wc -c <"$TMP/media")" ] || fail "Flipping a byte changed the size of ${active#/media/}."
+verify_code=0
+verify_published >"$TMP/verify-flipped.txt" 2>&1 || verify_code=$?
+flip_byte "$media_file"
+[ "$(sha256_of "$media_file")" = "$before" ] || fail "Flipping the byte back didn't restore ${active#/media/}."
+[ "$verify_code" = 1 ] || fail "photos verify exited $verify_code with a byte flipped in ${active#/media/}, expected 1: $(cat "$TMP/verify-flipped.txt")"
+flipped_msg="${active##*/} does not match its sha256"
+grep -qF -- "$flipped_msg" "$TMP/verify-flipped.txt" || fail "photos verify didn't say '$flipped_msg': $(cat "$TMP/verify-flipped.txt")"
+grep -qF -- "[photos] VERIFY_FAILED: " "$TMP/verify-flipped.txt" || fail "photos verify didn't end VERIFY_FAILED: $(cat "$TMP/verify-flipped.txt")"
+if grep -qF -- /data/portfolio "$TMP/verify-flipped.txt"; then
+  fail "photos verify named an absolute path: $(cat "$TMP/verify-flipped.txt")"
+fi
+# shellcheck disable=SC2016 # $revision is jq's
+jq -e 'any(.revisions[]; .revisionId == $revision and (.ok | not))' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
+  fail "status/verify.json doesn't record the failure of $revision: $(cat "$PUBLISHED/status/verify.json")"
+verify_code=0
+verify_published >"$TMP/verify-again.txt" 2>&1 || verify_code=$?
+[ "$verify_code" = 0 ] || fail "photos verify exited $verify_code once the byte was back, expected 0: $(cat "$TMP/verify-again.txt")"
+# shellcheck disable=SC2016 # $revision is jq's
+jq -e 'any(.revisions[]; .revisionId == $revision and .live and .ok)' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
+  fail "status/verify.json doesn't pass $revision again once the byte was back: $(cat "$PUBLISHED/status/verify.json")"
+echo "photos verify passed $revision and recorded it, failed it with exit 1 for a byte flipped in ${active#/media/} with its size kept, and passed it again once the byte was back."
 echo "smoke-catalog passed."

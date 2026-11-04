@@ -17,6 +17,7 @@ The registry in it names every photo by its path in the library and by the SHA-2
 | `assets/<photoId>/<assetRevision>/<profileId>/` | One `/media` set: its WebP and AVIF files and `manifest.json`. A set never changes once it's written. | The watcher |
 | `staging/` | Sets still being built | The watcher |
 | `status/watcher.json` | The watcher's heartbeat, which its healthcheck reads | The watcher, every 30 s |
+| `status/verify.json` | The last full `photos verify` run: when it ran, the active pointer it read, the chain's result, and each revision's, with up to 20 problems. The curator's Publish screen reads it for its rollback-ready line. Nothing runs verify on its own, so it's missing until you run it, which is fine. | `photos.mjs verify`, when you run it |
 | `catalog/revisions/` | Every published revision, which never changes once it's written | `photos.mjs publish`, and the curator's Publish |
 | `catalog/activations/` | Each activation: every publish and rollback adds one | `photos.mjs publish` and `rollback`, and the curator's Publish and Restore |
 | `catalog/active/v<N>.json` | The pointer to the active revision. A [version folder](#version-folders), so a publish or a rollback moves it by adding the next version. | `photos.mjs publish` and `rollback`, and the curator's Publish and Restore |
@@ -184,10 +185,14 @@ Restore both folders from the same archive, so the registry describes the librar
   sudo mv public/assets/photos "photos.$aside"
   sudo mv portfolio-data "portfolio-data.$aside"
   sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs verify ||
+    echo "photos verify found a problem, listed above. The stack starts anyway: fix what it names before you rely on a rollback." >&2
   docker compose -f docker-compose.prod.yml up -d web image-watcher
   [ -z "$curator" ] || docker compose -f docker-compose.prod.yml up -d curator
 )
 ```
+
+`photos.mjs verify` runs before the stack starts again. It reads every revision, the rules on it, and every `/media` set's digests, and checks the activation chain, so it catches a set the archive holds only part of, or a file that changed on the way. It writes its result to `status/verify.json`, which the curator's Publish screen reads, and changes nothing else. If it finds a problem it says what to put back, and the block starts the stack anyway, so `web` serves what it can. The README's [Verify](../README.md#verify) section has the details.
 
 Then check that `photos.mjs identity status` counts the photos you expect, as in step 6 of the runbook, and that `GET /api/health` reports `ready`.
 
@@ -200,6 +205,8 @@ If only the data root was lost and the library is fine, restore just `portfolio-
   docker compose -f docker-compose.prod.yml stop web image-watcher curator
   sudo mv portfolio-data "portfolio-data.before-restore-$(date -u +%Y%m%dT%H%M%SZ)"
   sudo tar -xzpf ~/photography-backups/photography-<timestamp>.tar.gz portfolio-data
+  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs verify ||
+    echo "photos verify found a problem, listed above. The stack starts anyway: fix what it names before you rely on a rollback." >&2
   docker compose -f docker-compose.prod.yml up -d web image-watcher
   [ -z "$curator" ] || docker compose -f docker-compose.prod.yml up -d curator
 )

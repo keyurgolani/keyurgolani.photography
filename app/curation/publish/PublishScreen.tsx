@@ -59,7 +59,7 @@ const REVIEW: Record<ReviewLabel, { text: string; icon: LucideIcon; tone: 'done'
     published: { text: 'Published', icon: Check, tone: 'done' },
 };
 
-/** Text with `backticks` around a command, as the rollback line carries it. */
+/** Text with `backticks` around a command, as the rollback line and its warning carry it, and the Validate stakes (#117). */
 function withCode(text: string): ReactNode {
     return text.split('`').map((part, index) =>
         index % 2 === 1 ? (
@@ -488,7 +488,7 @@ function ResultSlot({ answer, view, facts, ctx, zone }: { answer: Answer | null;
                 {copy.heading}
             </h2>
             {copy.body.map((line) => (
-                <p key={line}>{line}</p>
+                <p key={line}>{withCode(line)}</p>
             ))}
             {listed.length > 0 ? (
                 <ol className={styles.errors}>
@@ -610,8 +610,9 @@ function PreviewPanel({ facts }: { facts: DisplayFacts }) {
                 </div>
             ) : null}
             {panel.rollback ? (
-                <footer className={styles.panelFooter}>
-                    <Undo2 size={15} aria-hidden="true" />
+                // #117: a warning that names the fix takes the rollback-ready line's place, in the alert tone.
+                <footer className={styles.panelFooter} {...(panel.rollbackTone ? { 'data-tone': panel.rollbackTone } : {})}>
+                    {panel.rollbackTone === 'alert' ? <CircleAlert size={15} aria-hidden="true" /> : <Undo2 size={15} aria-hidden="true" />}
                     <span>{withHistoryLink(panel.rollback)}</span>
                 </footer>
             ) : null}

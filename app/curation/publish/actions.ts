@@ -14,12 +14,12 @@ import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-lay
 import { AuthoredWriteError, writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
 import { requireCurator } from '@/lib/curation/auth';
 import { WEB_ACTOR } from '@/lib/curation/inbox-form';
-import { countLine, type Answer, type Intent, type Publisher, type PublishState } from '@/lib/curation/publish-facts';
+import { countLine, rollbackStakes, type Answer, type Intent, type Publisher, type PublishState } from '@/lib/curation/publish-facts';
 import { blockingReasons, editorialWords, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
 import { INBOX_REASONS, restampReason } from '@/lib/curation/publish-view';
 import { dataRootStatus } from '@/lib/storage/config';
 import { loadHistoryView, numberFrom } from './history-load';
-import { ledgerOf, pointerFacts, readSnapshot, reviewNow, type Snapshot } from './load';
+import { ledgerOf, pointerFacts, readinessOf, readSnapshot, reviewNow, type Snapshot } from './load';
 
 /**
  * The Publish screen's one server action (16-3). Every intent calls
@@ -80,8 +80,10 @@ async function answerFor(result: PublishResult, intent: 'validate' | 'publish', 
             if (snapshot === 'moved') return { kind: 'changed', body: changedBody(pointer?.live.number) };
             const counted = snapshot ? countLine(ledgerOf(snapshot, null).ledger, 0) : '';
             const n = Number(/^(\d+)/.exec(counted)?.[1] ?? 0);
-            const live = pointer?.live.number;
-            return { kind: 'valid', stakes: `Publishing makes ${n === 1 ? 'this change' : `these ${n} changes`} live on every page.${live ? ` Revision ${live} stays rollback-ready.` : ''}` };
+            // #117: the clause follows the rollback-ready line's gate, and names the fix in its place on evidence of a problem.
+            const ready = root && pointer ? await readinessOf(root, pointer.live.revisionId, snapshot?.registry) : null;
+            const stakes = pointer && ready ? rollbackStakes(pointer.live.number, ready) : '';
+            return { kind: 'valid', stakes: `Publishing makes ${n === 1 ? 'this change' : `these ${n} changes`} live on every page.${stakes}` };
         }
         case 'VALIDATION_FAILED': {
             // The diagnostics join onto a ledger of the candidate publish() checked, never a newer one.

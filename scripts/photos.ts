@@ -155,6 +155,23 @@
  *     revision going live first, or a busy lock. Logs one JSON line per
  *     event.
  *
+ *   npx tsx scripts/photos.ts verify [--revision <revisionId>] [--json]
+ *     Check the catalog the way a restore needs it: every revision file
+ *     parses and hashes to its name, every rule passes on it (an integrity
+ *     error fails it, an editorial one warns), and every derivative set it
+ *     publishes has its manifest's files at their sizes and SHA-256, each set
+ *     hashed once. Then the chain: the active pointer names an activation
+ *     record for its revision, every previous activation it names exists,
+ *     and committed activations have a pointer. Prints each revision's
+ *     result and whether a rollback can return to it, and the fix for what
+ *     fails. Reads the data root only, never the library, and takes no lock.
+ *     A full run records its result in status/verify.json, which the
+ *     curator's Publish screen reads; --revision checks one revision alone
+ *     and records nothing. Exits 0 when the live revision and the chain pass,
+ *     even if an older revision fails, 1 when either fails, 2 on a usage
+ *     error, 3 when the data root isn't ready, and 4 when the registry or an
+ *     activation record can't be read or an I/O error stops it.
+ *
  *   npx tsx scripts/photos.ts curation list [--status <status> | --all] [--json]
  *   npx tsx scripts/photos.ts curation show <eventId> [--json]
  *   npx tsx scripts/photos.ts curation (edit | approve) <eventId> --version <n> [--series <id> | --unassigned]
@@ -236,6 +253,7 @@ import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
 import { rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
+import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
@@ -290,6 +308,7 @@ const USAGE = `Usage:
   ${PROGRAM} history
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
         --accept, once per editorial rule flagged on the target, brings it back with that error; it's the only flag that repeats.
+  ${PROGRAM} verify [--revision <revisionId>] [--json]
 ${curationUsage(PROGRAM)}
   ${PROGRAM} gc [--apply <planDigest>]
 ${credentialUsage(PROGRAM)}
@@ -529,6 +548,13 @@ async function rollbackCommand(args: string[]): Promise<number> {
     });
 }
 
+async function verifyCommand(args: string[]): Promise<number> {
+    const parsed = verifyArgs(args);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return runVerifyCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
+}
+
 async function gcCommand(args: string[]): Promise<number> {
     const parsed = gcArgs(args);
     const root = catalogRoot();
@@ -632,6 +658,7 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'publish') return await publishCommand(args);
         if (command === 'history') return await historyCommand(args);
         if (command === 'rollback') return await rollbackCommand(args);
+        if (command === 'verify') return await verifyCommand(args);
         if (command === 'curation' && (CREDENTIAL_COMMANDS as readonly string[]).includes(args[0] ?? '')) {
             const result = await runCredentialCommand(args[0] as (typeof CREDENTIAL_COMMANDS)[number], args.slice(1), { stdin: process.stdin, stderr: process.stderr });
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);

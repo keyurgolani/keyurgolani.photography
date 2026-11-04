@@ -751,6 +751,11 @@
   margin-top: 0.1rem;
 }
 
+/* #117: the warning in the rollback-ready line's place, in the alert ink, as the failed count line is. */
+.panelFooter[data-tone='alert'] {
+  color: var(--curator-tone-alert-ink);
+}
+
 .command {
   display: inline-block;
   padding: 0.5rem 0.75rem;

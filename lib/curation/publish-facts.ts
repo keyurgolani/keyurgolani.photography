@@ -115,6 +115,21 @@ export interface PanelView {
     scrollToId?: string;
 }
 
+/**
+ * #117: whether the active revision is rollback-ready, from verify.ts's
+ * rollbackReadiness(), repeated here so this module stays client-safe.
+ * `verified`: the live checks pass and the last `photos verify` passed it.
+ * `live-ok`: the live checks pass and no verify has checked it. Both show
+ * the line. `failed`: evidence of a problem, which a warning that names the
+ * fix shows in its place: the live checks fail, a verify failed it, its
+ * record can't be read, or the pointer chain doesn't show it going live.
+ * `unknown`: the gate found no live revision to judge, which a page that
+ * loaded a live one never sees, so it shows neither.
+ */
+export type RollbackReadiness =
+    | { state: 'verified' | 'live-ok' | 'unknown' }
+    | { state: 'failed'; reason: 'live-check' | 'last-verify' | 'record-damaged' | 'chain' };
+
 /** Everything a page load knows: Unvalidated, or one of the Nothing states. */
 export interface ScreenView {
     draftId: string;
@@ -129,6 +144,8 @@ export interface ScreenView {
     /** The blockers the review context shows on load, before any Validate. */
     blockers: Blocker[];
     panel: PanelView;
+    /** Whether the active revision is rollback-ready (#117), which the line while a draft is pending says. */
+    rollbackReady: RollbackReadiness;
 }
 
 export type Answer =
@@ -200,6 +217,8 @@ export interface DisplayFacts {
         count?: string;
         copyLine?: string;
         rollback: string | null;
+        /** #117: the rollback line is a warning, set in the alert tone. */
+        rollbackTone?: 'alert';
     };
     bar: { validate: ActionState; publish: ActionState; reason?: string; loadUpdated: boolean } | null;
     /** The ledger and blockers to show: the latest answer's when it carries a fresh join, else the page's. */
@@ -301,15 +320,40 @@ export function orderRuns({ before, after, from, to }: Pick<OrderCompare, 'befor
 }
 
 /**
- * The rollback line: while a draft is pending, the active revision (approved
- * line); otherwise the activation before the active one, restored from
- * History below (15-4). `ready` is AC 14's seam: the deferred lastKnownGood()
- * gate sets it false when photos:verify fails for the active revision, and
- * nothing sets it yet, so the line always shows.
+ * #117's warning in place of the rollback-ready line, and of the Validate
+ * stakes clause, on evidence that revision `n` isn't rollback-ready. Each
+ * names the fix: `photos verify` says what fails and what to do about it.
  */
-function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null, ready = true): string | null {
-    if (pending) return ready ? `Last-known-good revision ${active.number} remains rollback-ready.` : null;
-    return previous ? `Revision ${previous.number} is kept. Restore it from History, below.` : null;
+export function rollbackWarning(n: number, reason: Extract<RollbackReadiness, { state: 'failed' }>['reason']): string {
+    switch (reason) {
+        case 'last-verify':
+            return `Revision ${n} failed its last check, so it isn't rollback-ready. Run \`photos verify\` to see what to fix.`;
+        case 'live-check':
+            return `Revision ${n} fails the checks a restore runs, so it isn't rollback-ready. Run \`photos verify\` to see what to fix.`;
+        case 'record-damaged':
+            return `Revision ${n} isn't rollback-ready: the record of its last check can't be read. Run \`photos verify\` in the watcher's container to write it again.`;
+        case 'chain':
+            return `Revision ${n} isn't rollback-ready: the activation records don't show it going live. Run \`photos verify\` to check the active pointer, or restore a revision from History, below.`;
+    }
+}
+
+/** The Validate answer's last clause about revision `n`, with its leading space, or nothing when the page can't say. */
+export function rollbackStakes(n: number, ready: RollbackReadiness): string {
+    if (ready.state === 'failed') return ` ${rollbackWarning(n, ready.reason)}`;
+    return ready.state === 'unknown' ? '' : ` Revision ${n} stays rollback-ready.`;
+}
+
+/**
+ * The rollback line: while a draft is pending, the active revision (approved
+ * line), gated by `ready` (#117, AC 14): the line while the live checks pass
+ * and no `photos verify` has failed it, a warning that names the fix on any
+ * evidence of a problem. Otherwise the activation before the active one,
+ * restored from History below (15-4), which the gate doesn't cover.
+ */
+function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null, ready: RollbackReadiness = { state: 'live-ok' }): Pick<DisplayFacts['panel'], 'rollback' | 'rollbackTone'> {
+    if (!pending) return { rollback: previous ? `Revision ${previous.number} is kept. Restore it from History, below.` : null };
+    if (ready.state === 'failed') return { rollback: rollbackWarning(active.number, ready.reason), rollbackTone: 'alert' };
+    return { rollback: ready.state === 'unknown' ? null : `Last-known-good revision ${active.number} remains rollback-ready.` };
 }
 
 const PREVIEW_PANEL_TITLE = 'Visitor preview';
@@ -353,7 +397,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
                 frameSrc: view.panel.liveSrc,
                 count: view.panel.count,
                 copyLine: 'What visitors see now.',
-                rollback: rollbackLine(false, view.active, view.previous),
+                ...rollbackLine(false, view.active, view.previous),
             },
             bar: null,
             ledger,
@@ -383,7 +427,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             ...(view.panel.scrollToId ? { scrollToId: view.panel.scrollToId } : {}),
             count: view.panel.count.replace(/, was \d+$/, ''),
             copyLine: 'What visitors see now.',
-            rollback: rollbackLine(false, current, previous),
+            ...rollbackLine(false, current, previous),
         },
         bar,
         ledger,
@@ -423,7 +467,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
                 frameTitle: 'Visitor preview of the draft catalog',
                 frameSrc: null,
                 frameNote: 'Load the updated ledger to preview the new draft.',
-                rollback: answer.kind === 'someone-published' ? rollbackLine(false, pointer, previous) : rollbackLine(true, view.active, null),
+                ...(answer.kind === 'someone-published' ? rollbackLine(false, pointer, previous) : rollbackLine(true, view.active, null, view.rollbackReady)),
             },
             bar: { validate: 'hidden', publish: 'hidden', loadUpdated: true },
             ledger,
@@ -461,7 +505,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             ...(view.panel.scrollToId ? { scrollToId: view.panel.scrollToId } : {}),
             count: view.panel.count,
             copyLine: view.panel.copyLine,
-            rollback: rollbackLine(true, view.active, null),
+            ...rollbackLine(true, view.active, null, view.rollbackReady),
         },
         bar: { validate: 'available', publish: validated ? 'available' : 'unavailable', ...(reason ? { reason } : {}), loadUpdated: false },
         ledger,

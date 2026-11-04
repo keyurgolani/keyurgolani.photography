@@ -7,12 +7,13 @@ import { readReviewContext } from '@/lib/catalog/review-context';
 import { createRouteBuilder } from '@/lib/catalog/routes';
 import { fieldReview, inboxReviewOf, type FieldReviewState, type ReviewEnv } from '@/lib/catalog/review';
 import type { ActivePointer, Activation, Issue, IssueRecord, RevisionFile, WorkingLayer } from '@/lib/catalog/types';
+import { rollbackReadiness } from '@/lib/catalog/verify';
 import { readActivePointer, readWorkingLayer } from '@/lib/catalog/working-layer';
 import type { ReviewContext } from '@/lib/catalog/review';
 import { readRegistry } from '@/lib/identity/registry';
 import type { Registry } from '@/lib/identity/types';
 import { dataRootStatus } from '@/lib/storage/config';
-import type { Blocker, Ledger, RevisionFacts, ScreenView } from '@/lib/curation/publish-facts';
+import type { Blocker, Ledger, RevisionFacts, RollbackReadiness, ScreenView } from '@/lib/curation/publish-facts';
 import { buildLedger, Names, panelLines, panelTarget } from '@/lib/curation/publish-view';
 import type { HistoryView } from '@/lib/curation/publish-history';
 import { loadHistoryView, type HistoryLoadOptions } from './history-load';
@@ -108,8 +109,20 @@ export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): {
     });
 }
 
-/** The view for a snapshot, as a page load shows it. */
-export function viewOf(snapshot: Snapshot): ScreenView {
+/**
+ * #117: whether `revisionId`, the revision the page shows as live, is
+ * rollback-ready, through verify.ts's lastKnownGood() gate: the live checks
+ * without digests, then the record `photos verify` writes. Read only, and it
+ * never throws. `registry`: one this read already has.
+ */
+export async function readinessOf(root: string, revisionId: string, registry?: Registry): Promise<RollbackReadiness> {
+    const readiness = await rollbackReadiness(root, { revisionId, ...(registry ? { registry } : {}) });
+    if (readiness.state === 'failed') return { state: 'failed', reason: readiness.reason };
+    return { state: readiness.state === 'none' ? 'unknown' : readiness.state };
+}
+
+/** The view for a snapshot, as a page load shows it, with what readinessOf() said of its active revision. */
+export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { state: 'unknown' }): ScreenView {
     const { compiled, active, activations, diff } = snapshot;
     const draftId = compiled.candidateId;
     // What `photos rollback` returns to now: the revision the active pointer's activation replaced.
@@ -142,6 +155,7 @@ export function viewOf(snapshot: Snapshot): ScreenView {
             liveSrc: kind === 'ledger' ? at(live) : liveSeries ? live.seriesHref(liveSeries.slug) : live.workHref(),
             ...(kind === 'ledger' && series && target.photoId ? { scrollToId: `photo-${target.photoId}` } : {}),
         },
+        rollbackReady,
     };
 }
 
@@ -169,7 +183,7 @@ export async function loadPublishPage(query: PageQuery = {}): Promise<PublishPag
     try {
         snapshot = await readSnapshot();
         if (snapshot === null) return { state: 'not-launched' };
-        view = viewOf(snapshot);
+        view = viewOf(snapshot, await readinessOf(snapshot.root, snapshot.active.revisionId, snapshot.registry));
         history = await loadHistoryView(snapshot.root, { ...query, draftPending: view.kind === 'ledger', conflicts: conflictRows(view) });
     } catch (error) {
         console.error('[curation] The Publish screen could not be read:', error);
