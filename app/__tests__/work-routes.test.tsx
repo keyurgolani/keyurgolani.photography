@@ -9,7 +9,7 @@ import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 // publicRoutes, answered as a render or a throw to app/error.tsx. /gallery,
 // which #13's slice E removed, is proxy.ts's 308 (__tests__/originals.test.ts).
 
-const state = vi.hoisted(() => ({ catalog: null as unknown }));
+const state = vi.hoisted(() => ({ catalog: null as unknown, origin: null as URL | null }));
 
 vi.mock('next/navigation', () => ({
     usePathname: () => '/work',
@@ -20,9 +20,14 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
     return { ...actual, getActiveCatalog: async () => state.catalog };
 });
 
+vi.mock('@/lib/site/config', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/lib/site/config')>();
+    return { ...actual, getSiteOrigin: () => state.origin };
+});
+
 vi.mock('@/components/site/SiteNav', () => ({ default: () => <nav aria-label="Primary" /> }));
 
-const { default: WorkPage, dynamic: workDynamic } = await import('../work/page');
+const { default: WorkPage, dynamic: workDynamic, generateMetadata } = await import('../work/page');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -165,5 +170,33 @@ describe('Work on a served revision', () => {
             expect(tag).toMatch(/ alt=""/);
             expect(tag).toMatch(/ src="\/media\/ph_[^"]+\/w1200\.webp"/);
         }
+    });
+});
+
+describe('the /work metadata', () => {
+    beforeEach(() => {
+        state.origin = null;
+    });
+
+    it('with SITE_URL set gives the title, the description, and the canonical path /work', async () => {
+        state.origin = new URL('https://photos.example.test');
+        expect(await generateMetadata()).toEqual({
+            title: 'Work',
+            description: 'Photographic series by Keyur Golani.',
+            alternates: { canonical: '/work' },
+        });
+    });
+
+    it('leaves the canonical link out without a valid SITE_URL, instead of pointing it at localhost', async () => {
+        const metadata = await generateMetadata();
+        expect(metadata).toEqual({ title: 'Work', description: 'Photographic series by Keyur Golani.' });
+        expect(JSON.stringify(metadata)).not.toMatch(/localhost|https?:/);
+    });
+
+    // The page's own fields only, so a read failure keeps #21's error page and status, and the layout's share image.
+    it.each(['not-published', 'catalog-unreadable'] as const)('is the same while the catalog is unavailable (%s), and reads no catalog', async (reason) => {
+        state.catalog = unavailable(reason);
+        state.origin = new URL('https://photos.example.test');
+        expect(await generateMetadata()).toEqual({ title: 'Work', description: 'Photographic series by Keyur Golani.', alternates: { canonical: '/work' } });
     });
 });

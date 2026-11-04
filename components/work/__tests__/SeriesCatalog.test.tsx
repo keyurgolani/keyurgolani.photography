@@ -99,8 +99,11 @@ describe('SeriesCatalog', () => {
         render(<SeriesCatalog work={work([])} />);
         expect(screen.queryByRole('list')).toBeNull();
         expect(screen.queryByRole('link')).toBeNull();
-        expect(screen.getByText('No series are published yet.')).toBeInTheDocument();
+        expect(screen.getByText('No series are published right now.')).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(WORK_TITLE);
+        // The heading and the one line: no placeholder, skeleton, or cover.
+        expect(document.querySelectorAll('img, [data-cover]')).toHaveLength(0);
+        expect([...screen.getByRole('main').querySelectorAll('h1, p')].map((el) => el.textContent)).toEqual([WORK_TITLE, 'No series are published right now.']);
     });
 
     it('loads the first two covers at once, only the first at high priority and preloaded, and the rest lazily (#3)', () => {

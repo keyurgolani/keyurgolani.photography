@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { CATALOG_ORIGIN } from './support/catalog-home';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
@@ -126,4 +127,41 @@ for (const scheme of ['light', 'dark'] as const) {
         await expect(page.locator('html')).toHaveAttribute('data-theme', scheme);
         expectAbout(await paint(page), ABOUT_THEMES[scheme]);
     });
+}
+
+// #12: leaving About by its nav, the next page paints its own colours, the same as a fresh load of it in that theme,
+// and nothing of About's surface stays behind. On the catalog server, where Work and Home have a published catalog.
+const PAGE_PAINT = () => {
+    const main = document.querySelector('main');
+    const nav = document.querySelector('nav[aria-label="Primary"]');
+    const style = (el: Element | null) => (el ? `${getComputedStyle(el).backgroundColor} ${getComputedStyle(el).color}` : 'none');
+    return {
+        theme: document.documentElement.getAttribute('data-theme'),
+        body: style(document.body),
+        main: style(main),
+        nav: style(nav),
+        aboutSurfaces: document.querySelectorAll('[data-surface="about"]').length,
+    };
+};
+
+for (const choice of ['system', 'dark', 'light', 'bright', 'black'] as const) {
+    for (const [name, path] of [['Work', '/work'], ['Home', '/']] as const) {
+        test(`after leaving About for ${name} in ${choice}, ${name} paints its own colours`, async ({ page }) => {
+            if (choice !== 'system') await page.addInitScript((value) => localStorage.setItem('theme', value), choice);
+            await page.setViewportSize(VIEWPORTS[0]);
+            await page.goto(`${CATALOG_ORIGIN}${path}`);
+            await waitForHydration(page);
+            // A fresh load, once any first transition has settled.
+            await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
+            const own = await page.evaluate(PAGE_PAINT);
+            expect(own.aboutSurfaces).toBe(0);
+
+            await page.goto(`${CATALOG_ORIGIN}/about`);
+            await waitForHydration(page);
+            expect((await page.evaluate(PAGE_PAINT)).aboutSurfaces, "About's surface is on").toBeGreaterThan(0);
+            await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name, exact: true }).click();
+            await expect(page).toHaveURL(`${CATALOG_ORIGIN}${path}`);
+            await expect.poll(() => page.evaluate(PAGE_PAINT), { timeout: 5_000 }).toEqual(own);
+        });
+    }
 }

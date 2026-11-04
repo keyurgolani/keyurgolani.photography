@@ -639,6 +639,42 @@ test.describe('on the desktop project', () => {
         });
     }
 
+    /**
+     * In `main`: animations by name and transitions longer than 0.01 ms on every element and its pseudo-elements, and
+     * every animation or transition running on any of them.
+     */
+    const motionInMain = (page: Page) =>
+        page.locator('main').evaluate((main) => {
+            const found: string[] = [];
+            for (const node of [main, ...Array.from(main.querySelectorAll('*'))]) {
+                for (const pseudo of [null, '::before', '::after']) {
+                    const style = getComputedStyle(node, pseudo);
+                    if (pseudo && style.content === 'none') continue;
+                    const name = `${node.tagName.toLowerCase()}${pseudo ?? ''}`;
+                    if (style.animationName !== 'none') found.push(`${name} animates ${style.animationName}`);
+                    for (const value of style.transitionDuration.split(',')) {
+                        const text = value.trim();
+                        const ms = text.endsWith('ms') ? parseFloat(text) : parseFloat(text) * 1000;
+                        if (ms > 0.01) found.push(`${name} transitions for ${text}`);
+                    }
+                }
+            }
+            for (const animation of document.getAnimations()) {
+                const target = (animation.effect as KeyframeEffect | null)?.target;
+                if (target && main.contains(target) && animation.playState === 'running') found.push(`${target.tagName.toLowerCase()} runs ${animation.constructor.name}`);
+            }
+            return found;
+        });
+
+    // #12: under reduced motion nothing in main animates or transitions, at rest or under a pointer across all of it.
+    test('with reducedMotion reduce, nothing in main animates or transitions, at rest or after a pointer sweeps across it', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await openAbout(page);
+        expect(await motionInMain(page), 'at rest').toEqual([]);
+        await sweep(page, page.locator('main'));
+        expect(await motionInMain(page), 'after the sweep').toEqual([]);
+    });
+
     test('loading /about requests nothing from another origin', async ({ page }) => {
         const requested: string[] = [];
         page.on('request', (request) => requested.push(request.url()));

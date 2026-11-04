@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 import { freePort } from '../../test/helpers/ports';
 import path from 'node:path';
+import { artist } from '../../data/artist';
+import { publish } from '../../lib/catalog/publish';
+import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
+import { startCatalogServer, type CatalogServer } from '../support/catalogServer';
 import { expect, test } from '../support/test';
 
 // Each describe starts its own `next start` on a free port from the build the
@@ -127,6 +131,63 @@ test.describe('with SITE_URL set for this server only', () => {
     });
 });
 
+/** The raw HTML's `<head>`, where a visitor without JavaScript, and a crawler, read the metadata. */
+const headOf = (html: string) => /<head>([\s\S]*?)<\/head>/.exec(html)?.[1] ?? '';
+
+/** Work and About's own metadata (#3, #12): Work needs a published catalog, so this server has one. */
+const OWN_METADATA = [
+    { route: '/work', title: `Work · ${SITE_NAME}`, description: 'Photographic series by Keyur Golani.', h1: 'Bodies of work' },
+    { route: '/about', title: `About · ${SITE_NAME}`, description: artist.profile.statementHeading, h1: artist.profile.statementHeading },
+] as const;
+
+test.describe('Work and About with SITE_URL set and a published catalog', () => {
+    let catalog: TestCatalog | undefined;
+    let server: CatalogServer | undefined;
+    test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT + 30_000);
+        catalog = await createTestCatalog({ seed: 47, withAssets: true, photos: [{ id: 'ph_00000000-0000-4000-8000-000000000001', width: 900, height: 600 }], series: [{ id: 'ser_e2e-meta', slug: 'meta', title: 'Fixture meta', photoIds: ['ph_00000000-0000-4000-8000-000000000001'] }] });
+        const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
+        expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+        server = await startCatalogServer(catalog.root, undefined, { siteUrl: 'https://example.test' });
+    });
+    test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        await server?.stop();
+        await catalog?.cleanup();
+    });
+    const origin = () => {
+        if (!server) throw new Error('The catalog server did not start');
+        return server.origin;
+    };
+
+    for (const { route, title, description } of OWN_METADATA) {
+        test(`${route} sends its title, description, and canonical link in the server HTML's head, with the site's share image`, async ({ request }) => {
+            const response = await request.get(`${origin()}${route}`);
+            expect(response.status()).toBe(200);
+            const head = headOf(await response.text());
+            expect(head).toContain(`<title>${title}</title>`);
+            expect(meta(head, 'description')).toBe(description);
+            expect(head).toContain(`<link rel="canonical" href="https://example.test${route}"/>`);
+            expect(meta(head, 'og:image')).toMatch(/^https:\/\/example\.test\//);
+            expect(meta(head, 'og:site_name')).toBe(SITE_NAME);
+        });
+    }
+
+    test.describe('with JavaScript disabled', () => {
+        test.use({ javaScriptEnabled: false });
+
+        for (const { route, title, description, h1 } of OWN_METADATA) {
+            test(`${route} shows its content, with its title, description, and canonical link`, async ({ page }) => {
+                await page.goto(`${origin()}${route}`);
+                await expect(page.getByRole('heading', { level: 1 })).toHaveText(h1);
+                await expect(page).toHaveTitle(title);
+                await expect(page.locator('head meta[name="description"]')).toHaveAttribute('content', description);
+                await expect(page.locator('head link[rel="canonical"]')).toHaveAttribute('href', `https://example.test${route}`);
+            });
+        }
+    });
+});
+
 test.describe('with SITE_URL unset', () => {
     let server: Server;
     test.beforeAll(async () => {
@@ -148,5 +209,15 @@ test.describe('with SITE_URL unset', () => {
         expect(meta(html, 'og:image')).toMatch(/^http:\/\/localhost:3000\//);
         for (const route of ['/', '/work', '/does-not-exist']) await request.get(`${server.origin}${route}`);
         expect(warnings()).toBe(1);
+    });
+
+    // As on the series and Viewer pages: no canonical link pointing at localhost. Work is #21's error page here, with its title.
+    test('/about and /work keep their title and description and send no canonical link', async ({ request }) => {
+        for (const { route, title, description } of OWN_METADATA) {
+            const html = await (await request.get(`${server.origin}${route}`)).text();
+            expect(html, route).toContain(`<title>${title}</title>`);
+            expect(meta(html, 'description'), route).toBe(description);
+            expect(html, route).not.toMatch(/<link rel="canonical"/);
+        }
     });
 });

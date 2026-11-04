@@ -79,3 +79,13 @@ describe('the host docs', () => {
     expect(libraryDeletes(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
   });
 });
+
+describe("the README's screenshots", () => {
+  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  const alts = Object.fromEntries([...readme.matchAll(/<img src="(docs\/screenshots\/[^"]+)" alt="([^"]*)"/g)].map(([, src, alt]) => [src, alt]));
+
+  // #12: the alt says what the shot shows, not only which page it is.
+  it('describe About with its portrait and statement', () => {
+    expect(alts['docs/screenshots/about.png']).toBe('About page with portrait and artist statement');
+  });
+});
