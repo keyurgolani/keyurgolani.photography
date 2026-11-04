@@ -176,6 +176,7 @@ describe('Work on a served revision', () => {
 describe('the /work metadata', () => {
     beforeEach(() => {
         state.origin = null;
+        state.catalog = served('ok');
     });
 
     it('with SITE_URL set gives the title, the description, and the canonical path /work', async () => {
@@ -193,10 +194,10 @@ describe('the /work metadata', () => {
         expect(JSON.stringify(metadata)).not.toMatch(/localhost|https?:/);
     });
 
-    // The page's own fields only, so a read failure keeps #21's error page and status, and the layout's share image.
-    it.each(['not-published', 'catalog-unreadable'] as const)('is the same while the catalog is unavailable (%s), and reads no catalog', async (reason) => {
+    // As the series pages: an unavailable catalog gets {}, so #21's error page keeps the site's defaults with its 500.
+    it.each(['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const)('is empty while the catalog is unavailable (%s)', async (reason) => {
         state.catalog = unavailable(reason);
         state.origin = new URL('https://photos.example.test');
-        expect(await generateMetadata()).toEqual({ title: 'Work', description: 'Photographic series by Keyur Golani.', alternates: { canonical: '/work' } });
+        expect(await generateMetadata()).toEqual({});
     });
 });

@@ -248,12 +248,37 @@ async function expectClearOfPinned(page: Page) {
                     }
                 }
             }
-            return hits;
+            return { parts: parts.length, hits };
         }, SLACK);
-        for (const hit of found) problems.push(`at the ${end}: ${hit}`);
+        expect(found.parts, `About's parts were found at the ${end}`).toBeGreaterThan(0);
+        for (const hit of found.hits) problems.push(`at the ${end}: ${hit}`);
     }
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     expect(problems, 'nothing meets a fixed or sticky element at either end of the page').toEqual([]);
+}
+
+/**
+ * #179's frame: the photo's box is 4:3 stacked and 4:5 side by side. Stacked, its height is capped at
+ * min(45svh, 28rem), so on a short window (640 by 400) or a tablet the cap wins over the ratio and the heading
+ * stays in the first viewport.
+ */
+async function expectFrameRatio(page: Page, layout: 'stacked' | 'side by side') {
+    const { width, height, cap } = await portrait(page).locator(':scope > div').first().evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const probe = document.createElement('div');
+        probe.style.cssText = 'position:absolute;visibility:hidden;height:min(45svh, 28rem)';
+        document.body.append(probe);
+        const cap = probe.getBoundingClientRect().height;
+        probe.remove();
+        return { width: box.width, height: box.height, cap };
+    });
+    if (layout === 'side by side') {
+        expect(width / height, 'the frame is 4:5 side by side').toBeCloseTo(4 / 5, 2);
+    } else if ((width * 3) / 4 <= cap + SLACK) {
+        expect(width / height, 'the frame is 4:3 stacked').toBeCloseTo(4 / 3, 2);
+    } else {
+        expect(Math.abs(height - cap), `the frame is capped at min(45svh, 28rem), ${cap} px`).toBeLessThanOrEqual(1);
+    }
 }
 
 /** The width of the portrait variant the browser chose, from its /about/portrait/<token>/w<width>.<format> URL. */
@@ -372,8 +397,8 @@ test.describe('the statement and portrait', () => {
 test.describe('the statement and portrait at set sizes', () => {
     test.skip(({ isMobile }) => isMobile, 'Each test sets its own size. The checks above run on both projects.');
 
-    // #12's matrix: 640 by 400 is a short landscape phone or a small window. On a phone the heading starts inside the
-    // first viewport, under the portrait.
+    // #12's matrix: 640 by 400 is a short landscape phone, or 1280 by 800 at 200% zoom. At every size the heading
+    // starts inside the first viewport, under the portrait.
     for (const [width, height] of [[320, 568], [390, 844], [640, 400], [768, 1024]] as const) {
         test(`stack portrait, statement, then links at ${width} by ${height}`, async ({ page }) => {
             await page.setViewportSize({ width, height });
@@ -382,7 +407,8 @@ test.describe('the statement and portrait at set sizes', () => {
             await expectNoOverlap(page);
             expect(await readabilityProblems(page)).toEqual([]);
             await expectClearOfPinned(page);
-            if (width < 640) expect((await boxOf(heading(page))).top, "the heading's top is inside the first viewport").toBeLessThan(height);
+            await expectFrameRatio(page, 'stacked');
+            expect((await boxOf(heading(page))).top, "the heading's top is inside the first viewport").toBeLessThan(height);
         });
     }
 
@@ -392,8 +418,18 @@ test.describe('the statement and portrait at set sizes', () => {
         await expectNoOverlap(page);
         expect(await readabilityProblems(page)).toEqual([]);
         await expectClearOfPinned(page);
+        await expectFrameRatio(page, 'side by side');
         expect((await boxOf(heading(page))).top, "the heading's top is inside the first viewport").toBeLessThan(800);
     });
+
+    for (const [width, height] of [[1024, 768], [1440, 900]] as const) {
+        test(`frame the portrait 4:5 beside the statement at ${width} by ${height}`, async ({ page }) => {
+            await page.setViewportSize({ width, height });
+            await openAbout(page);
+            await expectSideBySide(page);
+            await expectFrameRatio(page, 'side by side');
+        });
+    }
 
     // The desktop project's pixel ratio is 1, so 41vw of 1280 is about 525 px, and the 800 px rung covers it.
     test('ask for the 800 px portrait rung or smaller at 1280 by 800', async ({ page }) => {

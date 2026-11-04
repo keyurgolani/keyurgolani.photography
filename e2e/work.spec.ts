@@ -332,9 +332,10 @@ const clippedText = (page: Page) =>
         for (const el of Array.from(document.querySelectorAll<HTMLElement>('main h1, main h2, main p'))) {
             const name = `${el.tagName.toLowerCase()} "${(el.textContent ?? '').slice(0, 24)}"`;
             const style = getComputedStyle(el);
-            // Sideways only, as About's check: the display heading's 0.9 leading lets its glyphs run a few px past
-            // the line box, which clips nothing while no ancestor does (checked below).
-            if (el.scrollWidth > el.clientWidth + slack) problems.push(`${name} overflows its box`);
+            if (el.scrollWidth > el.clientWidth + slack) problems.push(`${name} overflows its box sideways`);
+            // Downwards only where the element clips its own overflow: the display heading's 0.9 leading lets its
+            // glyphs run a few px past the line box, which clips nothing while overflow-y is visible.
+            if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY) && el.scrollHeight > el.clientHeight + slack) problems.push(`${name} is cut off by its own overflow-y ${style.overflowY}`);
             if (style.textOverflow === 'ellipsis' && style.overflowX !== 'visible') problems.push(`${name} ends in an ellipsis`);
             if (style.webkitLineClamp !== 'none' && style.webkitLineClamp !== '') problems.push(`${name} is clamped to ${style.webkitLineClamp} lines`);
             const box = el.getBoundingClientRect();
@@ -360,6 +361,10 @@ test.describe('at 320 px with 200% text', () => {
         await openWork(page);
         await page.setViewportSize({ width: 320, height: 640 });
         await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+        // As expectReflow: a transition reports its start value until it ends, so measure once size and font have settled.
+        await expect
+            .poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length))
+            .toBe(0);
         const boxes = await entries(page).evaluateAll((links) => links.map((link) => link.getBoundingClientRect().toJSON() as DOMRect));
         const width = await page.evaluate(() => document.documentElement.clientWidth);
         for (const [index, box] of boxes.entries()) {

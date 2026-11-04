@@ -211,13 +211,22 @@ test.describe('with SITE_URL unset', () => {
         expect(warnings()).toBe(1);
     });
 
-    // As on the series and Viewer pages: no canonical link pointing at localhost. Work is #21's error page here, with its title.
-    test('/about and /work keep their title and description and send no canonical link', async ({ request }) => {
-        for (const { route, title, description } of OWN_METADATA) {
-            const html = await (await request.get(`${server.origin}${route}`)).text();
-            expect(html, route).toContain(`<title>${title}</title>`);
-            expect(meta(html, 'description'), route).toBe(description);
-            expect(html, route).not.toMatch(/<link rel="canonical"/);
-        }
+    // As on the series and Viewer pages: no canonical link pointing at localhost.
+    test('/about keeps its title and description and sends no canonical link', async ({ request }) => {
+        const about = OWN_METADATA[1];
+        const html = await (await request.get(`${server.origin}${about.route}`)).text();
+        expect(html).toContain(`<title>${about.title}</title>`);
+        expect(meta(html, 'description')).toBe(about.description);
+        expect(html).not.toMatch(/<link rel="canonical"/);
+    });
+
+    // This server has published nothing, so /work is #21's error page, which keeps the site's defaults, as a series does.
+    test("/work's error page has the site's title and description and no canonical link", async ({ request }) => {
+        const response = await request.get(`${server.origin}/work`);
+        expect(response.status()).toBe(500);
+        const html = await response.text();
+        expect(html).toContain(`<title>${SITE_NAME}</title>`);
+        expect(meta(html, 'description')).toBe('Photography portfolio of Keyur Golani');
+        expect(html).not.toMatch(/<link rel="canonical"/);
     });
 });
