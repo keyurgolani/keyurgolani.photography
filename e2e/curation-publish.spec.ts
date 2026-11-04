@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
+import { readRevisionFile } from '../lib/catalog/repository';
 import { readActivePointer, readAuthoredRecord } from '../lib/catalog/working-layer';
+import { mediaFilePath } from '../lib/media/path';
 import {
     blockRevisionFile,
     BREAKWATER_TITLE,
@@ -15,6 +17,7 @@ import {
     SALT_ROADS,
     type PublishFixture,
 } from '../test/helpers/publishFixture';
+import { runTsx } from '../test/helpers/runTsx';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { signIn, startCuratorServer, type CuratorServer } from './support/curatorServer';
 import { waitForHydration } from './support/hydration';
@@ -353,6 +356,36 @@ test('answers failed when the publish stops before the switch, and Publish stays
         undo();
     }
     await press(page, publishButton(page), 'Revision 3 is live');
+});
+
+// #117: the line means the checks a restore runs pass and no `photos verify` has failed the live revision. A byte
+// flipped in a live derivative keeps its size, so only the digest check sees it: verify exits 1 and records the failure,
+// and after a reload a warning that names the fix takes the line's place, and the Validate stakes clause's.
+test('replaces the rollback-ready line and the stakes clause with a warning once photos verify fails the live revision', async ({ page }) => {
+    await fixBoth(fixture);
+    await open(page);
+    const ready = page.getByText('Last-known-good revision 2 remains rollback-ready.', { exact: true });
+    await expect(ready).toBeVisible();
+
+    const revision = await readRevisionFile(fixture.root, fixture.revisions[1]);
+    const photo = revision?.content.photos[0];
+    if (!photo) throw new Error('Revision 2 publishes no photograph');
+    const file = mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w800', 'webp', fixture.root);
+    const bytes = fs.readFileSync(file);
+    bytes[0] ^= 0xff;
+    fs.writeFileSync(file, bytes);
+    const verify = await runTsx('scripts/photos.ts', ['verify'], { env: { PHOTOGRAPHY_DATA_DIR: fixture.root } });
+    expect(verify.code, verify.stderr).toBe(1);
+    expect(verify.stderr).toContain(`${photo.id}: w800.webp does not match its sha256`);
+
+    await page.reload();
+    await waitForHydration(page);
+    await expect(ready).toHaveCount(0);
+    await expect(page.getByText("Revision 2 failed its last check, so it isn't rollback-ready. Run photos verify to see what to fix.", { exact: true })).toBeVisible();
+    await expect(page.locator('main code', { hasText: 'photos verify' }).first()).toBeVisible();
+    await press(page, validate(page), 'Catalog revision is valid');
+    await expect(page.getByText(/stays rollback-ready/)).toHaveCount(0);
+    await expect(page.getByText(/^Publishing makes these \d+ changes live on every page\. Revision 2 failed its last check, so it isn't rollback-ready\. Run photos verify to see what to fix\.$/)).toBeVisible();
 });
 
 test.describe('without JavaScript', () => {

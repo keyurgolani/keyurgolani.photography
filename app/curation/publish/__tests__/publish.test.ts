@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashValue } from '@/lib/catalog/review';
+import { readRevisionFile } from '@/lib/catalog/repository';
 import { rollback } from '@/lib/catalog/rollback';
+import { runVerifyCommand } from '@/lib/catalog/verify-cli';
+import { mediaFilePath } from '@/lib/media/path';
 import { createTestCatalog } from '@/lib/catalog/testing';
 import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
 import { writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
@@ -468,5 +471,59 @@ describe('the whole-page states', () => {
             errors.mockRestore();
             fs.renameSync(path.join(fixture.root, 'data-root.json.aside'), path.join(fixture.root, 'data-root.json'));
         }
+    });
+});
+
+// #117: the rollback-ready line and the Validate stakes clause follow lastKnownGood(): the live checks, then the record
+// `photos verify` writes. On evidence of a problem a warning that names the fix takes their place.
+describe('the rollback-ready line', () => {
+    /** Revision 2's first photograph's w800 WebP, with its first byte flipped in place, its size kept. Returns the undo. */
+    async function flipLiveByte(): Promise<() => void> {
+        const revision = await readRevisionFile(fixture.root, fixture.revisions[1]);
+        const photo = revision?.content.photos[0];
+        if (!photo) throw new Error('Revision 2 publishes no photo');
+        const file = mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w800', 'webp', fixture.root);
+        const flip = () => {
+            const bytes = fs.readFileSync(file);
+            bytes[0] ^= 0xff;
+            fs.writeFileSync(file, bytes);
+        };
+        flip();
+        return flip;
+    }
+
+    const verify = async () => runVerifyCommand(fixture.root, { json: false }, { out: () => undefined, err: () => undefined });
+    const failedLine = "Revision 2 failed its last check, so it isn't rollback-ready. Run `photos verify` to see what to fix.";
+
+    it('shows the line, and says it in the stakes, while verify never ran and the live checks pass', async () => {
+        const screen = await view();
+        expect(screen.rollbackReady).toEqual({ state: 'live-ok' });
+        expect(displayFacts(screen, null, null).panel).toMatchObject({ rollback: 'Last-known-good revision 2 remains rollback-ready.' });
+        expect(await verify()).toBe(0);
+        expect((await view()).rollbackReady).toEqual({ state: 'verified' });
+    });
+
+    it('replaces the line and the stakes clause with the warning once verify fails the live revision', async () => {
+        await flipLiveByte();
+        // The live check reads sizes and manifests, not digests, so only the record knows.
+        expect((await view()).rollbackReady).toEqual({ state: 'live-ok' });
+        expect(await verify()).toBe(1);
+        await fixBoth(fixture);
+        const screen = await view();
+        expect(screen.rollbackReady).toEqual({ state: 'failed', reason: 'last-verify' });
+        expect(displayFacts(screen, null, null).panel).toMatchObject({ rollback: failedLine, rollbackTone: 'alert' });
+        const valid = await act(screen, 'validate');
+        expect(valid.answer).toMatchObject({ kind: 'valid', stakes: expect.stringMatching(/^Publishing makes these \d+ changes live on every page\. Revision 2 failed its last check, so it isn't rollback-ready\. Run `photos verify` to see what to fix\.$/) });
+        expect(resultCopy(answerOf(valid), screen).body.join(' ')).not.toContain('stays rollback-ready');
+    });
+
+    it('warns when the live check fails, with nothing recorded', async () => {
+        const revision = await readRevisionFile(fixture.root, fixture.revisions[1]);
+        const photo = revision?.content.photos[0];
+        if (!photo) throw new Error('Revision 2 publishes no photo');
+        fs.rmSync(mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w400', 'avif', fixture.root));
+        const screen = await view();
+        expect(screen.rollbackReady).toEqual({ state: 'failed', reason: 'live-check' });
+        expect(displayFacts(screen, null, null).panel.rollback).toBe("Revision 2 fails the checks a restore runs, so it isn't rollback-ready. Run `photos verify` to see what to fix.");
     });
 });
