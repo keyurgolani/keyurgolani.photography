@@ -194,6 +194,8 @@ interface Pair {
     gateOnly?: boolean;
     /** The page this is a state of, whose allowances it takes. */
     stateOf?: string;
+    /** Elements both walks leave out with their subtrees, where the builds differ on purpose and another pair compares them. */
+    leaveOut?: { selector: string; why: string }[];
 }
 
 let browser: Browser;
@@ -502,6 +504,11 @@ const keyboardFocus = async (page: Page, target: Locator) => {
 const homeNext = (page: Page) => page.getByRole('button', { name: 'Next photograph' });
 const homeEnter = (page: Page) => page.getByRole('link', { name: /^Enter the series/ });
 const homeRetry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
+/**
+ * The slide stack, left out of the failure pairs' walks: on a failed Next the base puts the failed slide (its LQIP) on
+ * screen, and #4 keeps the photograph that showed (v2.0.0). Every other Home pair compares the stack.
+ */
+const FAILED_NEXT_STACK = [{ selector: '[class$="_carousel"], [class*="_carousel "]', why: '#4: a failed Next keeps the photograph on screen' }];
 /** Next from the keyboard onto the photograph failNext fails, which both builds answer with the notice, Retry and Skip. */
 const failNextFromKeyboard = async (page: Page) => {
     await revealChrome(page);
@@ -687,6 +694,7 @@ const VISITOR: Pair[] = [
         gateOnly: true,
         glass: true,
         failNext: true,
+        leaveOut: FAILED_NEXT_STACK,
         act: async (page) => {
             await failNextFromKeyboard(page);
         },
@@ -697,6 +705,8 @@ const VISITOR: Pair[] = [
         gateOnly: true,
         glass: true,
         failNext: true,
+        stateOf: 'home-failure',
+        leaveOut: FAILED_NEXT_STACK,
         act: async (page) => {
             await failNextFromKeyboard(page);
             await hoverOn(homeRetry(page));
@@ -907,6 +917,13 @@ const ALLOWANCES: Allowance[] = [
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
     ...INDEPENDENT_PANELS,
+    // #4's failure copy (v2.0.0): "Couldn't load photograph 04 of 04" is 2.2 px narrower than "Photograph 04 of 04 couldn't load.".
+    ...['[data-chrome-region="sequence"] > div', '[data-chrome-region="sequence"] [role="status"]', '[data-chrome-region="sequence"] [role="status"] > p'].map((selector) => ({
+        page: 'home-failure',
+        selector,
+        maxDelta: 4,
+        why: "#4: the failure notice's new copy",
+    })),
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
@@ -963,7 +980,7 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
+        return { walk: await walk(page, selectors, [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
     } finally {
         await context.close();
     }
