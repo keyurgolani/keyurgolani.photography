@@ -480,14 +480,26 @@ const ACCENT_WORDS: Record<string, string> = {
 /**
  * Each editorial rule in `codes`, in the owner's words with no rule ID:
  * "Salt Roads' accent color: it's hard to read on the Viewer's dark bands".
- * A rule the copy doesn't know yet reads "a style today's checks flag".
+ * A rule the copy doesn't know yet names its series, "Salt Roads' style,
+ * which today's checks flag", or reads "a style today's checks flag". Words
+ * two rules would share get their place among them, ", 1 of 2", so every
+ * box has a name of its own.
  */
 export function editorialWords(issues: readonly Pick<Issue, 'code' | 'record'>[], codes: readonly string[], seriesName: (id: string) => string): string[] {
-    return codes.map((code) => {
-        const words = ACCENT_WORDS[code];
-        if (words === undefined) return "a style today's checks flag";
+    const words = codes.map((code) => {
         const records = [...new Set(issues.filter((issue) => issue.code === code && issue.record.kind === 'series').map((issue) => seriesName(issue.record.id)))];
-        return `${records.length ? `${records.join(' and ')}' ` : 'an '}${words}`;
+        const owner = records.length ? `${records.join(' and ')}'` : '';
+        const known = ACCENT_WORDS[code];
+        if (known !== undefined) return `${owner ? `${owner} ` : 'an '}${known}`;
+        return owner ? `${owner} style, which today's checks flag` : "a style today's checks flag";
+    });
+    const seen = new Map<string, number>();
+    return words.map((text) => {
+        const total = words.filter((other) => other === text).length;
+        if (total === 1) return text;
+        const place = (seen.get(text) ?? 0) + 1;
+        seen.set(text, place);
+        return `${text}, ${place} of ${total}`;
     });
 }
 

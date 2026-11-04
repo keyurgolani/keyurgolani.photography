@@ -5,7 +5,7 @@ import { count, issueLines, parseFlags, PRINTED_ISSUES, UsageError } from './own
 import type { CatalogLogger } from './publish';
 import { acceptanceMessage, editorialRuleIds, errorText, planRollback, rollback, ROLLBACK_EXIT_CODES, unacceptedRules, type RollbackOptions, type RollbackPlan, type RollbackResult, type RollbackTarget } from './rollback';
 import { CatalogIntegrityError } from './repository';
-import { registeredRules } from './ruleset';
+import { AUTHORED_ONLY_RULE_IDS, registeredRules } from './ruleset';
 import { REVISION_ID_RE } from './schema';
 import type { CommandResult } from './sequence-commands';
 
@@ -30,10 +30,13 @@ export interface RollbackArgs {
 function acceptArgs(values: readonly string[]): string[] {
     const editorial = editorialRuleIds();
     const registered = new Set(registeredRules().map((rule) => rule.id));
+    // The ones a rollback can flag, for the message: #16's review rules are editorial, but only ever report on a draft.
+    const flaggable = [...editorial].filter((id) => !AUTHORED_ONLY_RULE_IDS.has(id)).sort();
     for (const id of values) {
+        if (!/\S/.test(id)) throw new UsageError(`--accept needs a rule ID, such as --accept ${flaggable[0] ?? 'accent.contrast'}.`);
         if (editorial.has(id)) continue;
         if (registered.has(id)) throw new UsageError(`${id} is an integrity rule, which no rollback can accept.`);
-        throw new UsageError(`--accept takes an editorial rule ID (${[...editorial].sort().join(', ')}), not ${id}.`);
+        throw new UsageError(`--accept takes an editorial rule ID (${flaggable.join(', ')}), not ${id}.`);
     }
     return [...new Set(values)];
 }
@@ -255,7 +258,7 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
     }
     if (!args.yes) {
         if (io.confirm === null) {
-            io.err(`[photos] CONFIRMATION_REQUIRED: A rollback needs confirmation. Run it in a terminal to answer, or run it again with --yes --expect-active ${plan.active.revisionId} to roll back exactly this. --expect-active stops it if another revision goes live first.`);
+            io.err(`[photos] CONFIRMATION_REQUIRED: A rollback needs confirmation. Run it in a terminal to answer, or run it again with --yes --expect-active ${plan.active.revisionId}${accept.map((rule) => ` --accept ${rule}`).join('')} to roll back exactly this. --expect-active stops it if another revision goes live first.`);
             return ROLLBACK_EXIT_CODES.CONFIRMATION_REQUIRED;
         }
         if (!(await io.confirm(`Roll back to ${number}? Type yes to confirm: `))) {

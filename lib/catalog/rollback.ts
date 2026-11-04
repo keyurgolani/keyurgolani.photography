@@ -219,9 +219,23 @@ export function unacceptedRules(plan: Pick<RollbackPlan, 'editorial'>, accepted:
     return plan.editorial.filter((rule) => !given.has(rule)).sort();
 }
 
+/**
+ * Whether the plan's acceptances hold: null when every flagged editorial
+ * rule is accepted, ACCEPTANCE_REQUIRED when any isn't, whatever else the
+ * plan says, and STORAGE_ERROR for a READY plan that names no target, which
+ * planRollback() never returns, so the rollback fails closed on it.
+ */
+export function acceptanceCheck(plan: RollbackPlan, accepted: readonly string[], revisionId: string): { outcome: 'ACCEPTANCE_REQUIRED'; message: string; unaccepted: string[] } | { outcome: 'STORAGE_ERROR'; message: string } | null {
+    const unaccepted = unacceptedRules(plan, accepted);
+    if (unaccepted.length > 0) return { outcome: 'ACCEPTANCE_REQUIRED', message: acceptanceMessage(plan.target ?? { revisionId, revisionNumber: null }, unaccepted), unaccepted };
+    if (plan.target === null) return { outcome: 'STORAGE_ERROR', message: `The rollback's plan for ${revisionId} names no target. Nothing was rolled back.` };
+    return null;
+}
+
 /** ACCEPTANCE_REQUIRED's message, which the CLI prints as it is. */
 export function acceptanceMessage(target: RevisionRef, unaccepted: readonly string[]): string {
-    const name = named(target).replace(/^./, (first) => first.toUpperCase());
+    // "Revision 3 (rev_…)" leads the sentence; a bare revision ID keeps its lower-case prefix.
+    const name = target.revisionNumber === null ? target.revisionId : `Revision ${target.revisionNumber} (${target.revisionId})`;
     return `${name} has editorial errors a rollback brings back only when you accept each one: ${unaccepted.join(', ')}. Run it again with ${unaccepted.map((rule) => `--accept ${rule}`).join(' ')}. Nothing was rolled back.`;
 }
 
@@ -427,8 +441,8 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         if (planned.outcome !== 'READY') return finish(planned.outcome, planned.message);
         // #117: every editorial rule flagged on the target needs its own accept, checked under the lock against the
         // plan made there, so rules that changed since the caller looked can't slip through. Nothing is written yet.
-        const unaccepted = unacceptedRules(planned, acceptedRules);
-        if (unaccepted.length > 0 && planned.target) return finish('ACCEPTANCE_REQUIRED', acceptanceMessage(planned.target, unaccepted), { unaccepted });
+        const refused = acceptanceCheck(planned, acceptedRules, options.revisionId);
+        if (refused) return finish(refused.outcome, refused.message, 'unaccepted' in refused ? { unaccepted: refused.unaccepted } : {});
 
         // Exactly the flagged rules, every one accepted above. An accept for a rule that isn't flagged isn't recorded.
         const activated = await activateRevision({

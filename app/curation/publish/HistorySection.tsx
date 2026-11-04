@@ -197,7 +197,13 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
 
     // Focus by phase: the first unchecked box, the empty reason, the pending button, or the answer's heading with its whole box in view.
     const firstUnchecked = unchecked.length ? rules.indexOf(unchecked[0]) : -1;
+    const focused = useRef({ phase, serial: state.serial, presses: missing + unacceptedTries });
     useEffect(() => {
+        const last = focused.current;
+        const presses = missing + unacceptedTries;
+        focused.current = { phase, serial: state.serial, presses };
+        // Checking the last box leaves the unaccepted phase with no new press or answer: focus stays on the box the owner is at.
+        if (last.phase === 'unaccepted' && last.serial === state.serial && last.presses === presses) return;
         if (!opened.current || phase === 'review') return;
         requestAnimationFrame(() => {
             if (phase === 'unaccepted') document.getElementById(`restore-accept-${firstUnchecked}`)?.focus();
@@ -217,10 +223,12 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
             event.preventDefault();
             return;
         }
-        // The boxes first, as they come first: a press with one unchecked posts nothing and goes to it.
+        // A press with a box unchecked, the reason empty, or both posts nothing and says so for each; focus goes to the
+        // first unchecked box, as the boxes come first.
         if (unchecked.length > 0) {
             event.preventDefault();
             setUnacceptedTries((count) => count + 1);
+            if (!/\S/.test(reason)) setMissing((count) => count + 1);
             return;
         }
         if (!/\S/.test(reason)) {
