@@ -140,8 +140,9 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
                     Identity question
                 </h3>
                 <p>
-                    Bind it to one of the candidates with <code>photos identity bind</code>, or make it a new photograph with <code>photos identity new</code>. The
-                    watcher&apos;s next pass applies the decision and closes this item.
+                    Bind it to one of the candidates or make it a new photograph: <code>photos identity bind</code> or <code>photos identity new</code> records the
+                    decision, and the watcher&apos;s next pass applies it and closes this item. It stays open while the same bytes are still in doubt at another
+                    path.
                 </p>
             </section>
         );

@@ -143,7 +143,10 @@ export function archivedChange(event: CurationEvent, registry: Registry, at: str
 
 /**
  * An open, deferred, or failed `ambiguous` item whose bytes no hold of #10's
- * registry has any more, resolved, or null. A decision ends the hold, and so
+ * registry has any more, resolved, or null. Deferred too: once nothing is in
+ * doubt, there is no question left to leave for later. A deferred
+ * replacement, by contrast, stays deferred (lib/curation/candidates.ts).
+ * While the same bytes are held at another path, the item stays open. A decision ends the hold, and so
  * does the held file changing or leaving. The close names the photograph
  * present on those bytes, the one at the item's path first, when there is one.
  */
@@ -371,6 +374,8 @@ export function namedPhotos(facts: readonly IdentityFact[]): string[] {
 
 const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos).filter(isRetired).map((photo) => photo.photoId));
 const heldIn = (registry: Registry) => new Set(registry.holds.map((held) => `${held.assetRevision}|${held.path}`));
+/** Whether a delivered `ambiguous` fact's bytes are held by no hold now: one that started and ended between deliveries. */
+const unheldFact = (facts: readonly IdentityFact[], registry: Registry) => facts.some((fact) => fact.type === 'ambiguous' && !registry.holds.some((held) => held.assetRevision === fact.assetRevision));
 
 /**
  * A fact sink that runs after #14's sink has opened the pass's items. Its
@@ -380,7 +385,9 @@ const heldIn = (registry: Registry) => new Set(registry.holds.map((held) => `${h
  * failed, and those retired since the last delivery that succeeded, since
  * #10 applies an archive, or retires a merged photo, without a fact for it.
  * One after a hold ended settles every item, as the first does, so the
- * ambiguous item it held closes. The pass delivers its pending facts until every sink has them, so a
+ * ambiguous item it held closes: a hold this sink saw last time and doesn't
+ * now, or the bytes of a delivered `ambiguous` fact that no hold has, as
+ * when the hold started and ended between two of this sink's deliveries. The pass delivers its pending facts until every sink has them, so a
  * delivery that failed names them again, and an owed photo stays owed until
  * a delivery settles it. Like #14's sink, an I/O or lock error fails the
  * delivery.
@@ -395,7 +402,7 @@ export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
         const now = retiredIn(registry);
         const holding = heldIn(registry);
         const known = retired;
-        const ended = held === null || [...held].some((hold) => !holding.has(hold));
+        const ended = held === null || [...held].some((hold) => !holding.has(hold)) || unheldFact(facts, registry);
         const taken = owed?.take();
         if (known === null || ended) await settleSources(at, { ...rest, registry });
         else {

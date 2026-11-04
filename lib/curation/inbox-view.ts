@@ -21,6 +21,9 @@ export const BADGE_LABELS: Record<CurationEventType, string> = {
 };
 
 /** The item's title in the list, by type. */
+/** #17: a replacement left in draft whose set the writer refused because the source moved on to a newer file. */
+export const SUPERSEDED_TITLE = 'Superseded by a newer file';
+
 export function itemTitle(type: CurationEventType, waiting: boolean): string {
     switch (type) {
         case 'new':

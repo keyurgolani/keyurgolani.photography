@@ -1081,8 +1081,10 @@ describe('an older revision\'s bytes', { timeout: 60_000 }, () => {
         await w.pass();
         const revert = await w.event(replacementEventId(w.p, w.a));
         expect(revert.candidate).toMatchObject({ state: 'ready' });
-        // B's item is stale now: the source holds A again.
-        expect(await confirm(w, await w.event())).toMatchObject({ ok: false, code: 'stale' });
+        // B's item is moot now: the source holds A again, so the watcher closed it as moved (#183), and confirm refuses it.
+        const stale = await w.event();
+        expect(stale.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.moved });
+        expect(await confirm(w, stale)).toMatchObject({ ok: false, code: 'refused' });
         const authored = treeBytes(path.join(w.root, 'authored'));
         const result = await confirm(w, revert);
         expect(result).toMatchObject({ ok: true, event: { status: 'approved', decisions: [{ action: 'confirm', writes: [] }] } });

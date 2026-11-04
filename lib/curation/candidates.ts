@@ -19,10 +19,13 @@ import { SINK_WAIT_MS } from './sink';
  * registry says: `ready` once the writer has committed it with its manifest,
  * which is what makes the item a replacement-ready one the curator can
  * confirm, or `failed` (an open item turns `failed`, and #14's retry
- * applies; a deferred one stays deferred). A set the writer refused because
- * the source moved on to newer bytes isn't a failure to retry: the newer
- * bytes' own item reviews them, so an open or failed item closes as
- * superseded, and #14's sink opens it again if these bytes come back.
+ * applies; a deferred one stays deferred). Once the photograph's source
+ * holds other bytes, an open or failed item has nothing left to review:
+ * the newer bytes' own item reviews them (#183), so it closes, as
+ * `superseded` when the writer refused its set for that, otherwise as
+ * `moved`, ready set or not. #14's sink opens it again if these bytes come
+ * back. A deferred replacement stays deferred, since Leave in draft is the
+ * curator's; an ambiguous item closes deferred or not (lib/curation/sources.ts).
  * An older revision's bytes coming back reuse the set already committed for
  * them, so that item is ready without a build, and an item already confirmed
  * for them opens again when the photo record has moved on (settleOne()).
@@ -92,24 +95,32 @@ function sameCandidate(candidate: Candidate | undefined, view: Extract<Candidate
  * The item with `view` recorded, or null when nothing changes. Its status
  * moves only when the candidate's state does: a set that fails turns an open
  * item `failed`, and one that becomes ready after a failure turns it `open`
- * again. A set refused as superseded closes an open or failed item instead,
- * as `resolved` with the watcher's close, including one an earlier build
- * left `failed` on it. A deferred item stays deferred either way: Leave in
- * draft is the curator's, so a failure only lands in its `candidate`, which
- * `show` reports. Approved and dismissed items are never touched.
+ * again. `movedOn` says the photograph's present source holds other bytes
+ * than the item's: then an open or failed item closes instead, as `resolved`
+ * with the watcher's close, `superseded` when the writer refused its set
+ * for that and `moved` otherwise. While the source holds the item's bytes, a
+ * superseded refusal is only recorded, as when an older profile refused them
+ * and #10 requeued only the current one, so the item stays for review. A
+ * deferred item stays deferred either way: Leave in draft is the curator's,
+ * so a failure only lands in its `candidate`, which `show` reports.
+ * Approved and dismissed items are never touched.
  */
-export function withCandidate(event: CurationEvent, view: CandidateView, at: string): CurationEvent | null {
+export function withCandidate(event: CurationEvent, view: CandidateView, at: string, movedOn = false): CurationEvent | null {
     if (event.type !== 'replacement' || !STILL_OPEN.has(event.status)) return null;
-    if (view.state !== 'ready' && view.state !== 'failed') return null;
-    if (view.state === 'failed' && view.failure === 'superseded' && event.status !== 'deferred') {
-        const recorded = sameCandidate(event.candidate, view) ? event.candidate as Candidate : { state: view.state, profileId: view.profileId, failure: view.failure, at };
+    const settled = view.state === 'ready' || view.state === 'failed';
+    if (movedOn && event.status !== 'deferred') {
+        const recorded = !settled || sameCandidate(event.candidate, view)
+            ? event.candidate
+            : { state: view.state, profileId: view.profileId, ...(view.state === 'failed' ? { failure: view.failure } : {}), at };
+        const superseded = recorded?.state === 'failed' && recorded.failure === 'superseded';
         return {
             ...event,
-            candidate: recorded,
+            ...(recorded === undefined ? {} : { candidate: recorded }),
             status: 'resolved',
-            decisions: [...event.decisions, { action: 'close', at, by: 'watcher', baseRevisionId: null, reason: CLOSE_REASONS.superseded }],
+            decisions: [...event.decisions, { action: 'close', at, by: 'watcher', baseRevisionId: null, reason: superseded ? CLOSE_REASONS.superseded : CLOSE_REASONS.moved }],
         };
     }
+    if (view.state !== 'ready' && view.state !== 'failed') return null;
     if (sameCandidate(event.candidate, view)) return null;
     const candidate: Candidate = { state: view.state, profileId: view.profileId, ...(view.state === 'failed' ? { failure: view.failure } : {}), at };
     let status = event.status;
@@ -143,7 +154,7 @@ export interface SettleResult {
     failed: string[];
     /** Approved item IDs opened again, because their bytes came back while the photo record pins others. */
     reopened: string[];
-    /** Item IDs closed because the source moved on before their set was built. */
+    /** Item IDs closed because the photograph's source moved on to other bytes, as `superseded` or `moved`. */
     superseded: string[];
 }
 
@@ -202,16 +213,25 @@ async function settleOne(root: string, event: CurationEvent, registry: Registry,
         };
         return { next: withCandidate(reopened, view, at) ?? reopened, kind: 'reopened' };
     }
-    const next = withCandidate(event, view, at);
+    const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
+    const movedOn = photo !== undefined && photo.mergedInto === undefined && photo.sourceHealth === 'present' && photo.source.present && photo.source.observedRevision !== revision;
+    const next = withCandidate(event, view, at, movedOn);
     if (next === null) return null;
     return { next, kind: next.status === 'resolved' ? 'superseded' : next.candidate?.state === 'ready' ? 'ready' : 'failed' };
 }
 
-/** The items to look at: `only`'s, or every one, damaged ones aside. */
-async function eventsFor(root: string, only: SettleOptions['only']): Promise<CurationEvent[]> {
+/**
+ * The items to look at: `only`'s, or every one, damaged ones aside. For each of `only`'s photos that means the
+ * replacement items of every revision the registry holds for it, since newer bytes close the older ones (#183).
+ */
+async function eventsFor(root: string, only: SettleOptions['only'], registry: Registry): Promise<CurationEvent[]> {
     if (!only) return (await listEvents(root)).events;
     const refs = Array.isArray(only) ? only : [only as RevisionRef];
-    const ids = new Set(refs.flatMap((ref) => replacementEventIds(ref.photoId, ref.assetRevision)));
+    const revisionsOf = (ref: RevisionRef) => {
+        const photo = Object.hasOwn(registry.photos, ref.photoId) ? registry.photos[ref.photoId] : undefined;
+        return [...new Set([ref.assetRevision, ...Object.keys(photo?.revisions ?? {})])];
+    };
+    const ids = new Set(refs.flatMap((ref) => revisionsOf(ref).flatMap((revision) => replacementEventIds(ref.photoId, revision))));
     const found: CurationEvent[] = [];
     for (const id of ids) {
         const event = await readUsableEvent(root, id);
@@ -237,7 +257,7 @@ export async function settleCandidates(root: string, options: SettleOptions = {}
 
     const looked = await readRegistry(root);
     const due: CurationEvent[] = [];
-    for (const event of await eventsFor(root, options.only)) {
+    for (const event of await eventsFor(root, options.only, looked)) {
         if (await settleOne(root, event, looked, profileId, at()) !== null) due.push(event);
     }
     if (due.length === 0) return result;

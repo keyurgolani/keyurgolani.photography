@@ -129,7 +129,8 @@ const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
 /**
  * Why the watcher reopens a resolved item that new evidence folds into, or null to leave it as it is: #10 holding
  * an ambiguous item's bytes in doubt again after lib/curation/sources.ts closed it (#14), or a replacement's bytes
- * back at the source after its set was refused as superseded (#17). Only the watcher's own close is undone.
+ * back at the source after lib/curation/candidates.ts closed it because the source moved on (#17). Only the
+ * watcher's own close is undone.
  */
 function reopenReasonOf(type: CurationEventType, event: CurationEvent): string | null {
     if (event.status !== 'resolved') return null;
@@ -137,7 +138,7 @@ function reopenReasonOf(type: CurationEventType, event: CurationEvent): string |
     if (close?.action !== 'close' || close.by !== 'watcher' || close.reason === undefined) return null;
     const cause = closeCauseOf(close.reason);
     if (type === 'ambiguous' && (cause === 'identified' || cause === 'unheld')) return REOPEN_REASONS.held;
-    if (type === 'replacement' && cause === 'superseded') return REOPEN_REASONS.back;
+    if (type === 'replacement' && (cause === 'superseded' || cause === 'moved')) return REOPEN_REASONS.back;
     return null;
 }
 

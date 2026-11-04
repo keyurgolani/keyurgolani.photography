@@ -1,7 +1,7 @@
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
-import type { Registry } from '../identity/types';
+import type { ProfileEntry, Registry } from '../identity/types';
 import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
 import { candidateOf } from './candidates';
@@ -18,6 +18,7 @@ import {
     seriesName,
     settledMissingTitle,
     shortIdOf,
+    SUPERSEDED_TITLE,
     type HolderRef,
     type InboxDetail,
     type InboxItem,
@@ -71,7 +72,9 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         type: event.type,
         status: event.status,
         group: groupOf(event, waiting, placed !== null, unplaced !== null),
-        title: unplaced !== null ? 'Approved, no longer placed' : ((event.type === 'missing' ? settledMissingTitle(event.status, resolvedCauseOf(event, registry)) : null) ?? itemTitle(event.type, waiting !== null)),
+        title: unplaced !== null
+            ? 'Approved, no longer placed'
+            : ((event.type === 'missing' ? settledMissingTitle(event.status, resolvedCauseOf(event, registry)) : null) ?? (supersededBy(event, registry) ? SUPERSEDED_TITLE : itemTitle(event.type, waiting !== null))),
         photoId: event.photoId,
         shortId: shortIdOf(event.photoId),
         sourcePath: printable(event.derivedFacts.sourcePath),
@@ -155,15 +158,29 @@ function readyProfile(event: CurationEvent, registry: Registry | null): string |
 }
 
 /** Each profile's state, and how many tries a failed one took. A build's error text may name a host path, so it never shows. */
+/**
+ * #17: a replacement whose set the writer refused because the source moved on, while the source still holds other
+ * bytes. The watcher closes an open one; one left in draft stays, and reads as superseded, not failed, as
+ * `photos status` counts it (lib/curation/alerts.ts).
+ */
+function supersededBy(event: CurationEvent, registry: Registry | null): boolean {
+    if (event.type !== 'replacement' || event.candidate?.state !== 'failed' || event.candidate.failure !== 'superseded' || event.photoId === null) return false;
+    const photo = registry?.photos[event.photoId];
+    return photo !== undefined && photo.source.observedRevision !== event.assetRevision;
+}
+
+/** How a profile's entry reads: a refusal because the source moved on is no build failure (#17). */
+const entryText = (id: string, entry: ProfileEntry) => entry.state === 'failed' && entry.error === 'source-superseded'
+    ? `${id} superseded by a newer file`
+    : `${id} ${entry.state}${entry.state === 'failed' ? ` after ${entry.attempts} attempt${entry.attempts === 1 ? '' : 's'}` : ''}`;
+
 function derivativeText(event: CurationEvent, registry: Registry | null): { text: string; ready: string | null } {
     if (event.photoId === null || event.assetRevision === null) return { text: 'None. Nothing was made from it.', ready: null };
     const revision = registry?.photos[event.photoId]?.revisions[event.assetRevision];
     const profiles = revision ? Object.entries(revision.profiles) : [];
     if (profiles.length === 0) return { text: 'None built yet.', ready: null };
     const ready = readyProfile(event, registry);
-    const text = profiles
-        .map(([id, entry]) => `${id} ${entry.state}${entry.state === 'failed' ? ` after ${entry.attempts} attempt${entry.attempts === 1 ? '' : 's'}` : ''}`)
-        .join(', ');
+    const text = profiles.map(([id, entry]) => entryText(id, entry)).join(', ');
     return { text, ready };
 }
 

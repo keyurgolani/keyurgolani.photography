@@ -39,13 +39,16 @@ export interface InboxAlerts {
 }
 
 /**
- * A failure in the inbox: a failed processing item or set, open or left in draft. A set refused as `superseded` is
- * none: the source moved on, and the newer bytes' own item reviews them (#17). The watcher closes an open one, and
- * one left in draft stays the curator's, without counting.
+ * A failure in the inbox: a failed processing item or set, open or left in draft. A set refused as `superseded` on
+ * an item left in draft is none: the source moved on, and the newer bytes' own item reviews them (#17). The watcher
+ * closes an open or failed one once the source holds other bytes, so one still open or failed has its bytes back,
+ * refused under an older profile, and needs a retry, which counts.
  */
 function failureOf(event: CurationEvent): string | null {
     if (!STILL_OPEN.has(event.status)) return null;
-    if (event.candidate?.state === 'failed') return event.candidate.failure === 'superseded' ? null : `derivative set ${event.candidate.failure ?? 'build'}`;
+    if (event.candidate?.state === 'failed') {
+        return event.candidate.failure === 'superseded' && event.status === 'deferred' ? null : `derivative set ${event.candidate.failure ?? 'build'}`;
+    }
     if (event.type === 'processing-failure') return event.derivedFacts.failure ?? 'processing failed';
     return event.status === 'failed' ? 'failed' : null;
 }

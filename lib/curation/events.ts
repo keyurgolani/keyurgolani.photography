@@ -337,7 +337,7 @@ export const CLOSE_REASONS = {
     superseded: 'The source changed again before this derivative set was built, so the newer replacement item is the one to review.',
 } as const;
 
-/** The watcher's reopen reasons for the items CLOSE_REASONS' `identified`, `unheld` and `superseded` closed (lib/curation/sink.ts). */
+/** The watcher's reopen reasons for the items CLOSE_REASONS' `identified`, `unheld`, `superseded` and a replacement's `moved` closed (lib/curation/sink.ts). */
 export const REOPEN_REASONS = {
     held: '#10 holds this file in doubt again.',
     back: 'The source holds these bytes again.',
