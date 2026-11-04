@@ -189,11 +189,11 @@ async function prepare({ migrate = false }: { migrate?: boolean } = {}): Promise
 }
 
 /** The watcher run `npm run images:process` starts, against the temp roots. Resolves its output. */
-async function runWatcherOnce(fixture: Fixture, ...args: string[]): Promise<string> {
-    const run = await runTsx('scripts/imageWatcher.ts', ['--once', ...args], {
+async function runWatcherOnce(fixture: Fixture, { code = 0 }: { code?: number } = {}): Promise<string> {
+    const run = await runTsx('scripts/imageWatcher.ts', ['--once'], {
         env: { PHOTOGRAPHY_LIBRARY_DIR: fixture.lib.root, PHOTOGRAPHY_DATA_DIR: fixture.data.root },
     });
-    if (run.code !== 0) throw new Error(`The watcher exited ${run.code}:\n${run.stdout}\n${run.stderr}`);
+    if (run.code !== code) throw new Error(`The watcher exited ${run.code}, expected ${code}:\n${run.stdout}\n${run.stderr}`);
     return `${run.stdout}${run.stderr}`;
 }
 
@@ -202,8 +202,8 @@ async function runWatcherOnce(fixture: Fixture, ...args: string[]): Promise<stri
  * step is off, and the heartbeat records a committed pass. A run whose
  * identity step was skipped would prove nothing about ingestion.
  */
-async function runWatcherOnceWithIdentity(fixture: Fixture, name: string, ...args: string[]): Promise<void> {
-    const output = await runWatcherOnce(fixture, ...args);
+async function runWatcherOnceWithIdentity(fixture: Fixture, name: string): Promise<void> {
+    const output = await runWatcherOnce(fixture);
     expect(output, name).not.toContain('Identity step off');
     expect(output, name).toContain(`[identity] Identity step on: data root ${fixture.data.root}.`);
     const heartbeat = JSON.parse(fs.readFileSync(watcherStatusFile(fixture.data.root), 'utf8')) as { lastPassResult: unknown };
@@ -386,11 +386,11 @@ describe('the watcher never authors order', () => {
     it('leaves catalog/ and authored/ byte-identical at startup and after each kind of library edit', async () => {
         const fixture = await prepare({ migrate: true });
         const { lib, put } = fixture;
-        const run = (name: string, edit: () => unknown, ...args: string[]): OrderStep => ({
+        const run = (name: string, edit: () => unknown): OrderStep => ({
             name,
             run: async () => {
                 await edit();
-                await runWatcherOnceWithIdentity(fixture, name, ...args);
+                await runWatcherOnceWithIdentity(fixture, name);
             },
         });
         await assertOrderUntouched(fixture.data.root, [
@@ -400,9 +400,9 @@ describe('the watcher never authors order', () => {
             run('a replacement with new pixels', () => put('square.webp', fresh)),
             run('a new photograph', () => put('added.jpg', bytesOf('landscape-edited.jpg'))),
             run('a deletion', () => fs.rmSync(lib.file('added.jpg'))),
-            run('regenerating every derivative', () => undefined, '--force'),
         ]);
-        expect(fs.existsSync(lib.file('optimized', 'square.webp'))).toBe(true);
+        // Since v1.7.0 the watcher writes nothing in the library.
+        expect(fs.existsSync(lib.file('optimized'))).toBe(false);
         // The watcher's own --once run delivered to #14's curation sink: the new photograph is an inbox item.
         const { events } = await listEvents(fixture.data.root);
         expect(events.filter((event) => event.type === 'new').map((event) => event.derivedFacts.sourcePath)).toContain('added.jpg');
@@ -415,7 +415,8 @@ describe('the watcher never authors order', () => {
         for (const dir of ['catalog', 'authored']) fs.cpSync(path.join(fixture.data.root, dir), path.join(uninitialized.root, dir), { recursive: true });
         await assertOrderUntouched(uninitialized.root, [{
             name: 'startup',
-            run: () => runWatcherOnce({ ...fixture, data: uninitialized }),
+            // It exits 1 there, since it processes nothing until the migration.
+            run: () => runWatcherOnce({ ...fixture, data: uninitialized }, { code: 1 }),
         }]);
         // The watcher writes its heartbeat to any data root it can write, initialized or not, and nothing else.
         expect(fs.readdirSync(uninitialized.root).sort()).toEqual(['authored', 'catalog', 'status']);

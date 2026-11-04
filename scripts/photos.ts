@@ -206,14 +206,15 @@
  *     changed plan or a busy lock. --apply logs one JSON line per path it
  *     deletes.
  *
- * The library is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the
- * working directory. The data root is PHOTOGRAPHY_DATA_DIR, or portfolio-data
- * under the working directory outside production.
+ * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
+ * reads the library exits 1 when it's unset. The data root is
+ * PHOTOGRAPHY_DATA_DIR, or portfolio-data under the working directory outside
+ * production.
  *
  * The image has no tsx, so it runs the bundle `npm run build:scripts` writes,
  * with the same arguments: node dist/scripts/photos.mjs <command>. In
- * production, run it in the watcher's container, which mounts the data root
- * read-write:
+ * production, run it in the watcher's container, which mounts the library
+ * read-only at /data/library and the data root read-write:
  * docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>.
  * The README's "Curating the catalog" section walks through the commands.
  *
@@ -246,7 +247,7 @@ import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
 import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
-import { dataRoot, dataRootStatus, libraryRoot } from '../lib/storage/config';
+import { configuredLibraryRoot, dataRoot, dataRootStatus, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { isInside } from '../lib/storage/fsx';
 
 /** This CLI the way it was started: the bundle in the image, or the source under tsx. */
@@ -398,6 +399,10 @@ async function decide(type: DecisionInput['type'], args: string[]): Promise<numb
         if (outcome.reason === 'locked') {
             console.log(`[photos] Saved ${file}. The registry is busy, so the watcher applies it on its next pass.`);
             return 0;
+        }
+        if (outcome.reason === 'library-empty') {
+            console.error(`[photos] The library has no photos, but the registry has ${outcome.present} present, so the pass marked nothing missing and applied nothing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
+            return 1;
         }
         console.error(`[photos] The data root is ${outcome.state}${outcome.detail ? `: ${outcome.detail}` : ''}. The decision is saved in ${file}.`);
         return 1;
@@ -628,7 +633,7 @@ async function main(argv: string[]): Promise<number> {
             return result.exitCode;
         }
         if (command === 'curation') {
-            const result = await runCurationCli(args, { dataRoot: dataRoot(), libraryRoot: libraryRoot(), program: PROGRAM });
+            const result = await runCurationCli(args, { dataRoot: dataRoot(), libraryRoot: configuredLibraryRoot(), program: PROGRAM });
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
             return result.exitCode;
         }
@@ -645,6 +650,10 @@ async function main(argv: string[]): Promise<number> {
         }
         if (error instanceof LibraryRootMissingError) {
             console.error(`[photos] ${error.message}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. Nothing was written.`);
+            return 1;
+        }
+        if (error instanceof LibraryRootConfigError) {
+            console.error(`[photos] ${error.message} Nothing was written.`);
             return 1;
         }
         throw error;

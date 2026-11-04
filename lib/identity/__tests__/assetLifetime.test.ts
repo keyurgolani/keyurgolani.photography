@@ -67,8 +67,10 @@ describe('a revision a catalog refers to', () => {
     it('stays ready through a replacement, a rename, and the source being deleted', async () => {
         const s = await identity();
         fs.writeFileSync(s.lib.file('ridge.jpg'), images[0]);
+        // Another photo stays throughout, so the deletion below isn't refused as an empty library.
+        fs.writeFileSync(s.lib.file('harbor.jpg'), images[2]);
         await s.step();
-        const [photo] = Object.values((await readRegistry(s.data.root)).photos);
+        const photo = Object.values((await readRegistry(s.data.root)).photos).find((entry) => entry.source.path === 'ridge.jpg')!;
         const first: AssetRef = { photoId: photo.photoId, assetRevision: photo.source.observedRevision, profileId: currentProfileId() };
         expect((await resolveAsset(first)).state).toBe('ready');
 

@@ -43,18 +43,20 @@ export function setKeyOf(filename: string): string {
  * match, such as IMG_1.jpg and IMG_1.png, or differ only in case or Unicode
  * form and the disk resolves both spellings to one file, as a case-insensitive
  * disk does with Beach.jpg and beach.png. On a case-sensitive disk those two
- * have a set each. When lstat can't tell, they count as one.
+ * have a set each. When lstat can't tell, they count as one. With no library
+ * (`root` null) there's no disk to ask, so only matching base names share one,
+ * as when the library is missing.
  */
-export function sharesSet(a: string, b: string, root: string = libraryRoot()): boolean {
+export function sharesSet(a: string, b: string, root: string | null = libraryRoot()): boolean {
     const baseA = baseNameOf(a);
     const baseB = baseNameOf(b);
     if (baseA === baseB) return true;
-    if (setKeyOf(a) !== setKeyOf(b)) return false;
+    if (setKeyOf(a) !== setKeyOf(b) || root === null) return false;
     return sameFile(path.join(root, b), path.join(root, `${baseA}${path.extname(b)}`)) !== false;
 }
 
 /** Sources grouped by the set they write, each group in path order. */
-export function setGroups(files: string[], root: string = libraryRoot()): string[][] {
+export function setGroups(files: string[], root: string | null = libraryRoot()): string[][] {
     const groups: string[][] = [];
     const byKey = new Map<string, string[][]>();
     for (const file of [...files].sort()) {

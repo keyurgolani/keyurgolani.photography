@@ -8,7 +8,7 @@ import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempL
 import { libraryPaths } from '../../../utils/imageOptimizer';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { DATA_ROOT_FILE, dataRoot, dataRootState, dataRootStatus, libraryRoot, PROBE_SWEEP_AGE_MS, probeHostTag } from '../config';
+import { configuredLibraryRoot, DATA_ROOT_FILE, dataRoot, dataRootState, dataRootStatus, LibraryRootConfigError, LibraryRootInvalidError, libraryRoot, LibraryRootUnsetError, PROBE_SWEEP_AGE_MS, probeHostTag } from '../config';
 
 const isRoot = process.getuid?.() === 0;
 // macOS volumes are usually case-insensitive, where another spelling of a path is the same folder.
@@ -44,9 +44,68 @@ describe('libraryRoot', () => {
         expect(libraryPaths().thumbnails).toBe(path.join(second.root, 'thumbnails'));
     });
 
-    it('defaults to public/assets/photos under the working directory', () => {
+    it.each(['production', 'development', 'test'])('has no default under NODE_ENV=%s: unset, it throws and names the variable and /data/library', (nodeEnv) => {
         vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', '');
-        expect(libraryRoot()).toBe(path.join(process.cwd(), 'public/assets/photos'));
+        vi.stubEnv('NODE_ENV', nodeEnv);
+        expect(() => libraryRoot()).toThrow(LibraryRootUnsetError);
+        expect(() => libraryRoot()).toThrow('PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library in both compose files.');
+        expect(() => libraryPaths()).toThrow(LibraryRootUnsetError);
+        expect(configuredLibraryRoot()).toBeNull();
+    });
+
+    it('never falls back to public/assets/photos, even when that folder exists', () => {
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'photography-cwd-'));
+        cleanups.push(() => fs.promises.rm(cwd, { recursive: true, force: true }));
+        fs.mkdirSync(path.join(cwd, 'public', 'assets', 'photos'), { recursive: true });
+        vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', '');
+        expect(() => libraryRoot()).toThrow(LibraryRootUnsetError);
+        expect(configuredLibraryRoot()).toBeNull();
+    });
+
+    it('configuredLibraryRoot() is the resolved PHOTOGRAPHY_LIBRARY_DIR when set', async () => {
+        const lib = await tempLibrary();
+        expect(configuredLibraryRoot()).toBe(lib.root);
+        expect(libraryRoot()).toBe(lib.root);
+    });
+
+    it.each(['relative/library', './public/assets/photos', 'library'])('refuses a relative PHOTOGRAPHY_LIBRARY_DIR, %s, naming the variable', (value) => {
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', value);
+        expect(() => libraryRoot()).toThrow(LibraryRootInvalidError);
+        expect(() => libraryRoot()).toThrow(`PHOTOGRAPHY_LIBRARY_DIR must be an absolute path, such as /data/library, not ${value}.`);
+        expect(() => libraryRoot()).toThrow(LibraryRootConfigError);
+    });
+
+    it.each(['public', 'public/assets/photos', 'public/assets/photos/trips'])('refuses a PHOTOGRAPHY_LIBRARY_DIR at or inside the app\'s public folder, %s, where Next serves files', (inside) => {
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'photography-cwd-'));
+        cleanups.push(() => fs.promises.rm(cwd, { recursive: true, force: true }));
+        fs.mkdirSync(path.join(cwd, inside), { recursive: true });
+        vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(cwd, inside));
+        expect(() => libraryRoot()).toThrow(LibraryRootInvalidError);
+        expect(() => libraryRoot()).toThrow(`PHOTOGRAPHY_LIBRARY_DIR is inside the app's public folder, where Next serves files: ${path.join(cwd, inside)}. Mount the library outside it, at /data/library.`);
+    });
+
+    it('refuses the public folder through a symlink too, and takes a sibling of it', () => {
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'photography-cwd-'));
+        cleanups.push(() => fs.promises.rm(cwd, { recursive: true, force: true }));
+        fs.mkdirSync(path.join(cwd, 'public', 'assets', 'photos'), { recursive: true });
+        fs.mkdirSync(path.join(cwd, 'library'));
+        fs.mkdirSync(path.join(cwd, 'public-not'));
+        fs.symlinkSync(path.join(cwd, 'public', 'assets', 'photos'), path.join(cwd, 'linked'));
+        vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(cwd, 'linked'));
+        expect(() => libraryRoot()).toThrow(LibraryRootInvalidError);
+        for (const sibling of ['library', 'public-not']) {
+            vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(cwd, sibling));
+            expect(libraryRoot()).toBe(path.join(cwd, sibling));
+        }
+    });
+
+    it('lets the data root be checked with no library configured, as web runs', () => {
+        const data = tempDataRoot();
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', '');
+        expect(dataRootStatus()).toEqual({ state: 'ready', root: data.root });
     });
 });
 

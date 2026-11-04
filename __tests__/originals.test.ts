@@ -286,8 +286,10 @@ describe('derivative URLs', () => {
     const outputs = ['thumbnail', 'medium', 'optimized', 'thumbnailAvif', 'mediumAvif', 'optimizedAvif', 'lqip'] as const;
     const names = ['50%off.jpg', 'a#b.jpg', 'what?.png', 'IMG 1234 (edited).jpg', 'café.webp', '100% #2.jpg', 'a%2Fb.jpg', 'a%2fb.png', 'a%5Cb.jpg'];
 
-    // The watcher still writes the legacy sets until slice E's second PR, at these URLs, and none of them serves.
-    it.each(names)('for %s, 404 at every URL the watcher writes under /assets/photos', async (name) => {
+    // A v1.6 watcher wrote the legacy sets at these URLs, and a library may still hold them. None of them serves.
+    it.each(names)('for %s, 404 at every URL a v1.6 watcher wrote under /assets/photos', async (name) => {
+        // Only the names matter: libraryPaths() joins them onto a library that is never read.
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(path.sep, 'nowhere', 'library'));
         const urls = getImagePaths(name, libraryPaths(), new Map());
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', emptyRoot());
         try {

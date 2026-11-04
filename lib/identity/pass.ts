@@ -189,7 +189,14 @@ export type PassOutcome =
         decisions: DecisionOutcome[];
     }
     | { status: 'skipped'; reason: 'data-root'; state: DataRootState; detail?: string }
-    | { status: 'skipped'; reason: 'locked'; holder: LockRecord | null };
+    | { status: 'skipped'; reason: 'locked'; holder: LockRecord | null }
+    /**
+     * The scan found no source at all while the registry holds `present`
+     * photos: an unmounted or emptied library, such as a NAS mount point that's
+     * still empty at boot. Committing would mark every photo missing, so the
+     * pass writes nothing and applies no decision.
+     */
+    | { status: 'skipped'; reason: 'library-empty'; present: number };
 
 /** Only the fields a recorded decision has. */
 function recordOf(outcome: RecordedDecision | Exclude<DecisionOutcome, { status: 'deferred' }>): RecordedDecision {
@@ -277,6 +284,8 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
             const complete = listed && decisions.every((file) => file.raw !== null);
             const replay = replayDecisions(decisions, before.decided ?? {}, { complete });
             const observed = await observeLibrary({ root: libraryRoot(), registry: before, statCache: await readStatCache(root), deps: options, decisions: replay.fresh });
+            const present = Object.values(before.photos).filter((photo) => photo.sourceHealth === 'present').length;
+            if (observed.scan.entries.length === 0 && present > 0) return { status: 'skipped' as const, reason: 'library-empty' as const, present };
             const { outcomes, decided } = replay.settle(observed.decisions);
             signal.throwIfAborted();
             for (const skipped of observed.report.unreadable) logger.warn(`[identity] Skipped ${skipped}: it can't be read.`);

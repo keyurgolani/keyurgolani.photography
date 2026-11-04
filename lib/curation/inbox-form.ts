@@ -2,7 +2,7 @@ import { REVISION_ID_RE, SERIES_ID_RE } from '../catalog/schema';
 import { readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
 import { isLibraryPath, PHOTO_ID_RE } from '../identity/ids';
 import { readRegistry } from '../identity/registry';
-import { dataRootStatus, libraryRoot } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type ActionInput, type ActionOutcome, type Choices } from './actions';
 import { pendingArchiveOf } from './binds';
 import { printable, scrub } from './commands';
@@ -379,7 +379,7 @@ let serial = 0;
 export async function runInboxAction(kind: InboxActionKind, form: unknown, options: { actor?: string; clock?: () => number; waitMs?: number } = {}): Promise<InboxActionState> {
     serial += 1;
     const answer = (status: Exclude<InboxActionState, { status: 'idle' }>['status'], eventId: string | null, message: string, field?: FormField): InboxActionState => {
-        return { status, action: kind, eventId, message: scrub(message, [dataRootStatus().root, libraryRoot()]), ...(field ? { field } : {}), serial };
+        return { status, action: kind, eventId, message: scrub(message, [dataRootStatus().root, configuredLibraryRoot()]), ...(field ? { field } : {}), serial };
     };
     if (!(form instanceof FormData)) return answer('invalid', null, 'The form was empty. Refresh the inbox.');
     let input: ActionInput;
@@ -455,7 +455,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     // written" answers fits, whatever the writer or the event's write said.
     const partial = kind === 'archive' ? await partWritten() : null;
     if (partial !== null) {
-        console.warn(`[curation] The inbox archive on ${input.eventId} stopped part way: ${scrub(outcome.message, [dataRootStatus().root, libraryRoot()])}`);
+        console.warn(`[curation] The inbox archive on ${input.eventId} stopped part way: ${scrub(outcome.message, [dataRootStatus().root, configuredLibraryRoot()])}`);
         return answer('failed', input.eventId, partial);
     }
     // A set still building is the item waiting, not the data root failing.
@@ -464,6 +464,6 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     if (outcome.code === 'locked') return answer('busy', input.eventId, 'Another change is being written right now, so nothing was written. Try again in a moment.');
     const status = STATUS_FOR[outcome.code] as 'refused' | 'invalid' | 'failed';
     // 14-1's own words, IDs and all, stay in the server log.
-    if (status === 'failed') console.warn(`[curation] The inbox ${kind} on ${input.eventId} failed: ${scrub(outcome.message, [dataRootStatus().root, libraryRoot()])}`);
+    if (status === 'failed') console.warn(`[curation] The inbox ${kind} on ${input.eventId} failed: ${scrub(outcome.message, [dataRootStatus().root, configuredLibraryRoot()])}`);
     return answer(status, input.eventId, pageWording(outcome.message, status), kind === 'bind' ? bindField(outcome.message) : undefined);
 }

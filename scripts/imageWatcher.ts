@@ -2,24 +2,25 @@
 /**
  * Image Watcher Script
  *
- * Watches the photos directory for changes and processes new images automatically.
- * Uses chokidar for reliable file watching in Docker bind-mount scenarios.
- * It never deletes a source or a derivative. Removing a source keeps its
- * derivatives.
+ * Watches the photo library and keeps the data root's identity state and
+ * `/media` sets up to date. Uses chokidar for reliable file watching in Docker
+ * bind-mount scenarios. It reads the library and never writes it: since
+ * v1.7.0 (#13's slice E) it writes no legacy basename derivatives, and
+ * leaves any a v1.6 watcher wrote as they are. It never deletes anything.
  *
- * Two steps run. The legacy step writes the derivatives under the library
- * for photos directly in its root. The identity step runs only when the data
- * root (PHOTOGRAPHY_DATA_DIR) is ready: each pass reconciles the whole
- * library, nested folders included, and the derivative worker builds the
- * `/media` sets the pass left pending. Library changes, a 10-minute timer,
- * and work another process leaves, looked for every 30 s, schedule a pass,
- * 5 s after the last request. Each pass and each 30 s check update
- * status/watcher.json in the data root.
+ * The identity step runs when the data root (PHOTOGRAPHY_DATA_DIR) is ready:
+ * each pass reconciles the whole library, nested folders included, and the
+ * derivative worker builds the `/media` sets the pass left pending. Library
+ * changes, a 10-minute timer, and work another process leaves, looked for
+ * every 30 s, schedule a pass, 5 s after the last request. Each pass and each
+ * 30 s check update status/watcher.json in the data root, with
+ * `legacyDerivatives: false`.
  *
- * The library root is PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under
- * the working directory. Both modes exit 1 if the root is missing, and watch
- * mode also exits 1 if the root disappears while it runs. An unknown flag
- * exits 2.
+ * The library root is PHOTOGRAPHY_LIBRARY_DIR, /data/library in both compose
+ * files, with no default. Both modes exit 1 if it's unset or the root is
+ * missing, and watch mode also exits 1 if the root disappears while it runs.
+ * Both exit 1 with no data root, since there is nothing else to do. An
+ * unknown flag, and --force, which rebuilt the legacy derivatives, exit 2.
  *
  * Usage:
  *   # Watch mode (continuous)
@@ -28,18 +29,16 @@
  *   # One-shot mode (process once and exit)
  *   npx tsx scripts/imageWatcher.ts
  *
- *   # Process and exit. Exits 1 if any photo failed or changed while it was
- *   # processed, if a /media set failed to build for any reason but a
- *   # source that moved on, or if the derivative worker couldn't start.
+ *   # Process and exit. Exits 1 if the data root isn't ready, if a /media
+ *   # set failed to build for any reason but a source that moved on, if a
+ *   # photo was still changing, or if the derivative worker couldn't start.
  *   npx tsx scripts/imageWatcher.ts --once
- *
- *   # Regenerate every legacy derivative, not only missing or outdated ones
- *   npx tsx scripts/imageWatcher.ts --once --force
  *
  * The image has no tsx, so it runs the bundle `npm run build:scripts` writes,
  * with the same flags: node dist/scripts/imageWatcher.mjs --watch.
  */
 
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
@@ -50,16 +49,15 @@ import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
-import { dataRoot } from '../lib/storage/config';
-import { ensureDirectories, libraryPaths, libraryRootExists } from '../utils/imageOptimizer';
-import { attachWatcher, createWatcherHandlers, createWatchModeHandlers, drainOrReport, processOnce, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
+import { dataRoot, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
+import { attachWatcher, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
 
 /** This script the way it was started: the bundle in the image, or the source under tsx. */
 const PROGRAM = fileURLToPath(import.meta.url).endsWith('.mjs') ? 'node dist/scripts/imageWatcher.mjs' : 'npx tsx scripts/imageWatcher.ts';
-const USAGE = `Usage: ${PROGRAM} [--watch | --once] [--force]`;
+const USAGE = `Usage: ${PROGRAM} [--watch | --once]`;
 
 /** Strict, so a mistyped flag such as --froce exits 2 instead of being ignored. */
-function readFlags(): { once: boolean; force: boolean } {
+function readFlags(): { once: boolean } {
     let values: { watch?: boolean; once?: boolean; force?: boolean; help?: boolean };
     try {
         ({ values } = parseArgs({
@@ -81,26 +79,55 @@ function readFlags(): { once: boolean; force: boolean } {
         console.log(USAGE);
         process.exit(0);
     }
-    return { once: Boolean(values.once) || !values.watch, force: Boolean(values.force) };
+    if (values.force) {
+        console.error('[ImageWatcher] --force rebuilt the legacy derivatives, which the watcher no longer writes (v1.7.0). Run it without --force.');
+        console.error(USAGE);
+        process.exit(2);
+    }
+    return { once: Boolean(values.once) || !values.watch };
 }
 
-const FLAGS = readFlags();
-const ONCE_MODE = FLAGS.once;
-const FORCE = FLAGS.force;
+const ONCE_MODE = readFlags().once;
 
-/** Docker kills a container 10 s after SIGTERM, so queued jobs get this long to finish. */
+/** Docker kills a container 10 s after SIGTERM, so a pass or build under way gets this long to finish. */
 const SHUTDOWN_GRACE_MS = 8000;
 
 /** How often watch mode checks that the library root is still there. */
 const ROOT_CHECK_MS = 5000;
-    
-/** Exit 1 instead of recreating a missing root, which would hide an unmounted library. */
-function requireLibraryRoot(): string {
-    const { root } = libraryPaths();
+
+function libraryRootExists(root: string): boolean {
+    try {
+        const stat = fs.statSync(root);
+        // A host folder deleted from under a bind mount still stats as a directory, with no links left
+        return stat.isDirectory() && stat.nlink > 0;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Exit 1 unless the library is configured and there, and the data root is
+ * named. Never creates a missing root, which would hide an unmounted library,
+ * and never falls back to another folder.
+ */
+function requireRoots(): string {
+    let root: string;
+    try {
+        root = libraryRoot();
+    } catch (error) {
+        if (!(error instanceof LibraryRootConfigError)) throw error;
+        console.error(`[ImageWatcher] ${error.message} Nothing was processed.`);
+        process.exit(1);
+    }
     if (!libraryRootExists(root)) {
         console.error(
             `[ImageWatcher] Library root not found: ${root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. Nothing was processed.`,
         );
+        process.exit(1);
+    }
+    // Outside production dataRoot() falls back to ./portfolio-data, so this only stops an unconfigured production watcher.
+    if (dataRoot() === null) {
+        console.error('[ImageWatcher] PHOTOGRAPHY_DATA_DIR is not set, and the watcher writes nothing but the data root, so it has nothing to do. Set it to the data root: /data/portfolio in both compose files.');
         process.exit(1);
     }
     return root;
@@ -149,22 +176,16 @@ async function drainIdentity(identity: ReturnType<typeof createIdentityStep>, ti
 }
 
 function startWatcher(): void {
-    const root = requireLibraryRoot();
-    ensureDirectories();
-    // With no data root the identity step never runs, so the watch stays exactly as it was before it.
-    // Outside production dataRoot() falls back to ./portfolio-data, so dev and `npm run images:watch` count as on.
-    const setup = watchSetup(root, { identity: dataRoot() !== null });
+    const root = requireRoots();
+    const setup = watchSetup(root);
 
     console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}${setup.path === root ? '' : ` (${setup.path})`}`);
 
-    // Not idle before chokidar's ready queues the startup batch, so the identity step's first pass can't build alongside it.
-    const handlers = createWatchModeHandlers();
-    // A pass reads the library after the legacy step's queued jobs, and asks the watch for any pass it needs next.
+    // A pass asks the watch for any pass it needs next.
     let watch: IdentityWatch | null = null;
     const identity = createIdentityStep({
         sinks: factSinks(),
         worker: workerBuilds(),
-        legacyIdle: () => handlers.idle(),
         requestPass: (reason, delayMs) => watch?.schedule(reason, delayMs),
     });
     watch = watchIdentity(identity);
@@ -172,11 +193,9 @@ function startWatcher(): void {
 
     const watcher = chokidar.watch(setup.path, setup.options);
 
-    // Events, and the startup batch once the initial scan is ready. Live events still jump ahead of that backlog.
-    // The identity step's startup pass comes after that batch.
-    attachWatcher(watcher, handlers, {
+    // The startup pass runs once chokidar has its baseline, so a file saved during the initial scan isn't missed.
+    attachWatcher(watcher, {
         root: setup.path,
-        force: FORCE,
         onRootRemoved: () => void shutdown(1, `Library root removed: ${root}`),
         onLibraryChange: (event, changedPath) => {
             if (concernsIdentity(event, changedPath)) watch?.schedule('event');
@@ -189,14 +208,13 @@ function startWatcher(): void {
         if (!libraryRootExists(root)) void shutdown(1, `Library root disappeared: ${root}`);
     }, ROOT_CHECK_MS);
 
-    // Stop taking events, close chokidar, give queued jobs a bounded time to finish, then exit
+    // Stop taking events, close chokidar, give a pass or build under way a bounded time to finish, then exit
     let shuttingDown = false;
     async function shutdown(code: number, reason: string): Promise<void> {
         if (shuttingDown) return;
         shuttingDown = true;
         clearInterval(rootCheck);
         (code === 0 ? console.log : console.error)(`[ImageWatcher] ${reason}. Shutting down...`);
-        handlers.stop();
         watch?.stop();
         identity.stop();
         try {
@@ -205,30 +223,25 @@ function startWatcher(): void {
             console.error('[ImageWatcher] Error closing watcher:', err);
             code = 1;
         }
-        await Promise.all([drainOrReport(handlers, SHUTDOWN_GRACE_MS), drainIdentity(identity, SHUTDOWN_GRACE_MS)]);
+        await drainIdentity(identity, SHUTDOWN_GRACE_MS);
         console.log('[ImageWatcher] Watcher closed.');
         process.exit(code);
     }
-    
+
     process.on('SIGINT', () => void shutdown(0, 'Received SIGINT'));
     process.on('SIGTERM', () => void shutdown(0, 'Received SIGTERM'));
-    
+
     console.log('[ImageWatcher] Watching for changes. Press Ctrl+C to exit.');
 }
 
 /**
- * The same startup batch watch mode runs, then the identity step's passes
- * and builds, then exit. Returns 1 if any photo failed or changed meanwhile,
- * or if a set failed to build.
+ * The identity step's passes and builds, then exit. Returns 1 if the data
+ * root isn't ready, if a set failed to build, or if a photo was still changing.
  */
 async function runOnce(): Promise<number> {
     console.log('[ImageWatcher] Running in one-shot mode...');
-    requireLibraryRoot();
-    ensureDirectories();
-    const handlers = createWatcherHandlers();
-    const legacy = await processOnce(handlers, { force: FORCE });
-    const identity = await runIdentityOnce({ sinks: factSinks(), worker: workerBuilds(), legacyIdle: () => handlers.idle() });
-    return Math.max(legacy, identity);
+    requireRoots();
+    return runIdentityOnce({ sinks: factSinks(), worker: workerBuilds() });
 }
 
 // Main execution

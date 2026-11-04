@@ -57,4 +57,29 @@ describe('tempLibrary', () => {
 
         expect(seen).toEqual([lib.root]);
     });
+
+    it('snapshot() tells a chmod, a touch, a rewrite with the same bytes and time, and an added folder apart from nothing', async () => {
+        const lib = await createTempLibrary({ fixtures: 'basic' });
+        try {
+            const changes: [string, () => void][] = [
+                ['chmod', () => fs.chmodSync(lib.file('landscape.jpg'), 0o600)],
+                ['touch', () => fs.utimesSync(lib.file('portrait.png'), new Date('2001-01-01'), new Date('2001-01-01'))],
+                ['same bytes and mtime', () => {
+                    const stat = fs.statSync(lib.file('square.webp'));
+                    fs.writeFileSync(lib.file('square.webp'), fs.readFileSync(lib.file('square.webp')));
+                    fs.utimesSync(lib.file('square.webp'), stat.atime, stat.mtime);
+                }],
+                ['folder', () => fs.mkdirSync(lib.file('optimized'))],
+            ];
+            for (const [name, change] of changes) {
+                const before = lib.snapshot();
+                expect(lib.snapshot(), name).toEqual(before);
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                change();
+                expect(lib.snapshot(), name).not.toEqual(before);
+            }
+        } finally {
+            await lib.cleanup();
+        }
+    });
 });

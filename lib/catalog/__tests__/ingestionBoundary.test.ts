@@ -80,7 +80,9 @@ describe('the watcher process import graph', () => {
 
     it('covers the watcher\'s whole pipeline, not only its entry file', () => {
         const { files } = importGraph('scripts/imageWatcher.ts');
-        expect(files).toEqual(expect.arrayContaining(['utils/watcherHandlers.ts', 'utils/imageOptimizer.ts', 'lib/storage/config.ts']));
+        expect(files).toEqual(expect.arrayContaining(['utils/watcherHandlers.ts', 'lib/storage/config.ts']));
+        // #13's slice E, v1.7.0: the legacy derivative writer is out of the watcher altogether.
+        expect(files.filter((file) => file.startsWith('utils/'))).toEqual(['utils/watcherHandlers.ts']);
     });
 
     it('reaches #14\'s curation sink, and none of the curator\'s commands', () => {
@@ -94,7 +96,7 @@ describe('the watcher process import graph', () => {
         const source = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
         expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\), createCandidateSink\(\{ owed \}\), createSourcesSink\(\{ owed: owedSources \}\)\];/);
         expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),\n\s+worker: workerBuilds\(\),/);
-        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\),/);
+        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\) \}\)/);
         // #17: every build records its set on the revision's replacement item, and a failure that stays gets an item, or the build owes them to the sinks, which share `owed` and `owedSources`.
         expect(source).toMatch(/function workerBuilds\(\) \{\n\s+return \{ build: recordingFailuresAfterBuild\(settlingAfterBuild\(buildDerivativeSet, \{ owed \}\), \{ owed: owedSources \}\) \};/);
         expect(source).toMatch(/^const owed = owedSettles\(\);$/m);

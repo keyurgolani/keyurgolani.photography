@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { curationPaths } from '../../curation/repository';
 import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../identity/registry';
@@ -22,6 +22,7 @@ import { newestRecordFile, VARIANT_BYTES } from './catalogFixtures';
 const cleanups: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
+    vi.unstubAllEnvs();
     for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
@@ -61,7 +62,7 @@ describe('photos status', () => {
     it('reports the data root, the catalog, the registry, and the working layer, with no absolute path but the root', async () => {
         const catalog = await fixture();
         const clock = () => Date.parse('2026-10-24T12:01:00.000Z');
-        await writeWatcherHeartbeat(catalog.root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: '2026-10-24T12:00:00.000Z' });
+        await writeWatcherHeartbeat(catalog.root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: '2026-10-24T12:00:00.000Z', legacyDerivatives: false });
         const result = await runStatusCommand({ dataRoot: catalog.root }, { clock });
         expect(result.exitCode).toBe(0);
         const text = withoutRoot(result.output, catalog.root);
@@ -108,6 +109,8 @@ describe('photos status', () => {
         const photo = registry.photos[catalog.photos[0].id];
         const revision = photo.revisions[photo.source.observedRevision];
         const [profileId] = Object.keys(revision.profiles);
+        // Never read: status only keeps the configured library's path out of its output.
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(os.tmpdir(), 'kg-status-library'));
         const source = path.join(libraryRoot(), 'nested', 'fixture source.jpg');
         revision.profiles[profileId] = { state: 'failed', attempts: 3, error: `source unreadable: EACCES: permission denied, open '${source}' (staging ${path.join(catalog.root, 'staging', 'x')})` };
         await writeRegistry(catalog.root, registry, registry.version);
