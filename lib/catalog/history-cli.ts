@@ -3,8 +3,9 @@ import { dataRootStatus } from '../storage/config';
 import { readHistory, type ChangeSet, type History, type HistoryRow, type RevisionChanges } from './history';
 import { count, issueLines, parseFlags, PRINTED_ISSUES, UsageError } from './owner-cli';
 import type { CatalogLogger } from './publish';
-import { errorText, planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackPlan, type RollbackResult, type RollbackTarget } from './rollback';
+import { acceptanceMessage, editorialRuleIds, errorText, planRollback, rollback, ROLLBACK_EXIT_CODES, unacceptedRules, type RollbackOptions, type RollbackPlan, type RollbackResult, type RollbackTarget } from './rollback';
 import { CatalogIntegrityError } from './repository';
+import { registeredRules } from './ruleset';
 import { REVISION_ID_RE } from './schema';
 import type { CommandResult } from './sequence-commands';
 
@@ -20,14 +21,28 @@ export interface RollbackArgs {
     actor: string;
     /** The active revision the rollback must replace. Required with `yes`. */
     expectActive?: string;
+    /** `--accept <ruleId>`, once per editorial rule the curator accepts, deduplicated. */
+    accept: string[];
     yes: boolean;
 }
 
-/** `photos rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]`. */
+/** `--accept`: registered editorial rule IDs only. Anything else is a usage error, so a typo never reads as an accept. */
+function acceptArgs(values: readonly string[]): string[] {
+    const editorial = editorialRuleIds();
+    const registered = new Set(registeredRules().map((rule) => rule.id));
+    for (const id of values) {
+        if (editorial.has(id)) continue;
+        if (registered.has(id)) throw new UsageError(`${id} is an integrity rule, which no rollback can accept.`);
+        throw new UsageError(`--accept takes an editorial rule ID (${[...editorial].sort().join(', ')}), not ${id}.`);
+    }
+    return [...new Set(values)];
+}
+
+/** `photos rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]`. */
 export function rollbackArgs(args: string[], env: Record<string, string | undefined> = process.env): RollbackArgs {
     const { values } = parseFlags({
         args,
-        options: { to: { type: 'string' }, reason: { type: 'string' }, actor: { type: 'string' }, 'expect-active': { type: 'string' }, yes: { type: 'boolean' } },
+        options: { to: { type: 'string' }, reason: { type: 'string' }, actor: { type: 'string' }, accept: { type: 'string', multiple: true }, 'expect-active': { type: 'string' }, yes: { type: 'boolean' } },
     });
     if (values.to === undefined) throw new UsageError('photos rollback needs --to <number | revisionId>: a revision number or ID from photos history.');
     let to: RollbackTarget;
@@ -40,7 +55,8 @@ export function rollbackArgs(args: string[], env: Record<string, string | undefi
     const expectActive = values['expect-active'];
     if (expectActive !== undefined && !REVISION_ID_RE.test(expectActive)) throw new UsageError(`--expect-active takes the active revision's ID, not ${expectActive}.`);
     if (values.yes && expectActive === undefined) throw new UsageError('--yes needs --expect-active <revisionId>, the active revision the impact list was made against.');
-    return { to, reason: values.reason.trim(), actor: actor.trim(), ...(expectActive === undefined ? {} : { expectActive }), yes: values.yes === true };
+    const accept = acceptArgs(values.accept ?? []);
+    return { to, reason: values.reason.trim(), actor: actor.trim(), ...(expectActive === undefined ? {} : { expectActive }), accept, yes: values.yes === true };
 }
 
 // History.
@@ -170,11 +186,14 @@ function refLines(plan: RollbackPlan): string[] {
     return lines;
 }
 
-/** The plan's lines: the two revisions, the impact list, and the issues on the target. */
-export function planLines(plan: RollbackPlan): string[] {
+/** The plan's lines: the two revisions, the impact list, the editorial rules and whether each is accepted, and the issues on the target. */
+export function planLines(plan: RollbackPlan, accepted: readonly string[] = []): string[] {
     const lines = [`[photos] ${plan.outcome}: ${plan.message}`, ...refLines(plan)];
     if (plan.outcome === 'READY' || plan.outcome === 'VALIDATION_FAILED') lines.push(...changeLines(plan));
-    if (plan.editorial.length) lines.push(`Editorial errors, which a rollback doesn't block on and its activation records: ${plan.editorial.join(', ')}`);
+    if (plan.editorial.length) {
+        const marked = plan.editorial.map((rule) => `${rule} (${accepted.includes(rule) ? 'accepted' : 'not accepted'})`);
+        lines.push(`Editorial errors, which a rollback brings back only with --accept for each: ${marked.join(', ')}`);
+    }
     lines.push(...issueLines(plan.issues, 'Fix the first ones, then plan the rollback again.'));
     return lines;
 }
@@ -216,7 +235,8 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
         for (const line of [...resultLines(settled), ...refLines(shown)]) (exitCode === 0 ? io.out : io.err)(line);
         return exitCode;
     }
-    for (const line of planLines(plan)) (planExit === 0 ? io.out : io.err)(line);
+    const accept = args.accept ?? [];
+    for (const line of planLines(plan, accept)) (planExit === 0 ? io.out : io.err)(line);
     if (plan.outcome !== 'READY' || !plan.target || !plan.active) return planExit;
 
     const expected = args.expectActive ?? plan.active.revisionId;
@@ -224,12 +244,20 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
         io.err(`[photos] ACTIVE_CHANGED: ${plan.active.revisionId} is active, not ${expected}, so the impact you confirmed is out of date. Nothing was rolled back. Check the list above.`);
         return ROLLBACK_EXIT_CODES.ACTIVE_CHANGED;
     }
+    // #117: each editorial rule flagged on the target needs its own --accept, refused here before anything is asked.
+    // rollback() checks again under the lock, against the plan it makes there.
+    const number = plan.target.revisionNumber === null ? plan.target.revisionId : `revision ${plan.target.revisionNumber}`;
+    for (const rule of accept) if (!plan.editorial.includes(rule)) io.out(`${rule} isn't flagged on ${number}, so there's nothing to accept.`);
+    const unaccepted = unacceptedRules(plan, accept);
+    if (unaccepted.length > 0) {
+        io.err(`[photos] ACCEPTANCE_REQUIRED: ${acceptanceMessage(plan.target, unaccepted)}`);
+        return ROLLBACK_EXIT_CODES.ACCEPTANCE_REQUIRED;
+    }
     if (!args.yes) {
         if (io.confirm === null) {
             io.err(`[photos] CONFIRMATION_REQUIRED: A rollback needs confirmation. Run it in a terminal to answer, or run it again with --yes --expect-active ${plan.active.revisionId} to roll back exactly this. --expect-active stops it if another revision goes live first.`);
             return ROLLBACK_EXIT_CODES.CONFIRMATION_REQUIRED;
         }
-        const number = plan.target.revisionNumber === null ? plan.target.revisionId : `revision ${plan.target.revisionNumber}`;
         if (!(await io.confirm(`Roll back to ${number}? Type yes to confirm: `))) {
             io.err('[photos] DECLINED: Nothing was rolled back.');
             return ROLLBACK_EXIT_CODES.DECLINED;
@@ -242,6 +270,7 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
         expectedActiveRevisionId: expected,
         actor: args.actor,
         reason: args.reason,
+        acceptedRules: accept,
         logger: io.logger ?? options.logger,
     });
     const exitCode = ROLLBACK_EXIT_CODES[result.outcome];

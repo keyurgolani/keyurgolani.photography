@@ -171,7 +171,8 @@ describe('photos rollback --accept', () => {
     });
 
     it('refuses an ID that is no rule, and an integrity rule, as usage errors', () => {
-        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format), not contrast.');
+        // Every registered editorial rule, sorted: #16's review.* rules are editorial too, though they never fire on a stored revision.
+        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toMatch(/^--accept takes an editorial rule ID \(accent\.contrast, accent\.format(, [a-z.-]+)*\), not contrast\.$/);
         expect(usage(() => rollbackArgs([...base, '--accept', 'assets.size']))).toBe('assets.size is an integrity rule, which no rollback can accept.');
         expect(usage(() => rollbackArgs([...base, '--reason', 'again']))).toBe('--reason is given more than once. Give it once.');
     });
