@@ -9,7 +9,6 @@ import { createTempLibrary, derivativePaths, type TempLibrary } from '../../test
 import {
     baseNameOf,
     ensureDirectories,
-    filesToProcess,
     getImagePaths,
     getPhotoFiles,
     getUnprocessedFiles,
@@ -29,7 +28,6 @@ import {
     tempFilePrefix,
     writeVariants,
 } from '../imageOptimizer';
-import { createWatcherHandlers, type WatcherHandlers } from '../watcherHandlers';
 
 // Counts encodes so a test can fail the Nth one, or act at it. Everything else passes through to Sharp.
 const encodes = vi.hoisted(() => ({ count: 0, failAt: 0, onEncode: null as ((count: number) => void) | null }));
@@ -56,23 +54,14 @@ vi.mock('sharp', async (importOriginal) => {
 
 const LANDSCAPE = derivativePaths('landscape');
 const SEVEN = [1, 2, 3, 4, 5, 6, 7];
-const quiet = { log: () => undefined, error: () => undefined };
 
 let fixtures: Map<string, Buffer>;
 let lib: TempLibrary;
 const libraries: TempLibrary[] = [];
-const handlerSets: WatcherHandlers[] = [];
 
 async function newLibrary(options?: Parameters<typeof createTempLibrary>[0]): Promise<void> {
     lib = await createTempLibrary(options);
     libraries.push(lib);
-}
-
-/** A handler set that afterEach waits on, so no job outlives its test. */
-function newHandlers(): WatcherHandlers {
-    const handlers = createWatcherHandlers({ logger: quiet });
-    handlerSets.push(handlers);
-    return handlers;
 }
 
 beforeAll(async () => {
@@ -84,7 +73,6 @@ afterEach(async () => {
     encodes.failAt = 0;
     encodes.onEncode = null;
     vi.restoreAllMocks();
-    await Promise.all(handlerSets.splice(0).map((handlers) => handlers.idle()));
     for (const library of libraries.splice(0).reverse()) await library.cleanup();
 });
 
@@ -150,7 +138,7 @@ describe('libraryPaths', () => {
         const previous = process.env.PHOTOGRAPHY_LIBRARY_DIR;
         try {
             delete process.env.PHOTOGRAPHY_LIBRARY_DIR;
-            expect(libraryPaths().root).toBe(path.join(process.cwd(), 'public/assets/photos'));
+            expect(() => libraryPaths()).toThrow('PHOTOGRAPHY_LIBRARY_DIR is not set.');
         } finally {
             process.env.PHOTOGRAPHY_LIBRARY_DIR = previous;
         }
@@ -530,87 +518,6 @@ describe('isSourceNewer', () => {
 
         expect(getUnprocessedFiles()).toContain('landscape.jpg');
     }, 30_000);
-});
-
-describe('startup batch overwrite rule', { timeout: 60_000 }, () => {
-    beforeEach(async () => {
-        await newLibrary({ fixtures: 'basic' });
-        const first = await newHandlers().queueStartupBatch();
-        expect(first.errors).toEqual([]);
-        expect(first.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
-    });
-
-    it('refreshImage() and reprocessImage() write nothing for a source whose set another source owns', async () => {
-        const before = lib.hashes(LANDSCAPE);
-        fs.copyFileSync(lib.file('portrait.png'), lib.file('landscape.png'));
-        expect(await refreshImage('landscape.png', { force: true })).toEqual([]);
-        await reprocessImage('landscape.png');
-        expect(lib.hashes(LANDSCAPE)).toEqual(before);
-        expect(await filesToProcess({ force: true })).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
-    });
-
-    it('regenerates a source newer than its outputs', async () => {
-        const others = lib.hashes([...derivativePaths('portrait'), ...derivativePaths('square')]);
-        fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
-        // Newer than the outputs but not in the future, which a later test covers
-        setMtime('thumbnails/landscape.webp', Date.now() - 60 * 60 * 1000);
-        setMtime('landscape.jpg', Date.now() - 60 * 1000);
-
-        const result = await newHandlers().queueStartupBatch();
-        expect(result).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
-        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
-        expect(lib.hashes(Object.keys(others))).toEqual(others);
-    });
-
-    it('regenerates all seven when one is missing, not just the gap', async () => {
-        fs.rmSync(lib.file('medium/landscape.webp'));
-        // A replacement with an older mtime, so only the missing output starts the job
-        fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
-        setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
-
-        const result = await newHandlers().queueStartupBatch();
-        expect(result).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
-        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
-    });
-
-    it('leaves a replacement with an older mtime for touch or --force', async () => {
-        const before = lib.hashes(LANDSCAPE);
-        fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
-        setMtime('landscape.jpg', Date.parse('2001-01-01T00:00:00Z'));
-
-        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: [], skipped: [], errors: [] });
-        expect(lib.hashes(LANDSCAPE)).toEqual(before);
-
-        const forced = await newHandlers().queueStartupBatch({ force: true });
-        expect(forced.errors).toEqual([]);
-        expect(forced.processed.sort()).toEqual(['landscape.jpg', 'portrait.png', 'square.webp']);
-        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
-    });
-
-    it('regenerates a future-dated replacement made while stopped, and dates the thumbnail when it was written', async () => {
-        // From a camera whose clock runs a day ahead
-        fs.writeFileSync(lib.file('landscape.jpg'), fixture('landscape-edited.jpg'));
-        setMtime('landscape.jpg', Date.now() + 24 * 60 * 60 * 1000);
-
-        const startedAt = Date.now();
-        expect(await newHandlers().queueStartupBatch()).toEqual({ processed: ['landscape.jpg'], skipped: [], errors: [] });
-        expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
-
-        // Nothing sets file times, so until its date passes this source counts as newer on each start
-        const written = fs.statSync(lib.file('thumbnails/landscape.webp')).mtimeMs;
-        expect(written).toBeGreaterThanOrEqual(startedAt - 1000);
-        expect(written).toBeLessThanOrEqual(Date.now() + 1000);
-        expect(await filesToProcess()).toContain('landscape.jpg');
-    });
-
-    it('throws on a missing root when forced, the same as unforced', async () => {
-        const missing = await createTempLibrary({ missingRoot: true });
-        libraries.push(missing);
-
-        await expect(filesToProcess()).rejects.toThrow(`Library root not found: ${missing.root}`);
-        await expect(filesToProcess({ force: true })).rejects.toThrow(`Library root not found: ${missing.root}`);
-        await expect(newHandlers().queueStartupBatch({ force: true })).rejects.toThrow('Library root not found');
-    });
 });
 
 describe('orientation', { timeout: 60_000 }, () => {

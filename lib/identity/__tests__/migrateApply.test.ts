@@ -107,7 +107,9 @@ describe('migrateApply', () => {
     }, 60_000);
 
     it.each(['y.jpg', '50%off.jpg', 'a#b.png', 'IMG 1 (edited).jpg', 'café.webp', 'what?.jpg'])('names the URLs the legacy site served for %s, encoded as it wrote them', (name) => {
-        const legacy = getImagePaths(name);
+        // Only the names matter: the index is empty, and the library is never read.
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(path.sep, 'nowhere', 'library'));
+        const legacy = getImagePaths(name, undefined, new Map());
         expect(legacyUrls(name)).toEqual([legacy.original, legacy.thumbnail, legacy.medium, legacy.optimized, legacy.thumbnailAvif, legacy.mediumAvif, legacy.optimizedAvif, legacy.lqip]);
     });
 

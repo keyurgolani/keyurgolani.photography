@@ -3,15 +3,17 @@
 #
 # 1. Nothing published. The image's node generates a fixture library from
 #    this checkout's test/fixtures/makeLibrary.ts, `photos migrate` gives each
-#    photo its ID in an empty data root, and the watcher's --once run builds
-#    every derivative and set. web then answers the catalog's unavailable
-#    state, the same after a restart: /api/ready and #6's Home records
-#    endpoint answer 503 with not-published. Since #13's slice E there is no
-#    legacy mode: /api/photos is a 404, /gallery a 308 to /work, and each
-#    legacy WebP the watcher wrote 404s and is refused at /_next/image.
+#    photo its ID in an empty data root, and the watcher's --once run, with
+#    the library read-only at /data/library as docker-compose.prod.yml mounts
+#    it, builds every set and writes nothing in the library. web then answers
+#    the catalog's unavailable state, the same after a restart: /api/ready
+#    and #6's Home records endpoint answer 503 with not-published. Since
+#    #13's slice E there is no legacy mode: /api/photos is a 404, /gallery a
+#    308 to /work, and each legacy WebP a v1.6 watcher wrote, planted under
+#    web's public/ folder, 404s and is refused at /_next/image.
 # 2. A published catalog. ci/publish-fixture.ts publishes a small test
-#    catalog into a second data root, and web serves it with the first
-#    root's library still in place. It names its revision at /api/ready and
+#    catalog into a second data root, and web serves it with the planted
+#    legacy WebPs still in place. It names its revision at /api/ready and
 #    at the Home records endpoint, still 404s /api/photos and each legacy
 #    WebP, serves a set the revision holds from /media with 200,
 #    `immutable`, and an ETag of its bytes, answers 304 to that ETag, and
@@ -38,6 +40,8 @@ cd "$(dirname "$0")/.."
 IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:$1
 TMP=$(mktemp -d)
 LIB=$TMP/library
+# A v1.6 host's legacy WebPs, which web gets under public/, where Next would serve them.
+LEGACY=$TMP/legacy
 DATA=$TMP/data
 PUBLISHED=$TMP/published
 WEB=photography-smoke-catalog-$$
@@ -45,7 +49,7 @@ WEB_STARTED=false
 BASE_URL=
 # The body of /_next/image's 400 for a url images.localPatterns doesn't allow.
 NOT_ALLOWED='"url" parameter is not allowed'
-# The legacy WebPs the watcher writes for makeLibrary.ts's fixtures, which never serve.
+# The legacy WebPs a v1.6 watcher wrote for makeLibrary.ts's fixtures, which never serve.
 LEGACY_WEBPS=(/assets/photos/optimized/landscape.webp /assets/photos/optimized/portrait.webp /assets/photos/optimized/square.webp)
 # A revision ID no catalog holds, for the #6 endpoint's `revision`.
 NO_REVISION=rev_$(printf '0%.0s' {1..64})
@@ -67,17 +71,18 @@ cleanup() {
   fi
   # The containers wrote the library and the first data root as the image's
   # user. Remove everything with the image under test, so cleanup never pulls.
-  docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library /t/data /t/published
+  docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library /t/legacy /t/data /t/published
   rm -rf "$TMP"
   exit "$status"
 }
 trap cleanup EXIT
 
 # Runs a command in the image as its user, with the library and the first
-# data root where docker-compose.prod.yml mounts them for image-watcher.
+# data root where docker-compose.prod.yml mounts them for image-watcher: the
+# library read-only at /data/library.
 in_image() {
-  docker run --rm --pull never -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
-    -v "$LIB:/app/public/assets/photos" -v "$DATA:/data/portfolio" "$IMAGE" "$@"
+  docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/data/library -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+    -v "$LIB:/data/library:ro" -v "$DATA:/data/portfolio" "$IMAGE" "$@"
 }
 
 # Points BASE_URL at web's published port and waits for /api/health.
@@ -93,11 +98,13 @@ wait_for_web() {
   done
 }
 
-# Starts web on library <library> and data root <root>, which it mounts
-# read-only, as docker-compose.prod.yml does.
+# Starts web on data root <root>, which it mounts read-only, as
+# docker-compose.prod.yml does, with <legacy> under its public/assets/photos,
+# which production's web doesn't mount since v1.7.0: here a legacy file Next
+# would serve is on disk, so its 404 proves the refusal.
 start_web() {
   docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
-    -v "$1:/app/public/assets/photos" -v "$2:/data/portfolio:ro" "$IMAGE" >/dev/null
+    -v "$1:/app/public/assets/photos:ro" -v "$2:/data/portfolio:ro" "$IMAGE" >/dev/null
   WEB_STARTED=true
   wait_for_web
 }
@@ -144,7 +151,7 @@ check_closed() {
   [ "$(header location)" = /work ] || fail "GET /gallery sent Location: $(header location), expected /work."
   [ "$(header cache-control)" = no-store ] || fail "GET /gallery sent Cache-Control: $(header cache-control), expected no-store."
   for src in "${LEGACY_WEBPS[@]}"; do
-    [ -s "$LIB${src#/assets/photos}" ] || fail "The watcher wrote no $src, so its 404 would prove nothing."
+    [ -s "$LEGACY${src#/assets/photos}" ] || fail "There is no $src on disk, so its 404 would prove nothing."
     code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$src") || fail "GET $src failed."
     [ "$code" = 404 ] || fail "GET $src returned $code, expected 404."
     [ "$(header cache-control)" = no-store ] || fail "The 404 for $src sent Cache-Control: $(header cache-control)."
@@ -168,7 +175,7 @@ check_unpublished() {
 
 # 1. The fixture library, generated by the image under test with this
 #    checkout's fixtures mounted read-only, and an empty data root, both
-#    writable by the image's user.
+#    writable by the image's user. The watcher mounts the library read-only.
 mkdir "$LIB" "$DATA"
 chmod 777 "$LIB" "$DATA"
 docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
@@ -180,7 +187,8 @@ plan=$(sed -n 's/^Plan: //p' <<<"$dry_run")
 [ -n "$plan" ] || fail "The dry run printed no plan: $dry_run"
 in_image node dist/scripts/photos.mjs migrate --apply --plan "$plan" >/dev/null || fail "Applying $plan failed."
 
-# 3. One watcher pass writes every derivative and builds every set.
+# 3. One watcher pass builds every set, and writes nothing in the library.
+find "$LIB" -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort >"$TMP/library-before.txt"
 in_image node dist/scripts/imageWatcher.mjs --once >"$TMP/once.log" 2>&1 || {
   cat "$TMP/once.log"
   fail "The watcher's --once run failed."
@@ -191,14 +199,24 @@ in_image node dist/scripts/photos.mjs identity status --json >"$TMP/status.json"
 }
 jq -e '.dataRoot.state == "ready" and .photos.total == 3 and .pendingJobs == 0 and .failedProfiles == []' "$TMP/status.json" >/dev/null ||
   fail "After the --once run, photos identity status reported $(cat "$TMP/status.json")."
-echo "The migration gave the 3 fixtures their IDs, and --once built their derivatives and sets."
+find "$LIB" -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort >"$TMP/library-after.txt"
+diff -u "$TMP/library-before.txt" "$TMP/library-after.txt" || fail "The watcher's --once run changed the library, which it must never write."
+in_image cat /data/portfolio/status/watcher.json | jq -e '.legacyDerivatives == false' >/dev/null ||
+  fail "The watcher's heartbeat does not say legacyDerivatives: false."
+# The legacy WebPs a v1.6 host's library holds, from any bytes, for web's public/ folder.
+mkdir -p "$LEGACY/optimized"
+for src in "${LEGACY_WEBPS[@]}"; do
+  cp "$LIB/square.webp" "$LEGACY${src#/assets/photos}"
+done
+chmod -R a+rX "$LEGACY"
+echo "The migration gave the 3 fixtures their IDs, and --once built their sets and wrote nothing in the library."
 
 # 4. With nothing published, web answers the unavailable state and serves no
 #    legacy WebP, and a restart changes nothing.
 photo=$(in_image node dist/scripts/photos.mjs list --json | jq -r '.[0].photoId') ||
   fail "photos list --json failed."
 [[ $photo == ph_* ]] || fail "photos list --json named no photo ID."
-start_web "$LIB" "$DATA"
+start_web "$LEGACY" "$DATA"
 check_unpublished "$photo" "$TMP/unpublished-before.json"
 docker restart "$WEB" >/dev/null
 wait_for_web
@@ -217,7 +235,7 @@ inactive=$(jq -r .inactive "$TMP/fixture.json")
 featured_series=$(jq -r .featuredSeries "$TMP/fixture.json")
 featured=$(jq -r .featured "$TMP/fixture.json")
 [[ $revision == rev_* && $active == /media/* && $inactive == /media/* && $featured_series == ser_* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
-start_web "$LIB" "$PUBLISHED"
+start_web "$LEGACY" "$PUBLISHED"
 # shellcheck disable=SC2016 # $revision and $featured are jq's
 expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 1' --arg revision "$revision"
 cp "$TMP/body.json" "$TMP/ready-before.json"

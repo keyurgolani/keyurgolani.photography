@@ -15,7 +15,7 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
-      - ./public/assets/photos:/app/public/assets/photos # Bind mount for photos
+      # No photo library: web reads nothing in it (#13's slice E).
       # The private data root, which only the watcher writes. Read-only here by
       # convention only: .:/app shows the same folder read-write at /app/portfolio-data.
       - ./portfolio-data:/data/portfolio:ro
@@ -29,7 +29,7 @@ services:
       retries: 3
       start_period: 10s
 
-  # Image optimization watcher - processes new photos automatically
+  # Image watcher - gives each new photo its ID and builds its /media set
   image-watcher:
     build:
       context: .
@@ -38,11 +38,14 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
-      - ./public/assets/photos:/app/public/assets/photos # Same volume mount as web
+      # The photo library, read-only, at the path production mounts it. Read-only
+      # by convention only here too: .:/app shows it read-write under /app/public.
+      - ./public/assets/photos:/data/library:ro
       - ./portfolio-data:/data/portfolio
     environment:
       - NODE_ENV=development
       - PHOTOGRAPHY_DATA_DIR=/data/portfolio
+      - PHOTOGRAPHY_LIBRARY_DIR=/data/library
     command: npx tsx scripts/imageWatcher.ts --watch
     # The watcher doesn't need web to serve anything, so it starts alongside it.
     depends_on:

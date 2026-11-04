@@ -29,6 +29,7 @@ function beat(root: string, at = AT, passStartedAt: number | null = null): Promi
         lastPassResult: null,
         passStartedAt: passStartedAt === null ? null : new Date(passStartedAt).toISOString(),
         heartbeatAt: new Date(at).toISOString(),
+        legacyDerivatives: false,
     });
 }
 
@@ -87,6 +88,17 @@ describe('checkWatcherHealth', () => {
             message: 'The identity pass under way has run for 31 min, longer than 30 min.',
         });
         expect((await checkWatcherHealth({ clock: () => AT, passLimitMs: 60 * 60_000 })).healthy).toBe(true);
+    });
+
+    it('is unhealthy while the last pass refused an empty library, with a fresh heartbeat, and healthy again after a pass commits', async () => {
+        const data = dataRoot();
+        await writeWatcherHeartbeat(data.root, { pid: 7, hostname: 'watcher-host', lastPassAt: new Date(AT).toISOString(), lastPassResult: 'library-empty', passStartedAt: null, heartbeatAt: new Date(AT).toISOString(), legacyDerivatives: false });
+        expect(await checkWatcherHealth({ clock: () => AT })).toEqual({
+            healthy: false,
+            message: 'The last pass found no photo in the library while the registry has present ones, so it marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.',
+        });
+        await writeWatcherHeartbeat(data.root, { pid: 7, hostname: 'watcher-host', lastPassAt: new Date(AT).toISOString(), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: new Date(AT).toISOString(), legacyDerivatives: false });
+        expect((await checkWatcherHealth({ clock: () => AT })).healthy).toBe(true);
     });
 
     it('reads a heartbeat from before passStartedAt existed as no pass running, and refuses a malformed one', async () => {

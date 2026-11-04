@@ -43,15 +43,65 @@ export interface DataRootStatus {
     detail?: string;
 }
 
+/** PHOTOGRAPHY_LIBRARY_DIR doesn't name a library this process may read: unset, relative, or served. */
+export class LibraryRootConfigError extends Error {
+    constructor(message: string, readonly code: 'LIBRARY_ROOT_UNSET' | 'LIBRARY_ROOT_INVALID') {
+        super(message);
+        this.name = new.target.name;
+    }
+}
+
+/** PHOTOGRAPHY_LIBRARY_DIR is unset, so nothing can say where the photo library is. */
+export class LibraryRootUnsetError extends LibraryRootConfigError {
+    constructor() {
+        super('PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library in both compose files.', 'LIBRARY_ROOT_UNSET');
+    }
+}
+
+/** PHOTOGRAPHY_LIBRARY_DIR is relative, or sits in the app's public folder, where Next would serve the originals. */
+export class LibraryRootInvalidError extends LibraryRootConfigError {
+    constructor(message: string) {
+        super(message, 'LIBRARY_ROOT_INVALID');
+    }
+}
+
 /**
- * The photo library: PHOTOGRAPHY_LIBRARY_DIR, or public/assets/photos under the working directory.
+ * The photo library, PHOTOGRAPHY_LIBRARY_DIR resolved, or null when it's
+ * unset. There is no default in any environment: until v1.7.0 it was
+ * public/assets/photos under the working directory, and a container that
+ * quietly read that old path could read an empty folder as an empty library.
+ * For callers that only keep the library's path out of output or check what
+ * sits inside it, such as web, which reads nothing there and mounts no library.
  *
  * The roots are found at run time, so the build must not trace them: the
  * ignore comments here and in dataRootStatus() keep Turbopack from copying
  * the whole project into .next/standalone.
  */
+export function configuredLibraryRoot(): string | null {
+    const configured = process.env.PHOTOGRAPHY_LIBRARY_DIR;
+    return configured ? path.resolve(/*turbopackIgnore: true*/ configured) : null;
+}
+
+/**
+ * The photo library, for the callers that read it: the watcher, the identity
+ * pass and builds, and the CLI. Throws LibraryRootUnsetError when
+ * PHOTOGRAPHY_LIBRARY_DIR is unset, so it never falls back to another folder,
+ * and LibraryRootInvalidError when it's relative, which would depend on the
+ * working directory, or at or inside the app's public folder (/app/public in
+ * the image), symlinks resolved, where Next would serve the originals.
+ */
 export function libraryRoot(): string {
-    return path.resolve(/*turbopackIgnore: true*/ process.env.PHOTOGRAPHY_LIBRARY_DIR || path.join(/*turbopackIgnore: true*/ process.cwd(), 'public/assets/photos'));
+    const configured = process.env.PHOTOGRAPHY_LIBRARY_DIR;
+    if (!configured) throw new LibraryRootUnsetError();
+    if (!path.isAbsolute(configured)) {
+        throw new LibraryRootInvalidError(`PHOTOGRAPHY_LIBRARY_DIR must be an absolute path, such as /data/library, not ${configured}.`);
+    }
+    const root = path.resolve(/*turbopackIgnore: true*/ configured);
+    const served = path.join(/*turbopackIgnore: true*/ process.cwd(), 'public');
+    if (isInside(realpathLoose(root), realpathLoose(served))) {
+        throw new LibraryRootInvalidError(`PHOTOGRAPHY_LIBRARY_DIR is inside the app's public folder, where Next serves files: ${root}. Mount the library outside it, at /data/library.`);
+    }
+    return root;
 }
 
 /**
@@ -83,8 +133,9 @@ export function servedFolderContaining(target: string): string | null {
  */
 function servedFolderOf(target: string): { folder: string; name: string } | null {
     const realTarget = realpathLoose(target);
+    const library = configuredLibraryRoot();
     const served = [
-        { folder: libraryRoot(), name: 'the photo library' },
+        ...(library === null ? [] : [{ folder: library, name: 'the photo library' }]),
         { folder: path.join(/*turbopackIgnore: true*/ process.cwd(), 'public'), name: 'the app\'s public folder' },
     ];
     return served.find(({ folder }) => isInside(realTarget, realpathLoose(folder))) ?? null;

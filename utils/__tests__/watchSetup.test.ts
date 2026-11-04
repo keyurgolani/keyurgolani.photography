@@ -6,16 +6,16 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { watchSetup, type WatchSetup } from '../watcherHandlers';
 
-/** The options scripts/imageWatcher.ts passed chokidar before the identity step, apart from `ignored`. */
-const OPTIONS_BEFORE_IDENTITY = {
+/** The options scripts/imageWatcher.ts passes chokidar, apart from `ignored`. */
+const OPTIONS = {
     persistent: true,
     ignoreInitial: true,
     usePolling: true,
     interval: 2000,
     binaryInterval: 3000,
     alwaysStat: true,
-    depth: 0,
     awaitWriteFinish: { stabilityThreshold: 3000, pollInterval: 500 },
+    followSymlinks: true,
 };
 
 let temp: string;
@@ -87,59 +87,18 @@ function touch(file: string, data: string): void {
     fs.utimesSync(file, later, later);
 }
 
-describe('watchSetup without a data root', () => {
-    it('watches the root as configured, with the options from before the identity step', () => {
-        const setup = watchSetup(link, { identity: false });
-        const { ignored, ...options } = setup.options;
-
-        expect(setup.path).toBe(link);
-        // followSymlinks is left at chokidar's default, true, as it was
-        expect(options).toStrictEqual(OPTIONS_BEFORE_IDENTITY);
-        expect(typeof ignored).toBe('function');
-    });
-
-    it('skips only the generated folders, as the old filter did', () => {
-        const ignored = watchSetup(link, { identity: false }).options.ignored as (watched: string, stats?: fs.Stats) => boolean;
-        const symlinkStats = fs.lstatSync(path.join(real, 'elsewhere'));
-
-        expect(ignored(path.join(link, 'thumbnails'))).toBe(true);
-        expect(ignored(path.join(link, 'cache'))).toBe(true);
-        expect(ignored(path.join(link, '.DS_Store'))).toBe(false);
-        expect(ignored(path.join(link, 'elsewhere'), symlinkStats)).toBe(false);
-        expect(ignored(path.join(link, 'linked.jpg'), fs.lstatSync(path.join(real, 'linked.jpg')))).toBe(false);
-    });
-
-    it('keeps reporting a symlinked root, through a top-level link, and nothing nested', async () => {
-        const watching = await watch(watchSetup(link, { identity: false }));
-        await quietFor(300);
-        expect(watching.events).toEqual([]);
-
-        fs.writeFileSync(path.join(real, 'b.jpg'), 'b');
-        await watching.until(has('add', path.join(link, 'b.jpg')));
-        touch(path.join(real, 'trips', 'target.jpg'), 'edited');
-        await watching.until(has('change', path.join(link, 'linked.jpg')));
-        fs.writeFileSync(path.join(real, 'trips', 'nested.jpg'), 'n');
-        await quietFor(500);
-
-        // depth 0: no nested file is polled or reported
-        expect(watching.events.filter(([, at]) => at.includes(`${path.sep}trips${path.sep}`))).toEqual([]);
-    }, 20_000);
-});
-
-describe('watchSetup with a data root', () => {
+describe('watchSetup', () => {
     it("watches the root's real path at every depth, through symlinks", () => {
-        const setup = watchSetup(link, { identity: true });
+        const setup = watchSetup(link);
         const { ignored, ...options } = setup.options;
 
         expect(setup.path).toBe(real);
-        const before: Partial<typeof OPTIONS_BEFORE_IDENTITY> = { ...OPTIONS_BEFORE_IDENTITY };
-        delete before.depth;
-        expect(options).toStrictEqual({ ...before, followSymlinks: true });
+        expect(options).toStrictEqual(OPTIONS);
         expect(typeof ignored).toBe('function');
     });
 
     it('reports new and nested photos under a symlinked root, and a change through a top-level link', async () => {
-        const watching = await watch(watchSetup(link, { identity: true }));
+        const watching = await watch(watchSetup(link));
         // No add for the links that were already there
         await quietFor(300);
         expect(watching.events).toEqual([]);
@@ -153,7 +112,7 @@ describe('watchSetup with a data root', () => {
     }, 20_000);
 
     it('reports nothing reached through a linked folder or a nested link', async () => {
-        const watching = await watch(watchSetup(link, { identity: true }));
+        const watching = await watch(watchSetup(link));
         touch(path.join(outside, 'far.jpg'), 'edited');
         fs.writeFileSync(path.join(outside, 'new.jpg'), 'new');
         // A change in the library afterwards, so the polls that would have caught those have run

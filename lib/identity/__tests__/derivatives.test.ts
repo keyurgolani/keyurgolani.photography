@@ -499,7 +499,8 @@ describe('buildDerivativeSet', () => {
     });
 
     it('waits, changing nothing, while the source is missing', async () => {
-        const s = await setup();
+        // A second photo stays, so the pass after the removal isn't refused as an empty library.
+        const s = await setup({ 'landscape.jpg': landscape, 'edited.jpg': edited });
         const job = await s.job('landscape.jpg');
         fs.rmSync(s.lib.file('landscape.jpg'));
         await s.pass();

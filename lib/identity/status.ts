@@ -1,4 +1,4 @@
-import { dataRootStatus, libraryRoot, type DataRootStatus } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus, type DataRootStatus } from '../storage/config';
 import { withoutAbsolutePaths } from '../storage/fsx';
 import { watcherHeartbeatAge } from './heartbeat';
 import { readRegistry } from './registry';
@@ -44,7 +44,7 @@ export async function identityStatus({ clock = Date.now, root }: { clock?: () =>
     if (dataRoot.root === null || (dataRoot.state === 'unavailable' && dataRoot.cause !== 'inside-served-folder')) return status;
 
     // A reason recorded before builds left paths out may still name where the library or the data root lives.
-    const roots = [libraryRoot(), dataRoot.root];
+    const roots = [configuredLibraryRoot(), dataRoot.root];
     try {
         const registry = await readRegistry(dataRoot.root);
         status.registry = { version: registry.version, updatedAt: registry.updatedAt };

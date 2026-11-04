@@ -230,7 +230,8 @@ describe('a fact the sink can\'t shape', () => {
 
     it('leaves no pending fact behind after a watcher pass, so check() asks for no 30 s re-pass', async () => {
         const f = await fixture();
-        const lib = await createTempLibrary();
+        // Photos in the library, so the pass isn't refused as an empty library while the registry has present ones.
+        const lib = await createTempLibrary({ fixtures: 'basic' });
         cleanups.push(() => lib.cleanup());
         const restore = setDataDir(f.root);
         cleanups.push(async () => restore());

@@ -1,5 +1,5 @@
 import os from 'node:os';
-import { dataRootStatus, type DataRootState, type DataRootStatus } from '../storage/config';
+import { dataRootStatus, libraryRoot, type DataRootState, type DataRootStatus } from '../storage/config';
 import { readPendingDecisions } from './decisions';
 import { writeWatcherHeartbeat, type PassResult } from './heartbeat';
 import { jsonLogSink, runReconcilePass, type FactSink, type PassOptions } from './pass';
@@ -8,8 +8,8 @@ import { readRegistry } from './registry';
 import { createWorker, onceExitCode, pendingJobs, summarizeResults, WorkerStartError, type DerivativeWorker, type WorkerOptions } from './worker';
 
 /**
- * The watcher's identity step. A pass waits for the legacy step's queued
- * jobs, then, when the data root is ready, reconciles the library, delivers
+ * The watcher's identity step, the only one it has. When the data root is
+ * ready, a pass reconciles the library, delivers
  * the facts, and hands the derivative worker what the pass left pending.
  * While the data root isn't ready it does no identity work and logs why,
  * once per state. Each pass, and the 30 s check, update
@@ -20,12 +20,13 @@ import { createWorker, onceExitCode, pendingJobs, summarizeResults, WorkerStartE
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
 
 /** Why a pass was asked for. */
-export type PassReason = 'startup' | 'event' | 'timer' | 'decisions' | 'facts' | 'pending-sets' | 'settling' | 'locked' | 'worker';
+export type PassReason = 'startup' | 'event' | 'timer' | 'decisions' | 'facts' | 'pending-sets' | 'settling' | 'locked' | 'worker' | 'library-empty';
 
 export type PassReport =
     | { status: 'committed'; facts: number; queued: number; retryAfterMs: number | null }
     | { status: 'off'; state: Exclude<DataRootState, 'ready'> }
     | { status: 'locked' }
+    | { status: 'refused'; reason: 'library-empty'; present: number }
     | { status: 'failed'; error: string }
     | { status: 'stopped' };
 
@@ -36,8 +37,11 @@ export interface IdentityStepOptions {
      * check() found work waiting.
      */
     requestPass?: (reason: PassReason, delayMs?: number) => void;
-    /** Resolves once the legacy step has no job queued or running. */
-    legacyIdle?: () => Promise<void>;
+    /**
+     * Awaited before each pass reads anything, outside the time the
+     * healthcheck counts. Tests hold a pass here. The watcher passes none.
+     */
+    beforePass?: () => Promise<void>;
     logger?: Logger;
     /** The heartbeat's clock. */
     clock?: () => number;
@@ -77,13 +81,16 @@ export interface IdentityStep {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/** How soon the watcher looks again after a pass found the library empty. */
+export const LIBRARY_EMPTY_RETRY_MS = 60_000;
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 export function createIdentityStep(options: IdentityStepOptions = {}): IdentityStep {
     const {
         requestPass = () => undefined,
-        legacyIdle = async () => undefined,
+        beforePass = async () => undefined,
         logger = console,
         clock = Date.now,
         pid = process.pid,
@@ -115,7 +122,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
         if (status.state === 'ready') {
             logger.log(`[identity] Identity step on: data root ${status.root}.`);
         } else {
-            logger.log(`[identity] Identity step off: the data root is ${status.state}${status.detail ? ` (${status.detail})` : ''}. Only legacy derivatives are written.`);
+            logger.log(`[identity] Identity step off: the data root is ${status.state}${status.detail ? ` (${status.detail})` : ''}. Nothing is processed until it is ready.`);
         }
     }
 
@@ -123,7 +130,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     async function writeHeartbeat(status: DataRootStatus): Promise<void> {
         if (status.root === null || (status.state !== 'ready' && status.state !== 'uninitialized')) return;
         try {
-            await writeWatcherHeartbeat(status.root, { pid, hostname, lastPassAt, lastPassResult, passStartedAt, heartbeatAt: iso(clock()) });
+            await writeWatcherHeartbeat(status.root, { pid, hostname, lastPassAt, lastPassResult, passStartedAt, heartbeatAt: iso(clock()), legacyDerivatives: false });
             heartbeatWarned = false;
         } catch (error) {
             if (!heartbeatWarned) logger.warn(`[identity] Could not write status/watcher.json: ${errorText(error)}`);
@@ -176,6 +183,13 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
                 requestPass('locked');
                 return { status: 'locked' };
             }
+            if (outcome.reason === 'library-empty') {
+                // An unmounted or emptied library: committing would mark every photo missing. Look again soon, marking nothing.
+                logger.error(`[identity] The library at ${libraryRoot()} has no photos, but the registry has ${outcome.present} present. It looks unmounted or emptied, so this pass marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.`);
+                lastPassResult = 'library-empty';
+                requestPass('library-empty', LIBRARY_EMPTY_RETRY_MS);
+                return { status: 'refused', reason: 'library-empty', present: outcome.present };
+            }
             // The data root changed since this pass looked, or its registry comes from a newer build. Never ready here.
             const state = outcome.state as Exclude<DataRootState, 'ready'>;
             noteState({ state, root, detail: outcome.detail });
@@ -195,7 +209,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     }
 
     async function runPass(reason: PassReason): Promise<PassReport> {
-        await legacyIdle();
+        await beforePass();
         if (stopped) return { status: 'stopped' };
         // The 30 s check's heartbeats carry this while the pass runs, so the healthcheck sees a pass that never ends.
         passStartedAt = iso(clock());
@@ -409,8 +423,8 @@ export const ONCE_MAX_PASSES = 5;
  * still settling or a build asks for one, up to `maxPasses`. Returns 1 when a
  * build failed for any reason but `source-superseded`, when the registry
  * stayed busy, when the worker didn't start for any reason, or when files were still
- * changing after the last pass. A data root that isn't ready gives 0, after
- * one log line, so the legacy step alone decides the exit code.
+ * changing after the last pass, and when the data root isn't ready, after
+ * one log line, since then nothing was processed.
  */
 export async function runIdentityOnce(options: IdentityOnceOptions = {}): Promise<0 | 1> {
     const { logger = console, sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)), maxPasses = ONCE_MAX_PASSES } = options;
@@ -443,7 +457,7 @@ export async function runIdentityOnce(options: IdentityOnceOptions = {}): Promis
     try {
         for (let passes = 1; ; passes++) {
             const report = await step.pass(passes === 1 ? 'startup' : 'settling');
-            if (report.status === 'off') return 0;
+            if (report.status === 'off') return 1;
             if (report.status === 'locked') {
                 logger.log('[identity] The registry stayed busy, so the identity step did not run. Run it again.');
                 return 1;

@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Checks that the built image ships the bundled scripts and no dev
-# dependencies, runs its watcher with --once against a generated fixture
-# library and checks that it never deletes a derivative, then starts the web
-# server on that library twice: on an empty data root, as a host has before
-# the migration, and with no data root at all. Neither has published
-# anything, so each answers the catalog's unavailable state: /api/ready and
-# a #6 catalog endpoint 503 with not-published. The derivatives the watcher
-# just wrote never serve (#13's slice E), directly or through /_next/image,
+# dependencies, then runs its watcher with --once against a generated
+# fixture library, mounted read-only at /data/library as
+# docker-compose.prod.yml mounts it, on a migrated data root. It builds a
+# /media set, with its manifest.json, for every photo, writes nothing in the
+# library (since v1.7.0, #13's slice E, no legacy derivative either), deletes
+# nothing once a photo is removed, and says legacyDerivatives: false in its
+# heartbeat. It exits 1 on a missing library or an unset
+# PHOTOGRAPHY_LIBRARY_DIR, and 2 on --force. Then it starts the web server
+# twice, on an empty data root, as a host has before the migration, and with
+# no data root at all, each with a v1.6 host's library, legacy derivatives
+# and all, under its public/ folder, where Next would serve it. Neither has
+# published anything, so each answers the catalog's unavailable state:
+# /api/ready and a #6 catalog endpoint 503 with not-published. The legacy
+# derivatives never serve (#13's slice E), directly or through /_next/image,
 # and neither do the original sources, the removed endpoints, /api/photos
 # among them, and /gallery is a 308 to /work. ci/smoke-catalog.sh checks a
 # published catalog.
@@ -28,6 +35,10 @@ read -r -a WATCHER <<<"$WATCHER_CMD"
 
 TMP=$(mktemp -d)
 LIB=$TMP/library
+# The watcher's data root, which the migration initializes.
+ROOT=$TMP/root
+# A v1.6 host's library: the photos and their legacy derivatives, for web.
+PUBLIC=$TMP/public-photos
 DATA=$TMP/data
 WEB=photography-smoke-watcher-$$
 WEB_STARTED=false
@@ -40,6 +51,7 @@ OUTPUTS=(
   thumbnails-avif/%s.avif medium-avif/%s.avif optimized-avif/%s.avif
   lqip/%s.txt
 )
+LEGACY_FOLDERS=(thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache)
 
 fail() {
   echo "::error::$1"
@@ -63,26 +75,82 @@ cleanup() {
     fi
     docker rm -f "$UNSET" >/dev/null
   fi
-  # The watcher creates the derivative folders as uid 1001. Remove them with
-  # the image under test, so cleanup never pulls anything.
-  docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library
+  # The image wrote the library and the data root as uid 1001. Remove them
+  # with the image under test, so cleanup never pulls anything.
+  docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library /t/root /t/public-photos
   rm -rf "$TMP"
   exit "$status"
 }
 trap cleanup EXIT
 
-run_once() {
-  docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/library -v "$LIB:/library" "$IMAGE" "${WATCHER[@]}" --once
+# Runs a command in the image as image-watcher does: the library read-only at
+# /data/library, and the data root read-write.
+in_watcher() {
+  docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/data/library -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+    -v "$LIB:/data/library:ro" -v "$ROOT:/data/portfolio" "$IMAGE" "$@"
 }
 
-# Fails unless all seven derivatives of <base> exist and are non-empty.
-require_outputs() {
-  local base=$1 context=$2 pattern output
+# shellcheck disable=SC2120 # expect_exit passes --force through; shellcheck can't see that call
+run_once() {
+  in_watcher "${WATCHER[@]}" --once "$@"
+}
+
+# Prints every file and folder under the library, sorted, with its size,
+# mtime, mode, owner and group, and ctime, and each file's SHA-256, so two
+# equal listings mean nothing changed, a chmod or chown included.
+library_listing() {
+  (
+    cd "$LIB" || exit 1
+    find . -mindepth 1 -printf '%P %y %s %T@ %m %U:%G %C@\n' | LC_ALL=C sort
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+  )
+}
+
+# Fails unless the library lists exactly as <listing file> does, and holds no legacy folder.
+# The watcher here mounts the library :ro, as production does, so this mostly
+# shows Docker keeps a read-only mount read-only. That the watcher itself
+# writes nothing with the library read-write is ci/smoke-image.sh's step 12
+# and utils/__tests__/imageWatcherScript.test.ts.
+require_library_unchanged() {
+  local folder
+  library_listing >"$TMP/listing-now.txt" || fail "Could not list the library."
+  diff -u "$1" "$TMP/listing-now.txt" || fail "$2: the watcher changed the library, which it must never write."
+  for folder in "${LEGACY_FOLDERS[@]}"; do
+    [ ! -e "$LIB/$folder" ] || fail "$2: the library has a $folder/ folder, which the watcher no longer writes."
+  done
+}
+
+# Writes the seven legacy derivatives of <base> into $PUBLIC, from any bytes.
+plant_outputs() {
+  local base=$1 pattern output
   for pattern in "${OUTPUTS[@]}"; do
     # shellcheck disable=SC2059 # the pattern is ours, with one %s
     output=$(printf "$pattern" "$base")
-    [ -s "$LIB/$output" ] || fail "$context: $output is missing or empty."
+    mkdir -p "$PUBLIC/$(dirname "$output")"
+    printf 'legacy %s from v1.6\n' "$output" >"$PUBLIC/$output"
   done
+}
+
+# Writes each photo's ready set and the sha256 of its manifest.json to <file>, from the registry.
+set_manifests() {
+  # shellcheck disable=SC2016 # the ${...} are JavaScript template strings
+  in_watcher node -e '
+    const fs = require("fs");
+    const dir = "/data/portfolio/identity/registry";
+    const newest = Math.max(...fs.readdirSync(dir).map((name) => Number((/^v([1-9][0-9]*)\.json$/.exec(name) || [])[1] || 0)));
+    const registry = JSON.parse(fs.readFileSync(`${dir}/v${newest}.json`, "utf8"));
+    const crypto = require("crypto");
+    const lines = [];
+    for (const photo of Object.values(registry.photos)) {
+      const revision = photo.revisions[photo.source.observedRevision];
+      const ready = Object.entries(revision.profiles).filter(([, profile]) => profile.state === "ready").map(([id]) => id);
+      if (ready.length !== 1) throw new Error(`${photo.source.path} has ${ready.length} ready sets, expected 1`);
+      const manifest = `/data/portfolio/assets/${photo.photoId}/${revision.assetRevision}/${ready[0]}/manifest.json`;
+      const bytes = fs.readFileSync(manifest);
+      if (!JSON.parse(bytes).variants.w800.webp) throw new Error(`${manifest} names no w800 WebP`);
+      lines.push(`${photo.source.path} ${photo.photoId} ${crypto.createHash("sha256").update(bytes).digest("hex")}`);
+    }
+    console.log(lines.sort().join("\n"));' >"$1" || fail "Could not read a manifest.json for every photo's set."
 }
 
 # 0. The image runs the watcher and the CLIs from their bundles, and carries
@@ -106,38 +174,76 @@ problems=$(docker run --rm --pull never "$IMAGE" node -e '
 [ -z "$problems" ] || fail "The image should ship only the bundled scripts and runtime packages, but has: $problems."
 echo "The image ships dist/scripts and no dev dependencies, tsx, or script sources."
 
-# 1. A library the container's uid 1001 can write into, generated by the image
-#    under test with this checkout's fixtures mounted read-only.
-mkdir "$LIB"
-chmod 777 "$LIB"
+# 1. A library generated by the image under test with this checkout's
+#    fixtures mounted read-only, and a data root uid 1001 can write, which
+#    the migration initializes as docs/data-root.md runs it.
+mkdir "$LIB" "$ROOT"
+chmod 777 "$LIB" "$ROOT"
 docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
+for base in landscape portrait square; do
+  compgen -G "$LIB/$base.*" >/dev/null || fail "The fixture library has no $base photo."
+done
+dry_run=$(in_watcher node dist/scripts/photos.mjs migrate --dry-run) || fail "The migration dry run failed: $dry_run"
+plan=$(sed -n 's/^Plan: //p' <<<"$dry_run")
+[ -n "$plan" ] || fail "The dry run printed no plan: $dry_run"
+in_watcher node dist/scripts/photos.mjs migrate --apply --plan "$plan" >/dev/null || fail "Applying $plan failed."
+library_listing >"$TMP/listing-start.txt" || fail "Could not list the library."
 
-# 2. --once writes all seven derivatives for each fixture.
+# 2. --once builds a set, with its manifest.json, for each fixture, says
+#    legacyDerivatives: false, and writes nothing in the library.
 echo "Running ${WATCHER_CMD} --once in $IMAGE."
 run_once || fail "The first --once run exited non-zero."
-for base in landscape portrait square; do
-  require_outputs "$base" "After the first --once run"
-done
-count=$(find "$LIB/optimized" -maxdepth 1 -name '*.webp' | wc -l | tr -d ' ')
-[ "$count" -eq 3 ] || fail "Expected 3 optimized/*.webp after the first --once run, found $count."
-echo "--once wrote all seven derivatives for each fixture."
+set_manifests "$TMP/manifests-first.txt"
+[ "$(wc -l <"$TMP/manifests-first.txt")" -eq 3 ] || fail "Expected a set with a manifest.json for each of the 3 fixtures, got: $(cat "$TMP/manifests-first.txt")"
+in_watcher cat /data/portfolio/status/watcher.json | jq -e '.legacyDerivatives == false and .lastPassResult == "committed"' >/dev/null ||
+  fail "The heartbeat after --once does not say legacyDerivatives: false after a committed pass."
+require_library_unchanged "$TMP/listing-start.txt" "After the first --once run"
+echo "--once built a set and manifest.json for each fixture, and wrote nothing in the library."
 
-# 3. With a source gone, another --once run keeps its derivatives.
+# 3. With a source gone, another --once run keeps every set and manifest.
 # The image wrote it as uid 1001, so force the removal and check it took.
-rm -f "$LIB/landscape.jpg"
-[ ! -e "$LIB/landscape.jpg" ] || fail "Could not remove landscape.jpg from the fixture library."
+rm -f "$LIB"/landscape.*
+compgen -G "$LIB/landscape.*" >/dev/null && fail "Could not remove landscape from the fixture library."
+library_listing >"$TMP/listing-removed.txt" || fail "Could not list the library."
 run_once || fail "The second --once run exited non-zero."
-require_outputs landscape "After removing landscape.jpg"
-echo "--once kept landscape's derivatives after landscape.jpg was removed."
+set_manifests "$TMP/manifests-second.txt"
+diff -u "$TMP/manifests-first.txt" "$TMP/manifests-second.txt" || fail "A set or its manifest.json changed or went once landscape was removed."
+require_library_unchanged "$TMP/listing-removed.txt" "After removing landscape"
+echo "--once kept every set and manifest.json after landscape was removed."
 
-# 4. A missing library root exits 1 instead of being recreated.
-set +e
-docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/tmp/missing-library "$IMAGE" "${WATCHER[@]}" --once
-code=$?
-set -e
-[ "$code" -eq 1 ] || fail "--once exited $code on a missing library root, expected 1."
-echo "--once exited 1 on a missing library root."
+# 4. A missing library root, and an unset PHOTOGRAPHY_LIBRARY_DIR with the
+#    library at its old path, exit 1 and name the problem, and --force,
+#    which rebuilt the legacy derivatives, exits 2.
+expect_exit() {
+  local expected=$1 message=$2 code
+  shift 2
+  set +e
+  "$@" >"$TMP/exit.log" 2>&1
+  code=$?
+  set -e
+  [ "$code" -eq "$expected" ] || { cat "$TMP/exit.log"; fail "'$*' exited $code, expected $expected."; }
+  grep -qF -- "$message" "$TMP/exit.log" || { cat "$TMP/exit.log"; fail "'$*' did not say: $message"; }
+}
+expect_exit 1 'Library root not found: /tmp/missing-library' \
+  docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/tmp/missing-library -e PHOTOGRAPHY_DATA_DIR=/data/portfolio -v "$ROOT:/data/portfolio" "$IMAGE" "${WATCHER[@]}" --once
+expect_exit 1 'PHOTOGRAPHY_LIBRARY_DIR is not set. Point it at the photo library: /data/library' \
+  docker run --rm --pull never -e PHOTOGRAPHY_DATA_DIR=/data/portfolio -v "$LIB:/app/public/assets/photos:ro" -v "$ROOT:/data/portfolio" "$IMAGE" "${WATCHER[@]}" --once
+expect_exit 2 '--force rebuilt the legacy derivatives, which the watcher no longer writes' run_once --force
+set_manifests "$TMP/manifests-third.txt"
+diff -u "$TMP/manifests-first.txt" "$TMP/manifests-third.txt" || fail "A refused run changed a set."
+require_library_unchanged "$TMP/listing-removed.txt" "After the refused runs"
+echo "--once exited 1 on a missing library and on an unset PHOTOGRAPHY_LIBRARY_DIR, 2 on --force, and changed nothing."
+
+# The v1.6 host's library web gets under public/: the fixtures, and the
+# legacy derivatives a v1.6 watcher wrote for each, so a 404 for one proves
+# that the proxy refuses a file Next would otherwise serve.
+mkdir "$PUBLIC"
+cp "$LIB"/* "$PUBLIC/"
+for base in portrait square landscape; do
+  plant_outputs "$base"
+done
+chmod -R a+rX "$PUBLIC"
 
 # Sets WEB_URL to container $1's port 3000 on 127.0.0.1, once /api/health
 # answers 200. GET / is #21's error page until a catalog is published.
@@ -182,7 +288,7 @@ check_unpublished() {
   # The derivatives the watcher wrote, and the originals, 404 with no-store.
   # Each is on disk, so its 404 proves something: a renamed fixture fails here instead of passing.
   for asset in optimized/portrait.webp thumbnails-avif/square.avif lqip/landscape.txt portrait.png square.webp portrait%2Epng; do
-    [ -s "$LIB/${asset//%2E/.}" ] || fail "The library holds no $asset, so its 404 $label would prove nothing."
+    [ -s "$PUBLIC/${asset//%2E/.}" ] || fail "The library holds no $asset, so its 404 $label would prove nothing."
     expect_code GET "$base/assets/photos/$asset" 404 yes
   done
   # /_next/image refuses them with its own 400, before its cache can answer.
@@ -193,21 +299,22 @@ check_unpublished() {
   done
 }
 
-# 5. The web server, with the library at its default path and an empty data
-#    root mounted read-only where production mounts it, as before the
-#    migration. It starts after the derivatives exist, so a file Next would
-#    serve from public/ is there to be refused.
+# 5. The web server, with a v1.6 host's library, legacy derivatives and all,
+#    under its public/ folder, and an empty data root mounted read-only where
+#    production mounts it, as before the migration. Production's web mounts
+#    no library at all since v1.7.0. This one does, so a file Next would serve
+#    from public/ is there to be refused.
 mkdir "$DATA"
 chmod 755 "$DATA"
 docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
-  -v "$LIB:/app/public/assets/photos" -v "$DATA:/data/portfolio:ro" "$IMAGE" >/dev/null
+  -v "$PUBLIC:/app/public/assets/photos:ro" -v "$DATA:/data/portfolio:ro" "$IMAGE" >/dev/null
 WEB_STARTED=true
 wait_for_web "$WEB"
 check_unpublished "$WEB_URL" "on an empty data root"
 echo "On an empty data root, /api/ready and the #6 endpoint answer 503 not-published, /api/photos and the removed endpoints 404, /gallery is a 308 to /work, and the derivatives and originals return 404, and 400 through /_next/image."
 
 # 6. With no data root at all, the same answers.
-docker run -d --pull never --name "$UNSET" -p 127.0.0.1::3000 -v "$LIB:/app/public/assets/photos" "$IMAGE" >/dev/null
+docker run -d --pull never --name "$UNSET" -p 127.0.0.1::3000 -v "$PUBLIC:/app/public/assets/photos:ro" "$IMAGE" >/dev/null
 UNSET_STARTED=true
 wait_for_web "$UNSET"
 check_unpublished "$WEB_URL" "with no data root"

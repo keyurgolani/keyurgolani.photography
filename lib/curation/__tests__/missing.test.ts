@@ -1369,20 +1369,29 @@ describe('the library guard', { timeout: 60_000 }, () => {
         expect(everything(w)).toEqual(before);
     });
 
-    it('with the library root empty, reports every photo missing and keeps the site and every asset as they were', async () => {
+    it('with the library root empty, as an unmounted share leaves it, marks nothing missing, writes nothing, and exits 1', async () => {
         const w = await world();
-        const before = layers(w);
+        const before = everything(w);
         const visible = await served(w);
-        fs.rmSync(w.lib.file('harbor'), { recursive: true });
+        const away = `${w.lib.root}-away`;
+        fs.renameSync(w.lib.root, away);
+        fs.mkdirSync(w.lib.root);
+        try {
+            expect(await w.restart()).toBe(1);
+            expect(fs.readdirSync(w.lib.root)).toEqual([]);
+            const registry = await w.registry();
+            expect([registry.photos[w.p].sourceHealth, registry.photos[w.q].sourceHealth]).toEqual(['present', 'present']);
+            expect((await listEvents(w.root)).events.filter((event) => event.type === 'missing')).toEqual([]);
+            expect(everything(w)).toEqual(before);
+            expect(await served(w)).toEqual(visible);
+        } finally {
+            fs.rmdirSync(w.lib.root);
+            fs.renameSync(away, w.lib.root);
+        }
+        // With the photos back, the next start marks nothing missing either.
         expect(await w.restart()).toBe(0);
-        expect(fs.readdirSync(w.lib.root)).toEqual([]);
         const registry = await w.registry();
-        expect([registry.photos[w.p].sourceHealth, registry.photos[w.q].sourceHealth]).toEqual(['missing', 'missing']);
-        const missing = (await listEvents(w.root)).events.filter((event) => event.type === 'missing');
-        expect(missing.map((event) => event.photoId).sort()).toEqual([w.p, w.q].sort());
-        expect(layers(w)).toEqual(before);
-        expect(await served(w)).toEqual(visible);
-        expect(pendingDecisions(w)).toEqual([]);
+        expect([registry.photos[w.p].sourceHealth, registry.photos[w.q].sourceHealth]).toEqual(['present', 'present']);
     });
 });
 

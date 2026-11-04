@@ -2,7 +2,7 @@ import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../ca
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
-import { dataRootStatus, libraryRoot } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
 import { candidateOf } from './candidates';
 import { printable, scrub } from './commands';
@@ -435,7 +435,7 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
         return { state: 'not-ready', message: `The data root is ${status.state}, so the inbox can't be read. Nothing was written.` };
     }
     const root = status.root;
-    const scrubbed = (text: string) => scrub(text, [root, libraryRoot()]);
+    const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
     const { events, problems } = await listEvents(root);
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();

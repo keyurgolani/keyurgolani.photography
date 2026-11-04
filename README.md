@@ -61,6 +61,10 @@ cd keyurgolani.photography
 # Install dependencies
 npm install
 
+# The library has no default (v1.7.0): name it for the watcher and the CLI, as
+# an absolute path outside the checkout's public/ folder, which is refused
+export PHOTOGRAPHY_LIBRARY_DIR=$HOME/photography-library
+
 # Give the library's photos their IDs, once. The dry run prints the plan to apply.
 npm run photos:migrate -- --dry-run
 npm run photos:migrate -- --apply --plan <plan path>
@@ -68,11 +72,12 @@ npm run photos:migrate -- --apply --plan <plan path>
 # Start development server
 npm run dev
 
-# In a second terminal, build the photos' derivatives, then keep watching for new ones
+# In a second terminal, with PHOTOGRAPHY_LIBRARY_DIR set the same way, build the
+# photos' /media sets, then keep watching for new ones
 npm run images:watch
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` and `npm start` listen on `127.0.0.1` only. The site shows only a published catalog revision in `./portfolio-data`, the data root the npm scripts use by default, so until one is published, Home and Work show the error page with Try again, and `/api/ready` answers 503 with `not-published`. There is no legacy photo list to fall back to (#13's slice E). The migration, the watcher, and a publish fill it: [Curating the catalog](#curating-the-catalog) below has the commands. `npm run dev` alone builds no derivatives or `/media` sets; `npm run images:process` builds them once and exits.
+Open [http://localhost:3000](http://localhost:3000) to view the site. `npm run dev` and `npm start` listen on `127.0.0.1` only. The site shows only a published catalog revision in `./portfolio-data`, the data root the npm scripts use by default, so until one is published, Home and Work show the error page with Try again, and `/api/ready` answers 503 with `not-published`. There is no legacy photo list to fall back to (#13's slice E). The migration, the watcher, and a publish fill it: [Curating the catalog](#curating-the-catalog) below has the commands. `npm run dev` alone builds no `/media` sets; `npm run images:process` builds them once and exits. `npm run dev` reads nothing in the library, so it needs no `PHOTOGRAPHY_LIBRARY_DIR`. The watcher and the CLI exit 1 without it, naming it, rather than guess a folder, and refuse a relative path, or one inside the app's `public/` folder, where Next would serve the originals.
 
 Outside production, `PHOTOGRAPHY_DATA_DIR` defaults to `./portfolio-data`, so the watcher here (and in the dev compose) runs with its identity watch on whether or not you set it. The identity pass itself waits until `photos:migrate --apply` initializes that folder.
 
@@ -100,15 +105,15 @@ Both containers run one pinned release tag. Set it in a `.env` next to `docker-c
 PHOTOGRAPHY_IMAGE_TAG=vX.Y.Z
 ```
 
-Both also mount the private data root, `./portfolio-data`. It has to exist and belong to uid 1001 before the first start, since Compose never creates it. On a host where nothing else writes the photos, hand the photos folder to uid 1001 too:
+Both also mount the private data root, `./portfolio-data`. It has to exist and belong to uid 1001 before the first start, since Compose never creates it:
 
 ```bash
 mkdir -p portfolio-data
-sudo chown -R 1001:1001 public/assets/photos portfolio-data
+sudo chown -R 1001:1001 portfolio-data
 sudo chmod 700 portfolio-data
 ```
 
-If another process writes the photos, such as a file sync tool running as another user, leave `public/assets/photos` out of that `chown` and give uid 1001 only the folders the watcher writes, as [Who owns the photos](docs/data-root.md#who-owns-the-photos) describes. [docs/data-root.md](docs/data-root.md) also covers what the data root holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
+The photo library stays in `./public/assets/photos` on the host. `image-watcher` alone mounts it, read-only, at `/data/library`, with `PHOTOGRAPHY_LIBRARY_DIR` pointing there, and the commands run in it read it the same way. `curator` and `web` don't mount it at all, since they read no file there, so nothing in the stack can write your originals. uid 1001 only has to be able to read them, as [Who owns the photos](docs/data-root.md#who-owns-the-photos) describes, so a file sync tool running as another user can keep owning them. [docs/data-root.md](docs/data-root.md) also covers what the data root holds, backing it up with the library, restoring it, and the one-time migration that gives every photo its ID.
 
 About reads its portrait from the host. Put it in `./site-config/about/portrait.jpg` (or `.jpeg`, `.png`, `.webp`), with an optional `./site-config/about/portrait.json` holding its `alt` text and `focalPoint`. `web` mounts the folder read-only and reads it per request, so replacing the file changes About on the next page load, with no rebuild or restart. Home's loading screen and its badge show the same file. Without one, About shows the name in its place, and Home plays its loading screen without a portrait. Set the folder up before the first `up -d`: when it's missing, Compose creates it owned by root under a rootful daemon, and `sudo chown -R "$(id -u):$(id -g)" site-config` gives it back. [About's portrait](docs/releasing.md#abouts-portrait) has the fields, the limits, and how to swap it, `portrait.json` included:
 
@@ -158,30 +163,14 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 ## 🖼️ Adding Photos
 
 1. **Drop photos** into `public/assets/photos/` directory
-2. **Image watcher** automatically processes them:
-   - Generates thumbnails (400px)
-   - Creates medium size (800px)  
-   - Optimizes full size (1920px)
-   - Extracts EXIF data for captions
-   - Creates LQIP placeholders
-3. **The curator's Inbox** shows the photo once the watcher has recorded it in the data root and built its `/media` set. It reaches the site only through a publish that places it in a series. Neither the original file nor its legacy derivatives are ever served.
+2. **Image watcher** picks them up. It reads them, read-only, and writes only the data root: each photo's ID, and its `/media` set, WebP and AVIF from 400 px to 1920 px with an LQIP placeholder. Since v1.7.0 (#13's slice E) it writes nothing in the library, no legacy derivatives either.
+3. **The curator's Inbox** shows the photo once the watcher has recorded it in the data root and built its `/media` set. It reaches the site only through a publish that places it in a series. Neither the original file nor any legacy derivative is ever served.
 
 ### Replacing and Removing Photos
-- **Replace** a photo by saving over it under the same name. The watcher regenerates its derivatives from the new file and swaps them in only once all seven are written, so a failed run keeps the old ones. The site serves none of these files: `/assets/photos` answers 404, `/_next/image` refuses it, and visitors see photos only through the `/media` sets the active revision holds.
-- **Accepted risk:** a different photo saved under a removed photo's name, with an older modification time, shows the old images until you `touch` it or run `--force`. Copy tools that keep modification times, such as `cp -p` and `rsync -a`, do this. A photo that takes over a set another photo built, such as `IMG_1.jpg` added next to `IMG_1.png`, doesn't have this problem. Each set records the source it was built from, so the watcher rebuilds it when the file arrives, or at its next start if it was stopped.
+- **Replace** a photo by saving over it under the same name. The watcher sees new bytes, and the curation Inbox opens a replacement item for its new `/media` set. The site serves no file from the library: `/assets/photos` answers 404, `/_next/image` refuses it, and visitors see photos only through the `/media` sets the active revision holds.
 - **Delete** a photo's file and the site keeps showing it: the active catalog revision keeps listing the photo, and `/media` keeps serving it. Take it down as the next item describes.
-- **Clear a photo's legacy derivatives out of the library** with the watcher stopped, so a job already running can't write them back. Nothing serves them, so this only tidies the library:
-  1. Stop `image-watcher`, then delete the photo.
-  2. Delete its seven derivatives and `cache/set-sources/<name>.json`, the record of which source its set was built from, where `<name>` is the photo's file name without its extension, such as `landscape`. Do the same for each earlier name the photo had, which the listing below finds. If another photo has the same name with another extension, the watcher builds the set again from that one when it starts. The deletes run inside the container, since the files belong to the containers' user and a host user's `rm` can fail.
-  3. Start `image-watcher` again.
-
-  ```bash
-  docker compose -f docker-compose.prod.yml stop image-watcher
-  # Delete the photo, then, with its name for <name>:
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && rm -f -- thumbnails/"$1".webp medium/"$1".webp optimized/"$1".webp thumbnails-avif/"$1".avif medium-avif/"$1".avif optimized-avif/"$1".avif lqip/"$1".txt cache/set-sources/"$1".json' sh '<name>'
-  docker compose -f docker-compose.prod.yml start image-watcher
-  ```
-- **Take a photo down** from the site: archive, then publish. `/assets/photos` never serves, so its legacy derivatives are out of reach already, and the steps above only clear them out of the library. Deleting, moving, or renaming the file takes nothing down by itself. The active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox. Putting the same file back closes that item. Run each command below with the same `run --rm --no-deps image-watcher` form as the commands above, as `node dist/scripts/photos.mjs <command>`. To take the photo down:
+- **The legacy derivatives** a watcher before v1.7.0 wrote, the seven folders `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` and `lqip`, and `cache/`, at the top of the library, are left exactly as they are. Nothing writes, reads, or serves them, and the identity scan skips those folder names, so a photo inside them is never taken for one of yours. They harm nothing, so leave them in place: #15's GC reclaims them once it ships. No step here moves or deletes them.
+- **Take a photo down** from the site: archive, then publish. `/assets/photos` never serves, so its legacy derivatives are out of reach already. Deleting, moving, or renaming the file takes nothing down by itself. The active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox. Putting the same file back closes that item. Run each command below in `image-watcher`, as `docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>`. To take the photo down:
   1. Move its file out of the library, or delete it, and find its `missing` item with `curation list`.
   2. Run `curation archive <eventId> --version <n> --base <revisionId>`, with the version and base `curation show` prints. It takes the photo out of every series in the draft with `sequence remove` and archives it. Nothing is public yet. A publish then needs these too. Archive prints the cover, opening photograph, and chapter ones that apply, and `validate` names the rest:
      - A published series needs a cover. If the photo was the cover, the remove clears it, so pick another with `sequence cover <seriesId> <otherPhotoId>`.
@@ -194,19 +183,9 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
   5. Purge the photo's `/media` URLs from any CDN in front of the site. `/media` sends `max-age=31536000, immutable`, so copies already served can stay in browsers and caches for up to a year.
 
   Archive deletes nothing: the photo's sets stay in the data root's `assets/`. If the publish stops on errors in other records, the photo stays public until they're fixed. `validate` lists them. As a last resort, delete its sets, `assets/<photoId>/` in the data root, inside `image-watcher`. `/media` then answers 404 for them, and its page shows a broken image until a publish leaves the photo out. [docs/data-root.md](docs/data-root.md#curation-inbox) describes the other ways to settle a `missing` item, including `curation bind`, for giving a missing photo other bytes.
-- **List legacy derivatives whose photo is gone**, such as a deleted photo's or a renamed photo's earlier names. It prints each base name in `optimized/` that no photo in the library's top folder has. Only the extensions the watcher builds from count, in any case (`.jpg`, `.jpeg`, `.png`, `.webp`), so a sidecar such as `IMG_1.xmp` left behind doesn't hide a deleted photo's old images:
-
-  ```bash
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher sh -c 'cd /app/public/assets/photos && for f in optimized/*.webp; do n=${f#optimized/}; n=${n%.webp}; found=; for s in "$n".*; do case "$s" in *.[jJ][pP][gG]|*.[jJ][pP][eE][gG]|*.[pP][nN][gG]|*.[wW][eE][bB][pP]) found=1;; esac; done; [ -n "$found" ] || echo "$n"; done'
-  ```
-- **Regenerate everything** locally with `npm run images:process -- --force`. The production image has no tsx or npm scripts, so there, run the bundled watcher with `--force`, and stop `image-watcher` first so the two never write at once. Photos with an EXIF orientation tag need none of this after an upgrade: the watcher rebuilds them by itself at its first start, as [docs/releasing.md](docs/releasing.md) describes for slice A of #10.
-
-  ```bash
-  docker compose -f docker-compose.prod.yml stop image-watcher
-  docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/imageWatcher.mjs --once --force
-  docker compose -f docker-compose.prod.yml start image-watcher
-  ```
-- **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose no longer creates a missing photos folder, neither container can start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
+- **`--force`**, which rebuilt every legacy derivative, is gone with them: the watcher exits 2 on it from v1.7.0. A `/media` set is built once per photo version and never rebuilt in place.
+- **An empty library at start-up**, such as a network share not mounted yet, marks nothing missing: a pass that finds no photo at all while the registry has photos present writes nothing, logs why, turns the watcher unhealthy, and tries again a minute later. `--once` exits 1 then.
+- **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose never creates a missing photos folder, `image-watcher` can't start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
 - **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. The site serves only a published catalog revision, and a publish needs the IDs, so until the plan is applied and a revision is published, `/api/ready` answers 503 with `not-published`, and Home and Work show the error page. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
 - **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. From then on, the site serves the active revision, and `/media` serves only the sets it holds. "Curating the catalog" below has the rest of the commands.
 
@@ -280,7 +259,7 @@ The first publish is the launch, so it stops and prints what it would change, wi
 - `photos carry-over` has run, if the site should keep the photos the legacy Gallery listed. Without it, every one of them that no series of yours holds is left out of the launch.
 - A preview looks right. Copy the data root and the library, publish the copy with `PHOTOGRAPHY_DATA_DIR` pointing at it, and serve it on another port bound to `127.0.0.1`. It's the copy's first publish, so it needs `--confirm-launch` too: check that the command names the copy before you type it.
   - On a source checkout, run `npm run build`, copy `public` into `.next/standalone/public` and `.next/static` into `.next/standalone/.next/static` as the Dockerfile does, and start `node .next/standalone/server.js` with `HOSTNAME=127.0.0.1`, `PORT=3001`, and `PHOTOGRAPHY_DATA_DIR` and `PHOTOGRAPHY_LIBRARY_DIR` set to the copies' absolute paths, since `server.js` changes to its own folder. Not `npx next start`.
-  - On a host that runs only the image, which has no npx or tsx, use a separate container, never the compose services. `image-watcher` mounts the real data root, so a `publish --confirm-launch` there launches production. Mount the data root copy at `/data/preview` with `-e PHOTOGRAPHY_DATA_DIR=/data/preview`, mount the library copy at `/app/public/assets/photos`, and publish only `127.0.0.1:3001:3000`. Publish the copy in that same kind of container, with `node dist/scripts/photos.mjs publish`.
+  - On a host that runs only the image, which has no npx or tsx, use a separate container, never the compose services. `image-watcher` mounts the real data root, so a `publish --confirm-launch` there launches production. Mount the data root copy at `/data/preview` with `-e PHOTOGRAPHY_DATA_DIR=/data/preview`, mount the library copy read-only at `/data/library` with `-e PHOTOGRAPHY_LIBRARY_DIR=/data/library`, and publish only `127.0.0.1:3001:3000`. Publish the copy in that same kind of container, with `node dist/scripts/photos.mjs publish`.
 
 #### History and rollback
 
@@ -325,9 +304,9 @@ docker compose -f docker-compose.prod.yml run --rm --no-deps -T -e PHOTOS_ACTOR=
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SITE_URL` | The site's public origin, like `https://keyurgolani.photography`, for share links and the share image URL. Read on every request, never at build time. Unset or invalid, share links point at `http://localhost:3000`, and a production server logs one warning at startup that names the reason, never the value. | none |
-| `PHOTOGRAPHY_LIBRARY_DIR` | Photo library folder for the watcher and the CLI. The site serves no file from it, so leave it unset outside tests. | `public/assets/photos` |
+| `PHOTOGRAPHY_LIBRARY_DIR` | The photo library, the originals, for the watcher and the CLI, which only ever read it. No default since v1.7.0 (#13's slice E): unset, relative, or at or inside the app's `public/` folder, the watcher and every command that reads the library exit 1 and name it, rather than read some other folder. Both compose files mount `./public/assets/photos` read-only at `/data/library` in `image-watcher` and set it there. `curator` sets it too, only to keep the path out of its messages, and mounts nothing there. `web` reads nothing in the library, so it mounts none and needs none. | none |
 | `PHOTOGRAPHY_SITE_CONFIG_DIR` | The site config folder, which holds About's portrait as `about/portrait.jpg` (or `.jpeg`, `.png`, `.webp`) and its optional `about/portrait.json`. Read per request, never at build time, and never written. It must sit outside `public/` and the library. `docker-compose.prod.yml` mounts `./site-config` read-only at `/config/site` and sets it there. See [About's portrait](docs/releasing.md#abouts-portrait). | `site-config` |
-| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state and the `/media` sets. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since each version of its documents is written with `link()`. The watcher's identity step runs only once `photos:migrate --apply` has initialized it, and until then the watcher logs why once. Outside production it defaults to `./portfolio-data`, so `npm run images:watch` and the dev compose watch with identity on (every depth, polled) even when it's unset. In production nothing changes until it's set. Both compose files set it to `/data/portfolio` and mount `./portfolio-data` there. To edit a document there by hand, copy its newest version to the next number without changing its owner or mode: from a shell in the watcher's image when it runs in the containers, or as root with `sudo cp -n -p` otherwise. Edit the copy, and do it only while no command runs and the curator is stopped. Never edit a version in place. [`docs/data-root.md`](docs/data-root.md) has the steps. | `portfolio-data`, none in production |
+| `PHOTOGRAPHY_DATA_DIR` | Private data root for photo identity state and the `/media` sets. It must sit outside `public/` and the library, on a filesystem that supports hard links (not exFAT or FAT), since each version of its documents is written with `link()`. The watcher's identity step runs only once `photos:migrate --apply` has initialized it, and until then the watcher logs why once. Outside production it defaults to `./portfolio-data`, so `npm run images:watch` and the dev compose watch with identity on (every depth, polled) even when it's unset. In production the watcher exits 1 until it's set, since it writes nothing else. Both compose files set it to `/data/portfolio` and mount `./portfolio-data` there. To edit a document there by hand, copy its newest version to the next number without changing its owner or mode: from a shell in the watcher's image when it runs in the containers, or as root with `sudo cp -n -p` otherwise. Edit the copy, and do it only while no command runs and the curator is stopped. Never edit a version in place. [`docs/data-root.md`](docs/data-root.md) has the steps. | `portfolio-data`, none in production |
 
 The Home slideshow interval isn't configurable. It's `HOME_AUTO_ADVANCE_MS` (12000 ms) in `components/home/homePlayback.ts`.
 

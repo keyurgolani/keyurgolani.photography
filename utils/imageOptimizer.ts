@@ -9,6 +9,13 @@ import { libraryRoot } from '../lib/storage/config';
 import { hasErrorCode } from '../lib/storage/fsx';
 import { baseNameOf, sameFile, setGroups, setKeyOf, sharesSet } from './derivativeSets';
 
+/*
+ * The legacy basename derivative pipeline. Since v1.7.0 (#13's slice E) no
+ * production code writes with it: the watcher doesn't import it, and the
+ * library is mounted read-only. Tests use processImage() to model a library
+ * a v1.6 watcher left behind, and the launch's carry-over reads its paths.
+ */
+
 /** A derivative folder's name under the library root, such as `thumbnails-avif`. */
 type DerivativeFolder = keyof typeof DERIVATIVE_FOLDERS;
 
