@@ -43,8 +43,9 @@ export type Fit = 'cover' | 'contain';
  * The box a photograph is drawn in, where `media` holds: `vw` of the
  * viewport wide, less `lessRem` (gutters and gaps), and either a shape of its
  * own (`ratio`, width over height) or a height the screen sets (`heightVh`).
+ * `scale` multiplies what that box asks for, as ONE_RUNG_DOWN does.
  */
-export type PhotoBox = { media?: string; vw: number; lessRem?: number } & ({ ratio: number; heightVh?: never } | { heightVh: number; ratio?: never });
+export type PhotoBox = { media?: string; vw: number; lessRem?: number; scale?: number } & ({ ratio: number; heightVh?: never } | { heightVh: number; ratio?: never });
 
 const length = (vw: number, lessRem = 0) => (lessRem > 0 ? `calc(${round(vw, 2)}vw - ${round(lessRem, 2)}rem)` : `${round(vw, 2)}vw`);
 
@@ -69,13 +70,13 @@ export const ONE_RUNG_DOWN = 2 / 3;
  * so close to that ratio a box with gutters can ask for a little more than
  * the width it's drawn at. The height is a viewport share (vh, which svh
  * never exceeds), so a box a little shorter still gets a rung that covers it.
- * `scale` multiplies every length, as ONE_RUNG_DOWN does.
  */
-export function photoSizes(photo: { width: number; height: number }, fit: Fit, boxes: readonly PhotoBox[], { scale = 1 }: { scale?: number } = {}): string {
+export function photoSizes(photo: { width: number; height: number }, fit: Fit, boxes: readonly PhotoBox[]): string {
     const shape = photo.width / photo.height;
     return boxes
         .flatMap((box) => {
             const media = box.media ? `${box.media} ` : '';
+            const scale = box.scale ?? 1;
             const width = length(box.vw * scale, (box.lessRem ?? 0) * scale);
             if (box.ratio !== undefined) {
                 const factor = scale * (fit === 'cover' ? Math.max(1, shape / box.ratio) : Math.min(1, shape / box.ratio));

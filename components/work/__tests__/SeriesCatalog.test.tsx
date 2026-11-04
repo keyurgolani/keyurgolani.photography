@@ -241,7 +241,8 @@ describe('WorkCoverImage', () => {
                 const [vw, rem] = (/calc\(([\d.]+)vw - ([\d.]+)rem\)/.exec(desktop) ?? []).slice(1).map(Number);
                 const [boxVw, boxRem] = (/calc\(([\d.]+)vw - ([\d.]+)rem\)/.exec(box) ?? []).slice(1).map(Number);
                 expect(vw, `${span} ${shape.width}x${shape.height}: ${desktop}`).toBeGreaterThanOrEqual(boxVw);
-                expect(vw / rem, `${span} ${shape.width}x${shape.height}: the box's own proportions`).toBeCloseTo(boxVw / boxRem, 0);
+                // The same box scaled up, not shrunk somewhere else: its vw and rem keep their proportions, to rounding.
+                expect(Math.abs(vw / rem / (boxVw / boxRem) - 1), `${span} ${shape.width}x${shape.height}: the box's own proportions`).toBeLessThan(0.02);
             }
         }
     });

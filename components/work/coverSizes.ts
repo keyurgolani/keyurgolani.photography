@@ -10,9 +10,15 @@ export type CoverSpan = 'wide' | 'narrow';
  * little under the column from 1455 px, where the gutter stops at 3rem.
  */
 const COLUMN_VW = 93.4;
+/**
+ * Under 768 px a cover takes the one rung smaller rule 5 allows. On a 3x
+ * phone the rule's rung for a 3:2 cover is w1920, which put Work's LCP
+ * behind v1.7.0's (#172). A 1x desktop keeps the rule's rung, so a cover is
+ * never drawn from a file narrower than its box.
+ */
 const PHONE_BOX: PhotoBox[] = [
-    { media: '(min-width: 485px)', vw: COLUMN_VW, ratio: 4 / 3 },
-    { vw: 100, lessRem: 2, ratio: 4 / 3 },
+    { media: '(min-width: 485px)', vw: COLUMN_VW, ratio: 4 / 3, scale: ONE_RUNG_DOWN },
+    { vw: 100, lessRem: 2, ratio: 4 / 3, scale: ONE_RUNG_DOWN },
 ];
 /**
  * Above 768 px wide entries span 7 of the grid's 12 columns at 3:2, and
@@ -29,14 +35,9 @@ const BOXES: Record<CoverSpan, PhotoBox[]> = {
     narrow: [{ media: '(min-width: 768px)', vw: (5 / 12) * COLUMN_VW - (7 / 12) * GAP.vw, lessRem: (7 / 12) * GAP.rem, ratio: 4 / 5 }, ...PHONE_BOX],
 };
 
-/**
- * A cover's sizes by #6's size rule: its box for the span, and its own shape
- * and crop, at the one rung smaller rule 5 allows. Work shows several covers
- * at once, and on a 3x phone the rule's rung for a 3:2 cover is w1920, which
- * put Work's LCP behind v1.7.0's (#172).
- */
+/** A cover's sizes by #6's size rule: its box for the span, and its own shape and crop. */
 export function coverSizes(cover: { width: number; height: number; crop: Fit }, span: CoverSpan): string {
-    return photoSizes(cover, cover.crop, BOXES[span], { scale: ONE_RUNG_DOWN });
+    return photoSizes(cover, cover.crop, BOXES[span]);
 }
 
 /** The entry's span above 768 px, as SeriesCatalog.module.css sets it: the 1st and 4th of every four are wide. */

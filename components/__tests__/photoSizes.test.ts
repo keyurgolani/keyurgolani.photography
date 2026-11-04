@@ -57,11 +57,13 @@ describe('photoSizes', () => {
         expect(photoSizes(landscape, 'contain', [{ vw: 100, heightVh: 82 }])).toBe(heightCappedSizes(2400, 1600, 82, [{ vw: 100 }]));
     });
 
-    it('scales every length, for the one rung smaller rule 5 allows', () => {
+    it('scales a box\'s lengths, for the one rung smaller rule 5 allows, and only that box\'s', () => {
         expect(ONE_RUNG_DOWN).toBeCloseTo(2 / 3);
-        expect(photoSizes(landscape, 'cover', [{ vw: 100, lessRem: 2, ratio: 4 / 3 }], { scale: ONE_RUNG_DOWN })).toBe('calc(75vw - 1.5rem)');
+        expect(photoSizes(landscape, 'cover', [{ media: '(min-width: 768px)', vw: 40, ratio: 4 / 5 }, { vw: 100, lessRem: 2, ratio: 4 / 3, scale: ONE_RUNG_DOWN }])).toBe(
+            '(min-width: 768px) 75vw, calc(75vw - 1.5rem)',
+        );
         // The switch stays where the box's width and the photograph at its height meet; only the lengths shrink.
-        expect(photoSizes(landscape, 'cover', [{ vw: 100, heightVh: 100 }], { scale: 0.5 })).toBe('(min-aspect-ratio: 1500/1000) 50vw, 75vh');
+        expect(photoSizes(landscape, 'cover', [{ vw: 100, heightVh: 100, scale: 0.5 }])).toBe('(min-aspect-ratio: 1500/1000) 50vw, 75vh');
     });
 
     it('takes each box in order, the media ones first and the last with none', () => {
