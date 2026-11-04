@@ -90,8 +90,9 @@ in_watcher() {
     -v "$LIB:/data/library:ro" -v "$ROOT:/data/portfolio" "$IMAGE" "$@"
 }
 
+# shellcheck disable=SC2120 # expect_exit passes --force through; shellcheck can't see that call
 run_once() {
-  in_watcher "${WATCHER[@]}" --once
+  in_watcher "${WATCHER[@]}" --once "$@"
 }
 
 # Prints every file and folder under the library, sorted, with its size,
