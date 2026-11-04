@@ -634,9 +634,9 @@ const VISITOR: Pair[] = [
     // Hover and focus (the review's Delta 2, item 3), walked by the gate only.
     { name: 'nav-link-hover', url: '/work', gateOnly: true, act: (page) => hoverOn(navLink(page)) },
     { name: 'nav-link-focus', url: '/work', gateOnly: true, act: (page) => keyboardFocus(page, navLink(page)) },
-    { name: 'about-nav-link-hover', url: '/about', gateOnly: true, act: (page) => hoverOn(navLink(page)) },
-    { name: 'about-link-hover', url: '/about', gateOnly: true, act: (page) => hoverOn(aboutLink(page)) },
-    { name: 'about-link-focus', url: '/about', gateOnly: true, act: (page) => keyboardFocus(page, aboutLink(page)) },
+    { name: 'about-nav-link-hover', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => hoverOn(navLink(page)) },
+    { name: 'about-link-hover', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => hoverOn(aboutLink(page)) },
+    { name: 'about-link-focus', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => keyboardFocus(page, aboutLink(page)) },
     {
         name: 'home-control-focus',
         url: '/',
@@ -787,7 +787,31 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: 'main > article > header > p:first-child:has(> a[href="/work"])', why: "#173 (B4): the series page's All work link above the title" },
 ];
 
+/**
+ * #179, the portrait's frame (B1): 4:3 stacked under a cap of min(45svh, 28rem), and 4:5 side by side, from the
+ * refined #12's mockup, where today's About sets a height (clamp(250px, 42svh, 380px) stacked, 420 px wide). Every
+ * paint, type and style in About stays exact; only boxes in main move, and the page's height with them. At 390 the
+ * photo is 105 px shorter and everything under it rises with it. At 1024 the figure keeps to its own height in the
+ * grid row, 22 px shorter. At 1440 the photo is 207 px taller, and the statement, centred in the row, moves down half
+ * that. Each width's bound sits just above what it measured.
+ */
+const ABOUT_FRAME: Allowance[] = (
+    [
+        [390, 110],
+        [1024, 25],
+        [1440, 210],
+    ] as const
+).flatMap(([width, maxDelta]) => {
+    const why = "#179: About's portrait frame, 4:3 stacked and 4:5 side by side";
+    return [
+        { page: 'about', width, selector: 'body', maxDelta, why },
+        { page: 'about', width, selector: 'body > next-route-announcer', maxDelta, why },
+        { page: 'about', width, selector: 'main[data-surface="about"]', maxDelta, subtree: true, why },
+    ];
+});
+
 const ALLOWANCES: Allowance[] = [
+    ...ABOUT_FRAME,
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
     { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow', 'border-bottom-color'], why: "P2-8: the Inbox's selected row's outline" },
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
@@ -895,7 +919,16 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
             const named = allowancesFor(pair, viewport.width).filter((entry) => against.walk.resolved[entry.selector]);
-            const allowances = Object.fromEntries(named.filter((entry) => entry.maxDelta !== undefined).map((entry) => [against.walk.resolved[entry.selector], entry.maxDelta!]));
+            // A subtree allowance covers the element and every path under it in the base's walk.
+            const allowances = Object.fromEntries(
+                named
+                    .filter((entry) => entry.maxDelta !== undefined)
+                    .flatMap((entry) => {
+                        const root = against.walk.resolved[entry.selector];
+                        const paths = entry.subtree ? against.walk.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
+                        return paths.map((path) => [path, entry.maxDelta!] as const);
+                    }),
+            );
             const sanctioned = Object.fromEntries(named.filter((entry) => entry.properties).map((entry) => [against.walk.resolved[entry.selector], entry.properties!]));
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];

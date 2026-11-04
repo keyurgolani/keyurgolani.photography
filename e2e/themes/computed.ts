@@ -49,6 +49,8 @@ export interface Allowance {
     maxDelta?: number;
     /** Computed properties that may differ, by name. */
     properties?: readonly string[];
+    /** `maxDelta` covers every element under it too, for a departure that moves a whole section's layout. */
+    subtree?: boolean;
     why: string;
 }
 
