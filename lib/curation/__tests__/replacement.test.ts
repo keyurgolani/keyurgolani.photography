@@ -95,7 +95,7 @@ const profileState = async (w: World, assetRevision: string) => (await readRegis
 
 const otherRef = (w: World) => ({ photoId: w.p, assetRevision: w.b, profileId: w.profileId });
 
-const NOTHING_SETTLED = { ready: [], failed: [], reopened: [] };
+const NOTHING_SETTLED = { ready: [], failed: [], reopened: [], superseded: [] };
 
 describe('a replacement that builds', { timeout: 60_000 }, () => {
     it('opens as building, turns ready once its set is committed, and confirms onto the same photo, series, and position', async () => {
@@ -1243,7 +1243,8 @@ describe('confirm', { timeout: 60_000 }, () => {
         expect(await w.build(w.job(w.b))).toMatchObject({ status: 'failed', error: 'source-superseded' });
         const event = await w.event();
         expect(event).toMatchObject({ status: 'resolved', candidate: { state: 'failed', failure: 'superseded' } });
-        expect(await confirm(w, event)).toMatchObject({ ok: false, code: 'stale' });
+        // Closed as superseded (#17), so it is refused as settled before the source is even read.
+        expect(await confirm(w, event)).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining('is resolved, so it can\'t be confirmed') });
     });
 
     it('works from the CLI, and show says what confirming keeps', async () => {

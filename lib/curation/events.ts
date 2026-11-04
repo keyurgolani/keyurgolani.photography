@@ -329,15 +329,30 @@ export const CLOSE_REASONS = {
     built: (profileId: string) => `Its derivative set built under ${profileId}.`,
     gone: 'The registry no longer holds the photograph.',
     moved: "The source holds other bytes now, which the photograph's newer items cover.",
+    /** #14: an ambiguous item whose bytes #10 holds in doubt no more, because a present photograph has them. */
+    identified: (photoId: string) => `These bytes are ${photoId}'s now, so nothing is in doubt.`,
+    /** #14: an ambiguous item whose hold ended with no photograph present on its bytes: the file changed or left. */
+    unheld: 'The file changed or left the library, so nothing is in doubt.',
+    /** #17: a replacement whose derivative set the writer refused because the source moved on to newer bytes. */
+    superseded: 'The source changed again before this derivative set was built, so the newer replacement item is the one to review.',
 } as const;
 
-export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved';
+/** The watcher's reopen reasons for the items CLOSE_REASONS' `identified`, `unheld` and `superseded` closed (lib/curation/sink.ts). */
+export const REOPEN_REASONS = {
+    held: '#10 holds this file in doubt again.',
+    back: 'The source holds these bytes again.',
+} as const;
+
+export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded';
 
 /** Which of CLOSE_REASONS a watcher's close reason is, or null for any other text. */
 export function closeCauseOf(reason: string): CloseCause | null {
     if (reason === CLOSE_REASONS.archived) return 'archived';
     if (reason === CLOSE_REASONS.gone) return 'gone';
     if (reason === CLOSE_REASONS.moved) return 'moved';
+    if (reason === CLOSE_REASONS.unheld) return 'unheld';
+    if (reason === CLOSE_REASONS.superseded) return 'superseded';
+    if (/^These bytes are .+'s now, so nothing is in doubt\.$/.test(reason)) return 'identified';
     const back = /^The source is back .+ with (the same|other) bytes, /.exec(reason);
     if (back) return back[1] === 'the same' ? 'same-file' : 'other-bytes';
     if (reason.startsWith('A bind gave these bytes to ')) return 'merged';

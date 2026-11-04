@@ -295,9 +295,11 @@ export interface InboxDetail extends InboxItem {
  * source back, `bound` one back through a bind, `merged` a new photograph a bind gave to another, whose file is
  * `into` (library-relative, or null when the registry can't say), `archived` an archived photograph, and `built`,
  * `gone` and `moved` a failed build that built, whose photograph the registry dropped, or whose file moved on.
+ * `identified` and `unheld` are an ambiguous item #10 no longer holds in doubt (#14), because a photograph has its
+ * bytes or because the file changed or left, and `superseded` a replacement whose source changed again first.
  */
 export type ResolvedCause =
-    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' }
+    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' }
     | { kind: 'merged'; into: string | null };
 
 /**
@@ -349,6 +351,12 @@ export function resolvedResponse(cause: ResolvedCause | null, type: CurationEven
             return 'The registry no longer holds the photograph, so nothing needs retrying.';
         case 'moved':
             return "The file holds other bytes now, and the photograph's newer items cover them.";
+        case 'identified':
+            return "The watcher now knows whose file this is, so there's nothing left to decide here.";
+        case 'unheld':
+            return "The file changed or left the library, so there's nothing left to decide here.";
+        case 'superseded':
+            return 'The file changed again before this version was built, so the newer replacement item reviews it instead.';
         default:
             return 'The watcher closed it. History says what it found.';
     }

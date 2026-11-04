@@ -132,15 +132,16 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
             </section>
         );
     }
-    if (detail.type === 'ambiguous') {
+    // Settled once #10 holds the file in doubt no more (#14): there's no question left to ask.
+    if (detail.type === 'ambiguous' && detail.group !== 'settled') {
         return (
             <section className={styles.box} aria-labelledby="type-box">
                 <h3 className={styles.boxTitle} id="type-box">
                     Identity question
                 </h3>
                 <p>
-                    Bind it to one of the candidates with <code>photos identity bind</code>, or make it a new photograph with <code>photos identity new</code>. The next
-                    watcher pass updates this item.
+                    Bind it to one of the candidates with <code>photos identity bind</code>, or make it a new photograph with <code>photos identity new</code>. The
+                    watcher&apos;s next pass applies the decision and closes this item.
                 </p>
             </section>
         );

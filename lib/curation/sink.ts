@@ -10,7 +10,9 @@ import {
     eventIdOf,
     eventKey,
     fingerprintOf,
+    closeCauseOf,
     KEPT_FACT_IDS,
+    REOPEN_REASONS,
     SAME_BYTES_BACK,
     type CurationEvent,
     type CurationEventType,
@@ -123,6 +125,21 @@ function shapeProblem(fact: IdentityFact): string | null {
 }
 
 const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
+
+/**
+ * Why the watcher reopens a resolved item that new evidence folds into, or null to leave it as it is: #10 holding
+ * an ambiguous item's bytes in doubt again after lib/curation/sources.ts closed it (#14), or a replacement's bytes
+ * back at the source after its set was refused as superseded (#17). Only the watcher's own close is undone.
+ */
+function reopenReasonOf(type: CurationEventType, event: CurationEvent): string | null {
+    if (event.status !== 'resolved') return null;
+    const close = event.decisions.at(-1);
+    if (close?.action !== 'close' || close.by !== 'watcher' || close.reason === undefined) return null;
+    const cause = closeCauseOf(close.reason);
+    if (type === 'ambiguous' && (cause === 'identified' || cause === 'unheld')) return REOPEN_REASONS.held;
+    if (type === 'replacement' && cause === 'superseded') return REOPEN_REASONS.back;
+    return null;
+}
 
 export function createCurationSink(options: CurationSinkOptions = {}): FactSink {
     const { clock = Date.now, logger = console, waitMs = SINK_WAIT_MS } = options;
@@ -321,7 +338,15 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     lastObservedAt: fact.observedAt > existing.lastObservedAt ? fact.observedAt : existing.lastObservedAt,
                     factIds: [...existing.factIds, fact.factId].slice(-KEPT_FACT_IDS),
                 };
-                // One reopen rule only: a source missing again while something shows the photo can't stay silenced.
+                const reopenReason = reopenReasonOf(type, existing);
+                if (reopenReason !== null) {
+                    // The evidence the watcher closed it on is back. A superseded set's failure is over too: #10 queues it again.
+                    const active = await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
+                    const { candidate: _superseded, ...rest } = next;
+                    void _superseded;
+                    next = { ...rest, status: 'open', decisions: [...existing.decisions, { action: 'reopen', at: producedAt, by: 'watcher', baseRevisionId: active, reason: reopenReason }] };
+                }
+                // The one curator-facing reopen rule: a source missing again while something shows the photo can't stay silenced.
                 if (type === 'missing' && existing.photoId !== null && !STILL_OPEN.has(existing.status)) {
                     const found = await photoHolders(root, existing.photoId, referenceCache);
                     const holders = 'holders' in found ? found.holders : null;

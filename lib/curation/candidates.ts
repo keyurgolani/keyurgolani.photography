@@ -7,7 +7,7 @@ import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { DerivativeJob, IdentityFact, ProfileEntry, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationEvent } from './events';
+import { CLOSE_REASONS, eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationEvent } from './events';
 import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, readEvent, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
 
@@ -19,7 +19,10 @@ import { SINK_WAIT_MS } from './sink';
  * registry says: `ready` once the writer has committed it with its manifest,
  * which is what makes the item a replacement-ready one the curator can
  * confirm, or `failed` (an open item turns `failed`, and #14's retry
- * applies; a deferred one stays deferred).
+ * applies; a deferred one stays deferred). A set the writer refused because
+ * the source moved on to newer bytes isn't a failure to retry: the newer
+ * bytes' own item reviews them, so an open or failed item closes as
+ * superseded, and #14's sink opens it again if these bytes come back.
  * An older revision's bytes coming back reuse the set already committed for
  * them, so that item is ready without a build, and an item already confirmed
  * for them opens again when the photo record has moved on (settleOne()).
@@ -89,13 +92,24 @@ function sameCandidate(candidate: Candidate | undefined, view: Extract<Candidate
  * The item with `view` recorded, or null when nothing changes. Its status
  * moves only when the candidate's state does: a set that fails turns an open
  * item `failed`, and one that becomes ready after a failure turns it `open`
- * again. A deferred item stays deferred either way: Leave in draft is the
- * curator's, so a failure only lands in its `candidate`, which `show`
- * reports. Approved and dismissed items are never touched.
+ * again. A set refused as superseded closes an open or failed item instead,
+ * as `resolved` with the watcher's close, including one an earlier build
+ * left `failed` on it. A deferred item stays deferred either way: Leave in
+ * draft is the curator's, so a failure only lands in its `candidate`, which
+ * `show` reports. Approved and dismissed items are never touched.
  */
 export function withCandidate(event: CurationEvent, view: CandidateView, at: string): CurationEvent | null {
     if (event.type !== 'replacement' || !STILL_OPEN.has(event.status)) return null;
     if (view.state !== 'ready' && view.state !== 'failed') return null;
+    if (view.state === 'failed' && view.failure === 'superseded' && event.status !== 'deferred') {
+        const recorded = sameCandidate(event.candidate, view) ? event.candidate as Candidate : { state: view.state, profileId: view.profileId, failure: view.failure, at };
+        return {
+            ...event,
+            candidate: recorded,
+            status: 'resolved',
+            decisions: [...event.decisions, { action: 'close', at, by: 'watcher', baseRevisionId: null, reason: CLOSE_REASONS.superseded }],
+        };
+    }
     if (sameCandidate(event.candidate, view)) return null;
     const candidate: Candidate = { state: view.state, profileId: view.profileId, ...(view.state === 'failed' ? { failure: view.failure } : {}), at };
     let status = event.status;
@@ -129,6 +143,8 @@ export interface SettleResult {
     failed: string[];
     /** Approved item IDs opened again, because their bytes came back while the photo record pins others. */
     reopened: string[];
+    /** Item IDs closed because the source moved on before their set was built. */
+    superseded: string[];
 }
 
 /** One event, or null when it is absent or damaged, as #14's sink leaves a damaged one. An I/O error is thrown. */
@@ -187,7 +203,8 @@ async function settleOne(root: string, event: CurationEvent, registry: Registry,
         return { next: withCandidate(reopened, view, at) ?? reopened, kind: 'reopened' };
     }
     const next = withCandidate(event, view, at);
-    return next === null ? null : { next, kind: next.candidate?.state === 'ready' ? 'ready' : 'failed' };
+    if (next === null) return null;
+    return { next, kind: next.status === 'resolved' ? 'superseded' : next.candidate?.state === 'ready' ? 'ready' : 'failed' };
 }
 
 /** The items to look at: `only`'s, or every one, damaged ones aside. */
@@ -215,7 +232,7 @@ async function eventsFor(root: string, only: SettleOptions['only']): Promise<Cur
 export async function settleCandidates(root: string, options: SettleOptions = {}): Promise<SettleResult> {
     const { clock = Date.now, logger = console, waitMs = SINK_WAIT_MS } = options;
     const profileId = options.profileId ?? currentProfileId();
-    const result: SettleResult = { ready: [], failed: [], reopened: [] };
+    const result: SettleResult = { ready: [], failed: [], reopened: [], superseded: [] };
     const at = () => new Date(clock()).toISOString();
 
     const looked = await readRegistry(root);
@@ -248,8 +265,8 @@ export async function settleCandidates(root: string, options: SettleOptions = {}
             result[kind].push(id);
         }
     });
-    if (result.ready.length > 0 || result.failed.length > 0 || result.reopened.length > 0) {
-        logger.log(`[curation] Replacements: ${result.ready.length} ready to confirm, ${result.failed.length} failed, ${result.reopened.length} reopened.`);
+    if (result.ready.length > 0 || result.failed.length > 0 || result.reopened.length > 0 || result.superseded.length > 0) {
+        logger.log(`[curation] Replacements: ${result.ready.length} ready to confirm, ${result.failed.length} failed, ${result.reopened.length} reopened, ${result.superseded.length} superseded.`);
     }
     return result;
 }
