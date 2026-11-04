@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { diffCatalog } from '../diff';
 import { revisionIdOf } from '../schema';
 import { createTestCatalog } from '../testing';
@@ -15,6 +15,37 @@ import type { CandidateContent, RevisionFile } from '../types';
  */
 
 describe('the diff budget', () => {
+    it("reads a field's published value through an index, never searching a revision's records per row", async () => {
+        const small = await createTestCatalog({ seed: 8, photos: 40, series: 4 });
+        try {
+            const content = structuredClone(small.content) as RevisionFile['content'];
+            const active: RevisionFile = { revisionId: revisionIdOf(content), schemaVersion: 1, baseRevisionId: null, compiledAt: '2026-02-01T00:00:00.000Z', content };
+            const older = structuredClone(content);
+            for (const photo of older.photos) photo.title = `${photo.id} before`;
+            const olderId = revisionIdOf(older);
+            const on = <T extends { baseRevisionId: string | null }>(record: T): T => ({ ...structuredClone(record), baseRevisionId: olderId });
+            const layer = { site: on(small.site), series: small.series.map(on), photos: small.photos.map(on), problems: [] };
+            const candidate = structuredClone(small.content) as CandidateContent;
+            for (const photo of [...candidate.photos, ...layer.photos]) photo.title = `${photo.title ?? photo.id} again`;
+            const lists = new Set<unknown>([content.photos, content.series, older.photos, older.series]);
+            const find = Array.prototype.find;
+            let searches = 0;
+            const spy = vi.spyOn(Array.prototype, 'find').mockImplementation(function (this: unknown[], ...args: Parameters<typeof find>) {
+                if (lists.has(this)) searches += 1;
+                return find.apply(this, args);
+            });
+            try {
+                const changes = diffCatalog({ active, candidate, authored: layer, registry: small.registry, review: { bases: new Map([[olderId, older]]), inbox: new Map(), unreadable: new Set<string>() } }).changes;
+                expect(changes.filter((change) => change.review.fields.some((field) => field.reason === 'active-moved')).length).toBeGreaterThan(30);
+            } finally {
+                spy.mockRestore();
+            }
+            expect(searches).toBe(0);
+        } finally {
+            await small.cleanup();
+        }
+    }, 60_000);
+
     it('diffs 5,000 photos in 100 series, each changed, in under 1 s', async () => {
         const big = await createTestCatalog({ seed: 7, photos: 5_000, series: 100 });
         try {
