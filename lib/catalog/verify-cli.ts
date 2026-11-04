@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { atomicWriteJson } from '../storage/atomicWrite';
+import { atomicWriteFile } from '../storage/atomicWrite';
 import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
 import { count, parseFlags, UsageError } from './owner-cli';
 import { REVISION_ID_RE } from './schema';
-import { verifyCatalog, verifyRecordPath, VERIFY_EXIT_CODES, type ChainCheck, type RevisionCheck, type VerifyOptions, type VerifyRecord, type VerifyReport } from './verify';
+import { MAX_RECORD_BYTES, verifyCatalog, verifyRecordPath, VERIFY_EXIT_CODES, type ChainCheck, type RevisionCheck, type VerifyOptions, type VerifyRecord, type VerifyReport } from './verify';
 
 /**
  * `photos verify [--revision <revisionId>] [--json]`, #117: argv parsing,
@@ -28,15 +28,49 @@ export function verifyArgs(args: string[]): VerifyArgs {
     return { json: values.json === true, ...(values.revision === undefined ? {} : { revisionId: values.revision }) };
 }
 
-/** Replace `status/verify.json` atomically, creating `status/` for its owner only, as the watcher's heartbeat does. */
-export async function writeVerifyRecord(root: string, record: VerifyRecord): Promise<void> {
+/**
+ * The record as JSON, at most MAX_RECORD_BYTES, which the reader refuses
+ * past. A big catalog's problems are cut to one per revision, then to none;
+ * each entry's `ok` and `problemCount` always stay.
+ */
+function recordText(record: VerifyRecord): string {
+    const text = (value: VerifyRecord) => `${JSON.stringify(value, null, 2)}\n`;
+    const trimmed = (keep: number): VerifyRecord => ({
+        ...record,
+        revisions: record.revisions.map((entry) => ({ ...entry, problems: entry.problems.slice(0, keep), warnings: entry.warnings.slice(0, keep), failedSets: entry.failedSets.slice(0, keep) })),
+    });
+    for (const candidate of [record, trimmed(1), trimmed(0)]) {
+        const out = text(candidate);
+        if (Buffer.byteLength(out) <= MAX_RECORD_BYTES) return out;
+    }
+    return `${JSON.stringify(trimmed(0))}\n`;
+}
+
+export interface RecordWriteOptions {
+    /** This process's uid. As root, the record takes the data root's owner. */
+    uid?: number;
+    chown?: (file: string, uid: number, gid: number) => Promise<void>;
+}
+
+/**
+ * Replace `status/verify.json` atomically, creating `status/` for its owner
+ * only, as the watcher's heartbeat does: 0700 and 0600, the data root's
+ * usual modes. Run as root, as `sudo` on the host would, both take the data
+ * root's owner, so the curator, which runs as that user, can still read the
+ * record. The docs run it in the watcher's container, as uid 1001.
+ */
+export async function writeVerifyRecord(root: string, record: VerifyRecord, { uid = process.getuid?.(), chown = (file, owner, group) => fs.promises.chown(file, owner, group) }: RecordWriteOptions = {}): Promise<void> {
     const file = verifyRecordPath(root);
     try {
         await fs.promises.mkdir(path.dirname(file), { mode: PRIVATE_DIR_MODE });
     } catch (error) {
         if (!hasErrorCode(error, 'EEXIST')) throw error;
     }
-    await atomicWriteJson(file, record);
+    await atomicWriteFile(file, recordText(record));
+    if (uid !== 0) return;
+    const owner = await fs.promises.stat(root);
+    if (owner.uid === 0) return;
+    for (const target of [path.dirname(file), file]) await chown(target, owner.uid, owner.gid);
 }
 
 function revisionLines(entry: RevisionCheck): string[] {

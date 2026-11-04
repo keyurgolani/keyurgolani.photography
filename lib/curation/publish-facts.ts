@@ -121,12 +121,14 @@ export interface PanelView {
  * `verified`: the live checks pass and the last `photos verify` passed it.
  * `live-ok`: the live checks pass and no verify has checked it. Both show
  * the line. `failed`: evidence of a problem, which a warning that names the
- * fix shows in its place. `unknown`: the page can't say, as when another
- * revision went live while it loaded, so it shows neither.
+ * fix shows in its place: the live checks fail, a verify failed it, its
+ * record can't be read, or the pointer chain doesn't show it going live.
+ * `unknown`: the gate found no live revision to judge, which a page that
+ * loaded a live one never sees, so it shows neither.
  */
 export type RollbackReadiness =
     | { state: 'verified' | 'live-ok' | 'unknown' }
-    | { state: 'failed'; reason: 'live-check' | 'last-verify' | 'record-damaged' };
+    | { state: 'failed'; reason: 'live-check' | 'last-verify' | 'record-damaged' | 'chain' };
 
 /** Everything a page load knows: Unvalidated, or one of the Nothing states. */
 export interface ScreenView {
@@ -329,7 +331,9 @@ export function rollbackWarning(n: number, reason: Extract<RollbackReadiness, { 
         case 'live-check':
             return `Revision ${n} fails the checks a restore runs, so it isn't rollback-ready. Run \`photos verify\` to see what to fix.`;
         case 'record-damaged':
-            return `Revision ${n} isn't rollback-ready: the record of its last check can't be read. Run \`photos verify\` to check it again.`;
+            return `Revision ${n} isn't rollback-ready: the record of its last check can't be read. Run \`photos verify\` in the watcher's container to write it again.`;
+        case 'chain':
+            return `Revision ${n} isn't rollback-ready: the activation records don't show it going live. Run \`photos verify\` to check the active pointer, or restore a revision from History, below.`;
     }
 }
 

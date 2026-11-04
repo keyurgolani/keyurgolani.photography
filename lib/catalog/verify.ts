@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
+import { containedAssetDir } from '../media/manifest';
 import { assetDir } from '../media/path';
 import { dataRootStatus } from '../storage/config';
 import { CorruptDocumentError } from '../storage/document';
@@ -9,7 +10,7 @@ import { hasErrorCode } from '../storage/fsx';
 import { verifyDirectory, type AssetIdentity } from '../storage/publish';
 import { historyState, knownGood } from './history';
 import { blockingIssues, validateStored } from './publish';
-import { assertRevisionId, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
+import { assertRevisionId, CatalogIntegrityError, listActivations, readRevisionFile, revisionNumberFor } from './repository';
 import { errorText } from './rollback';
 import { registeredRules } from './ruleset';
 import { REVISION_ID_RE } from './schema';
@@ -40,6 +41,8 @@ import { catalogPaths, readActivePointer } from './working-layer';
 export const VERIFY_RECORD_SCHEMA_VERSION = 1;
 /** How many problems and warnings the record keeps per revision. */
 export const MAX_RECORDED_PROBLEMS = 20;
+/** The most `status/verify.json` may hold. The reader calls a bigger one damaged, and the writer trims to stay under it. */
+export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 
 export type VerifyOutcome = 'VERIFIED' | 'VERIFY_FAILED' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
 
@@ -106,7 +109,7 @@ export interface VerifyOptions {
     /** Check this revision alone, without the chain. */
     revisionId?: string;
     clock?: () => number;
-    /** How a derivative set is checked. verifyDirectory() unless a test counts the calls. */
+    /** How a derivative set is checked. verifySet() unless a test counts the calls. */
     checkSet?: SetCheck;
 }
 
@@ -117,7 +120,7 @@ export function verifyRecordPath(root: string): string {
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
-const ARCHIVE = 'the archive the rest of the data root came from';
+const ARCHIVE = 'your backup';
 
 /** `text` with the data root's absolute path made relative, so no message names a host path. */
 export function scrubRoot(text: string, root: string): string {
@@ -139,15 +142,34 @@ function editorialRuleIds(): string[] {
 
 const issueText = (issue: Issue) => `${issue.code} on ${issue.record.kind} ${issue.record.id}, ${issue.field}: ${issue.message.replace(/\.$/, '')}`;
 
-/** Each derivative set's problems, checked once per run, by photo, asset revision, and profile. */
+/** verifyDirectory() as `photos verify` runs it: a symlinked manifest or variant file fails, as /media refuses it. */
+export const verifySet: SetCheck = (dir, identity) => verifyDirectory(dir, identity, { noFollow: true });
+
+/**
+ * Each derivative set's problems, checked once per run, by photo, asset
+ * revision, and profile. A set folder /media wouldn't serve, a symlink or
+ * one that resolves outside `assets/`, fails without being read, so verify
+ * never hashes through it into another folder, the library included.
+ */
 function setChecker(root: string, check: SetCheck) {
     const results = new Map<string, Promise<string[]>>();
+    const problemsOf = async (identity: AssetIdentity): Promise<string[]> => {
+        const dir = assetDir(identity, root);
+        if ((await containedAssetDir(identity, root)) === null) {
+            const there = await fs.promises.lstat(/*turbopackIgnore: true*/ dir).then(() => true, (error: unknown) => {
+                if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return false;
+                throw error;
+            });
+            if (there) return ["the set's folder is a symlink, or resolves outside assets/, so /media serves none of it"];
+        }
+        return check(dir, identity);
+    };
     return {
         problems(identity: AssetIdentity): Promise<string[]> {
             const key = `${identity.photoId}/${identity.assetRevision}/${identity.profileId}`;
             let result = results.get(key);
             if (!result) {
-                result = check(assetDir(identity, root), identity).then((problems) => problems.map((problem) => scrubRoot(problem, root)));
+                result = problemsOf(identity).then((problems) => problems.map((problem) => scrubRoot(problem, root)));
                 results.set(key, result);
             }
             return result;
@@ -332,7 +354,7 @@ async function run(root: string, options: VerifyOptions, full: boolean): Promise
     const activations = await listActivations(root);
     const registry = await readRegistry(root);
     const good = knownGood(activations, pointer);
-    const sets = setChecker(root, options.checkSet ?? verifyDirectory);
+    const sets = setChecker(root, options.checkSet ?? verifySet);
     const { ids, strays } = full ? await revisionIds(root, activations, pointer) : { ids: [options.revisionId as string], strays: [] };
 
     const revisions: RevisionCheck[] = [];
@@ -381,13 +403,36 @@ const isRecord = (value: unknown): value is VerifyRecord => {
     return record.schemaVersion === VERIFY_RECORD_SCHEMA_VERSION && typeof record.checkedAt === 'string' && Array.isArray(record.revisions) && record.revisions.every(isEntry);
 };
 
-/** The last full run's record: none before the first, damaged when it can't be read or isn't one this build reads. Never throws. */
+/**
+ * The last full run's record: none before the first, damaged when it can't
+ * be read or isn't one this build reads. Never throws, and never blocks or
+ * reads without bound: anything but a regular file of at most
+ * MAX_RECORD_BYTES, a symlink or a FIFO included, is damaged, which shows
+ * the warning.
+ */
 export async function readVerifyRecord(root: string): Promise<VerifyRecordRead> {
-    let text: string;
+    const file = verifyRecordPath(root);
+    let handle: fs.promises.FileHandle;
     try {
-        text = await fs.promises.readFile(/*turbopackIgnore: true*/ verifyRecordPath(root), 'utf8');
+        const stats = await fs.promises.lstat(/*turbopackIgnore: true*/ file);
+        if (!stats.isFile() || stats.size > MAX_RECORD_BYTES) return { state: 'damaged' };
+        // O_NOFOLLOW for a symlink swapped in after the lstat, O_NONBLOCK so a FIFO swapped in can't hold the open.
+        handle = await fs.promises.open(/*turbopackIgnore: true*/ file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     } catch (error) {
         return hasErrorCode(error, 'ENOENT', 'ENOTDIR') ? { state: 'none' } : { state: 'damaged' };
+    }
+    let text: string;
+    try {
+        const stats = await handle.stat();
+        if (!stats.isFile() || stats.size > MAX_RECORD_BYTES) return { state: 'damaged' };
+        const buffer = Buffer.alloc(MAX_RECORD_BYTES + 1);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        if (bytesRead > MAX_RECORD_BYTES) return { state: 'damaged' };
+        text = buffer.subarray(0, bytesRead).toString('utf8');
+    } catch {
+        return { state: 'damaged' };
+    } finally {
+        await handle.close().catch(() => undefined);
     }
     try {
         const value: unknown = JSON.parse(text);
@@ -399,7 +444,8 @@ export async function readVerifyRecord(root: string): Promise<VerifyRecordRead> 
 
 // The Publish screen's gate.
 
-export type FailedReason = 'live-check' | 'last-verify' | 'record-damaged';
+/** `chain`: the active pointer names an activation no record holds, or one set aside, so no record shows the revision going live. */
+export type FailedReason = 'live-check' | 'last-verify' | 'record-damaged' | 'chain';
 
 export type Readiness =
     /** The live checks pass, and the last full verify passed it. */
@@ -407,7 +453,7 @@ export type Readiness =
     /** The live checks pass, and no verify has checked it. */
     | { state: 'live-ok'; revisionId: string; revisionNumber: number }
     | { state: 'failed'; reason: FailedReason; revisionId: string | null; revisionNumber: number | null }
-    /** Nothing is live, or no record numbers the revision. */
+    /** Nothing is live, or `revisionId` was never live. */
     | { state: 'none' };
 
 /**
@@ -425,16 +471,20 @@ export async function rollbackReadiness(root: string, { revisionId, registry }: 
         pointer = await readActivePointer(resolved);
         activations = await listActivations(resolved);
     } catch {
-        return { state: 'failed', reason: 'live-check', revisionId: revisionId ?? null, revisionNumber: null };
+        return { state: 'failed', reason: 'chain', revisionId: revisionId ?? null, revisionNumber: null };
     }
     if (pointer === null) return { state: 'none' };
     const target = revisionId ?? pointer.revisionId;
-    const revisionNumber = knownGood(activations, pointer).get(target);
-    if (revisionNumber === undefined) return { state: 'none' };
+    const good = knownGood(activations, pointer);
+    // A pointer to a missing or set-aside activation numbers nothing, so the live revision has no number from a record.
+    const recorded = good.get(target);
+    if (recorded === undefined && target !== pointer.revisionId) return { state: 'none' };
+    const revisionNumber = recorded ?? revisionNumberFor(activations, target);
     const failed = (reason: FailedReason): Readiness => ({ state: 'failed', reason, revisionId: target, revisionNumber });
+    if (recorded === undefined || !checkChain(activations, pointer, null).ok) return failed('chain');
     try {
         const checked = await checkRevision(resolved, target, registry ?? (await readRegistry(resolved)), null);
-        if (checked.problems.length > 0 || !checkChain(activations, pointer, null).ok) return failed('live-check');
+        if (checked.problems.length > 0) return failed('live-check');
     } catch {
         return failed('live-check');
     }
