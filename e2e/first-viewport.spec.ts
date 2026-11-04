@@ -272,7 +272,10 @@ test.describe('a failed derivative keeps its box and the way on', () => {
     test('Home: the failure is offered, and the series and the site stay reachable', async ({ page }) => {
         await page.goto(`${origin()}/`);
         await waitForHydration(page);
-        await expect(page.getByRole('status').filter({ hasText: 'couldn’t load' })).toBeVisible();
+        // The opening and the next both fail, so the walk stops there (#4): two images asked for, not the whole loop.
+        await expect(page.locator('[data-home-state]')).toHaveAttribute('data-home-state', 'image-unavailable');
+        await expect(page.getByRole('status').filter({ hasText: 'These photographs can’t be shown right now.' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
         await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
         await page.getByRole('link', { name: 'Enter the series', exact: true }).click();
         await expect(page).toHaveURL(`${origin()}/work/${featured().slug}`);
