@@ -6,7 +6,9 @@ import { parseFlags, UsageError } from './owner-cli';
 import { CatalogIntegrityError, listActivations, readRevisionFile, revisionNumberFor } from './repository';
 import { hashValue, inboxReviewOf, type FieldReviewState, type ReviewContext } from './review';
 import { readReviewContext } from './review-context';
-import { INBOX_REASONS, isGeneratedAlt, markFieldsReviewed, restampReason, ReviewRefusedError } from './review-write';
+import { INBOX_REASONS, inConflict, isGeneratedAlt, restampReason } from './review-reasons';
+import { markAllReviewed, ReviewRefusedError, type MarkReviewedInput } from './review-write';
+import { errorText } from './rollback';
 import { REVISION_ID_RE, type AuthoredKind } from './schema';
 import type { CommandResult } from './sequence-commands';
 import type { AuthoredRecord, IssueRecord, RevisionFile, WorkingLayer } from './types';
@@ -101,7 +103,7 @@ async function ledgerOf(root: string): Promise<Ledger | CommandResult> {
         return await readLedger(root);
     } catch (error) {
         const outcome = error instanceof CatalogIntegrityError ? 'INTEGRITY_MISMATCH' : 'STORAGE_ERROR';
-        return { exitCode: 4, output: `[photos] ${outcome}: ${error instanceof Error ? error.message : String(error)}\n` };
+        return { exitCode: 4, output: `[photos] ${outcome}: ${errorText(error, root)}\n` };
     }
 }
 
@@ -139,7 +141,7 @@ const HINTS: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> = 
  * for a reason a stamp-only review may clear.
  */
 function assess(change: CatalogChange, ledger: Ledger): Assessment {
-    const conflicted = (record: IssueRecord, field: string) => (recordIn(ledger.layer, record)?.conflicts ?? []).some((entry) => field === entry.field || field.startsWith(`${entry.field}[`));
+    const conflicted = (record: IssueRecord, field: string) => inConflict(recordIn(ledger.layer, record), field);
     const open = change.review.fields.filter((entry) => entry.state !== 'reviewed');
     if (conflicted(change.record, change.field) || open.some((entry) => conflicted(entry.record, entry.field))) {
         return { kind: 'refused', why: `A restore's rebase left it in conflict with the live revision. Keep one value with photos edit ${change.record.kind === 'site' ? 'site' : change.record.id}, which clears the conflict.` };
@@ -167,17 +169,117 @@ function assess(change: CatalogChange, ledger: Ledger): Assessment {
     return { kind: 'clear', targets: [...targets.values()] };
 }
 
+/**
+ * The rows that rest on the same stamps, row by row: two moves in one
+ * series share its `photoIds` stamp, and so does a new photograph placed
+ * there, so marking one row reviewed marks the others. photos review wants
+ * every one of them named. Each row's list holds the others, in ledger
+ * order, through any chain of shared fields.
+ */
+function sharingOf(diff: CatalogDiff): Map<string, string[]> {
+    const parent = new Map(diff.changes.map((change) => [change.id, change.id]));
+    const find = (id: string): string => {
+        const up = parent.get(id) as string;
+        if (up === id) return id;
+        const top = find(up);
+        parent.set(id, top);
+        return top;
+    };
+    const firstWith = new Map<string, string>();
+    for (const change of diff.changes) {
+        for (const entry of change.review.fields) {
+            if (entry.state === 'reviewed') continue;
+            const key = `${entry.record.kind}:${entry.record.id}:${entry.field}`;
+            const other = firstWith.get(key);
+            if (other === undefined) firstWith.set(key, change.id);
+            else parent.set(find(change.id), find(other));
+        }
+    }
+    const groups = new Map<string, string[]>();
+    for (const change of diff.changes) groups.set(find(change.id), [...(groups.get(find(change.id)) ?? []), change.id]);
+    return new Map(diff.changes.map((change) => [change.id, (groups.get(find(change.id)) ?? []).filter((id) => id !== change.id)]));
+}
+
+/** Text over this many characters is cut, and the line says how long it was. */
+const SHOWN_CHARACTERS = 200;
+
+/** A before or after value as the ledger shows it: text quoted, a description by its words, anything else as compact JSON. */
+function shown(value: unknown): string {
+    if (value === null || value === undefined) return '(none)';
+    const object = typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+    if (object && Object.keys(object).length === 1 && typeof object.kind === 'string') return `(${object.kind})`;
+    const words = typeof value === 'string' ? value : object?.kind === 'described' && typeof object.text === 'string' ? object.text : null;
+    const text = [...(words ?? JSON.stringify(value))];
+    const cut = text.length > SHOWN_CHARACTERS;
+    const body = cut ? `${text.slice(0, SHOWN_CHARACTERS).join('')}…` : text.join('');
+    return `${words === null ? body : JSON.stringify(body)}${cut ? ` (${SHOWN_CHARACTERS} of ${text.length} characters)` : ''}`;
+}
+
+/** `photos diff --json`'s schema version. A field it gains keeps it; one it loses or changes moves it on. */
+export const DIFF_JSON_SCHEMA_VERSION = 1;
+
+/** One row of `photos diff --json`. */
+export interface DiffJsonRow {
+    id: string;
+    group: Group;
+    record: IssueRecord;
+    field: string;
+    category: CatalogChange['category'];
+    before: CatalogChange['before'];
+    after: CatalogChange['after'];
+    fields?: string[];
+    causedBy?: string;
+    visible: boolean;
+    surfaces: CatalogChange['surfaces'];
+    provenance: CatalogChange['provenance'];
+    review: { state: CatalogChange['review']['state']; fields: { record: IssueRecord; field: string; state: FieldReviewState['state']; reason: string | null; detail: string | null }[] };
+    stale: boolean;
+    summary: string;
+    /** Whether photos review can mark it, named with `sharedWith`. */
+    reviewable: boolean;
+    /** Why it can't, or that it needs nothing; null when reviewable. */
+    reason: string | null;
+    /** The rows marked with it, which photos review wants named too. */
+    sharedWith: string[];
+}
+
+function jsonRow(change: CatalogChange, assessment: Assessment, sharedWith: string[]): DiffJsonRow {
+    return {
+        id: change.id,
+        group: groupOf(change),
+        record: change.record,
+        field: change.field,
+        category: change.category,
+        before: change.before,
+        after: change.after,
+        ...(change.fields ? { fields: change.fields } : {}),
+        ...(change.causedBy ? { causedBy: change.causedBy } : {}),
+        visible: change.visible,
+        surfaces: change.surfaces,
+        provenance: change.provenance,
+        review: { state: change.review.state, fields: change.review.fields.map((entry) => ({ record: entry.record, field: entry.field, state: entry.state, reason: entry.reason ?? null, detail: entry.detail ?? null })) },
+        stale: change.stale,
+        summary: change.summary,
+        reviewable: assessment.kind === 'clear',
+        reason: assessment.kind === 'clear' ? null : assessment.why,
+        sharedWith,
+    };
+}
+
 /** `photos diff`: the ledger, grouped, with what each row waits on. Exits 0 once it reads, 3 when the data root isn't ready, 4 when a file can't be read. */
 export async function runDiffCommand(root: string, args: DiffArgs): Promise<CommandResult> {
     const ledger = await ledgerOf(root);
     if (isResult(ledger)) return ledger;
     const { diff, candidateId, active } = ledger;
+    const assessed = new Map(diff.changes.map((change) => [change.id, assess(change, ledger)]));
+    const sharing = sharingOf(diff);
     if (args.json) {
-        return { exitCode: 0, output: `${JSON.stringify({ candidateId, activeRevisionId: active?.revisionId ?? null, activeRevisionNumber: ledger.number, empty: diff.empty, changes: diff.changes }, null, 2)}\n` };
+        const rows = diff.changes.map((change) => jsonRow(change, assessed.get(change.id) as Assessment, sharing.get(change.id) ?? []));
+        const out = { schemaVersion: DIFF_JSON_SCHEMA_VERSION, candidateId, activeRevisionId: active?.revisionId ?? null, activeRevisionNumber: ledger.number, empty: diff.empty, rows };
+        return { exitCode: 0, output: `${JSON.stringify(out, null, 2)}\n` };
     }
     const lines: string[] = [];
     const visible = diff.changes.filter((change) => change.visible);
-    const assessed = new Map(diff.changes.map((change) => [change.id, assess(change, ledger)]));
     const waiting = visible.filter((change) => change.review.state === 'unreviewed' || change.review.state === 'stale' || assessed.get(change.id)?.kind === 'refused');
     if (active && candidateId === active.revisionId) {
         lines.push(`[photos] NO_CHANGES: The draft is the live revision, ${against(ledger)}. Nothing to publish.`);
@@ -190,31 +292,39 @@ export async function runDiffCommand(root: string, args: DiffArgs): Promise<Comm
     }
     lines.push(`Candidate: ${candidateId}`);
     lines.push(active ? `Live: ${active.revisionId} (revision ${ledger.number ?? '?'})` : 'Live: none (nothing is published yet)');
-    const command = (id: string) => `photos review ${id} --expect ${candidateId} --expect-active ${active?.revisionId ?? 'none'}`;
+    const command = (ids: string[]) => `photos review ${ids.join(' ')} --expect ${candidateId} --expect-active ${active?.revisionId ?? 'none'}`;
     for (const { group, heading } of GROUPS) {
         const rows = diff.changes.filter((change) => groupOf(change) === group);
         if (rows.length === 0) continue;
         lines.push('', `${heading} (${rows.length})`);
         for (const change of rows) {
             lines.push(`  ${change.id}  ${change.category}  ${change.review.state}  ${change.summary}`);
+            if (change.category === 'authored' || change.category === 'route') lines.push(`      Before: ${shown(change.before)}`, `      After:  ${shown(change.after)}`);
             const assessment = assessed.get(change.id);
             const open = change.review.fields.find((entry) => entry.state !== 'reviewed');
             if (open?.detail) lines.push(`      ${open.detail}`);
-            if (assessment?.kind === 'clear') lines.push(`      Once it's checked: ${command(change.id)}`);
+            if (assessment?.kind === 'clear') lines.push(`      Once it's checked: ${command([change.id, ...(sharing.get(change.id) ?? [])])}`);
             if (assessment?.kind === 'refused') lines.push(`      photos review can't clear it: ${assessment.why}`);
         }
     }
     return { exitCode: 0, output: `${lines.join('\n')}\n` };
 }
 
+/** Test hooks for runReviewCommand(). */
+export interface ReviewHooks {
+    /** After the draft is read and the rows checked, before the authored lock is taken. */
+    afterRead?: () => Promise<unknown>;
+}
+
 /**
- * `photos review`: mark the named rows reviewed, or none of them. Exits 0
- * when they're marked or need nothing, 1 when one can't be cleared here, 3
- * when the draft or the live revision changed since `photos diff` printed
- * them, a value moved, or the authored lock stays busy, and 4 when a file
- * can't be read or written.
+ * `photos review`: mark the named rows reviewed, or none of them. Every
+ * record is checked under one hold on the authored lock before any is
+ * written. Exits 0 when they're marked or need nothing, 1 when one can't be
+ * cleared here, 3 when the draft, the live revision or a record changed
+ * since `photos diff` printed them, or the authored lock stays busy, and 4
+ * when a file can't be read or written.
  */
-export async function runReviewCommand(root: string, args: ReviewArgs): Promise<CommandResult> {
+export async function runReviewCommand(root: string, args: ReviewArgs, hooks: ReviewHooks = {}): Promise<CommandResult> {
     const ledger = await ledgerOf(root);
     if (isResult(ledger)) return ledger;
     const live = ledger.active?.revisionId ?? null;
@@ -225,6 +335,8 @@ export async function runReviewCommand(root: string, args: ReviewArgs): Promise<
         return { exitCode: 3, output: `[photos] CHANGED: The draft changed since photos diff printed it: it compiles to ${ledger.candidateId}, not ${args.expect}. Nothing was written. Run photos diff again and check what changed.\n` };
     }
     const byId = new Map(ledger.diff.changes.map((change) => [change.id, change]));
+    const sharing = sharingOf(ledger.diff);
+    const named = new Set(args.changeIds);
     const refused: string[] = [];
     const done: string[] = [];
     const clear: { change: CatalogChange; targets: { record: IssueRecord; fields: string[] }[] }[] = [];
@@ -237,7 +349,12 @@ export async function runReviewCommand(root: string, args: ReviewArgs): Promise<
         const assessment = assess(change, ledger);
         if (assessment.kind === 'refused') refused.push(`  ${id}  ${assessment.why}`);
         else if (assessment.kind === 'done') done.push(`  ${id}  ${assessment.why}: ${change.summary}`);
-        else clear.push({ change, targets: assessment.targets });
+        else {
+            // No --all: a row that shares its stamps with others is marked only with all of them named.
+            const missing = (sharing.get(id) ?? []).filter((other) => !named.has(other));
+            if (missing.length > 0) refused.push(`  ${id}  It shares its review with ${missing.join(', ')}, so marking it would mark them too. Name them too, once you've checked them.`);
+            else clear.push({ change, targets: assessment.targets });
+        }
     }
     if (refused.length > 0) {
         const n = args.changeIds.length;
@@ -258,23 +375,24 @@ export async function runReviewCommand(root: string, args: ReviewArgs): Promise<
             records.set(key, entry);
         }
     }
-    const written: string[] = [];
+    const inputs: MarkReviewedInput[] = [];
     for (const { record: ref, fields } of records.values()) {
         const record = recordIn(ledger.layer, ref);
-        if (record === null) return stopped(1, `The ${ref.kind} record ${ref.id} is gone from the working layer.`, written);
+        if (record === null) return stopped(1, `The ${ref.kind} record ${ref.id} is gone from the working layer.`);
         const hashes = Object.fromEntries([...fields].map((field) => [field, hashValue((record as unknown as Record<string, unknown>)[field])]));
-        try {
-            await markFieldsReviewed({ root, record: { kind: ref.kind as AuthoredKind, id: ref.id }, version: record.version, hashes, baseRevisionId: live, actor: args.actor });
-            written.push(`${ref.kind}:${ref.id}`);
-        } catch (error) {
-            if (error instanceof ReviewRefusedError) return stopped(error.code === 'active-moved' ? 3 : 1, error.message, written);
-            if (error instanceof AuthoredWriteError) {
-                if (error.code === 'VERSION_CONFLICT') return stopped(3, `The ${ref.kind} record ${ref.id} changed since photos diff read it.`, written);
-                if (error.code === 'AUTHORED_LOCKED' || error.code === 'LOCK_NOT_HELD') return stopped(3, `Another write holds the working catalog. ${error.message}`, written);
-                if (error.code === 'INVALID_RECORD') return stopped(1, error.message, written);
-            }
-            return stopped(4, error instanceof Error ? error.message : String(error), written);
+        inputs.push({ root, record: { kind: ref.kind as AuthoredKind, id: ref.id }, version: record.version, hashes, baseRevisionId: live, actor: args.actor });
+    }
+    await hooks.afterRead?.();
+    try {
+        await markAllReviewed(inputs);
+    } catch (error) {
+        if (error instanceof ReviewRefusedError) return stopped(error.code === 'active-moved' ? 3 : 1, error.message);
+        if (error instanceof AuthoredWriteError) {
+            if (error.code === 'VERSION_CONFLICT') return stopped(3, `The ${error.record.kind} record ${error.record.id} changed since photos diff read it.`);
+            if (error.code === 'AUTHORED_LOCKED') return stopped(3, `Another write holds the working catalog. ${errorText(error, root)}`);
+            if (error.code === 'INVALID_RECORD') return stopped(1, errorText(error, root));
         }
+        return stopped(4, errorText(error, root), inputs.map((input) => `${input.record.kind}:${input.record.id}`));
     }
     const lines = [
         `[photos] REVIEWED: Marked ${plural(clear.length, 'row', 'rows')} reviewed against ${against(ledger)}. Nothing was published.`,
@@ -285,9 +403,15 @@ export async function runReviewCommand(root: string, args: ReviewArgs): Promise<
     return { exitCode: 0, output: `${lines.join('\n')}\n` };
 }
 
-/** A review that stopped at a write: what it wrote before, which stays, and why it stopped. */
-function stopped(exitCode: 1 | 3 | 4, why: string, written: readonly string[]): CommandResult {
+/**
+ * A review that stopped. Every check runs before the first write, so a
+ * refusal, a moved record or a busy lock wrote nothing. An I/O error part way
+ * through the writes may have left some of `maybe` marked.
+ */
+function stopped(exitCode: 1 | 3 | 4, why: string, maybe: readonly string[] = []): CommandResult {
     const outcome = exitCode === 3 ? 'CHANGED' : exitCode === 1 ? 'REFUSED' : 'STORAGE_ERROR';
-    const before = written.length === 0 ? 'Nothing was written.' : `It had marked the reviewed fields of ${written.join(', ')}, which stay marked.`;
-    return { exitCode, output: `[photos] ${outcome}: ${why} ${before} Run photos diff again.\n` };
+    const after = maybe.length === 0 ? 'Nothing was written.' : `It may have marked some of ${maybe.join(', ')} before it stopped; photos diff shows which.`;
+    return { exitCode, output: `[photos] ${outcome}: ${sentence(why)} ${after} Run photos diff again.\n` };
 }
+
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);

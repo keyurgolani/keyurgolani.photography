@@ -113,7 +113,7 @@ describe('photos diff', () => {
         const moved = data.rows.find((row) => row.id === MOVED);
         expect(Object.keys(moved ?? {}).sort()).toEqual(['after', 'before', 'category', 'field', 'group', 'id', 'provenance', 'reason', 'record', 'review', 'reviewable', 'sharedWith', 'stale', 'summary', 'surfaces', 'visible']);
         expect(moved).toMatchObject({ group: 'authored', reviewable: true, reason: null, sharedWith: [] });
-        expect(Object.keys((moved?.review as { fields: object[] }).fields[0]).sort()).toEqual(['detail', 'field', 'reason', 'record', 'state']);
+        expect(Object.keys((moved?.review as unknown as { fields: object[] }).fields[0]).sort()).toEqual(['detail', 'field', 'reason', 'record', 'state']);
         expect(data.rows.find((row) => row.id === ADDED)).toMatchObject({ reviewable: false, reason: expect.stringMatching(/photos edit/) });
         expect(data.rows.find((row) => row.category === 'derived')).toMatchObject({ group: 'derived', reviewable: false, reason: 'needs no review' });
     });
