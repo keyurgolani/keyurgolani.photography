@@ -20,14 +20,15 @@ import { withCurationLock } from '../repository';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { pageWording, runInboxAction } from '../inbox-form';
 import { loadInbox } from '../inbox';
-import { BIND_WAITING_NEXT, seriesName, systemResponse, type InboxDetail, type InboxView } from '../inbox-view';
+import { BIND_WAITING_NEXT, resolvedResponse, seriesName, systemResponse, type InboxDetail, type InboxView } from '../inbox-view';
 import { rollback } from '../../catalog/rollback';
 import { parseCurationArgs, runCurationCli } from '../commands';
-import type { CurationEvent } from '../events';
+import { CLOSE_REASONS, closeCauseOf, type CurationEvent } from '../events';
 import { listEvents } from '../repository';
 import { archiveMissing, bindReplacement, holdRefusal, MANAGED_PHOTO_FIELDS, OWNER_FIELDS } from '../resolutions';
 import { authoredPhotoSchema } from '../../catalog/schema';
 import { publish, validateWorkingLayer } from '../../catalog/publish';
+import { createCurationSink } from '../sink';
 import { createSourcesSink, failureEventId, recordingFailuresAfterBuild, settleSources } from '../sources';
 import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
@@ -824,6 +825,97 @@ describe('a bind to a path #10 holds in doubt', { timeout: 60_000 }, () => {
         expect(pendingDecisions(w)).toEqual([]);
         expect((await w.event(w.missingId)).version).toBe(item.version);
         expect((await w.registry()).photos[r].mergedInto).toBeUndefined();
+    });
+});
+
+describe('an ambiguous item (#14)', { timeout: 60_000 }, () => {
+    const COPY_PATH = 'harbor/copy.jpg';
+    const ambiguousItems = async (w: MissingWorld) => (await listEvents(w.root)).events.filter((event) => event.type === 'ambiguous');
+    const itemAt = async (w: MissingWorld, at: string) => (await ambiguousItems(w)).find((event) => event.derivedFacts.sourcePath === at) as CurationEvent;
+    const photoAt = (registry: Registry, at: string) => Object.values(registry.photos).find((photo) => photo.source.path === at && photo.sourceHealth === 'present')?.photoId;
+
+    /** Other bytes at P's path while P's own bytes sit at a new one: #10 holds both paths in doubt, with P the candidate. */
+    async function inDoubt(w: MissingWorld): Promise<void> {
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        fs.writeFileSync(w.lib.file(COPY_PATH), images.original);
+        await w.pass();
+        expect((await w.registry()).holds.map((held) => held.path).sort()).toEqual([COPY_PATH, P_PATH].sort());
+        expect((await ambiguousItems(w)).map((event) => [event.derivedFacts.sourcePath, event.status]).sort()).toEqual([[COPY_PATH, 'open'], [P_PATH, 'open']].sort());
+    }
+
+    /** Every ambiguous item is open exactly while #10 still holds its bytes in doubt. */
+    async function inStep(w: MissingWorld): Promise<void> {
+        const held = new Set((await w.registry()).holds.map((hold) => hold.assetRevision));
+        for (const event of await ambiguousItems(w)) expect([event.derivedFacts.sourcePath, event.status]).toEqual([event.derivedFacts.sourcePath, held.has(event.assetRevision as string) ? 'open' : 'resolved']);
+    }
+
+    it('closes once its photos identity new is applied, and the other path stays open until its bind is', async () => {
+        const w = await world();
+        await inDoubt(w);
+        await writeDecision(w.root, createDecision({ type: 'new', path: P_PATH, actor: ACTOR, reason: 'Fixture split' }, { clock }));
+        await w.pass();
+        const n = photoAt(await w.registry(), P_PATH) as string;
+        expect(n).toBeDefined();
+        expect(n).not.toBe(w.p);
+        const split = await itemAt(w, P_PATH);
+        expect(split.status).toBe('resolved');
+        expect(split.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.identified(n) });
+        expect((await itemAt(w, COPY_PATH)).status).toBe('open');
+        await inStep(w);
+
+        await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+        await w.pass();
+        const bound = await itemAt(w, COPY_PATH);
+        expect(bound.status).toBe('resolved');
+        expect(bound.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.identified(w.p) });
+        await inStep(w);
+
+        // The page counts both settled, says what closed them, and drops the identity question.
+        const { detail, response } = await pageItem(bound.id);
+        expect(detail).toMatchObject({ group: 'settled', resolvedBy: { kind: 'identified' } });
+        expect(response).toBe(resolvedResponse({ kind: 'identified' }, 'ambiguous'));
+        expect(response).toBe("The watcher now knows whose file this is, so there's nothing left to decide here.");
+        expect(closeCauseOf(CLOSE_REASONS.identified(w.p))).toBe('identified');
+        // Applying it again changes nothing.
+        const before = (await listEvents(w.root)).events;
+        await w.pass();
+        expect((await listEvents(w.root)).events).toEqual(before);
+    });
+
+    it('closes once its photos identity bind is applied', async () => {
+        const w = await world();
+        await inDoubt(w);
+        await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+        await w.pass();
+        expect(await itemAt(w, COPY_PATH)).toMatchObject({ status: 'resolved' });
+        await inStep(w);
+    });
+
+    it('closes when the file it doubted changes, saying nothing is in doubt', async () => {
+        const w = await world();
+        await inDoubt(w);
+        fs.writeFileSync(w.lib.file(COPY_PATH), images.fresh);
+        await w.pass();
+        const changed = await itemAt(w, COPY_PATH);
+        expect(changed.status).toBe('resolved');
+        expect(changed.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.unheld });
+        expect(closeCauseOf(CLOSE_REASONS.unheld)).toBe('unheld');
+        expect(resolvedResponse({ kind: 'unheld' }, 'ambiguous')).toBe("The file changed or left the library, so there's nothing left to decide here.");
+        await inStep(w);
+    });
+
+    it('is settled by the first pass after the upgrade when a decision already left it stuck open', async () => {
+        const w = await world();
+        await inDoubt(w);
+        await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+        // A watcher before this fix: the decision applies and its facts are delivered, and the item stays open.
+        const outcome = await runReconcilePass({ clock, logger: quiet, sinks: [createCurationSink({ logger: quiet, clock })], clearDelivered: true });
+        expect(outcome.status).toBe('committed');
+        expect((await w.registry()).holds.map((held) => held.path)).not.toContain(COPY_PATH);
+        expect((await itemAt(w, COPY_PATH)).status).toBe('open');
+        await w.restartPass();
+        expect(await itemAt(w, COPY_PATH)).toMatchObject({ status: 'resolved' });
+        await inStep(w);
     });
 });
 

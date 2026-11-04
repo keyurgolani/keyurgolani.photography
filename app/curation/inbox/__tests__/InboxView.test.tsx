@@ -464,6 +464,17 @@ describe('the detail', () => {
         expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
     });
 
+    it('asks the identity question only while an ambiguous item is open, and says the next pass closes it (#14)', () => {
+        const none = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false };
+        const { unmount } = renderInbox(view({ selected: detail({ type: 'ambiguous', can: { ...none, dismiss: true }, primaryUnavailable: null }) }));
+        expect(screen.getByRole('heading', { name: 'Identity question' })).toBeInTheDocument();
+        expect(screen.getByText(/The watcher's next pass applies the decision and closes this item\./)).toBeInTheDocument();
+        unmount();
+        renderInbox(view({ selected: detail({ type: 'ambiguous', status: 'resolved', group: 'settled', resolvedBy: { kind: 'identified' }, can: none, primaryUnavailable: null }) }));
+        expect(screen.queryByRole('heading', { name: 'Identity question' })).toBeNull();
+        expect(screen.getByText("The watcher now knows whose file this is, so there's nothing left to decide here.")).toBeInTheDocument();
+    });
+
     it("shows a missing item #17 archived as archived, with no hint about series or description", () => {
         renderInbox(view({ selected: detail({ type: 'missing', status: 'approved', group: 'settled', references: [], can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) }));
         expect(screen.getAllByText('Archived').length).toBeGreaterThan(0);

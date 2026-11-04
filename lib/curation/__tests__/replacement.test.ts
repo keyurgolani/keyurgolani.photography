@@ -15,9 +15,10 @@ import { writeVersionedDocument } from '../../storage/document';
 import { approveEvent, deferEvent, reopenEvent, retryEvent } from '../actions';
 import { createCandidateSink, replacementEventIds, settleCandidates, settlingAfterBuild } from '../candidates';
 import { curationUsage, runCurationCli } from '../commands';
-import { eventIdOf, eventKey, type CurationEvent } from '../events';
+import { inboxAlerts } from '../alerts';
+import { CLOSE_REASONS, closeCauseOf, eventIdOf, eventKey, type CurationEvent } from '../events';
 import { loadInbox } from '../inbox';
-import { CONFIRMED_LABEL, DONE_ANSWER, MOVED_ANSWER, reopenHint, REPLACEMENT_HINT, statusLabel, systemResponse, type InboxDetail } from '../inbox-view';
+import { CONFIRMED_LABEL, DONE_ANSWER, MOVED_ANSWER, reopenHint, REPLACEMENT_HINT, resolvedResponse, statusLabel, systemResponse, type InboxDetail } from '../inbox-view';
 import { draftPlanText, readDraftPlan } from '../pins';
 import { listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { confirmReplacement, leaveInDraft } from '../resolutions';
@@ -1241,7 +1242,7 @@ describe('confirm', { timeout: 60_000 }, () => {
         await w.pass();
         expect(await w.build(w.job(w.b))).toMatchObject({ status: 'failed', error: 'source-superseded' });
         const event = await w.event();
-        expect(event).toMatchObject({ status: 'failed', candidate: { state: 'failed', failure: 'superseded' } });
+        expect(event).toMatchObject({ status: 'resolved', candidate: { state: 'failed', failure: 'superseded' } });
         expect(await confirm(w, event)).toMatchObject({ ok: false, code: 'stale' });
     });
 
@@ -1286,3 +1287,60 @@ describe('confirm', { timeout: 60_000 }, () => {
     });
 });
 
+
+describe('a replacement superseded by newer bytes (#17)', { timeout: 60_000 }, () => {
+    const openReplacements = async (w: World) => (await listEvents(w.root)).events
+        .filter((event) => event.type === 'replacement' && ['open', 'deferred', 'failed'].includes(event.status))
+        .map((event) => event.id);
+
+    it('closes, so two quick re-exports leave one open replaced item and no failure', async () => {
+        const w = await world();
+        // B's set is still queued when C lands at the same path.
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        const c = (await w.pass()).find((fact) => fact.type === 'replaced' && fact.photoId === w.p)?.assetRevision as string;
+        expect(c).toBeDefined();
+        expect(await w.build(w.job(w.b))).toMatchObject({ status: 'failed', error: 'source-superseded' });
+        expect(await w.build(w.job(c))).toMatchObject({ status: 'ready' });
+
+        const superseded = await w.event();
+        expect(superseded).toMatchObject({ status: 'resolved', candidate: { state: 'failed', failure: 'superseded' } });
+        expect(superseded.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.superseded });
+        expect(closeCauseOf(CLOSE_REASONS.superseded)).toBe('superseded');
+        expect(resolvedResponse({ kind: 'superseded' }, 'replacement')).toBe('The file changed again before this version was built, so the newer replacement item reviews it instead.');
+        expect(await openReplacements(w)).toEqual([replacementEventId(w.p, c)]);
+        expect((await inboxAlerts(w.root)).failed).toEqual([]);
+        // The page counts it settled, and says what closed it.
+        const view = await loadInbox(superseded.id);
+        expect(view.state === 'ready' && view.selected).toMatchObject({ group: 'settled', resolvedBy: { kind: 'superseded' } });
+    });
+
+    it('opens again, without the failed set, when its bytes come back', async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        await w.pass();
+        await w.build(w.job(w.b));
+        expect((await w.event()).status).toBe('resolved');
+
+        // The owner goes back to B: #10 requeues its superseded set.
+        fs.writeFileSync(w.lib.file(P_PATH), images.replacement);
+        await w.pass();
+        const back = await w.event();
+        expect(back.status).toBe('open');
+        expect(back.candidate).toBeUndefined();
+        expect(back.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher' });
+        expect(await w.build(w.job(w.b))).toMatchObject({ status: 'ready' });
+        expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready' } });
+    });
+
+    it('is no failure in photos status while the curator leaves it in draft', async () => {
+        const w = await world();
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        await w.pass();
+        const event = await w.event();
+        expect(await deferEvent({ root: w.root, eventId: event.id, expectedVersion: event.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
+        await w.build(w.job(w.b));
+        // Leave in draft is the curator's, so the item stays deferred, with the superseded set on it.
+        expect(await w.event()).toMatchObject({ status: 'deferred', candidate: { state: 'failed', failure: 'superseded' } });
+        expect((await inboxAlerts(w.root)).failed.map((alert) => alert.eventId)).not.toContain(event.id);
+    });
+});
