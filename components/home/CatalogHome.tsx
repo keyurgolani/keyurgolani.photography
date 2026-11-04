@@ -14,6 +14,7 @@ import CatalogSequence from './CatalogSequence';
 import HomeChromeController, { HomeChrome, HomeVignette } from './HomeChromeController';
 import { homeLoopOf } from './homeLoop';
 import HomeSequenceControls from './HomeSequenceControls';
+import { HOME_LOADING_TIMEOUT_MS } from './homeChromeConfig';
 import { useHomeChrome } from './useHomeChrome';
 import { useHomePlayback, type HomePlayback } from './useHomePlayback';
 import { useHomeRecords } from './useHomeRecords';
@@ -171,6 +172,10 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
   const currentRecordFailed = currentId !== undefined && recordFailed.has(currentId);
   const currentFailed = currentId !== undefined && (failed.has(currentId) || currentRecordFailed || current?.image === null);
 
+  const handleImageFailed = useCallback((photoId: string) => {
+    setFailed((set) => (set.has(photoId) ? set : new Set(set).add(photoId)));
+  }, []);
+
   /** The move whose failure was last decided, so each visit to a photograph decides once, and again after a Retry. */
   const handled = useRef<number | null>(null);
   const autoFailures = useRef(0);
@@ -211,6 +216,17 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
     setNoticeId(currentId);
   }, [currentFailed, currentId, shown, photoIds.length, playback, reportPhoto]);
 
+  // #18's loading bound, once something is on screen: a move whose photograph is still loading at HOME_LOADING_TIMEOUT_MS
+  // counts as failed, so a stalled media route never stops Home now that each move waits on its commit. The image keeps
+  // loading, and lands if it arrives while it's still the one Home is on. The opening has no such bound: #18 ends
+  // loading at it, and the photograph still shows when it comes.
+  const waitingOn = shown && currentId !== undefined && currentId !== settledId && !currentFailed ? currentId : null;
+  useEffect(() => {
+    if (waitingOn === null) return;
+    const timer = setTimeout(() => handleImageFailed(waitingOn), HOME_LOADING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [waitingOn, playback.moves, handleImageFailed]);
+
   // Suspension holds the timer, without touching the visitor's Pause or Play.
   const { setHold } = playback;
   useEffect(() => {
@@ -243,10 +259,6 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
     reportPhoto('shown');
   });
   const handleImageReady = useCallback((photoId: string) => commit.current(photoId), [commit]);
-
-  const handleImageFailed = useCallback((photoId: string) => {
-    setFailed((set) => (set.has(photoId) ? set : new Set(set).add(photoId)));
-  }, []);
 
   const retry = useCallback(() => {
     if (currentId === undefined) return;
