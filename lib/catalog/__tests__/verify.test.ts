@@ -154,7 +154,9 @@ describe('photos verify', { timeout: 60_000 }, () => {
         const text = result.all();
         expect(text).toContain(`revision 2, ${two}: LIVE, FAILS`);
         expect(text).toContain(`${photoId}: w800.webp does not match its sha256`);
-        expect(text).toContain(`photos identity retry ${photoId}`);
+        // A set is never rebuilt in place, and photos identity retry requeues failed builds only, so the set comes back from the archive.
+        expect(text).toMatch(new RegExp(`Fix: Put assets/${photoId}/sha256-[0-9a-f]{64}/[^/\\s]+/ back from the archive the rest of the data root came from\\. Or roll back to a revision that passes\\.`));
+        expect(text).not.toContain('identity retry');
         expect(result.errors.at(-1)).toMatch(/^\[photos\] VERIFY_FAILED: Revision 2, the live one, fails/);
         const record = recordOf(root);
         expect(record.revisions.find((entry) => entry.revisionId === two)).toMatchObject({ ok: false, problems: [expect.stringContaining('does not match its sha256')] });
