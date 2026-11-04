@@ -15,7 +15,7 @@ import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { Activation, ActivePointer, AuthoredPhoto } from '../types';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../working-layer-writer';
-import { catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
+import { authoredPaths, catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -33,8 +33,22 @@ registerRule({
         : []),
 });
 
+/** A second editorial rule, so a target can carry two and a rollback accept only one. */
+let secondEditorialOn: string | null = null;
+registerRule({
+    id: 'test.rollback-editorial-b',
+    version: 1,
+    severity: 'error',
+    gate: 'publish',
+    rollbackClass: 'editorial',
+    check: (ctx) => (secondEditorialOn !== null && ctx.authored === null && ctx.active?.revisionId === secondEditorialOn
+        ? [{ record: { kind: 'site', id: 'site' }, field: 'featuredSeriesIds', message: 'A second test editorial error.' }]
+        : []),
+});
+
 afterEach(async () => {
     editorialErrorOn = null;
+    secondEditorialOn = null;
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -307,17 +321,78 @@ describe('photos rollback', { timeout: 60_000 }, () => {
         expect(stored(root)).toEqual(files);
     });
 
-    it('rolls back to a target with only editorial errors, prints them, and records them as accepted', async () => {
-        const { root, rollTo, one, two } = await twoRevisions({ seed: 216 });
+    /** Everything a refused rollback must leave as it was: the catalog (activations, pointer, revisions) and the working layer. */
+    const untouched = (root: string) => ({ catalog: folderBytes(catalogPaths(root).dir), authored: folderBytes(authoredPaths(root).dir) });
+
+    it('refuses a target with editorial errors nobody accepted, ACCEPTANCE_REQUIRED, exit 1, writing nothing', async () => {
+        const { root, rollTo, one, two, events } = await twoRevisions({ seed: 216 });
         editorialErrorOn = one;
         const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+        // The plan stays READY, with its editorial list, so History keeps Restore and the dialog asks for each one.
         expect(planned).toMatchObject({ outcome: 'READY', editorial: ['test.rollback-editorial'], blocking: [] });
         expect(planned.issues).toEqual([expect.objectContaining({ code: 'test.rollback-editorial', severity: 'error' })]);
+        const before = untouched(root);
 
         const result = await rollTo(one, two);
+        expect(result).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', activation: null, unaccepted: ['test.rollback-editorial'] });
+        expect(result.message).toBe(`Revision 1 (${one}) has editorial errors a rollback brings back only when you accept each one: test.rollback-editorial. Run it again with --accept test.rollback-editorial. Nothing was rolled back.`);
+        expect(ROLLBACK_EXIT_CODES[result.outcome]).toBe(1);
+        expect(untouched(root)).toEqual(before);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+        expect(events.find((event) => event.event === 'catalog.rollback.started')).toMatchObject({ acceptedRules: [] });
+        expect(events.find((event) => event.event === 'catalog.rollback.failed')).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', unaccepted: ['test.rollback-editorial'] });
+    });
+
+    it('rolls back once the editorial error is accepted, and records exactly the flagged rules', async () => {
+        const { root, rollTo, one, two, events } = await twoRevisions({ seed: 217 });
+        editorialErrorOn = one;
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial'] });
         expect(result.outcome).toBe('ROLLED_BACK');
         expect(result.activation).toMatchObject({ acceptedRules: ['test.rollback-editorial'], validation: { errors: 1 } });
         expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+        expect(events.find((event) => event.event === 'catalog.rollback.started')).toMatchObject({ acceptedRules: ['test.rollback-editorial'] });
+        expect(events.find((event) => event.event === 'catalog.rollback.activated')).toMatchObject({ acceptedRules: ['test.rollback-editorial'] });
+    });
+
+    it('refuses with two editorial errors and one accepted, naming the other, writing nothing', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 218 });
+        editorialErrorOn = one;
+        secondEditorialOn = one;
+        expect((await planRollback({ dataRoot: root, to: { revisionNumber: 1 } })).editorial).toEqual(['test.rollback-editorial', 'test.rollback-editorial-b']);
+        const before = untouched(root);
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial'] });
+        expect(result).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', unaccepted: ['test.rollback-editorial-b'] });
+        expect(result.message).toContain('accept each one: test.rollback-editorial-b. Run it again with --accept test.rollback-editorial-b.');
+        expect(untouched(root)).toEqual(before);
+
+        const both = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial-b', 'test.rollback-editorial'] });
+        expect(both.outcome).toBe('ROLLED_BACK');
+        expect(both.activation?.acceptedRules).toEqual(['test.rollback-editorial', 'test.rollback-editorial-b']);
+    });
+
+    it("doesn't record an accept for a rule that isn't flagged", async () => {
+        const { rollTo, one, two } = await twoRevisions({ seed: 219 });
+        editorialErrorOn = one;
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial', 'test.rollback-editorial-b', 'accent.format'] });
+        expect(result.outcome).toBe('ROLLED_BACK');
+        expect(result.activation?.acceptedRules).toEqual(['test.rollback-editorial']);
+        // A target with nothing flagged records no accepts at all.
+        const back = await rollTo(two, one, { acceptedRules: ['accent.format'] });
+        expect(back.outcome).toBe('ROLLED_BACK');
+        expect(back.activation?.acceptedRules).toEqual([]);
+    });
+
+    it('still refuses an integrity error with VALIDATION_FAILED, whatever it accepts', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 220 });
+        editorialErrorOn = one;
+        const photo = (await readRevisionFile(root, one))?.content.photos[0];
+        if (!photo) throw new Error('Revision 1 has no photo.');
+        fs.rmSync(mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w400', 'webp', root));
+        const before = untouched(root);
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial', 'assets.variant'] });
+        expect(result.outcome).toBe('VALIDATION_FAILED');
+        expect(result.message).toContain('(assets.variant)');
+        expect(untouched(root)).toEqual(before);
     });
 
     describe('when it is interrupted', () => {
@@ -438,7 +513,7 @@ describe('photos rollback', { timeout: 60_000 }, () => {
 });
 
 describe('runRollbackCommand', { timeout: 60_000 }, () => {
-    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back the caption', actor: 'curator', yes: false, ...overrides });
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back the caption', actor: 'curator', accept: [], yes: false, ...overrides });
 
     it('prints the impact list, asks, and rolls back on yes against the active revision it showed', async () => {
         const { catalog, root, two, one } = await twoRevisions({ seed: 241 });
@@ -511,7 +586,7 @@ describe('runRollbackCommand', { timeout: 60_000 }, () => {
 });
 
 describe('fix round 1', { timeout: 60_000 }, () => {
-    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', yes: false, ...overrides });
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', accept: [], yes: false, ...overrides });
 
     it('rolls back off a live revision whose file is damaged, listing everything the target publishes', async () => {
         const { catalog, root, one, two } = await twoRevisions({ seed: 251 });
@@ -658,7 +733,7 @@ describe('fix round 1', { timeout: 60_000 }, () => {
 });
 
 describe('fix round 2', { timeout: 60_000 }, () => {
-    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', yes: false, ...overrides });
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', accept: [], yes: false, ...overrides });
 
     it('names a damaged registry relative to the data root', async () => {
         const { root } = await twoRevisions({ seed: 261 });
