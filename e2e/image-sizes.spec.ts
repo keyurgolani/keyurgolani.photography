@@ -263,7 +263,11 @@ for (const screen of Object.keys(PATHS) as Screen[]) {
                         const where = `${path} @${width}: ${describeLook(image.photoId)} (${short(image.photoId)}) in ${Math.round(image.box.width)}x${Math.round(image.box.height)} ${image.fit}, sizes ${image.length}`;
                         // Home's slide takes the rule's rung exactly; anything else that rung or one smaller, never larger.
                         if (screen === 'home' ? step !== 0 : step < 0 || step > 1) failures.push(`${where} asks for w${asked}, the rule's rung is w${rule}`);
-                        if (image.picked !== null && ladder.indexOf(image.picked) > ladder.indexOf(rule)) failures.push(`${where} loaded w${image.picked}, over the rule's w${rule}`);
+                        // What this context fetched, not currentSrc: Chromium can paint a larger rung it already decoded
+                        // for another context in the same browser (Home's w1920 of the same photograph), which fetches
+                        // nothing. A series thumbnail of the same photograph is smaller than its cover, so it counts too.
+                        const fetched = media.filter((request) => request.photoId === image.photoId).map((request) => request.rung);
+                        for (const rung of fetched) if (ladder.indexOf(rung) > ladder.indexOf(rule)) failures.push(`${where} fetched w${rung}, over the rule's w${rule}`);
                     }
                 } finally {
                     await page.context().close();
@@ -288,6 +292,11 @@ test('Work: the first two covers load at once, only the first at high priority, 
 test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more than the 800w rung (#3)', async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark' });
     const page = await context.newPage();
+    const fetched: { photoId: string; rung: number }[] = [];
+    page.on('request', (request) => {
+        const match = /^\/media\/(ph_[^/]+)\/[^/]+\/[^/]+\/w(\d+)\.(?:avif|webp)$/.exec(new URL(request.url()).pathname);
+        if (match) fetched.push({ photoId: match[1], rung: Number(match[2]) });
+    });
     try {
         await page.goto(`${origin()}/work`);
         await waitForHydration(page);
@@ -298,7 +307,7 @@ test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more tha
         expect(images.length).toBeGreaterThan(4);
         for (const image of images) {
             expect(rungFor(image.candidates, image.sizesPx * 2), `${describeLook(image.photoId)}: ${image.length}`).toBeLessThanOrEqual(800);
-            if (image.picked !== null) expect(image.picked, describeLook(image.photoId)).toBeLessThanOrEqual(800);
+            for (const request of fetched.filter((other) => other.photoId === image.photoId)) expect(request.rung, describeLook(image.photoId)).toBeLessThanOrEqual(800);
         }
     } finally {
         await context.close();
