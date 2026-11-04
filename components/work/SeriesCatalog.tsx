@@ -26,7 +26,7 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                 <h1 className={styles.title}>{WORK_TITLE}</h1>
             </header>
             {work.series.length === 0 ? (
-                <p className={styles.empty}>No series are published yet.</p>
+                <p className={styles.empty}>No series are published right now.</p>
             ) : (
                 <ul className={styles.list}>
                     {work.series.map((series, index) => (
