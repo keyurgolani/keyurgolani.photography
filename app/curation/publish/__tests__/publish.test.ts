@@ -514,7 +514,7 @@ describe('the rollback-ready line', () => {
         expect(displayFacts(screen, null, null).panel).toMatchObject({ rollback: failedLine, rollbackTone: 'alert' });
         const valid = await act(screen, 'validate');
         expect(valid.answer).toMatchObject({ kind: 'valid', stakes: expect.stringMatching(/^Publishing makes these \d+ changes live on every page\. Revision 2 failed its last check, so it isn't rollback-ready\. Run `photos verify` to see what to fix\.$/) });
-        expect(resultCopy(answerOf(valid), screen).body.join(' ')).not.toContain('stays rollback-ready');
+        expect(resultCopy(answerOf(valid), screen)?.body.join(' ')).not.toContain('stays rollback-ready');
     });
 
     it('warns when the live check fails, with nothing recorded', async () => {
