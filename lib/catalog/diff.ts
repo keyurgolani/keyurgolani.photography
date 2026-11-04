@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Registry } from '../identity/types';
 import { canonicalJson } from '../storage/canonical';
 import { AUTHORED_PHOTO_FIELDS, fieldClass } from './fields';
-import { fieldReview, hashValue, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
+import { fieldReview, hashValue, publishedIndexes, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
 import type { AuthoredPhoto, AuthoredSeries, CandidateContent, CandidatePhotoRecord, IssueRecord, PublicPhotoRecord, RevisionFile, SeriesRecord, WorkingLayer } from './types';
 
 /**
@@ -382,7 +382,8 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
         }
     }
 
-    const env = authored ? { layer: authored, active: active ? { revisionId: active.revisionId, content: active.content } : null, review: input.review } : null;
+    // One index per revision for this diff, so each row's stale-base check finds its record without a search.
+    const env = authored ? { layer: authored, active: active ? { revisionId: active.revisionId, content: active.content } : null, review: input.review, published: publishedIndexes() } : null;
     const changes = rows.map((row): CatalogChange => {
         const visible = row.visible ?? true;
         const reviews = env && row.provenance !== 'derived' ? row.refs.map((entry) => fieldReview(entry, env)) : [];

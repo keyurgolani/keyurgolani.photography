@@ -385,21 +385,47 @@ export interface ReviewEnv {
     active: { revisionId: string; content: RevisionContent } | null;
     /** Absent: the inbox wasn't read, so a stamp that settled an inbox item can't be checked and reads as stale. */
     review?: ReviewContext;
+    /** Revision indexes for published values, from publishedIndexes(). Without it, each read searches the revision. */
+    published?: (content: RevisionContent) => PublishedIndex;
 }
 
 const EMPTY: RevisionContent = { site: { featuredSeriesIds: [] }, series: [], photos: [] };
 const NEEDS_JUDGMENT = new Set(['open', 'failed']);
 
-/** A field's published value in a revision, null when it doesn't publish it. */
-export function publishedValue(content: RevisionContent, ref: FieldRef): unknown {
+/** A revision's series and photos by ID. */
+export interface PublishedIndex {
+    series: Map<string, RevisionContent['series'][number]>;
+    photos: Map<string, RevisionContent['photos'][number]>;
+}
+
+/**
+ * Indexes of revisions by ID, each built the first time it's asked for. One
+ * diff makes one (diff.ts), so a diff that reads published values for every
+ * row, two per stale-base check after a rollback, never searches the lists,
+ * and nothing outlives the diff that might have changed since.
+ */
+export function publishedIndexes(): (content: RevisionContent) => PublishedIndex {
+    const built = new WeakMap<RevisionContent, PublishedIndex>();
+    return (content) => {
+        let index = built.get(content);
+        if (!index) {
+            index = { series: new Map(content.series.map((series) => [series.id, series])), photos: new Map(content.photos.map((photo) => [photo.id, photo])) };
+            built.set(content, index);
+        }
+        return index;
+    };
+}
+
+/** A field's published value in a revision, null when it doesn't publish it. `index` finds its record without searching. */
+export function publishedValue(content: RevisionContent, ref: FieldRef, index?: PublishedIndex): unknown {
     const { record, field } = ref;
     if (record.kind === 'site') return field === 'seriesOrder' ? content.series.map((series) => series.id) : (content.site as Record<string, unknown>)[field] ?? null;
     if (record.kind === 'series') {
-        const series = content.series.find((entry) => entry.id === record.id);
+        const series = index ? index.series.get(record.id) : content.series.find((entry) => entry.id === record.id);
         if (field === 'visibility') return series ? 'published' : null;
         return series ? (series as unknown as Record<string, unknown>)[field] ?? null : null;
     }
-    const photo = content.photos.find((entry) => entry.id === record.id);
+    const photo = index ? index.photos.get(record.id) : content.photos.find((entry) => entry.id === record.id);
     return photo ? (photo as unknown as Record<string, unknown>)[field] ?? null : null;
 }
 
@@ -503,7 +529,8 @@ export function fieldReview(ref: FieldRef, env: ReviewEnv): FieldReviewState {
         if (base === undefined) {
             return { ...ref, ...seen, state: 'stale', reason: 'base-unreadable', detail: `It was reviewed against ${short(stamp.baseRevisionId)}, whose revision file can't be read, so nothing shows whether the active revision changed it since.` };
         }
-        if (hashValue(publishedValue(base, ref)) !== hashValue(publishedValue(env.active?.content ?? EMPTY, ref))) {
+        const activeContent = env.active?.content ?? EMPTY;
+        if (hashValue(publishedValue(base, ref, env.published?.(base))) !== hashValue(publishedValue(activeContent, ref, env.published?.(activeContent)))) {
             return { ...ref, ...seen, state: 'stale', reason: 'active-moved', detail: `It was reviewed against ${short(stamp.baseRevisionId)}, and the active revision ${short(activeId)} publishes ${ref.field} differently.` };
         }
     }
