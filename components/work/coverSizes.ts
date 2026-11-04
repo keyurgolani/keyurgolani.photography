@@ -17,14 +17,16 @@ const PHONE_BOX: PhotoBox[] = [
 /**
  * Above 768 px wide entries span 7 of the grid's 12 columns at 3:2, and
  * narrow ones 5 at 4:5 (SeriesCatalog.module.css): 7/12 or 5/12 of the
- * column, less 5/12 or 7/12 of a column gap, at most 2rem plus two 12 px
- * surrounds. Below it every entry is the column wide, at 4:3. Black's covers
- * meet the screen's edge and are a little wider, which only asks for less.
+ * column, less 5/12 or 7/12 of a column gap. The gap is clamp(1rem, 2.5vw,
+ * 2rem), plus two 12 px surrounds in Light and Bright, so at most 2.5vw and
+ * 1.5rem there. Below 768 px every entry is the column wide, at 4:3. Black's
+ * covers meet the screen's edge and are a little wider, which only asks for
+ * a rung less.
  */
-const GAP_REM = 3.5;
+const GAP = { vw: 2.5, rem: 1.5 };
 const BOXES: Record<CoverSpan, PhotoBox[]> = {
-    wide: [{ media: '(min-width: 768px)', vw: (7 / 12) * COLUMN_VW, lessRem: (5 / 12) * GAP_REM, ratio: 3 / 2 }, ...PHONE_BOX],
-    narrow: [{ media: '(min-width: 768px)', vw: (5 / 12) * COLUMN_VW, lessRem: (7 / 12) * GAP_REM, ratio: 4 / 5 }, ...PHONE_BOX],
+    wide: [{ media: '(min-width: 768px)', vw: (7 / 12) * COLUMN_VW - (5 / 12) * GAP.vw, lessRem: (5 / 12) * GAP.rem, ratio: 3 / 2 }, ...PHONE_BOX],
+    narrow: [{ media: '(min-width: 768px)', vw: (5 / 12) * COLUMN_VW - (7 / 12) * GAP.vw, lessRem: (7 / 12) * GAP.rem, ratio: 4 / 5 }, ...PHONE_BOX],
 };
 
 /** A cover's sizes by #6's size rule: its box for the span, and its own shape and crop. */
