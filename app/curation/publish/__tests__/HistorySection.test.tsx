@@ -147,6 +147,8 @@ describe('the restore dialog with editorial errors', () => {
         const submit = within(dialog).getByRole('button', { name: 'Restore revision 4' });
         const [contrast, format] = within(dialog).getAllByRole('checkbox');
         expect(submit).toHaveAttribute('aria-disabled', 'true');
+        // aria-disabled, never disabled: it stays focusable, and a press still reaches it and says why.
+        expect(submit).not.toBeDisabled();
         fireEvent.click(contrast);
         expect(contrast).toBeChecked();
         expect(submit).toHaveAttribute('aria-disabled', 'true');

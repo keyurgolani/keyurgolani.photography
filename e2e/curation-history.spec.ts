@@ -412,8 +412,15 @@ test.describe('accepting what today’s checks flag', () => {
         page.on('request', (request) => {
             if (request.method() === 'POST') posted++;
         });
-        await confirm(page, 'Bring the dark accent back.');
+        await page.locator('#restore-reason').fill('Bring the dark accent back.');
+        // Restore is aria-disabled, not disabled, so it stays focusable and a keyboard press reaches it, as it does here.
+        await submit(page).focus();
+        await page.keyboard.press('Enter');
         await expect(dialog(page).getByText('Accept each one to restore it, or cancel.')).toBeVisible();
+        await expect(box).toBeFocused();
+        // And Space, from the button again: the same answer, still nothing posted.
+        await submit(page).focus();
+        await page.keyboard.press('Space');
         await expect(box).toBeFocused();
         expect(posted).toBe(0);
         expect((await listActivations(fixture.root)).length).toBe(before);
@@ -467,8 +474,13 @@ test.describe('accepting what today’s checks flag', () => {
         await expect(dialog(page).getByRole('checkbox')).toHaveCount(2);
         await acceptBox(page, CONTRAST).check();
         await expect(submit(page)).toHaveAttribute('aria-disabled', 'true');
-        await confirm(page, 'Bring both accents back.');
+        await page.locator('#restore-reason').fill('Bring both accents back.');
+        const before = (await listActivations(fixture.root)).length;
+        // force: Playwright won't click an aria-disabled button, but a mouse press does reach it, which is what this checks.
+        await submit(page).click({ force: true });
+        await expect(dialog(page).getByText('Accept each one to restore it, or cancel.')).toBeVisible();
         await expect(acceptBox(page, FORMAT)).toBeFocused();
+        expect((await listActivations(fixture.root)).length).toBe(before);
         await acceptBox(page, FORMAT).check();
         await submit(page).click();
         await page.waitForURL(/\?restored=6/);
@@ -485,8 +497,10 @@ test.describe('accepting what today’s checks flag', () => {
             await open(page);
             await openDialog(page, 4);
             const box = acceptBox(page, CONTRAST);
+            // The box's label: a `has` locator is resolved inside the label, so it can't start from the dialog.
+            const row = dialog(page).locator('label', { has: page.getByRole('checkbox', { name: CONTRAST }) });
             // A press on the label's words toggles it, and so does Space on the box; the keyboard last, so focus shows as it would.
-            await dialog(page).locator('label', { has: box }).getByText(/accent color/).click();
+            await row.getByText(/accent color/).click();
             await expect(box).toBeChecked();
             await expect(box).toBeFocused();
             await page.keyboard.press('Space');
@@ -495,7 +509,7 @@ test.describe('accepting what today’s checks flag', () => {
             await expect(box).toBeChecked();
             await checkSurface(page, { controls: [dialog(page).getByRole('button', { name: 'Cancel' }), submit(page)] });
             // The box's whole row is its target, and the box itself takes the focus ring.
-            await expectMinTargetSize(dialog(page).locator('label', { has: box }), 44);
+            await expectMinTargetSize(row, 44);
             await expectFocusRingVisible(box);
             await expectRingNotClipped(box);
         });
