@@ -41,6 +41,10 @@ const CACHE_DYNAMIC = 'dynamic';
 const CACHE_SET_SOURCES = 'set-sources';
 const CACHE_SUBFOLDERS: ReadonlySet<string> = new Set([CACHE_DYNAMIC, CACHE_SET_SOURCES]);
 
+/** The marker the v1.6 watcher wrote once per library after turning orientation-tagged photos upright. */
+const CACHE_UPRIGHT = 'upright-rebuild.json';
+const ISO_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+
 /** How much of a file the header checks read. A set record is far smaller. */
 const HEAD_BYTES = 64 * 1024;
 
@@ -148,6 +152,22 @@ async function notDerivative(top: string, name: string, relative: string, origin
     const extension = path.posix.extname(relative).toLowerCase();
     const file = path.join(/*turbopackIgnore: true*/ top, relative);
     if (name === CACHE_FOLDER) {
+        if (relative === CACHE_UPRIGHT) {
+            // Exactly v1.6.0's writeUprightMarker(): {rebuiltAt, photos, retry?}, retry only when it lists something.
+            let marker: unknown;
+            try {
+                marker = JSON.parse((await head(file)).toString('utf8'));
+            } catch {
+                marker = null;
+            }
+            const record = marker as { rebuiltAt?: unknown; photos?: unknown; retry?: unknown } | null;
+            const valid = typeof marker === 'object' && marker !== null && !Array.isArray(marker)
+                && Object.keys(marker).every((key) => key === 'rebuiltAt' || key === 'photos' || key === 'retry')
+                && typeof record?.rebuiltAt === 'string' && ISO_TIME.test(record.rebuiltAt)
+                && Number.isInteger(record.photos) && (record.photos as number) >= 0
+                && (record.retry === undefined || (Array.isArray(record.retry) && record.retry.length > 0 && record.retry.every((entry) => typeof entry === 'string')));
+            return valid ? null : `${shown} isn't the marker the v1.x pipeline wrote`;
+        }
         const [folder, entry, ...deeper] = relative.split('/');
         if (deeper.length > 0 || entry === undefined || !CACHE_SUBFOLDERS.has(folder)) return `${shown} isn't in ${CACHE_FOLDER}/${CACHE_DYNAMIC}/ or ${CACHE_FOLDER}/${CACHE_SET_SOURCES}/, where the v1.x pipeline wrote`;
         if (folder === CACHE_SET_SOURCES) {
