@@ -12,7 +12,7 @@ export function padPosition(value: number, total: number): string {
     return String(value).padStart(width(total), '0');
 }
 
-/** The mockup's `NN / NN`, padded to the digits of the total: `03 / 12`, `007 / 120`. For the eye only; a screen reader gets the spelled-out form. */
+/** The mockup's `NN / NN`, padded to the digits of the total: `03 / 12`, `007 / 120`. The Viewer's is for the eye, with the spelled-out form for a screen reader; Home's failure line is spoken padded, as #4 specifies. */
 export function positionLabel(position: number, total: number): string {
     return `${padPosition(position, total)} / ${padPosition(total, total)}`;
 }

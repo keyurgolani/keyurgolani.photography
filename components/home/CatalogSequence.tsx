@@ -139,6 +139,7 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
         if (!mounted) return null;
         const record = photos.get(id);
         const image = record?.image ?? null;
+        const crop = record?.crop === 'contain' ? 'contain' : 'cover';
         const className = [styles.slide, on && styles.active, (on || outgoing) && styles.zoom, outgoing && styles.outgoing].filter(Boolean).join(' ');
         return (
           <div
@@ -149,7 +150,8 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
             aria-label={slideLabel(id)}
             aria-hidden={!on}
             data-photo-id={id}
-            data-crop={record?.crop === 'contain' ? 'contain' : 'cover'}
+            data-crop={crop}
+            data-decoded={decoded.has(id) ? '' : undefined}
             style={frameOf(record?.focalPoint)}
             onTransitionEnd={(event) => {
               if (outgoing && event.propertyName === 'opacity' && event.target === event.currentTarget) {
@@ -162,6 +164,7 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
                 key={attempts[id] ?? 0}
                 id={id}
                 image={image}
+                crop={crop}
                 alt={record?.alt ?? ''}
                 priority={id === activeId}
                 lead={id === openingId}
@@ -193,12 +196,16 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
  */
 function frameOf(focalPoint: CatalogPhoto['focalPoint'] | undefined): React.CSSProperties {
   const { x, y } = focalPoint ?? { x: 0.5, y: 0.5 };
-  return { '--focal-x': `${x * 100}%`, '--focal-y': `${y * 100}%` } as React.CSSProperties;
+  // To two places, so floating point never writes 7.000000000000001%.
+  const percent = (value: number) => `${Math.round(value * 10000) / 100}%`;
+  return { '--focal-x': percent(x), '--focal-y': percent(y) } as React.CSSProperties;
 }
 
 interface SlideImageProps {
   id: string;
   image: NonNullable<CatalogPhoto['image']>;
+  /** How the slide draws it, which picks the rung #6's size rule gives it. */
+  crop: CatalogPhoto['crop'];
   alt: string;
   priority: boolean;
   /** The opening photograph: preloaded from the head, with the srcset and sizes its <picture> has. */
@@ -233,7 +240,7 @@ function decodeThen(element: HTMLImageElement, live: () => boolean, onDecoded: (
 }
 
 /** One attempt at a photograph's image. Retry remounts it with a new key, since a failed image's decode() doesn't fetch again. */
-function SlideImage({ id, image, alt, priority, lead, onDecoded, onGone, onFailed }: SlideImageProps) {
+function SlideImage({ id, image, crop, alt, priority, lead, onDecoded, onGone, onFailed }: SlideImageProps) {
   const ref = useRef<HTMLImageElement>(null);
   const mounted = useRef(false);
   const settle = useCallback(() => {
@@ -260,8 +267,8 @@ function SlideImage({ id, image, alt, priority, lead, onDecoded, onGone, onFaile
       ref={ref}
       asset={image}
       alt={alt}
-      // B2's size rule for a photograph covering the viewport. A contain slide (#4) needs no larger a file than that.
-      sizes={heroSizes(image)}
+      // #6's size rule for the slide's crop, so a contain one asks for the smaller rung it needs. The preload takes it too.
+      sizes={heroSizes(image, crop)}
       loading="eager"
       fetchPriority={priority ? 'high' : 'auto'}
       preload={lead}

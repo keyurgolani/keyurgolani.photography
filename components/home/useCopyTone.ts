@@ -11,8 +11,8 @@ export const TONE_SETTLE_MS = 150;
  * screen (`photoId`, in the slide stack under `carousel`) has loaded, at each slide change, and again whenever its
  * image loads a new source (a rotation or a wider window picks a larger srcset candidate, M5) or the copy or the
  * window changes size, settled for TONE_SETTLE_MS. Light's and Bright's copy takes a dark scrim over a dark photograph
- * (HomeChrome.module.css; spec §5). Before it's measured, or with no copy on the page, there's no tone, which is the
- * theme's own scrim. A measure that can't read the image now keeps the tone it has.
+ * (HomeChrome.module.css; spec §5). Before it's measured, with no copy on the page, or over a contain photograph (#4),
+ * there's no tone, which is the theme's own scrim. A measure that can't read the image now keeps the tone it has.
  */
 export function useCopyTone(carousel: RefObject<HTMLElement | null>, photoId: string | undefined, loaded: boolean) {
   useEffect(() => {
@@ -21,6 +21,12 @@ export function useCopyTone(carousel: RefObject<HTMLElement | null>, photoId: st
     const image = photoId !== undefined && loaded ? carousel.current?.querySelector<HTMLImageElement>(`[data-photo-id="${CSS.escape(photoId)}"] img`) : null;
     const story = root.querySelector('[data-chrome-region="story"]');
     if (!image || !story) return;
+    // A contain photograph leaves the mat under part of the copy, and copyTone samples as if the photograph covered its
+    // box, so it isn't measured: the theme's own scrim applies, with no tone from a photograph before it.
+    if (image.closest('[data-crop="contain"]')) {
+      root.removeAttribute('data-copy-tone');
+      return;
+    }
     let current = true;
     // Only the newest measure writes, however the samples resolve (L6).
     let latest = 0;
