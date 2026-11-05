@@ -357,7 +357,8 @@ describe('an identity pass', { timeout: 60_000 }, () => {
     });
 
     it('drops what the builds did at the next pass, and keeps only the error text until then', async () => {
-        const s = await setup({ options: { worker: { faults: { afterEncode: () => { throw new Error('encoder exploded'); } } } } });
+        // A6's retries are off, so each failure is recorded at once.
+        const s = await setup({ options: { worker: { retry: false, faults: { afterEncode: () => { throw new Error('encoder exploded'); } } } } });
 
         await s.step.pass('startup');
         await s.step.idle();

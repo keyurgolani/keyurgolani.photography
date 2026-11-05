@@ -212,7 +212,14 @@ export const decisionSchema = z.strictObject({
 export type CurationDecision = z.infer<typeof decisionSchema>;
 
 /** Why a replacement's derivative set wasn't built: #10's writer's failure, without its text, which may name a host path. */
-export const CANDIDATE_FAILURES = ['superseded', 'integrity', 'undecodable', 'build'] as const;
+/**
+ * A6 (#17) adds the build failure codes (lib/identity/failures.ts) a set can
+ * fail with for good: `io-error`, `decode-error`, `unsupported-format`,
+ * `too-large` and `retries-exhausted`. `integrity` is `corrupt-destination`,
+ * under the name it had, and `build` is a failure with no code, which only a
+ * v1.7.x worker or a worker without retries records.
+ */
+export const CANDIDATE_FAILURES = ['superseded', 'integrity', 'undecodable', 'build', 'io-error', 'decode-error', 'unsupported-format', 'too-large', 'retries-exhausted'] as const;
 export type CandidateFailure = (typeof CANDIDATE_FAILURES)[number];
 
 /**

@@ -23,8 +23,16 @@ export type ProfileState = 'pending' | 'ready' | 'failed';
 export interface ProfileEntry {
     state: ProfileState;
     attempts: number;
+    /** The writer's reason for a failed entry, or, on a pending one waiting for a retry, for its last try. */
     error?: string;
     readyAt?: string;
+    /**
+     * A6 (#17): on a pending entry, how many retries of a transient failure
+     * the worker has scheduled. v1.7.x ignores it.
+     */
+    retries?: number;
+    /** A6 (#17): on a pending entry, when its next retry is due. The worker builds it no sooner. v1.7.x ignores it. */
+    retryAt?: string;
 }
 
 export interface AssetRevisionRecord {

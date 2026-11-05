@@ -82,8 +82,12 @@ type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
 
 const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
 
-/** Failures a build item is opened for. `superseded` is the source moving on, and `undecodable` has #14's own item. */
-const ITEM_FAILURES = new Set(['build', 'integrity']);
+/**
+ * Failures a build item is opened for. `superseded` is the source moving on, and `undecodable` has #14's own item.
+ * A6 adds the codes a set fails with for good. A transient failure stays pending while it waits for a retry, so it
+ * opens nothing until it is `retries-exhausted`.
+ */
+const ITEM_FAILURES = new Set(['build', 'integrity', 'io-error', 'decode-error', 'unsupported-format', 'too-large', 'retries-exhausted']);
 
 /** The watcher input of a failed build's item, in the shape of #10's fact keys. */
 export function failureKeyOf(photoId: string, assetRevision: string): string {

@@ -171,12 +171,13 @@ describe('the derivative worker', () => {
         expect(s.entry(registry, undecodable)).toEqual({ state: 'failed', attempts: 1, error: 'undecodable' });
     }, 60_000);
 
-    it('retries only at start: an entry that fails again stays failed through later passes', async () => {
+    it('with retry: false, retries only at start: an entry that fails again stays failed through later passes', async () => {
         const s = await setup(1);
         await s.edit((registry) => {
             Object.values(registry.photos[s.ids[0]].revisions)[0].profiles[currentProfileId()] = { state: 'failed', attempts: 1, error: 'the disk was full' };
         });
-        const worker = s.worker({ faults: { beforeManifest: () => { throw new Error('still full'); } } });
+        // A6's retries are off here; lib/identity/__tests__/retries.test.ts covers them.
+        const worker = s.worker({ retry: false, faults: { beforeManifest: () => { throw new Error('still full'); } } });
         await worker.start();
         await worker.idle();
         await s.pass();
