@@ -9,8 +9,8 @@
  * In order, on one server started before the launch, so its pid only changes
  * where a row says it restarts:
  * - E1: before anything is published, the series and Viewer error pages are
- *   Next's bare error shell, with no title or hidden segment in the body,
- *   tag for tag the shell /work sends. Then the same on a second server whose
+ *   Next's bare error shell: no title, meta tag or filled hidden segment
+ *   after </head>, and tag for tag the body /work sends. Then the same on a second server whose
  *   first request meets a damaged active pointer.
  * - F6: a publish that changes the series statement shows in the series
  *   page's meta tag, its main, its statement, and /api/ready alike.
@@ -37,6 +37,7 @@ import {
     copyStandalone,
     DYNAMIC_CACHE_CONTROL,
     editSeries,
+    errorShellProblems,
     get,
     headOf,
     links,
@@ -130,8 +131,9 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     }
 
     /**
-     * `pathname` as `agent` is Next's bare error shell with a 500: no title
-     * and no hidden segment after </head>, and `reference`'s tags.
+     * `pathname` as `agent` is Next's bare error shell with a 500: nothing
+     * after </head> but the scripts and an empty boundary's hidden div
+     * (errorShellProblems()), and, given `reference`, that body's tags.
      */
     async function expectErrorShell(at: string, pathname: string, agent: Agent, reference?: string[]): Promise<string[]> {
         const page = await get(at, pathname, agent);
@@ -139,11 +141,10 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expect(page.status, where).toBe(500);
         expect(page.headers.get('content-type'), where).toContain('text/html');
         expect(page.html, where).toMatch(/<html\b[^>]*\bid="__next_error__"/);
-        const body = withoutScripts(bodyOf(page.html));
-        expect(body, `${where}: a title after </head>`).not.toMatch(/<title[\s>]/i);
-        expect(body, `${where}: a hidden segment after </head>`).not.toMatch(/<div\s+hidden/i);
-        const tags = skeleton(page.html);
-        if (reference) expect(tags, `${where} has /work's error shell`).toEqual(reference);
+        const body = bodyOf(page.html);
+        expect(errorShellProblems(body), `${where}: ${withoutScripts(body)}`).toEqual([]);
+        const tags = skeleton(body);
+        if (reference) expect(tags, `${where} has /work's error body`).toEqual(reference);
         return tags;
     }
 

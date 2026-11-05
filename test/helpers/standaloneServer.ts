@@ -279,6 +279,30 @@ export async function editSeries(root: string, seriesId: string, change: { state
     await writeAuthoredRecord({ ...structuredClone(record), ...change }, { expectedVersion: record.version, root });
 }
 
+/** A hidden div and what it holds, up to its first `</div>`, so a nested segment shows as content. */
+const HIDDEN_DIV_RE = /<div\b[^>]*\shidden(?:\s*=\s*(?:""|"hidden"|''|'hidden'))?(?=[\s/>])[^>]*>([\s\S]*?)<\/div>/gi;
+/** What an empty Suspense boundary leaves in the hidden div: its comments and whitespace. */
+const EMPTY_BOUNDARY_RE = /<!--\/?\$-->|\s+/g;
+
+/**
+ * Why `body`, everything after an error page's `</head>`, isn't Next's bare
+ * error shell, or nothing when it is. The shell may hold one hidden div with
+ * an empty Suspense boundary in it (`<!--$--><!--/$-->`), as `/work`'s does
+ * (test/fixtures/errorShell.ts). Metadata that resolved after the shell went
+ * out streams into that div, so a `<title>`, any `<meta>`, or a hidden div
+ * with anything more in it fails. Script contents are never read.
+ */
+export function errorShellProblems(body: string): string[] {
+    const markup = withoutScripts(body);
+    const problems: string[] = [];
+    if (/<title[\s>]/i.test(markup)) problems.push('a <title> after </head>');
+    if (/<meta[\s/>]/i.test(markup)) problems.push('a <meta> after </head>');
+    for (const [, inside] of markup.matchAll(HIDDEN_DIV_RE)) {
+        if (inside.replace(EMPTY_BOUNDARY_RE, '') !== '') problems.push(`a hidden div holding more than an empty boundary: ${inside}`);
+    }
+    return problems;
+}
+
 // ---- C1's window rule. ----
 
 /** When one publish wrote its pending activation (step 10) and had written its pointer (step 11). */
