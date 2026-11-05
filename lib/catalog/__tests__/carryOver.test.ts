@@ -45,6 +45,19 @@ vi.mock('../../curation/actions', async (importOriginal) => {
     };
 });
 
+// checkLayer(), wrapped, so a test can make its launch count disagree with the plan, as a plan that lost a photo would.
+const launchCount = vi.hoisted(() => ({ extraGone: 0 }));
+vi.mock('../publish', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../publish')>();
+    return {
+        ...actual,
+        checkLayer: async (...args: Parameters<typeof actual.checkLayer>) => {
+            const checked = await actual.checkLayer(...args);
+            return launchCount.extraGone === 0 || !checked.launch ? checked : { ...checked, launch: { ...checked.launch, gone: checked.launch.gone + launchCount.extraGone } };
+        },
+    };
+});
+
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined, info: () => undefined };
 const ACTOR = 'keyur';
 
@@ -75,6 +88,7 @@ interface World {
 const worlds: World[] = [];
 
 afterEach(async () => {
+    launchCount.extraGone = 0;
     for (const world of worlds.splice(0)) {
         await world.data.cleanup();
         await world.lib.cleanup();
@@ -319,6 +333,26 @@ describe('photos carry-over', { timeout: 120_000 }, () => {
         expect(dry.output).toContain(`newer.png (${w.ids['newer.png']}): it shares its legacy derivative set with newer.jpg, so the Gallery shows that one instead.`);
         expect(dry.output).toContain('GONE_COUNT 0');
         expect((await planCarryOver(w.root)).photos.map((photo) => photo.sourcePath)).toEqual(['newer.jpg', 'older.jpg', 'undated.jpg']);
+    });
+
+    it("refuses when the launch would take a photo off the site that --allow-missing didn't name (the GONE_COUNT guard)", async () => {
+        const w = await world();
+        const before = w.tree();
+        // Every photo carries, but the launch count says one more leaves: a photo the plan lost.
+        launchCount.extraGone = 1;
+        const plan = await planCarryOver(w.root);
+        expect(plan.uncarried).toEqual([]);
+        expect(plan.predicted?.gone).toBe(1);
+        const dry = await runCarryOver({ dataRoot: w.root });
+        expect(dry.exitCode).toBe(1);
+        expect(dry.output).toContain('GONE_COUNT 1)');
+        expect(dry.output).toContain("photos publish would take 1 photo off the site, and --allow-missing accepts 0 by name. Nothing leaves the site that you didn't name.");
+        expect(dry.output).toContain('--apply refuses until then.');
+        const refused = await runCarryOver({ dataRoot: w.root }, { apply: true, actor: ACTOR });
+        expect(refused.exitCode).toBe(1);
+        expect(refused.output).toContain("photos publish would take 1 photo off the site, and --allow-missing accepts 0 by name.");
+        expect(w.tree()).toEqual(before);
+        expect((await readWorkingLayer(w.root)).series).toEqual([]);
     });
 
     it('names a photo the Gallery shows that it cannot carry, exits 1 until --allow-missing names it, and ties GONE_COUNT to the names', async () => {
