@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { cache } from 'react';
+import { headers } from 'next/headers';
 import SiteNav from '@/components/site/SiteNav';
 import SeriesCatalog from '@/components/work/SeriesCatalog';
 import { workRouteOf } from '@/lib/catalog/projections/work';
@@ -9,12 +9,29 @@ import { getSiteOrigin } from '@/lib/site/config';
 // Per request, never at build: the image builds with no data root, so a build-time read would freeze Work.
 export const dynamic = 'force-dynamic';
 
+const readWork = async () => workRouteOf(await getActiveCatalog(), publicRoutes);
+
+/** Each request's answer, by its headers object, which Next keeps for the whole request. */
+const answers = new WeakMap<object, ReturnType<typeof readWork>>();
+
 /**
- * The page's one answer in this request. getActiveCatalog() reads one
- * revision per request, and cache() shares the projection between the page
- * and generateMetadata, so the two never disagree.
+ * The page's one answer in this request, shared by the page and
+ * generateMetadata, so the two never disagree. It's kept by the request, not
+ * by cache(), whose scope is one render: when the page throws, Next renders
+ * the error page's head in a second render, and a fresh catalog read there
+ * would land Work's metadata after the error shell was sent. Next then
+ * streams the title into the body, where a visitor without JavaScript keeps
+ * it. Kept, the answer is there at once.
  */
-const workFor = cache(async () => workRouteOf(await getActiveCatalog(), publicRoutes));
+async function workFor(): ReturnType<typeof readWork> {
+    const request = await headers();
+    let answer = answers.get(request);
+    if (answer === undefined) {
+        answer = readWork();
+        answers.set(request, answer);
+    }
+    return answer;
+}
 
 /**
  * Work's own title, description, and canonical path (#3), through the root
