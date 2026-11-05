@@ -112,11 +112,12 @@ const served = (servedState: 'ok' | 'degraded', content: CandidateContent = cata
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
     }) as unknown as ActiveCatalog;
 
-const props = (slug: string, photoId: string) => ({ params: Promise.resolve({ slug, photoId }) });
+type Query = Record<string, string | string[] | undefined>;
+const props = (slug: string, photoId: string, query: Query = {}) => ({ params: Promise.resolve({ slug, photoId }), searchParams: Promise.resolve(query) });
 
-async function answer(slug: string, photoId: string): Promise<{ html: string } | { redirect: string } | { notFound: true } | { thrown: unknown }> {
+async function answer(slug: string, photoId: string, query: Query = {}): Promise<{ html: string } | { redirect: string } | { notFound: true } | { thrown: unknown }> {
     try {
-        return { html: renderToStaticMarkup(await ViewerRoute(props(slug, photoId))) };
+        return { html: renderToStaticMarkup(await ViewerRoute(props(slug, photoId, query))) };
     } catch (error) {
         if (error instanceof Redirected) return { redirect: error.location };
         if (error instanceof NotFound) return { notFound: true };
@@ -235,19 +236,51 @@ describe('the Viewer route', () => {
         expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
     });
 
+    it.each([
+        ['an uppercase slug', 'Route-A', P[0], `/work/route-a/photo/${P[0]}`],
+        ['an uppercase photo ID', 'route-a', P[0].toUpperCase(), `/work/route-a/photo/${P[0]}`],
+        ['an uppercase former slug', 'SENTINEL-OLD-SLUG', P[1], `/work/route-a/photo/${P[1]}`],
+        ['a photo moved to another series', 'route-b', P[0], `/work/route-a/photo/${P[0]}`],
+        ['a photo moved, under a former slug', 'sentinel-old-slug', P[3], `/work/route-b/photo/${P[3]}`],
+        ['a photo moved, under an uppercase slug', 'Route-A', P[3], `/work/route-b/photo/${P[3]}`],
+    ])('answers %s 308 to the canonical URL (#7, decided)', async (_name, slug, photoId, location) => {
+        expect(await answer(slug, photoId)).toEqual({ redirect: location });
+        expect(await generateMetadata(props(slug, photoId))).toEqual({});
+    });
+
+    it('keeps the query on every redirect, re-encoded after the canonical path', async () => {
+        const query = { utm_source: 'mail', tag: ['one', 'two'] };
+        for (const [slug, photoId, path] of [
+            ['sentinel-old-slug', P[1], `/work/route-a/photo/${P[1]}`],
+            ['Route-A', P[0], `/work/route-a/photo/${P[0]}`],
+            ['route-b', P[0], `/work/route-a/photo/${P[0]}`],
+        ]) {
+            expect(await answer(slug, photoId, query), `${slug} ${photoId}`).toEqual({ redirect: `${path}?utm_source=mail&tag=one&tag=two` });
+        }
+    });
+
+    it('builds the Location from the canonical path only, and it never loops', async () => {
+        const result = await answer('Route-B', P[0], { next: '//evil.example/x' });
+        if (!('redirect' in result)) throw new Error(`Expected a redirect, got ${JSON.stringify(result)}`);
+        expect(result.redirect).toBe(`/work/route-a/photo/${P[0]}?next=%2F%2Fevil.example%2Fx`);
+        const target = new URL(result.redirect, 'https://photos.example.test');
+        expect(target.origin).toBe('https://photos.example.test');
+        const [, , slug, , photoId] = target.pathname.split('/');
+        expect('html' in (await answer(slug, photoId, Object.fromEntries(target.searchParams)))).toBe(true);
+    });
+
     it('answers the one not-found for anything it can\'t serve', async () => {
         const cases: [string, string][] = [
-            ['route-a', P[3]],
-            ['route-b', P[0]],
+            ['route-a', P[4]],
             ['route-draft', P[4]],
             ['route-hidden', P[5]],
             ['route-a', id(99)],
             ['no-such-series', P[0]],
-            ['Route-A', P[0]],
-            ['route-a', P[0].toUpperCase()],
+            ['Route-Draft', P[4]],
+            ['route-a', id(99).toUpperCase()],
             ['..', P[0]],
             ['route-a', 'IMG_0001.jpg'],
-            ['sentinel-old-slug', P[3]],
+            ['route-draft', P[0]],
         ];
         for (const [slug, photoId] of cases) expect(await answer(slug, photoId), `${slug} ${photoId}`).toEqual({ notFound: true });
     });

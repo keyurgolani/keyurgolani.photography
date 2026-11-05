@@ -196,13 +196,13 @@ function served(source: CatalogContent = content, servedState: 'ok' | 'degraded'
 
 const unavailable = (reason: 'not-published' | 'catalog-unreadable' | 'active-unreadable' | 'revision-unreadable'): ActiveCatalog => ({ state: 'unavailable', reason });
 
-const props = (slug: string) => ({ params: Promise.resolve({ slug }) });
+const props = (slug: string, query: Record<string, string | string[] | undefined> = {}) => ({ params: Promise.resolve({ slug }), searchParams: Promise.resolve(query) });
 
 type Answer = { html: string } | { redirect: InstanceType<typeof Redirected> } | { notFound: true } | { thrown: unknown };
 
-async function answer(slug: string): Promise<Answer> {
+async function answer(slug: string, query: Record<string, string | string[] | undefined> = {}): Promise<Answer> {
     try {
-        return { html: renderToStaticMarkup(await SeriesRoute(props(slug))) };
+        return { html: renderToStaticMarkup(await SeriesRoute(props(slug, query))) };
     } catch (error) {
         if (error === NOT_FOUND) return { notFound: true };
         if (error instanceof Redirected) return { redirect: error };
@@ -284,7 +284,8 @@ describe('route generation and visibility', () => {
         ['a hidden series\' former slug', 'sentinel-old-hidden'],
         ['a series ID', 'ser_fixture-a'],
         ['a photo ID', P[0]],
-        ['an uppercase variant', 'Fixture-A'],
+        ['an uppercase variant of a draft series', 'Sentinel-Draft'],
+        ['an uppercase variant of an unknown slug', 'No-Such-Series'],
         ['a dot segment', '..'],
         ['an encoded slash', 'fixture-a%2F..'],
         ['a slug over 64 characters', 'a'.repeat(65)],
@@ -303,7 +304,7 @@ describe('route generation and visibility', () => {
     });
 
     it('answers a malformed slug without reading the catalog', async () => {
-        for (const slug of ['Fixture-A', '..', 'a'.repeat(65), '']) {
+        for (const slug of ['Fixture--A', '..', 'a'.repeat(65), '']) {
             await answer(slug);
             await generateMetadata(props(slug));
         }
@@ -329,8 +330,41 @@ describe('redirects', () => {
 
     it('sends no redirect while the catalog is unavailable, only the error', async () => {
         state.catalog = unavailable('active-unreadable');
-        const result = await answer('old-fixture-a');
-        expect(result).toEqual({ thrown: expect.any(CatalogUnavailableError) });
+        for (const slug of ['old-fixture-a', 'Fixture-A']) expect(await answer(slug)).toEqual({ thrown: expect.any(CatalogUnavailableError) });
+    });
+
+    it.each([
+        ['an uppercase variant', 'Fixture-A'],
+        ['an all-caps variant', 'FIXTURE-A'],
+        ['a mixed-case former slug', 'Old-Fixture-A'],
+    ])('answers %s with a 308 to the canonical series path, and empty metadata (#5, decided)', async (_name, slug) => {
+        expect(await answer(slug)).toEqual({ redirect: expect.objectContaining({ location: '/work/fixture-a', status: 308 }) });
+        expect(await generateMetadata(props(slug))).toEqual({});
+    });
+
+    it('keeps the query on every redirect, re-encoded after the canonical path', async () => {
+        const query = { utm_source: 'mail', tag: ['one', 'two'] };
+        for (const slug of ['old-fixture-a', 'Fixture-A', 'OLD-FIXTURE-A']) {
+            expect(await answer(slug, query), slug).toEqual({ redirect: expect.objectContaining({ location: '/work/fixture-a?utm_source=mail&tag=one&tag=two', status: 308 }) });
+        }
+    });
+
+    it('builds the Location from the canonical path only, so no query or slug can send it off the site', async () => {
+        const result = await answer('Old-Fixture-A', { next: '//evil.example/x', '#': 'https://evil.example' });
+        if (!('redirect' in result)) throw new Error(`Expected a redirect, got ${JSON.stringify(result)}`);
+        const target = new URL(result.redirect.location, 'https://photos.example.test');
+        expect([target.origin, target.pathname, target.hash]).toEqual(['https://photos.example.test', '/work/fixture-a', '']);
+        expect(result.redirect.location).toBe('/work/fixture-a?next=%2F%2Fevil.example%2Fx&%23=https%3A%2F%2Fevil.example');
+    });
+
+    it('never loops: the Location renders the series', async () => {
+        for (const slug of ['old-fixture-a', 'Fixture-A']) {
+            const result = await answer(slug, { a: '1' });
+            if (!('redirect' in result)) throw new Error(`Expected a redirect, got ${JSON.stringify(result)}`);
+            const target = new URL(result.redirect.location, 'https://photos.example.test');
+            const next = await answer(target.pathname.slice('/work/'.length), Object.fromEntries(target.searchParams));
+            expect('html' in next, slug).toBe(true);
+        }
     });
 });
 
@@ -357,6 +391,7 @@ describe('generateMetadata on a published series', () => {
             title: 'Fixture series A',
             description: 'Fixture short statement A.',
             alternates: { canonical: '/work/fixture-a' },
+            other: { 'catalog-revision': REVISION },
             openGraph: {
                 siteName: 'Keyur Golani Photography',
                 type: 'website',
@@ -372,6 +407,7 @@ describe('generateMetadata on a published series', () => {
         expect(metadata).toEqual({
             title: 'Fixture series A',
             description: 'Fixture short statement A.',
+            other: { 'catalog-revision': REVISION },
             openGraph: { siteName: 'Keyur Golani Photography', type: 'website' },
         });
         expect(JSON.stringify(metadata)).not.toMatch(/localhost|https?:/);
@@ -436,6 +472,31 @@ describe('the page', () => {
         ]);
     });
 
+    it('shows at most three locations, in sequence order, and says how many more there are', async () => {
+        const many = structuredClone(content);
+        const places = ['Fixture place one', 'Fixture place two', 'Fixture place three', 'Fixture place four', 'Fixture place five'];
+        for (const [index, photoId] of ORDER_A.slice(0, 5).entries()) {
+            const photo = many.photos.find((record) => record.id === photoId);
+            if (!photo) throw new Error(`No ${photoId}`);
+            photo.location = places[index];
+        }
+        state.catalog = served(many);
+        const row = [...(await documentOf()).querySelectorAll('section[aria-labelledby="series-facts"] dl > div')].find((item) => item.querySelector('dt')?.textContent === 'Locations');
+        expect(row?.querySelector('dd')?.textContent).toBe('Fixture place one, Fixture place two, Fixture place three, and 2 moreFrom the photograph records');
+        // Three exactly shows all three, with no count.
+        const three = structuredClone(many);
+        for (const photo of three.photos) if (photo.location === 'Fixture place four' || photo.location === 'Fixture place five') photo.location = 'Fixture place one';
+        state.catalog = served(three);
+        const threeRow = [...(await documentOf()).querySelectorAll('section[aria-labelledby="series-facts"] dl > div')].find((item) => item.querySelector('dt')?.textContent === 'Locations');
+        expect(threeRow?.querySelector('dd')?.textContent).toBe('Fixture place one, Fixture place two, Fixture place threeFrom the photograph records');
+        // Four says "1 more".
+        const four = structuredClone(many);
+        for (const photo of four.photos) if (photo.location === 'Fixture place five') photo.location = 'Fixture place one';
+        state.catalog = served(four);
+        const fourRow = [...(await documentOf()).querySelectorAll('section[aria-labelledby="series-facts"] dl > div')].find((item) => item.querySelector('dt')?.textContent === 'Locations');
+        expect(fourRow?.querySelector('dd')?.textContent).toBe('Fixture place one, Fixture place two, Fixture place three, and 1 moreFrom the photograph records');
+    });
+
     it('shows one year when every date falls in it, and no Captured row when nothing is dated', async () => {
         const doc = await documentOf('fixture-b');
         const terms = [...doc.querySelectorAll('section[aria-labelledby="series-facts"] dt')].map((term) => term.textContent);
@@ -489,10 +550,12 @@ describe('the page', () => {
         expect(names).toEqual(
             ORDER_A.map((photoId, index) => {
                 const text = describedText(photoId);
-                return photoEntryName({ alt: text === null ? { kind: 'decorative' } : { kind: 'described', text }, position: index + 1, total: 6 });
+                return photoEntryName({ title: photoOf(photoId).title ?? null, alt: text === null ? { kind: 'decorative' } : { kind: 'described', text }, position: index + 1, total: 6 });
             }),
         );
         expect(names[1]).toBe('Photograph 2 of 6');
+        // P[0] is titled, so its name leads with the title (#5).
+        expect(names[0]).toBe(`Fixture title one, ${describedText(P[0])?.replace(/[\s.,;:]+$/, '')}, photograph 1 of 6`);
         expect(new Set(names).size).toBe(names.length);
         for (const entry of entries) for (const img of entry.querySelectorAll('img')) expect(img.getAttribute('alt')).toBe('');
     });
@@ -581,6 +644,19 @@ describe('the page', () => {
         expect(cover.getAttribute('style')).toContain(`--ratio:${width} / ${height}`);
     });
 
+    it('leads the cover\'s name with its photograph\'s title, as its entry\'s does (#5)', async () => {
+        const titled = structuredClone(content);
+        const photo = titled.photos.find((record) => record.id === P[1]);
+        if (!photo) throw new Error('No P[1]');
+        photo.title = 'Fixture cover title';
+        state.catalog = served(titled);
+        const doc = await documentOf();
+        const entryName = photoEntryName({ title: 'Fixture cover title', alt: { kind: 'described', text: describedText(P[1]) ?? '' }, position: 3, total: 6 });
+        expect(entryName.startsWith('Fixture cover title, ')).toBe(true);
+        expect(doc.getElementById(`photo-${P[1]}`)?.getAttribute('aria-label')).toBe(entryName);
+        expect(doc.getElementById('series-cover')?.getAttribute('aria-label')).toBe(`${entryName}, series cover`);
+    });
+
     it('names a decorative cover by its position, still apart from its entry', async () => {
         const decorative = structuredClone(content);
         const photo = decorative.photos.find((record) => record.id === P[1]);
@@ -620,21 +696,47 @@ describe('the page', () => {
         expect(doc.querySelector('main figcaption')?.textContent).toBe('Photograph 1 of 1');
     });
 
-    it('ends with an All work link to /work after the last entry, and nothing wraps to another series', async () => {
+    it('has an All work link to /work above the title and another after the last entry, and nothing wraps to another series', async () => {
         const doc = await documentOf();
         const links = [...doc.querySelectorAll('main a')];
         expect(links.at(-1)?.textContent).toBe('All work');
         expect(links.at(-1)?.getAttribute('href')).toBe('/work');
-        expect(links.filter((link) => !link.getAttribute('href')?.startsWith('/work/fixture-a/photo/')).map((link) => link.getAttribute('href'))).toEqual(['/work']);
+        // The first link in main, and before the h1 in the header (#5).
+        expect([links[0]?.textContent, links[0]?.getAttribute('href')]).toEqual(['All work', '/work']);
+        const header = doc.querySelector('main article header');
+        expect(header?.firstElementChild?.querySelector('a')).toBe(links[0]);
+        expect(links[0].compareDocumentPosition(doc.querySelector('h1') as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(links[0].closest('nav')).toBeNull();
+        expect(links.filter((link) => !link.getAttribute('href')?.startsWith('/work/fixture-a/photo/')).map((link) => link.getAttribute('href'))).toEqual(['/work', '/work']);
+    });
+
+    it('marks main with the served revision, as Work and Home do (#5)', async () => {
+        const doc = await documentOf();
+        expect(doc.querySelector('main')?.getAttribute('data-catalog-revision')).toBe(REVISION);
+        expect(doc.querySelectorAll('[data-catalog-revision]')).toHaveLength(1);
+    });
+
+    it('puts the h1, the statement, and the cover in the server HTML, so the page reads whole with JavaScript off', async () => {
+        const page = await html();
+        expect(page).toMatch(/<h1[^>]*>Fixture series A<\/h1>/);
+        expect(page).toContain('<p>Fixture statement, first paragraph.</p>');
+        expect(page).toContain('<p>Second &lt;b&gt;paragraph&lt;/b&gt; &amp; more.</p>');
+        const doc = new DOMParser().parseFromString(page, 'text/html');
+        const cover = doc.querySelector('main figure img');
+        expect(cover?.getAttribute('src')).toMatch(new RegExp(`^/media/${P[1]}/`));
+        expect(cover?.getAttribute('srcset')).toBeTruthy();
+        // Every entry's link and image are there too, and both All work links, with no client step to add them.
+        expect(entriesOf(doc)).toHaveLength(ORDER_A.length);
+        expect([...doc.querySelectorAll('main a[href="/work"]')]).toHaveLength(2);
     });
 });
 
 describe('keyboard and touch order', () => {
-    it('makes the cover, the entries, and All work the only focusable things in main, as plain links in DOM order with no tabindex', async () => {
+    it('makes All work, the cover, the entries, and All work again the only focusable things in main, as plain links in DOM order with no tabindex', async () => {
         const doc = await documentOf();
         const focusable = [...doc.querySelectorAll('main a[href], main button, main input, main select, main textarea, main [tabindex]')];
-        expect(focusable.map((element) => element.getAttribute('href'))).toEqual([`/work/fixture-a/photo/${P[1]}`, ...ORDER_A.map((photoId) => `/work/fixture-a/photo/${photoId}`), '/work']);
-        expect(focusable[0].id).toBe('series-cover');
+        expect(focusable.map((element) => element.getAttribute('href'))).toEqual(['/work', `/work/fixture-a/photo/${P[1]}`, ...ORDER_A.map((photoId) => `/work/fixture-a/photo/${photoId}`), '/work']);
+        expect(focusable[1].id).toBe('series-cover');
         for (const element of focusable) {
             expect(element.tagName).toBe('A');
             expect(element.hasAttribute('tabindex')).toBe(false);

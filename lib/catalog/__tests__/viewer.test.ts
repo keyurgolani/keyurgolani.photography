@@ -105,7 +105,7 @@ function trap(): ViewerSource {
     const fail = () => {
         throw new Error('The catalog was read');
     };
-    return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, photo: fail, photosOf: fail };
+    return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, seriesOfPhoto: fail, photo: fail, photosOf: fail };
 }
 
 describe('viewerParams', () => {
@@ -206,15 +206,56 @@ describe('viewerPhotoOf on a revision', () => {
         expect([result.position, result.total, result.previousPhotoId, result.nextPhotoId]).toEqual([2, 2, P[0], null]);
     });
 
-    it('redirects a prior slug to the canonical one, only for a photo that series holds', () => {
+    it('redirects a prior slug to the canonical one, and to the photo\'s own series when it moved', () => {
         expect(reader.getViewerPhoto('old-fixture-a', P[1])).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: P[1] });
-        expect(reader.getViewerPhoto('old-fixture-a', P[5])).toEqual({ kind: 'not-found' });
+        expect(reader.getViewerPhoto('old-fixture-a', P[5])).toEqual({ kind: 'redirect', slug: 'fixture-b', photoId: P[5] });
         expect(reader.getViewerPhoto('old-fixture-a', P[6])).toEqual({ kind: 'not-found' });
     });
 
-    it('answers not-found for a published photo under another series', () => {
-        expect(reader.getViewerPhoto('fixture-b', P[0])).toEqual({ kind: 'not-found' });
-        expect(reader.getViewerPhoto('fixture-a', P[5])).toEqual({ kind: 'not-found' });
+    it('redirects a published photo asked for under another published series to its own series (#7, decided)', () => {
+        expect(reader.getViewerPhoto('fixture-b', P[0])).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: P[0] });
+        expect(reader.getViewerPhoto('fixture-a', P[5])).toEqual({ kind: 'redirect', slug: 'fixture-b', photoId: P[5] });
+    });
+
+    it('redirects a letter-case variant of the slug, a prior slug, or the photo ID to the canonical URL (#7, decided)', () => {
+        const upperId = P[0].replace('ph_', 'PH_');
+        for (const [slug, photoId] of [['Fixture-A', P[0]], ['FIXTURE-A', P[0]], ['OLD-FIXTURE-A', P[0]], ['fixture-a', upperId], ['Fixture-A', upperId], ['Fixture-B', P[0]]]) {
+            expect(reader.getViewerPhoto(slug, photoId), `${slug} ${photoId}`).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: P[0] });
+        }
+        // A UUID's hex letters fold too.
+        const hex = structuredClone(content);
+        const hexId = `ph_${HEX_ID}`;
+        hex.photos[1].id = hexId;
+        hex.series[0].photoIds[1] = hexId;
+        const hexReader = createCatalogReader(hex, { revisionId: REVISION_B, revisionNumber: 4 });
+        expect(viewer(hexReader.getViewerPhoto('fixture-a', hexId)).photo.id).toBe(hexId);
+        expect(hexReader.getViewerPhoto('fixture-a', `ph_${HEX_ID.toUpperCase()}`)).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: hexId });
+    });
+
+    it('never loops: every redirect\'s target renders', () => {
+        for (const [slug, photoId] of [['Fixture-A', P[0]], ['old-fixture-a', P[5]], ['fixture-b', P[0]], ['fixture-a', P[0].replace('ph_', 'PH_')]]) {
+            const result = reader.getViewerPhoto(slug, photoId);
+            if (result.kind !== 'redirect') throw new Error(`${slug} ${photoId} did not redirect`);
+            expect(viewer(reader.getViewerPhoto(result.slug, result.photoId)).photo.id, `${slug} ${photoId}`).toBe(result.photoId);
+        }
+    });
+
+    it('answers not-found rather than redirect where the target would not render', () => {
+        // A hand-written revision: two series under one slug. The later one takes the slug, so a photo of the earlier one
+        // has no canonical URL that renders, and redirecting to it would loop.
+        const clash = structuredClone(content);
+        clash.series[1].slug = 'fixture-a';
+        const clashReader = createCatalogReader(clash, { revisionId: REVISION_B, revisionNumber: 4 });
+        for (const [slug, photoId] of [['fixture-a', P[0]], ['old-fixture-a', P[0]], ['Fixture-A', P[0]]]) {
+            expect(clashReader.getViewerPhoto(slug, photoId), `${slug} ${photoId}`).toEqual({ kind: 'not-found' });
+        }
+        expect(viewer(clashReader.getViewerPhoto('fixture-a', P[5])).series.id).toBe('ser_fixture-b');
+    });
+
+    it('answers a letter-case variant of a slug it doesn\'t publish, or of a photo it doesn\'t, with the one not-found', () => {
+        for (const [slug, photoId] of [['Fixture-Draft', P[6]], ['Fixture-Hidden', P[7]], ['Fixture-Z', P[0]], ['Fixture-A', id(99).replace('ph_', 'PH_')], ['Fixture-A', P[8]]]) {
+            expect(reader.getViewerPhoto(slug, photoId), `${slug} ${photoId}`).toEqual({ kind: 'not-found' });
+        }
     });
 
     it('answers not-found for unpublished photos and series, and unknown ones', () => {
@@ -225,6 +266,7 @@ describe('viewerPhotoOf on a revision', () => {
         }
         expect(reader.getViewerPhoto('fixture-draft', P[6])).toEqual({ kind: 'not-found' });
         expect(reader.getViewerPhoto('fixture-hidden', P[7])).toEqual({ kind: 'not-found' });
+        // A published photo under a slug the revision doesn't publish isn't a move: nothing names a series it left.
         expect(reader.getViewerPhoto('fixture-draft', P[0])).toEqual({ kind: 'not-found' });
         expect(reader.getViewerPhoto('fixture-z', P[0])).toEqual({ kind: 'not-found' });
     });
@@ -234,9 +276,11 @@ describe('viewerPhotoOf on a revision', () => {
         // A hand-written revision: a second record under series A's ID, with its own slug and B's photo.
         repeated.series.push({ ...structuredClone(repeated.series[1]), id: 'ser_fixture-a', slug: 'fixture-a-again', slugAliases: [] });
         const twice = createCatalogReader(repeated, { revisionId: REVISION_B, revisionNumber: 4 });
-        for (const [slug, photoId] of [['fixture-a', P[0]], ['fixture-a', P[1]], ['old-fixture-a', P[1]], ['fixture-a-again', P[0]], ['fixture-a-again', P[5]]]) {
+        for (const [slug, photoId] of [['fixture-a', P[0]], ['fixture-a', P[1]], ['old-fixture-a', P[1]], ['fixture-a-again', P[0]]]) {
             expect(twice.getViewerPhoto(slug, photoId), `${slug} ${photoId}`).toEqual({ kind: 'not-found' });
         }
+        // B's photo, asked for under the repeated record, goes to B, which holds it once and opens.
+        expect(twice.getViewerPhoto('fixture-a-again', P[5])).toEqual({ kind: 'redirect', slug: 'fixture-b', photoId: P[5] });
         // Series B, held once, still resolves.
         expect(viewer(twice.getViewerPhoto('fixture-b', P[5])).series.id).toBe('ser_fixture-b');
     });
@@ -271,15 +315,14 @@ describe('viewerPhotoOf on a revision', () => {
         expect(reader.getViewerPhoto('old-fixture-a', P[1])).toEqual({ kind: 'not-found' });
     });
 
-    it('answers a letter-case variant and other malformed params not-found, without reading the catalog', () => {
-        expect(reader.getViewerPhoto('Fixture-A', P[0])).toEqual({ kind: 'not-found' });
-        expect(reader.getViewerPhoto('OLD-FIXTURE-A', P[0])).toEqual({ kind: 'not-found' });
-        expect(reader.getViewerPhoto('fixture-a', P[0].replace('ph_', 'PH_'))).toEqual({ kind: 'not-found' });
-        for (const [slug, photoId] of [['Fixture-A', P[0]], ['..', P[0]], ['fixture-a', '../registry.json'], ['fixture-a', 'fixture-0001.jpg'], [['fixture-a'], P[0]]]) {
+    it('answers malformed params not-found, without reading the catalog', () => {
+        for (const [slug, photoId] of [['Fixture--A', P[0]], ['..', P[0]], ['fixture-a', '../registry.json'], ['fixture-a', 'fixture-0001.jpg'], [['fixture-a'], P[0]], ['\u212Aixture-a', P[0]], ['fixture-a', P[0].replace('ph_', 'PH-')]]) {
             expect(viewerPhotoOf(trap(), slug, photoId)).toEqual({ kind: 'not-found' });
         }
         // The trap does fail once the params pass, so the checks above prove the catalog went unread.
         expect(() => viewerPhotoOf(trap(), 'fixture-a', P[0])).toThrow('The catalog was read');
+        // A letter-case variant is in shape once folded, so it reads the catalog.
+        expect(() => viewerPhotoOf(trap(), 'Fixture-A', P[0].replace('ph_', 'PH_'))).toThrow('The catalog was read');
     });
 });
 
@@ -492,7 +535,8 @@ describe('catalog revision consistency', () => {
         expect([fromB.catalogRevision, fromB.series.title, fromB.photo.caption, fromB.total, fromB.nextPhotoId]).toEqual([REVISION_B, 'Fixture series 01, renamed', 'Fixture caption one, revised.', 4, P[2]]);
 
         expect(readerA.getViewerPhoto('fixture-a', P[1]).kind).toBe('ok');
-        expect(readerB.getViewerPhoto('fixture-a', P[1])).toEqual({ kind: 'not-found' });
+        // Its old URL follows it to series B in revision B (#7, decided).
+        expect(readerB.getViewerPhoto('fixture-a', P[1])).toEqual({ kind: 'redirect', slug: 'fixture-b', photoId: P[1] });
         const moved = viewer(readerB.getViewerPhoto('fixture-b', P[1]));
         expect([moved.position, moved.total, moved.previousPhotoId]).toEqual([2, 2, P[5]]);
     });
@@ -506,12 +550,15 @@ describe('viewerPhotoFrom', () => {
 
     it('answers malformed params not-found without loading the catalog', async () => {
         const load = vi.fn(async () => okCatalog());
-        for (const [slug, photoId] of [['Fixture-A', P[0]], ['fixture-a', 'nope'], [undefined, P[0]], ['fixture-a', `${P[0]}.jpg`]]) {
+        for (const [slug, photoId] of [['Fixture--A', P[0]], ['fixture-a', 'nope'], [undefined, P[0]], ['fixture-a', `${P[0]}.jpg`]]) {
             expect(await viewerPhotoFrom(load, slug, photoId)).toEqual({ kind: 'not-found' });
         }
         expect(load).not.toHaveBeenCalled();
         expect((await viewerPhotoFrom(load, 'fixture-a', P[0])).kind).toBe('ok');
         expect(load).toHaveBeenCalledTimes(1);
+        // A letter-case variant reads the catalog and redirects.
+        expect(await viewerPhotoFrom(load, 'Fixture-A', P[0])).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: P[0] });
+        expect(load).toHaveBeenCalledTimes(2);
     });
 
     it('reports a site with nothing published as unavailable, never a not-found', async () => {
@@ -548,7 +595,7 @@ describe('the Viewer on published revisions', { timeout: 60_000 }, () => {
         if (atOne.kind !== 'ok') throw new Error(`Expected a photo, got ${JSON.stringify(atOne)}`);
         expect([atOne.viewer.catalogRevision, atOne.viewer.photo.caption, atOne.viewer.nextPhotoId]).toEqual([one.revisionId, null, second]);
         expect(await viewerPhotoFrom(() => loadActiveCatalog(root), 'old-fixture-a', first)).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: first });
-        expect(await viewerPhotoFrom(() => loadActiveCatalog(root), 'fixture-b', first)).toEqual({ kind: 'not-found' });
+        expect(await viewerPhotoFrom(() => loadActiveCatalog(root), 'fixture-b', first)).toEqual({ kind: 'redirect', slug: 'fixture-a', photoId: first });
 
         const record = (await readWorkingLayer(root)).photos.find((photo) => photo.id === first);
         if (!record) throw new Error('The first photo has no record');

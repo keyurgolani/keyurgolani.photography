@@ -271,7 +271,7 @@ describe('seriesPageOf on a revision', () => {
         // One frozen value, so no not-found can differ from another by a field.
         expect(new Set(answers).size).toBe(1);
         expect(Object.isFrozen(answers[0])).toBe(true);
-        expect(answers[0]).toBe(reader.getSeriesPage('Fixture-A'));
+        expect(answers[0]).toBe(reader.getSeriesPage('Fixture-Draft'));
     });
 
     it('answers a series with nothing to open not-found, as Work leaves it out', () => {
@@ -297,14 +297,43 @@ describe('seriesPageOf on a revision', () => {
         expect(page(reader.getSeriesPage('fixture-b')).id).toBe('ser_fixture-b');
     });
 
-    it('answers a letter-case variant and other malformed slugs not-found, without reading the catalog', () => {
-        expect(reader.getSeriesPage('Fixture-A')).toEqual({ kind: 'not-found' });
-        expect(reader.getSeriesPage('OLD-FIXTURE-A')).toEqual({ kind: 'not-found' });
-        for (const slug of ['Fixture-A', '..', 'fixture-a/', 'fixture-a.json', ['fixture-a'], undefined, 'a'.repeat(65)]) {
+    it('redirects a letter-case variant of the slug or a former slug to the canonical one (#5, decided)', () => {
+        for (const slug of ['Fixture-A', 'FIXTURE-A', 'fixture-A', 'Old-Fixture-A', 'OLD-FIXTURE-A']) {
+            expect(reader.getSeriesPage(slug), slug).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
+        }
+        expect(reader.getSeriesPage('Fixture-B')).toEqual({ kind: 'redirect', slug: 'fixture-b', location: '/work/fixture-b' });
+    });
+
+    it('never loops: every redirect\'s target renders', () => {
+        for (const slug of ['Fixture-A', 'OLD-FIXTURE-A', 'old-fixture-a']) {
+            const result = reader.getSeriesPage(slug);
+            if (result.kind !== 'redirect') throw new Error(`${slug} did not redirect`);
+            expect(page(reader.getSeriesPage(result.slug)).href).toBe(result.location);
+        }
+    });
+
+    it('folds ASCII letters only, so no other character can fold into a slug', () => {
+        // U+212A KELVIN SIGN lowers to "k", U+0130 to "i̇", and U+017F LONG S uppers to "S": none is a letter-case variant here.
+        const kelvin = structuredClone(content);
+        kelvin.series[1].slug = 'kiln';
+        const kelvinReader = readerOf(kelvin);
+        expect(page(kelvinReader.getSeriesPage('kiln')).id).toBe('ser_fixture-b');
+        expect(kelvinReader.getSeriesPage('Kiln')).toEqual({ kind: 'redirect', slug: 'kiln', location: '/work/kiln' });
+        for (const slug of ['\u212Ailn', '\u0130ln', 'fixture-\u0130', 'fixture-\u017F']) expect(kelvinReader.getSeriesPage(slug), slug).toEqual({ kind: 'not-found' });
+    });
+
+    it('answers a letter-case variant of a draft, hidden, or unknown slug with the one not-found', () => {
+        for (const slug of ['Fixture-Draft', 'OLD-FIXTURE-DRAFT', 'Fixture-Hidden', 'Fixture-Z']) expect(reader.getSeriesPage(slug), slug).toBe(reader.getSeriesPage('fixture-z'));
+    });
+
+    it('answers a malformed slug not-found, without reading the catalog', () => {
+        for (const slug of ['..', 'fixture-a/', 'fixture-a.json', ['fixture-a'], undefined, 'a'.repeat(65), 'A'.repeat(65), 'Fixture--A', '\u212Ailn']) {
             expect(seriesPageOf(trap(), slug, routes)).toEqual({ kind: 'not-found' });
         }
         // The trap does fail once the slug passes, so the checks above prove the catalog went unread.
         expect(() => seriesPageOf(trap(), 'fixture-a', routes)).toThrow('The catalog was read');
+        // A letter-case variant is in shape once folded, so it reads the catalog, to find out whether it names a series.
+        expect(() => seriesPageOf(trap(), 'Fixture-A', routes)).toThrow('The catalog was read');
     });
 });
 
@@ -749,12 +778,15 @@ describe('seriesPageFrom', () => {
 
     it('answers a malformed slug not-found without loading the catalog', async () => {
         const load = vi.fn(async () => okCatalog());
-        for (const slug of ['Fixture-A', '..', undefined, ['fixture-a'], 'fixture-a.json']) {
+        for (const slug of ['..', undefined, ['fixture-a'], 'fixture-a.json', 'Fixture--A']) {
             expect(await seriesPageFrom(load, slug, routes)).toEqual({ kind: 'not-found' });
         }
         expect(load).not.toHaveBeenCalled();
         expect((await seriesPageFrom(load, 'fixture-a', routes)).kind).toBe('ok');
         expect(load).toHaveBeenCalledTimes(1);
+        // A letter-case variant reads the catalog and redirects.
+        expect(await seriesPageFrom(load, 'Fixture-A', routes)).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
+        expect(load).toHaveBeenCalledTimes(2);
     });
 
     it('reports a site with nothing published as unavailable, never a not-found or a redirect', async () => {
