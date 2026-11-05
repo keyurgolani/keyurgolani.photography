@@ -43,19 +43,24 @@ describe('PreviewFrame', () => {
     });
 
     // A9 (#182): the full preview's toolbar.
-    it('has Fit, Desktop and Mobile presets as native radios, the short hash, and Back to Publish', () => {
+    it('has Fit, Desktop and Mobile presets as pressed buttons, the short hash, and Back to Publish', () => {
         render(<PreviewFrame src={SRC} draftHash="1a2b3c4d" presets backHref="/curation/publish" />);
-        const group = screen.getByRole('radiogroup', { name: 'Frame size' });
-        const fit = screen.getByRole('radio', { name: 'Fit the window' });
-        const desktop = screen.getByRole('radio', { name: 'Desktop, 1440 by 900' });
-        const mobile = screen.getByRole('radio', { name: 'Mobile, 390 by 844' });
+        const group = screen.getByRole('group', { name: 'Frame size' });
+        const fit = screen.getByRole('button', { name: 'Fit the window' });
+        const desktop = screen.getByRole('button', { name: 'Desktop, 1440 by 900' });
+        const mobile = screen.getByRole('button', { name: 'Mobile, 390 by 844' });
         expect(group).toContainElement(fit);
-        expect(fit).toBeChecked();
+        for (const button of [fit, desktop, mobile]) expect(button).toHaveAttribute('type', 'button');
+        expect(fit).toHaveAttribute('aria-pressed', 'true');
+        expect(desktop).toHaveAttribute('aria-pressed', 'false');
         expect(screen.getByText('Draft 1a2b3c4d')).toBeInTheDocument();
         expect(screen.getByRole('link', { name: 'Back to Publish' })).toHaveAttribute('href', '/curation/publish');
         const frame = screen.getByTitle('Visitor preview of the draft catalog');
         fireEvent.click(desktop);
-        expect(desktop).toBeChecked();
+        expect(desktop).toHaveAttribute('aria-pressed', 'true');
+        expect(fit).toHaveAttribute('aria-pressed', 'false');
+        // The same iframe, resized: a preset never reloads the page inside.
+        expect(screen.getByTitle('Visitor preview of the draft catalog')).toBe(frame);
         expect(frame).toHaveStyle({ width: '1440px', height: '900px' });
         fireEvent.click(mobile);
         expect(frame).toHaveStyle({ width: '390px', height: '844px' });
@@ -65,7 +70,7 @@ describe('PreviewFrame', () => {
 
     it('keeps the embedded panel to its marker, with no presets', () => {
         render(<PreviewFrame src={SRC} embedded focusable={false} />);
-        expect(screen.queryByRole('radiogroup')).toBeNull();
+        expect(screen.queryByRole('group', { name: 'Frame size' })).toBeNull();
         expect(screen.queryByRole('link', { name: 'Back to Publish' })).toBeNull();
     });
 });

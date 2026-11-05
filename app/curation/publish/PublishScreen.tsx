@@ -243,7 +243,8 @@ interface FixContext {
     zone: string;
     open: string | null;
     busy: boolean;
-    refusal: { rowId: string; text: string } | null;
+    /** `intent`: which fix was refused, so its own strip shows it (A9: a row can carry two). */
+    refusal: { rowId: string; text: string; intent: Intent | null } | null;
     dispatch: (form: FormData) => void;
     onOpen: (rowId: string, from: 'row' | 'list') => void;
     onClose: (rowId: string) => void;
@@ -268,7 +269,7 @@ function RefusalStrip({ text }: { text: string }) {
 
 /** A row's fix: a link that opens the description review, a stamp-only form, an Inbox link, or the CLI's hint. */
 function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContext }) {
-    const refused = ctx.refusal?.rowId === row.id ? ctx.refusal.text : null;
+    const refused = ctx.refusal?.rowId === row.id && ctx.refusal.intent !== 'use-published' ? ctx.refusal.text : null;
     if (fix.type === 'description') {
         if (ctx.open === row.id) {
             return (
@@ -403,7 +404,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
 
 /** A9: Use the published value, a native submit in its own form, named for the record; the server action is the gate. */
 function UsePublishedAction({ row, fix, ctx }: { row: LedgerRow; fix: UsePublishedFix; ctx: FixContext }) {
-    const refused = ctx.refusal?.rowId === row.id ? ctx.refusal.text : null;
+    const refused = ctx.refusal?.rowId === row.id && ctx.refusal.intent === 'use-published' ? ctx.refusal.text : null;
     return (
         <div className={styles.restamp}>
             <form action={ctx.dispatch}>
@@ -433,6 +434,7 @@ function UsePublishedAction({ row, fix, ctx }: { row: LedgerRow; fix: UsePublish
                     {fix.note}
                 </p>
             ) : null}
+            {refused ? <RefusalStrip text={refused} /> : null}
         </div>
     );
 }
@@ -785,7 +787,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
     useEffect(() => {
         if (!pending) pressed.current = false;
     }, [pending]);
-    const refusal = state.answer?.kind === 'fix-refused' ? { rowId: state.answer.rowId, text: state.answer.text } : null;
+    const refusal = state.answer?.kind === 'fix-refused' ? { rowId: state.answer.rowId, text: state.answer.text, intent: state.intent } : null;
 
     const ctx: FixContext = {
         view,

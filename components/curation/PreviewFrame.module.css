@@ -65,10 +65,7 @@
 .presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 0.75rem;
-  margin: 0;
-  padding: 0;
-  border: 0;
+  gap: 0.25rem 0.5rem;
 }
 
 .preset {
@@ -76,15 +73,19 @@
   min-height: 44px;
   align-items: center;
   gap: 0.4rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
   color: var(--gah-ink);
+  background: transparent;
+  font: inherit;
   cursor: pointer;
 }
 
-.preset input {
-  width: 1.1rem;
-  height: 1.1rem;
-  margin: 0;
-  accent-color: var(--gah-ink);
+/* The pressed preset reads in ink, not colour alone: a heavier weight and a solid edge. */
+.preset[aria-pressed='true'] {
+  border-color: var(--gah-ink);
+  font-weight: 600;
 }
 
 .size {

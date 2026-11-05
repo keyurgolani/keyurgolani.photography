@@ -147,23 +147,21 @@ export default function PreviewFrame({ src, height, focusable = true, marker = '
                 <span className={styles.marker}>{marker}</span>
                 {draftHash ? <span className={styles.hash}>Draft {draftHash}</span> : null}
                 {presets ? (
-                    <fieldset className={styles.presets} role="radiogroup">
-                        <legend className={styles.visuallyHidden}>Frame size</legend>
-                        <label className={styles.preset}>
-                            <input type="radio" name="frame-size" value="fit" checked={preset === 'fit'} onChange={() => setPreset('fit')} />
+                    // Contract rule 1: an in-page choice is a button with aria-pressed, each a 44 px target with the focus token.
+                    <div className={styles.presets} role="group" aria-label="Frame size">
+                        <button type="button" className={styles.preset} aria-pressed={preset === 'fit'} onClick={() => setPreset('fit')}>
                             Fit the window
-                        </label>
+                        </button>
                         {(Object.keys(SIZES) as (keyof typeof SIZES)[]).map((key) => (
-                            <label key={key} className={styles.preset}>
-                                <input type="radio" name="frame-size" value={key} checked={preset === key} onChange={() => setPreset(key)} />
+                            <button key={key} type="button" className={styles.preset} aria-pressed={preset === key} onClick={() => setPreset(key)}>
                                 {SIZES[key].label}
                                 <span className={styles.size} aria-hidden="true">
                                     {SIZES[key].width} × {SIZES[key].height}
                                 </span>
                                 <span className={styles.visuallyHidden}>, {SIZES[key].spoken}</span>
-                            </label>
+                            </button>
                         ))}
-                    </fieldset>
+                    </div>
                 ) : null}
                 {backHref ? (
                     <a className={styles.back} href={backHref}>
