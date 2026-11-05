@@ -6,10 +6,12 @@ import { useDocumentVisible } from '@/components/motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
 import { useOnline } from '@/components/site/onlineStatus';
 import { useSiteRoutes } from '@/components/site/siteRoutesContext';
+// Types only: the projection pulls the catalog schema and node:crypto in, which must stay out of the client bundle.
+import type { PeekPhotoState } from '@/lib/catalog/projections/viewer';
 import { StageMotion } from './stageMotion';
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
 import { ViewerContext, peekKey, type ViewerChromeState, type ViewerMode, type ViewerPeek, type ViewerShellContext } from './viewerContext';
-import { stepForKey, type ViewerStep } from './viewerKeys';
+import { isViewerPath, stepForKey, type ViewerStep } from './viewerKeys';
 import { useDoubleTap } from './useDoubleTap';
 import { STAGE_SELECTOR, useSwipe, type SwipeShell } from './useSwipe';
 import { whenIdle } from './whenIdle';
@@ -30,8 +32,29 @@ type PrefetchOptions = NonNullable<Parameters<ReturnType<typeof useRouter>['pref
  */
 const FULL_PREFETCH = { kind: 'full' } as unknown as PrefetchOptions;
 
-/** The endpoint's answer when the revision asked for isn't the one it serves any more. */
-const REVISED = 'revised';
+/**
+ * The endpoint's answer when the revision asked for isn't the one it serves any more (its 409), with what the served
+ * revision holds for the photograph asked for (#178): `kept`, `renamed` (its series' slug changed), `gone`, or null
+ * when the answer doesn't say (the preview's mirror).
+ */
+interface Revised {
+    revised: PeekPhotoState | null;
+}
+
+function isRevised(answer: unknown): answer is Revised {
+    return typeof answer === 'object' && answer !== null && 'revised' in answer;
+}
+
+/** A 409's `photo`, when it's one the shell knows. */
+async function revisedOf(response: Response): Promise<Revised> {
+    try {
+        const body: unknown = await response.json();
+        const photo = typeof body === 'object' && body !== null ? (body as { photo?: unknown }).photo : undefined;
+        return { revised: photo === 'kept' || photo === 'renamed' || photo === 'gone' ? photo : null };
+    } catch {
+        return { revised: null };
+    }
+}
 
 /**
  * How often an open Viewer asks whether the revision it shows is still the one served (bug 5, #178), while its tab is
@@ -60,12 +83,12 @@ function offlineNow(): boolean {
  * error, a network failure): the photograph then follows the finger with nothing beside it. REVISED when the endpoint
  * serves another revision (its 409), so this photograph's page is from the one before.
  */
-async function fetchPeek(catalogApiHref: (path: string) => string, slug: string, photoId: string, revisionId: string): Promise<ViewerPeek | typeof REVISED | null> {
+async function fetchPeek(catalogApiHref: (path: string) => string, slug: string, photoId: string, revisionId: string): Promise<ViewerPeek | Revised | null> {
     try {
         // Through the site's routes, so #16's preview asks its own mirror and never the public endpoint.
         const path = catalogApiHref(`series/${encodeURIComponent(slug)}/photos/${encodeURIComponent(photoId)}?revision=${encodeURIComponent(revisionId)}`);
         const response = await fetch(path, { headers: { accept: 'application/json' } });
-        if (response.status === 409) return REVISED;
+        if (response.status === 409) return await revisedOf(response);
         if (!response.ok) return null;
         const body: unknown = await response.json();
         if (typeof body !== 'object' || body === null || (body as { photoId?: unknown }).photoId !== photoId) return null;
@@ -137,7 +160,7 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  */
 export default function ViewerShell({ mode, children }: { mode: ViewerMode; children: ReactNode }) {
     const router = useRouter();
-    const { catalogApiHref } = useSiteRoutes();
+    const { catalogApiHref, photoHref } = useSiteRoutes();
     const [chrome, setChrome] = useState<ViewerChromeState | null>(null);
     const [zoomed, setZoomed] = useState(false);
     /** The technical details, open or not, for the whole visit: a move keeps them as they are (#7, decided). */
@@ -183,9 +206,12 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setChrome((current) => (sameChrome(current, state) ? current : state));
     }, []);
 
+    /** A settled message still waiting to land, so an end pressed before it lands says both (#178 review). */
+    const waiting = useRef<string | null>(null);
     const clearAnnouncement = useCallback(() => {
         if (announceTimer.current !== null) clearTimeout(announceTimer.current);
         announceTimer.current = null;
+        waiting.current = null;
     }, []);
     /** The region's text, now: a new message at once, a repeat cleared first and set REPEAT_GAP_MS later (bug 3). */
     const land = useCallback((text: string) => {
@@ -208,8 +234,10 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         (text: string, { settle = false }: { settle?: boolean } = {}) => {
             clearAnnouncement();
             if (!settle) return land(text);
+            waiting.current = text;
             announceTimer.current = setTimeout(() => {
                 announceTimer.current = null;
+                waiting.current = null;
                 land(text);
             }, ANNOUNCE_SETTLE_MS);
         },
@@ -240,7 +268,9 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             }
             const href = direction === 'previous' ? chrome.previousHref : chrome.nextHref;
             if (href === null) {
-                announce(boundaryText(direction, chrome.seriesTitle));
+                // The move that got here may not have been announced yet: say it first, then the end, as one message.
+                const end = boundaryText(direction, chrome.seriesTitle);
+                announce(waiting.current === null ? end : `${waiting.current} ${end}`);
                 return;
             }
             // Offline, the next page can't come (#178): say so by the controls and in the region, and stay.
@@ -296,7 +326,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 if (requested.current.has(key)) continue;
                 requested.current.add(key);
                 void fetchPeek(catalogApiHref, state.seriesSlug, photoId, state.revisionId).then((peek) => {
-                    if (peek === REVISED) {
+                    if (isRevised(peek)) {
                         outdated.current = state.revisionId;
                         dropStalePages();
                     } else if (peek !== null) setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, peek)));
@@ -351,11 +381,27 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const previousHref = chrome?.previousHref ?? null;
     const nextHref = chrome?.nextHref ?? null;
     const revisionId = chrome?.revisionId ?? null;
+    // When Next drops a neighbor's prefetched page (a refresh, or its own expiry), it's asked for again once idle.
     useEffect(() => {
         if (unavailable || (previousHref === null && nextHref === null) || savesData()) return;
-        return whenIdle(() => {
-            for (const href of [nextHref, previousHref]) if (href !== null) router.prefetch(href, FULL_PREFETCH);
-        });
+        let live = true;
+        const cancels: (() => void)[] = [];
+        const ahead = (href: string) =>
+            router.prefetch(href, {
+                ...FULL_PREFETCH,
+                onInvalidate: () => {
+                    if (live && !savesData()) cancels.push(whenIdle(() => live && ahead(href)));
+                },
+            });
+        cancels.push(
+            whenIdle(() => {
+                for (const href of [nextHref, previousHref]) if (href !== null) ahead(href);
+            }),
+        );
+        return () => {
+            live = false;
+            for (const cancel of cancels) cancel();
+        };
     }, [previousHref, nextHref, revisionId, unavailable, router]);
 
     // The stage's motion, on the root, which outlives every move. Reduced motion drops any slide in flight.
@@ -376,10 +422,24 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     // Escape while zoomed only resets the zoom (#178). The key comes before the dialog's cancel, which it then swallows.
     const zoomedRef = useRef(zoomed);
     const escapeTook = useRef(false);
+    const escapeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(
+        () => () => {
+            if (escapeTimer.current !== null) clearTimeout(escapeTimer.current);
+        },
+        [],
+    );
+    /** Whether focus was in the zoomed region when its zoom was asked to reset, read before the reset takes its tabIndex. */
+    const zoomFocus = useRef(false);
+    const noteZoomFocus = useCallback(() => {
+        const stage = rootRef.current?.querySelector(STAGE_SELECTOR);
+        zoomFocus.current = zoomedRef.current && stage != null && stage.contains(document.activeElement);
+    }, []);
     const unzoom = useCallback(() => {
+        noteZoomFocus();
         zoomedRef.current = false;
         setZoomed(false);
-    }, []);
+    }, [noteZoomFocus]);
 
     // The modal: open it once the shell holds the controls (or the unavailable state), so showModal() moves focus inside.
     const ready = chrome !== null || unavailable;
@@ -414,7 +474,11 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         if (!was || zoomed || root === null) return;
         const stage = root.querySelector(STAGE_SELECTOR);
         const active = document.activeElement;
-        if (stage !== null && active !== null && stage.contains(active)) root.querySelector<HTMLElement>('[data-viewer-zoom]')?.focus({ preventScroll: true });
+        const fromStage = zoomFocus.current || (stage !== null && active !== null && stage.contains(active));
+        zoomFocus.current = false;
+        // Still in the region, or already dropped to the body by the browser's focus fixup.
+        const dropped = active === null || active === document.body || !active.isConnected || (stage !== null && stage.contains(active));
+        if (fromStage && dropped) root.querySelector<HTMLElement>('[data-viewer-zoom]')?.focus({ preventScroll: true });
     }, [zoomed]);
 
     const stepRef = useRef(step);
@@ -458,6 +522,38 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     }, [chrome]);
 
     /**
+     * Focus on something the photograph renders, and the zoomed photograph's scroll, kept across a path that remounts
+     * the photograph without a move (the revision check's replace): by the element's `data-viewer-*` hook, put back
+     * once the photograph reports again, as a move's control is (movedWith).
+     */
+    const heldFocus = useRef<{ selector: string | null; scroll: { left: number; top: number } | null } | null>(null);
+    const keepFocus = useCallback(() => {
+        const root = rootRef.current;
+        if (root === null) return;
+        const active = document.activeElement;
+        const hook = active instanceof Element && root.contains(active) ? [...active.attributes].find((attribute) => attribute.name.startsWith('data-viewer-')) : undefined;
+        const stage = root.querySelector<HTMLElement>(STAGE_SELECTOR);
+        heldFocus.current = {
+            selector: hook === undefined ? null : `[${hook.name}="${hook.value.replace(/["\\]/g, '\\$&')}"]`,
+            scroll: stage !== null && stage.hasAttribute('data-zoomed') ? { left: stage.scrollLeft, top: stage.scrollTop } : null,
+        };
+    }, []);
+    useLayoutEffect(() => {
+        const held = heldFocus.current;
+        const root = rootRef.current;
+        if (held === null || chrome === null || root === null || unavailable) return;
+        const active = document.activeElement;
+        if (active !== null && active !== document.body && active.isConnected) return;
+        heldFocus.current = null;
+        const stage = root.querySelector<HTMLElement>(STAGE_SELECTOR);
+        if (held.scroll !== null && stage !== null) {
+            stage.scrollLeft = held.scroll.left;
+            stage.scrollTop = held.scroll.top;
+        }
+        if (held.selector !== null) root.querySelector<HTMLElement>(held.selector)?.focus({ preventScroll: true });
+    }, [chrome, unavailable]);
+
+    /**
      * The 30 s check said another revision is served (bug 5). Once no move is on its way, the pages prefetched before it
      * go (dropStalePages), and this photograph renders again in the revision served: through a refresh, or, on a page
      * no move has left yet, through a replace to the same URL. A refresh there would re-render the directly loaded
@@ -466,18 +562,22 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
      * the new revision then drops the prefetched pages as any move into a new revision does.
      */
     const revised = useCallback(
-        (revision: string) => {
-            if (mode === 'page' && !movedOnce.current && pendingRef.current === null) {
+        (revision: string, photo: PeekPhotoState | null) => {
+            // Only when the photograph isn't there as the page has it: a publish elsewhere is a refresh, which remounts
+            // nothing and keeps focus (#178 review). The replace remounts the photograph, so focus is kept for it.
+            const leaves = photo === 'gone' || photo === 'renamed';
+            if (leaves && mode === 'page' && !movedOnce.current && pendingRef.current === null) {
                 if (revisitedFrom.current === revision) return;
                 revisitedFrom.current = revision;
                 movedOnce.current = true;
+                keepFocus();
                 router.replace(`${window.location.pathname}${window.location.search}`, { scroll: false });
                 return;
             }
             outdated.current = revision;
             dropStalePages();
         },
-        [mode, router, dropStalePages],
+        [mode, router, dropStalePages, keepFocus],
     );
 
     // Every visitor's Viewer asks whether its revision is still served (bug 5): every REVISION_CHECK_MS while the tab is
@@ -492,6 +592,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         revisedRef.current = revised;
     }, [chrome, revised]);
     const wasHidden = useRef(false);
+    const checking = useRef(false);
     useEffect(() => {
         if (!visible) {
             wasHidden.current = true;
@@ -501,10 +602,16 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         let live = true;
         const check = () => {
             const state = chromeRef.current;
-            if (state === null || unavailableRef.current) return;
-            void fetchPeek(catalogApiHref, state.seriesSlug, state.photoId, state.revisionId).then((answer) => {
-                if (live && answer === REVISED) revisedRef.current(state.revisionId);
-            });
+            // One check at a time: a slow answer skips the next tick rather than piling up behind it.
+            if (state === null || unavailableRef.current || checking.current) return;
+            checking.current = true;
+            void fetchPeek(catalogApiHref, state.seriesSlug, state.photoId, state.revisionId)
+                .then((answer) => {
+                    if (live && isRevised(answer)) revisedRef.current(state.revisionId, answer.revised);
+                })
+                .finally(() => {
+                    checking.current = false;
+                });
         };
         if (wasHidden.current) check();
         wasHidden.current = false;
@@ -529,6 +636,9 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     }, []);
     useEffect(() => {
         if (!unavailable) return;
+        // Reached by a move in the modal: the series page under it is from before the publish, so Back would land on
+        // it as it was. A refresh brings it up to date, and the unavailable state stays (#178 review).
+        if (mode === 'modal' && pendingRef.current !== null) router.refresh();
         pendingRef.current = null;
         setPending(null);
         queued.current = null;
@@ -538,7 +648,19 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setOffline(null);
         rootRef.current?.querySelector<HTMLElement>('[data-viewer-unavailable-heading]')?.focus({ preventScroll: true });
         announce(UNAVAILABLE_ANNOUNCEMENT, { settle: true });
-    }, [unavailable, announce, unzoom]);
+    }, [unavailable, announce, unzoom, mode, router]);
+
+    // A photograph rendered under a former slug of its series (a rename mid-visit, through the intercepted route) moves
+    // the address to its canonical URL, in place: nothing is fetched or remounted (#178 review).
+    useEffect(() => {
+        if (chrome === null || unavailable || typeof window === 'undefined') return;
+        const canonical = new URL(photoHref(chrome.seriesSlug, chrome.photoId), window.location.href);
+        const here = window.location.pathname;
+        if (canonical.pathname === here || !isViewerPath(here)) return;
+        // Only this photograph under another slug: never an address a navigation in flight has already moved on to.
+        if (here.replace(/\/$/, '').split('/').pop() !== chrome.photoId) return;
+        window.history.replaceState(window.history.state, '', `${canonical.pathname}${window.location.search}${window.location.hash}`);
+    }, [chrome, unavailable, photoHref]);
 
     // Keys come from the document in both modes, so they still work when focus falls to the body under the open
     // modal (Tab past the end, or a tap on the photograph in WebKit). In the modal, a key aimed anywhere but the
@@ -557,6 +679,12 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 if (!zoomedRef.current || event.isComposing || event.defaultPrevented) return;
                 event.preventDefault();
                 escapeTook.current = true;
+                // Its cancel, if the browser sends one, comes with the key; after that the next cancel is the visitor's.
+                if (escapeTimer.current !== null) clearTimeout(escapeTimer.current);
+                escapeTimer.current = setTimeout(() => {
+                    escapeTimer.current = null;
+                    escapeTook.current = false;
+                }, 0);
                 unzoom();
                 return;
             }
@@ -572,7 +700,10 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     // A double-tap on the photograph is Zoom, and does nothing where Zoom does nothing (no usable set), so it can't leave
     // the shell zoomed with nothing on screen to show it, which would stop the swipe.
     const hasImage = chrome?.hasImage ?? false;
-    const toggleZoom = useCallback(() => setZoomed((value) => !value), []);
+    const toggleZoom = useCallback(() => {
+        noteZoomFocus();
+        setZoomed((value) => !value);
+    }, [noteZoomFocus]);
     const doubleTapRef = useRef<() => void>(() => undefined);
     useEffect(() => {
         doubleTapRef.current = hasImage ? toggleZoom : () => undefined;

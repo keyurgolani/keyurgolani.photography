@@ -3,4 +3,5 @@
 // or redirect thrown after the shell streams turns into a 200, so both run before anything renders.
 export const dynamic = 'force-dynamic';
 
-export { ViewerRoute as default, generateMetadata } from './viewerRoute';
+export { ViewerRoute as default } from './viewerRoute';
+export { generateMetadata } from './viewerLookup';

@@ -200,7 +200,8 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             // v2.0.0 B5: each continuation page carries prevHref for Show earlier, and the walk follows it back from each ?photo= page.
             continuation: 'c8f02ce9b90081531687a0ab60de26ac2c4f8da4850b8d7460675feea409b745',
             // v2.0.0 B4: a letter-case variant, and a published photo under any other slug in shape, answer a 308 to its one home.
-            viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
+            // v2.0.0 B9: each redirect says why, `case`, `alias` or `moved`, for the Viewer's intercepted route (#178).
+            viewer: '4af51c5ea70b029aa5a5c6c7bde4d32f149256c39c5472b6c00a2aba548ba890',
         });
     });
 
@@ -216,7 +217,8 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             // v2.0.0 B5: as on the public routes.
             series: '7235da9a3d3743dc477c492c2724519a07f75715b7646559651994e24bf0365f',
             continuation: '56d7d4843808b495898b1191075510f651fce889eefee7a265d2829e8d7e19a3',
-            viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
+            // v2.0.0 B9: as on the public routes.
+            viewer: '4af51c5ea70b029aa5a5c6c7bde4d32f149256c39c5472b6c00a2aba548ba890',
         });
     });
 
