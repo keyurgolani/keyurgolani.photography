@@ -10,10 +10,12 @@ import { expect, test } from './support/test';
 // B9 (#178, bug 5): a publish while the Viewer is open. Its own catalog and server, since the shared per-worker
 // Viewer catalog can't be republished mid-run: a five-photo series, one with a 600-character caption, published as
 // Revision A, then republished without a photograph each test (B, C, D) while a page or the modal is open. The
-// tests run in order and each builds on the revision before.
+// tests run in order and each builds on the revision before. In this serial group a failure retries the whole group,
+// beforeAll included, so a retry starts again from Revision A.
 //
-// - The open Viewer learns of a publish within 30 s (its revision check, on a paused clock run 30 s on): a move after
-//   that lands on the served revision's photograph, and the dropped one's words appear in no DOM state from the press.
+// - The open Viewer learns of a publish within 30 s (its revision check; page.clock runs on, and is fast-forwarded 30 s),
+//   keeps focus, since the publish doesn't touch the open photograph, and every move after it lands on the served
+//   revision's page, never Revision A's prefetched one, with the dropped photograph's words in no DOM state.
 // - A photograph dropped under the open modal shows ViewerUnavailable, focus on its heading, announced, and the way
 //   back lands on the series heading, since its entry and the opener are gone.
 // - A move onto a neighbour the publish dropped, before any check, shows ViewerUnavailable too, never the site's
@@ -98,24 +100,35 @@ async function recordText(page: Page): Promise<() => Promise<string>> {
     return () => page.evaluate(() => (window as unknown as { kgSeen: string[] }).kgSeen.join('\n'));
 }
 
-test('a move after the 30 s check lands on the served revision, and the dropped neighbour\'s words never show (Revision B)', async ({ page }) => {
+test('the 30 s check learns of Revision B without touching the open photograph: focus stays, and no move shows Revision A\'s pages', async ({ page }) => {
     await page.clock.install();
     await page.goto(`${origin()}${href(R[2])}`);
     await waitForHydration(page);
     await expect(header(page)).toContainText('03 / 05');
-    // Let the idle prefetch take R[3]'s page in Revision A, as a visitor resting here would have it.
+    // Let the idle prefetch take both neighbours' pages in Revision A, as a visitor resting here would have them.
     await page.clock.fastForward(3000);
+    const next = viewer(page).getByRole('button', { name: 'Next photograph', exact: true });
+    await next.focus();
+    const seen = await recordText(page);
     await publishWithout(R[3]);
-    // The check, at 30 s: it learns of B, and the photograph renders again in B.
+    // The check, at 30 s: B drops R[3], not the open photograph, so it's a refresh, which remounts nothing.
     await page.clock.fastForward(30_000);
     await expect(header(page)).toContainText('03 / 04');
-    const seen = await recordText(page);
-    await viewer(page).getByRole('button', { name: 'Next photograph', exact: true }).click();
+    await expect(next).toBeFocused();
+    // Previous lands on R[1], whose page was prefetched in A as "02 / 05": B's own answer shows, never A's.
+    await viewer(page).getByRole('button', { name: 'Previous photograph', exact: true }).click();
+    await expect(page).toHaveURL(`${origin()}${href(R[1])}`);
+    await expect(header(page)).toContainText('02 / 04');
+    // On to the end: R[2], then R[4], never the dropped R[3].
+    await next.click();
+    await expect(header(page)).toContainText('03 / 04');
+    await next.click();
     await expect(page).toHaveURL(`${origin()}${href(R[4])}`);
     await expect(header(page)).toContainText('04 / 04');
     await expect(viewer(page).locator('[data-viewer-reading]')).toContainText(LONG_CAPTION.slice(0, 40));
     await page.clock.fastForward(1000);
     const text = await seen();
+    expect(text).not.toContain('02 / 05');
     for (const words of Object.values(DROPPED)) expect(text, words).not.toContain(words);
 });
 

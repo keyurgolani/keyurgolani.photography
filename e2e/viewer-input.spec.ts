@@ -40,6 +40,13 @@ async function openFromSeries(page: Page, photoId: string): Promise<void> {
     await expect(dialog(page)).toBeVisible();
 }
 
+/** Turns `navigator.connection.saveData` on before the page's own scripts, so the Viewer prefetches nothing (#174). */
+async function saveData(page: Page): Promise<void> {
+    await page.addInitScript(() => {
+        Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true, addEventListener() {}, removeEventListener() {} } });
+    });
+}
+
 /** The RSC requests for a Viewer page of `photoIds`: a move's, or the idle prefetch's. */
 function rscRequests(page: Page, photoIds: readonly string[]): () => string[] {
     const seen: string[] = [];
@@ -93,6 +100,21 @@ test.describe('keys (#178)', () => {
         await holdsStill(page, HARBOR[1], '02 / 03');
     });
 
+    test('on a page, Escape while zoomed resets the zoom and never leaves', async ({ page }) => {
+        await openPage(page, HARBOR[0]);
+        await button(page, 'Zoom').click();
+        await stage(page).focus();
+        await page.keyboard.press('Escape');
+        await expect(stage(page)).not.toHaveAttribute('data-zoomed');
+        await expect(button(page, 'Zoom')).toBeFocused();
+        await holdsStill(page, HARBOR[0], '01 / 03');
+    });
+});
+
+test.describe('Escape while zoomed in the modal (#178)', () => {
+    // WebKit too: its dialog sends its own cancel for Escape (the B9 review).
+    test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile', 'mobile-webkit'));
+
     test('in the modal, Escape while zoomed only resets the zoom, with focus from the zoomed region onto Zoom; the next Escape closes', async ({ page }) => {
         await openFromSeries(page, HARBOR[0]);
         await button(page, 'Zoom').focus();
@@ -108,39 +130,34 @@ test.describe('keys (#178)', () => {
         await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, HARBOR[0])).toBeFocused();
     });
-
-    test('on a page, Escape while zoomed resets the zoom and never leaves', async ({ page }) => {
-        await openPage(page, HARBOR[0]);
-        await button(page, 'Zoom').click();
-        await stage(page).focus();
-        await page.keyboard.press('Escape');
-        await expect(stage(page)).not.toHaveAttribute('data-zoomed');
-        await expect(button(page, 'Zoom')).toBeFocused();
-        await holdsStill(page, HARBOR[0], '01 / 03');
-    });
 });
 
 test.describe('a move (#178)', () => {
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
 
-    test('the stage is aria-busy from the press until the photograph lands', async ({ page }) => {
-        await page.route(
-            (url) => url.pathname === href(HARBOR[1]),
-            async (route) => {
-                if (route.request().resourceType() === 'document') return route.fallback();
-                await new Promise((resolve) => setTimeout(resolve, 1200));
-                await route.fallback();
-            },
-        );
-        await openPage(page, HARBOR[0]);
+    test('the stage is aria-busy from the press until the photograph lands, and the move is announced in full', async ({ page }) => {
+        // Nothing prefetched, so the move waits for its page, and every aria-busy change on the stage is recorded as it
+        // happens, so the check doesn't depend on how long the page takes (the B9 review).
+        await saveData(page);
+        await openPage(page, HARBOR[1]);
         await expect(stage(page)).not.toHaveAttribute('aria-busy');
-        await button(page, 'Next photograph').click();
-        await expect(stage(page)).toHaveAttribute('aria-busy', 'true');
-        await expect(page).toHaveURL(`${origin()}${href(HARBOR[1])}`);
-        await expect(header(page)).toContainText('02 / 03');
+        await viewer(page).evaluate((root) => {
+            const seen: string[] = [];
+            (window as unknown as { kgBusy: string[] }).kgBusy = seen;
+            new MutationObserver((records) => {
+                for (const record of records) {
+                    const target = record.target as Element;
+                    if (record.attributeName === 'aria-busy' && target.hasAttribute('data-viewer-stage')) seen.push(target.getAttribute('aria-busy') ?? 'none');
+                }
+            }).observe(root, { attributes: true, attributeFilter: ['aria-busy'], subtree: true });
+        });
+        await button(page, 'Previous photograph').click();
+        await expect(page).toHaveURL(`${origin()}${href(HARBOR[0])}`);
+        await expect(header(page)).toContainText('01 / 03');
         await expect(stage(page)).not.toHaveAttribute('aria-busy');
-        // Its announcement settles after the arrival: the position first, then whatever the photograph has.
-        await expect(announcer(page)).toHaveText(/^Photograph 2 of 3(\. |$)/);
+        expect(await page.evaluate(() => (window as unknown as { kgBusy: string[] }).kgBusy[0])).toBe('true');
+        // The fixture's first photograph has a title and a description, so the whole message is pinned here.
+        await expect(announcer(page)).toHaveText('Photograph 1 of 3. Fixture harbor at dusk. Fixture description of the harbor.');
     });
 
     test('offline, a move says so by the controls and in the region, and doesn\'t navigate; back online it moves', async ({ page, context }) => {
@@ -165,9 +182,7 @@ test.describe('saveData (#174)', () => {
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile'));
 
     test('with saveData on, the Viewer prefetches no neighbour page; with it off, it does', async ({ page, browser }) => {
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true, addEventListener() {}, removeEventListener() {} } });
-        });
+        await saveData(page);
         const saving = rscRequests(page, [HARBOR[0], HARBOR[2]]);
         await openPage(page, HARBOR[1]);
         // The idle prefetch runs within the idle callback's 2 s timeout, or 200 ms where there's none.
@@ -175,11 +190,14 @@ test.describe('saveData (#174)', () => {
         expect(saving()).toEqual([]);
 
         const plain = await browser.newPage();
-        const prefetched = rscRequests(plain, [HARBOR[0], HARBOR[2]]);
-        await plain.goto(`${origin()}${href(HARBOR[1])}`);
-        await waitForHydration(plain);
-        await expect.poll(() => new Set(prefetched()).size, { timeout: 10_000 }).toBe(2);
-        await plain.close();
+        try {
+            const prefetched = rscRequests(plain, [HARBOR[0], HARBOR[2]]);
+            await plain.goto(`${origin()}${href(HARBOR[1])}`);
+            await waitForHydration(plain);
+            await expect.poll(() => new Set(prefetched()).size, { timeout: 10_000 }).toBe(2);
+        } finally {
+            await plain.close();
+        }
     });
 });
 
