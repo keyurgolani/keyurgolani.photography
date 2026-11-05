@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { listEvents } from '../curation/repository';
+import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
+import { readRegistry } from '../identity/registry';
 import { dataRootStatus } from '../storage/config';
 import { hasErrorCode } from '../storage/fsx';
+import { MANIFEST_FILE } from '../storage/publish';
 import { parseCandidateFile, parseRevisionFile, type ParseResult, type SchemaIssue } from './schema';
 import type { CandidateContent } from './types';
 import { ACTIVE_POINTER_NAME, authoredPaths, catalogPaths, readActivePointer, readWorkingLayer, type RecordProblem } from './working-layer';
@@ -16,9 +20,25 @@ import { ACTIVE_POINTER_NAME, authoredPaths, catalogPaths, readActivePointer, re
  * that file references.
  */
 
-export type ReferenceSource = 'active-revision' | 'revision' | 'candidate' | 'working-layer-series' | 'working-layer-photo';
+export type ReferenceSource = 'active-revision' | 'revision' | 'candidate' | 'working-layer-series' | 'working-layer-photo' | 'open-inbox' | 'live-staging';
 
-const SOURCE_ORDER: readonly ReferenceSource[] = ['active-revision', 'revision', 'candidate', 'working-layer-series', 'working-layer-photo'];
+const SOURCE_ORDER: readonly ReferenceSource[] = ['active-revision', 'revision', 'candidate', 'working-layer-series', 'working-layer-photo', 'open-inbox', 'live-staging'];
+
+/**
+ * #15's always-protected set (AC 8): what no cleanup deletes, even for a
+ * tombstoned asset. For one, a working-layer series counts only where it
+ * lists the photo at that asset revision, and the photo's own record not at
+ * all. The other sources, older revisions, candidates and the photo's own
+ * record, a standing tombstone past its grace overrides, and nothing else.
+ */
+export const ALWAYS_PROTECTED: readonly ReferenceSource[] = ['active-revision', 'working-layer-series', 'open-inbox', 'live-staging'];
+
+/** The Inbox states #14 still shows as open: an item not yet settled. */
+const OPEN_EVENT_STATUSES = new Set(['open', 'deferred', 'failed']);
+
+/** `staging/`, and the names a build gives its folders there (lib/identity/derivatives.ts, which this module mustn't import: it pulls in the encoder). */
+const STAGING_DIR = 'staging';
+const STAGING_NAME = /^[a-z0-9-]+$/;
 
 export interface AssetReference {
     source: ReferenceSource;
@@ -114,7 +134,17 @@ function problemFile(problem: RecordProblem): string {
  * exact profiles. The working layer names asset revisions, so its references
  * keep every profile.
  */
-export async function references(dataRoot: string): Promise<AssetReference[]> {
+export interface ReferenceOptions {
+    /**
+     * #181's A10: also tag open Inbox items (`open-inbox`) and staging
+     * entries (`live-staging`), which #15's always-protected set keeps even
+     * for a tombstoned asset. Off by default, so the curator's callers see
+     * what they always saw. GC and purge turn it on.
+     */
+    live?: boolean;
+}
+
+export async function references(dataRoot: string, options: ReferenceOptions = {}): Promise<AssetReference[]> {
     // A missing or uninitialized root reads as empty, which would leave everything unprotected.
     const status = dataRootStatus({ root: dataRoot });
     if (status.state !== 'ready') throw new ReferenceScanError('.', 'not-ready', `the data root is ${status.cause ?? status.state}`);
@@ -178,7 +208,108 @@ export async function references(dataRoot: string): Promise<AssetReference[]> {
     for (const photo of photos) {
         add({ source: 'working-layer-photo', holder: photo.id, photoId: photo.id, assetRevision: photo.assetRevision, profileId: null });
     }
+    if (options.live) {
+        for (const reference of await liveReferences(dataRoot)) add(reference);
+    }
     return [...found.values()].sort(byReference);
+}
+
+const EVENT_REASONS = new Set<ReferenceScanReason>(['unreadable', 'invalid-json', 'edited-in-place', 'file-name', 'unknown-schema-version', 'invalid']);
+
+/**
+ * The references #15's always-protected set adds to references(): every
+ * open Inbox item, and every staging entry. Fails closed like the rest.
+ *
+ * - An open, deferred, or failed `CurationEvent` keeps its photo at its
+ *   asset revision, every one when it names none, at the profile its
+ *   candidate set names or any. One with no photo ID yet keeps the photos
+ *   its facts name.
+ * - Every folder in `staging/` counts as a live build: telling one from a
+ *   killed build would take its lock, and this scan writes nothing. A build
+ *   writes its manifest last, so one that has it keeps that set. One that
+ *   doesn't keeps every set the registry still has pending, the only ones a
+ *   build starts.
+ */
+export async function liveReferences(dataRoot: string): Promise<AssetReference[]> {
+    const found: AssetReference[] = [];
+
+    let listed: Awaited<ReturnType<typeof listEvents>>;
+    try {
+        listed = await listEvents(dataRoot);
+    } catch (error) {
+        throw new ReferenceScanError('curation/events', 'unreadable', `the folder can't be listed (${errorCode(error)})`);
+    }
+    const [eventProblem] = listed.problems;
+    if (eventProblem) {
+        throw new ReferenceScanError(`curation/events/${eventProblem.id}`, EVENT_REASONS.has(eventProblem.reason) ? eventProblem.reason : 'invalid', eventProblem.message);
+    }
+    for (const event of listed.events) {
+        if (!OPEN_EVENT_STATUSES.has(event.status)) continue;
+        const facts = event.derivedFacts;
+        const photoIds = event.photoId !== null
+            ? [event.photoId]
+            : [...new Set([...(facts.candidates ?? []), ...(facts.duplicateOf ? [facts.duplicateOf] : []), ...(facts.samePathAs ? [facts.samePathAs] : [])])];
+        for (const photoId of photoIds) {
+            found.push({ source: 'open-inbox', holder: event.id, photoId, assetRevision: event.assetRevision, profileId: event.photoId !== null ? event.candidate?.profileId ?? null : null });
+        }
+    }
+
+    const staging = path.join(/*turbopackIgnore: true*/ dataRoot, STAGING_DIR);
+    let entries: fs.Dirent[];
+    try {
+        entries = await fs.promises.readdir(staging, { withFileTypes: true });
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) entries = [];
+        else throw new ReferenceScanError(STAGING_DIR, 'unreadable', `the folder can't be listed (${errorCode(error)})`);
+    }
+    let pending: AssetReference[] | null = null;
+    for (const entry of entries.filter((each) => each.isDirectory() && STAGING_NAME.test(each.name)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        const target = await stagedManifest(path.join(staging, entry.name));
+        if (target !== null) {
+            found.push({ source: 'live-staging', holder: entry.name, ...target });
+            continue;
+        }
+        pending ??= await pendingSets(dataRoot);
+        for (const reference of pending) found.push({ ...reference, holder: entry.name });
+    }
+    return found;
+}
+
+/** The set a staging folder's manifest names, or null when it has none yet or it can't be read as one. */
+async function stagedManifest(dir: string): Promise<{ photoId: string; assetRevision: string; profileId: string } | null> {
+    const file = path.join(dir, MANIFEST_FILE);
+    try {
+        if (!(await fs.promises.lstat(file)).isFile()) return null;
+        const value = JSON.parse(await fs.promises.readFile(file, 'utf8')) as Record<string, unknown> | null;
+        const { photoId, assetRevision, profileId } = value ?? {};
+        if (typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return null;
+        if (typeof assetRevision !== 'string' || !ASSET_REVISION_RE.test(assetRevision)) return null;
+        if (typeof profileId !== 'string' || !PROFILE_ID_RE.test(profileId)) return null;
+        return { photoId, assetRevision, profileId };
+    } catch {
+        // Half written or gone: the folder then keeps every pending set instead.
+        return null;
+    }
+}
+
+/** Every set the registry has pending, as a staging folder with no manifest yet keeps them. */
+async function pendingSets(dataRoot: string): Promise<AssetReference[]> {
+    let registry: Awaited<ReturnType<typeof readRegistry>>;
+    try {
+        registry = await readRegistry(dataRoot);
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        throw new ReferenceScanError('identity/registry', code ? 'unreadable' : 'invalid', code ? `the registry can't be read (${code})` : (error as Error).message);
+    }
+    const sets: AssetReference[] = [];
+    for (const [photoId, photo] of Object.entries(registry.photos)) {
+        for (const [assetRevision, revision] of Object.entries(photo.revisions)) {
+            for (const [profileId, profile] of Object.entries(revision.profiles)) {
+                if (profile.state === 'pending') sets.push({ source: 'live-staging', holder: '', photoId, assetRevision, profileId });
+            }
+        }
+    }
+    return sets;
 }
 
 /** The references that keep one derivative set. */

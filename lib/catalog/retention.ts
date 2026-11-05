@@ -2,12 +2,15 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { STAGING_ID, stagingLockName, stagingRoot } from '../identity/derivatives';
+import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
+import { atomicCreateJson } from '../storage/atomicWrite';
 import { canonicalJson } from '../storage/canonical';
-import { dataRootStatus } from '../storage/config';
+import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { hasErrorCode, isInside } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
-import { references, ReferenceScanError } from './references';
+import { ALWAYS_PROTECTED, liveReferences, references, ReferenceScanError, type AssetReference, type ReferenceSource } from './references';
+import { collectedFile, graceEndsMs, problemText, readTombstones, standingFor, type TombstoneRead } from './tombstones';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish } from './repository';
 import { errorText as sharedErrorText } from './error-text';
 import { holderText } from './rollback';
@@ -32,11 +35,29 @@ import { catalogPaths } from './working-layer';
  *     ID. An active pointer naming it with no revision file stops GC
  *     altogether, since references() refuses that root.
  *
- * It never deletes an asset, a revision, an activation, the pointer, a
- * working-layer record, the registry, `edits/`, or anything it can't
- * classify, so every asset references() finds survives. It still runs
+ *   - `assets/<photoId>/<assetRevision>/`, #181's A10, the one asset
+ *     folder it ever deletes: one a standing tombstone lists
+ *     (lib/catalog/tombstones.ts) whose 7-day grace has passed, and that
+ *     nothing in #15's always-protected set names (ALWAYS_PROTECTED in
+ *     references.ts): the active revision, a working-layer series listing
+ *     the photo at that asset revision, an open Inbox item, or a staging
+ *     entry. A standing tombstone past its grace overrides references from
+ *     older revisions, candidates and the photo's own record, and nothing
+ *     else. A revoked tombstone protects nothing and deletes nothing.
+ *
+ * It never deletes any other asset, a revision, an activation, the pointer,
+ * a working-layer record, the registry, a tombstone, `edits/`, anything in
+ * the photo library, or anything it can't classify. It still runs
  * references() under the locks and stops on anything that scan can't read,
- * since a data root it can't read is one it can't reason about.
+ * since a data root it can't read is one it can't reason about. Asset sets
+ * nothing references and no tombstone lists are `unreferenced`: reported
+ * with their bytes, and never deleted.
+ *
+ * Before its first asset delete, apply checks every planned folder against
+ * the always-protected set again, read fresh, and stops with NOW_PROTECTED,
+ * deleting nothing, if one is protected now. It then writes each tombstone's
+ * `.collected.json` marker, prints one plain line saying what it deletes, and
+ * checks each folder once more right before its delete.
  *
  * The dry run and apply take the same path: both the catalog and the
  * authored lock, held from the scan through the last delete (#13's
@@ -54,7 +75,7 @@ export const GC_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 /** How long GC waits for another command's catalog or authored lock. */
 export const GC_WAIT_MS = 30_000;
 
-export type GcClass = 'abandoned-staging' | 'orphan-candidate';
+export type GcClass = 'abandoned-staging' | 'orphan-candidate' | 'tombstoned';
 
 /** Why GC keeps a path of a class it deletes. */
 export type GcKeptReason =
@@ -64,7 +85,14 @@ export type GcKeptReason =
     | 'not-a-regular-file'
     | 'has-revision'
     | 'named-by-activation'
-    | 'named-by-last-publish';
+    | 'named-by-last-publish'
+    /** A tombstoned asset folder whose newest standing tombstone is 7 days old or less. */
+    | 'tombstone-within-grace'
+    /** A tombstoned asset folder #15's always-protected set names, by the source that names it. */
+    | 'active-revision'
+    | 'working-layer-series'
+    | 'open-inbox'
+    | 'live-staging';
 
 export interface GcEntry {
     class: GcClass;
@@ -76,13 +104,27 @@ export interface GcEntry {
     bytes: number;
     /** The newest change GC found in it, in ms. */
     newestMs: number;
+    /** `tombstoned` only: the standing tombstones past their grace that list it, sorted. */
+    tombstoneIds?: string[];
 }
 
 export interface GcKept {
     class: GcClass;
     path: string;
     reason: GcKeptReason;
+    /** `tombstoned` only: the standing tombstones that list it. */
+    tombstoneIds?: string[];
 }
+
+/** A set nothing references and no standing tombstone lists. GC reports it and deletes none. */
+export interface GcUnreferenced {
+    /** `assets/<photoId>/<assetRevision>/<profileId>`. */
+    path: string;
+    bytes: number;
+}
+
+/** What keeps asset bytes, for the byte totals: each reference source, and a tombstone's grace. */
+export type GcProtection = ReferenceSource | 'tombstone-within-grace';
 
 export interface GcPlan {
     graceMs: number;
@@ -92,6 +134,18 @@ export interface GcPlan {
     kept: GcKept[];
     /** How many asset references references() found, every one of which GC keeps. */
     references: number;
+    /** #181's A10: report-only sets. Never deleted, and not in the digest. */
+    unreferenced: GcUnreferenced[];
+    /** Standing tombstones GC read. */
+    tombstones: number;
+    /**
+     * Byte totals: what the plan deletes, what is unreferenced, and the asset
+     * bytes each protection keeps. A set several sources name counts under
+     * each of them, so the protected totals can add up to more than the store.
+     */
+    bytes: { delete: number; unreferenced: number; protected: Partial<Record<GcProtection, number>> };
+    /** Why GC reports no asset totals, such as `assets/` being a symlink, or null. */
+    assetsNote: string | null;
     /** What `photos gc --apply` takes: a hash of every path in `delete` with its class, size, and newest change. */
     digest: string;
 }
@@ -100,6 +154,7 @@ export type GcOutcome =
     | 'PLANNED'
     | 'APPLIED'
     | 'PLAN_CHANGED'
+    | 'NOW_PROTECTED'
     | 'UNSAFE_PATH'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
@@ -108,12 +163,18 @@ export type GcOutcome =
     | 'INTEGRITY_MISMATCH'
     | 'STORAGE_ERROR';
 
-/** The CLI's exit codes, #13's: 1 for a layout GC refuses, 4 for a damaged file or I/O, 3 for any other stop. Usage errors, 2, are the CLI's own. */
+/**
+ * The CLI's exit codes, #13's: 1 for a layout GC refuses, 4 for a damaged
+ * file or I/O, and for #181's NOW_PROTECTED, a planned asset folder
+ * something always protected names now, 3 for any other stop. Usage errors,
+ * 2, are the CLI's own.
+ */
 export const GC_EXIT_CODES: Record<GcOutcome, 0 | 1 | 3 | 4> = {
     PLANNED: 0,
     APPLIED: 0,
     UNSAFE_PATH: 1,
     PLAN_CHANGED: 3,
+    NOW_PROTECTED: 4,
     CATALOG_LOCKED: 3,
     AUTHORED_LOCKED: 3,
     LOCK_LOST: 3,
@@ -135,6 +196,8 @@ export interface GcResult {
 }
 
 export interface GcHooks {
+    /** Runs once apply's plan matches the digest, before the always-protected check that comes before any delete. A test opens an Inbox item here. */
+    afterPlan?(plan: GcPlan): void | Promise<void>;
     /** Runs just before each delete, under every lock. A test changes the data root here. */
     beforeDelete?(entry: GcEntry): void | Promise<void>;
     /** Runs after an entry's last check and before the delete-time check of its folders. A test changes a folder here. */
@@ -151,6 +214,8 @@ export interface GcOptions {
     leaseMs?: number;
     hooks?: GcHooks;
     logger?: CatalogLogger;
+    /** Gets apply's one plain line, "Deletes 3 asset folders, 112.4 MB, from 2 tombstones.", once every check passed and before the first delete. */
+    announce?(line: string): void;
 }
 
 /** A path GC would have to reach through a symlink or a non-folder, so it may lead outside the data root. */
@@ -169,10 +234,17 @@ class EntryChangedError extends Error {}
 
 const STAGING_RULE = 'gc.staging.unlocked-past-grace';
 const CANDIDATE_RULE = 'gc.candidate.unpublished-past-grace';
+const TOMBSTONE_RULE = 'gc.tombstoned.past-grace';
 const CANDIDATE_FILE_RE = /^(rev_[0-9a-f]{64})\.json$/;
 
+/** `assets/<photoId>/<assetRevision>`, the one asset path GC deletes. */
+const ASSET_FOLDER_RE = /^assets\/(ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/(sha256-[0-9a-f]{64})$/;
+
 /** The only paths GC ever deletes, by shape. Checked again right before every delete. */
-const DELETABLE = [/^staging\/[a-z0-9-]+$/, /^catalog\/candidates\/rev_[0-9a-f]{64}\.json$/];
+const DELETABLE = [/^staging\/[a-z0-9-]+$/, /^catalog\/candidates\/rev_[0-9a-f]{64}\.json$/, ASSET_FOLDER_RE];
+
+/** The order the always-protected sources are named in, the first that names a folder being why it stays. */
+const PROTECTION_ORDER: readonly ReferenceSource[] = ALWAYS_PROTECTED;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const posix = (relative: string) => relative.split(path.sep).join('/');
@@ -185,7 +257,8 @@ function logEvent(logger: CatalogLogger, event: string, fields: Record<string, u
 
 /** The plan digest: every entry's class, path, size, and newest change, so any of them changing changes it. */
 export function planDigest(graceMs: number, entries: readonly GcEntry[]): string {
-    const body = { graceMs, delete: entries.map((entry) => ({ class: entry.class, path: entry.path, bytes: entry.bytes, newestMs: entry.newestMs })) };
+    // A tombstoned folder's tombstones are in it too, so a revoke or a new tombstone since the dry run changes it.
+    const body = { graceMs, delete: entries.map((entry) => ({ class: entry.class, path: entry.path, bytes: entry.bytes, newestMs: entry.newestMs, ...(entry.tombstoneIds ? { tombstoneIds: entry.tombstoneIds } : {}) })) };
     return `gc_${createHash('sha256').update(canonicalJson(body)).digest('hex')}`;
 }
 
@@ -235,7 +308,7 @@ async function classDir(realRoot: string, segments: readonly string[]): Promise<
 }
 
 /** Every file's size under `dir` and the newest change to it or anything in it, read with lstat, so no symlink is followed. */
-async function folderFacts(dir: string): Promise<{ bytes: number; newestMs: number }> {
+export async function folderFacts(dir: string): Promise<{ bytes: number; newestMs: number }> {
     const stat = await fs.promises.lstat(dir);
     let bytes = 0;
     let newestMs = Math.trunc(stat.mtimeMs);
@@ -355,7 +428,232 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
         }
     }
 
-    return { graceMs: GC_GRACE_MS, cutoff: iso(cutoffMs), delete: toDelete, kept, references: found.length, digest: planDigest(GC_GRACE_MS, toDelete) };
+    // #181's A10: the asset store, against every reference, the live ones included, and the tombstones.
+    const live = await liveReferences(root);
+    const tombstones = await readTombstones(root);
+    assertTombstonesRead(tombstones);
+    const assets = await assetPlan(realRoot, [...found, ...live], tombstones, now);
+    toDelete.push(...assets.delete);
+    kept.push(...assets.kept);
+    const deleteBytes = toDelete.reduce((sum, entry) => sum + entry.bytes, 0);
+
+    return {
+        graceMs: GC_GRACE_MS,
+        cutoff: iso(cutoffMs),
+        delete: toDelete,
+        kept,
+        references: found.length,
+        unreferenced: assets.unreferenced,
+        tombstones: tombstones.tombstones.filter((entry) => entry.revoked === null).length,
+        bytes: { delete: deleteBytes, unreferenced: assets.unreferenced.reduce((sum, set) => sum + set.bytes, 0), protected: assets.protectedBytes },
+        assetsNote: assets.note,
+        digest: planDigest(GC_GRACE_MS, toDelete),
+    };
+}
+
+/** Stops on a tombstone file nobody can read: a damaged revoke could make GC delete what the owner took back. */
+function assertTombstonesRead(read: TombstoneRead): void {
+    const [problem] = read.problems;
+    if (problem) throw new CatalogIntegrityError(problem.file, `${problemText(problem)}, so GC can't tell what is taken down`);
+}
+
+/** One `assets/<photoId>/<assetRevision>/` folder as GC found it. */
+interface AssetFolder {
+    photoId: string;
+    assetRevision: string;
+    /** Relative to the data root. */
+    path: string;
+    /** False for a symlink or a file in its place, which GC never deletes through. */
+    isFolder: boolean;
+    sets: { profileId: string; path: string; bytes: number }[];
+    bytes: number;
+    newestMs: number;
+}
+
+/** Every asset folder in the store, read with lstat, so nothing is followed through a symlink. Throws UnsafePathError for a store that is one. */
+async function assetFolders(realRoot: string): Promise<{ folders: AssetFolder[]; notFolders: string[] }> {
+    const store = await classDir(realRoot, ['assets']);
+    const folders: AssetFolder[] = [];
+    // Photo folders that are a symlink or a file: GC reasons about nothing under them.
+    const notFolders: string[] = [];
+    if (store === null) return { folders, notFolders };
+    const byName = (a: fs.Dirent, b: fs.Dirent) => (a.name < b.name ? -1 : 1);
+    for (const photo of (await fs.promises.readdir(store.dir, { withFileTypes: true })).sort(byName)) {
+        if (!PHOTO_ID_RE.test(photo.name)) continue;
+        if (!photo.isDirectory()) {
+            notFolders.push(photo.name);
+            continue;
+        }
+        const photoDir = path.join(store.dir, photo.name);
+        for (const revision of (await fs.promises.readdir(photoDir, { withFileTypes: true })).sort(byName)) {
+            if (!ASSET_REVISION_RE.test(revision.name)) continue;
+            const relative = `assets/${photo.name}/${revision.name}`;
+            if (!revision.isDirectory()) {
+                folders.push({ photoId: photo.name, assetRevision: revision.name, path: relative, isFolder: false, sets: [], bytes: 0, newestMs: 0 });
+                continue;
+            }
+            const dir = path.join(photoDir, revision.name);
+            const sets: AssetFolder['sets'] = [];
+            for (const profile of (await fs.promises.readdir(dir, { withFileTypes: true })).sort(byName)) {
+                if (!PROFILE_ID_RE.test(profile.name) || !profile.isDirectory()) continue;
+                sets.push({ profileId: profile.name, path: `${relative}/${profile.name}`, bytes: (await folderFacts(path.join(dir, profile.name))).bytes });
+            }
+            folders.push({ photoId: photo.name, assetRevision: revision.name, path: relative, isFolder: true, sets, ...(await folderFacts(dir)) });
+        }
+    }
+    return { folders, notFolders };
+}
+
+/**
+ * The asset half of the plan. A folder no standing tombstone lists is never
+ * deleted: each of its sets counts toward the sources that name it, or is
+ * `unreferenced`. A folder a standing tombstone lists stays when #15's
+ * always-protected set names the photo at that asset revision at any
+ * profile, or when every such tombstone is 7 days old or less. Otherwise it
+ * goes, whatever older revisions, candidates or the photo's own record say.
+ */
+async function assetPlan(realRoot: string, refs: readonly AssetReference[], tombstones: TombstoneRead, now: number) {
+    const toDelete: GcEntry[] = [];
+    const kept: GcKept[] = [];
+    const unreferenced: GcUnreferenced[] = [];
+    const protectedBytes: Partial<Record<GcProtection, number>> = {};
+    const count = (key: GcProtection, bytes: number) => {
+        if (bytes > 0) protectedBytes[key] = (protectedBytes[key] ?? 0) + bytes;
+    };
+
+    let found: Awaited<ReturnType<typeof assetFolders>>;
+    try {
+        found = await assetFolders(realRoot);
+    } catch (error) {
+        // A store GC can't walk safely: with nothing taken down that's only a missing report, but a tombstone could need a delete there.
+        if (error instanceof UnsafePathError && !tombstones.tombstones.some((entry) => entry.revoked === null)) {
+            return { delete: toDelete, kept, unreferenced, protectedBytes, note: `${error.message.replace(/ Nothing was deleted\.$/, '')}, so GC reports no asset bytes.` };
+        }
+        throw error;
+    }
+
+    for (const photoId of found.notFolders) {
+        for (const entry of tombstones.tombstones.filter((each) => each.revoked === null && each.photoId === photoId)) {
+            for (const assetRevision of entry.assetRevisions) kept.push({ class: 'tombstoned', path: `assets/${photoId}/${assetRevision}`, reason: 'not-a-folder', tombstoneIds: [entry.tombstoneId] });
+        }
+    }
+
+    for (const folder of found.folders) {
+        const named = refs.filter((ref) => ref.photoId === folder.photoId && (ref.assetRevision === null || ref.assetRevision === folder.assetRevision));
+        const standing = standingFor(tombstones, folder.photoId, folder.assetRevision);
+        if (standing.length === 0) {
+            for (const set of folder.sets) {
+                const sources = new Set(named.filter((ref) => ref.profileId === null || ref.profileId === set.profileId).map((ref) => ref.source));
+                if (sources.size === 0) unreferenced.push({ path: set.path, bytes: set.bytes });
+                for (const source of sources) count(source, set.bytes);
+            }
+            continue;
+        }
+        const tombstoneIds = standing.map((entry) => entry.tombstoneId).sort();
+        const keep = (reason: GcKeptReason) => kept.push({ class: 'tombstoned', path: folder.path, reason, tombstoneIds });
+        if (!folder.isFolder) {
+            keep('not-a-folder');
+            continue;
+        }
+        const always = PROTECTION_ORDER.find((source) => named.some((ref) => ref.source === source));
+        if (always) {
+            keep(always as GcKeptReason);
+            count(always, folder.bytes);
+            continue;
+        }
+        const past = standing.filter((entry) => graceEndsMs(entry) < now).map((entry) => entry.tombstoneId).sort();
+        if (past.length === 0) {
+            keep('tombstone-within-grace');
+            count('tombstone-within-grace', folder.bytes);
+            continue;
+        }
+        toDelete.push({ class: 'tombstoned', path: folder.path, rule: TOMBSTONE_RULE, bytes: folder.bytes, newestMs: folder.newestMs, tombstoneIds: past });
+    }
+    return { delete: toDelete, kept, unreferenced, protectedBytes, note: null as string | null };
+}
+
+/**
+ * Why a planned tombstoned folder can't go now, read fresh: the reference
+ * that always protects it, as a sentence, or null. Throws EntryChangedError
+ * when its standing tombstones past their grace aren't the plan's any more.
+ */
+async function nowProtected(root: string, entry: GcEntry, now: number): Promise<string | null> {
+    const match = ASSET_FOLDER_RE.exec(entry.path);
+    if (!match) throw new UnsafePathError(entry.path, 'is not a path GC deletes');
+    const [, photoId, assetRevision] = match;
+    const refs = await references(root, { live: true });
+    const holder = PROTECTION_ORDER.map((source) => refs.find((ref) => ref.source === source && ref.photoId === photoId && (ref.assetRevision === null || ref.assetRevision === assetRevision))).find((ref) => ref !== undefined);
+    if (holder) return `${entry.path} is protected now: ${protectedText(holder)}.`;
+    const tombstones = await readTombstones(root);
+    assertTombstonesRead(tombstones);
+    const past = standingFor(tombstones, photoId, assetRevision).filter((each) => graceEndsMs(each) < now).map((each) => each.tombstoneId).sort();
+    if (past.join() !== (entry.tombstoneIds ?? []).join()) throw new EntryChangedError(`${entry.path}'s tombstones changed since the plan.`);
+    return null;
+}
+
+/** Who protects an asset, in words. */
+export function protectedText(ref: Pick<AssetReference, 'source' | 'holder'>): string {
+    switch (ref.source) {
+        case 'active-revision':
+            return `the live revision, ${ref.holder}, shows it`;
+        case 'working-layer-series':
+            return `the draft's series ${ref.holder} lists it`;
+        case 'open-inbox':
+            return `the open Inbox item ${ref.holder} names it`;
+        case 'live-staging':
+            return `the build in staging/${ref.holder} may be writing it`;
+        case 'revision':
+            return `revision ${ref.holder} shows it`;
+        case 'candidate':
+            return `candidate ${ref.holder} shows it`;
+        case 'working-layer-photo':
+            return 'its own photo record pins it';
+    }
+}
+
+/** The library's real path, when one is set: GC never deletes in it, or in a folder that holds it. */
+function libraryRealPath(): string | null {
+    const library = configuredLibraryRoot();
+    if (!library) return null;
+    try {
+        return fs.realpathSync(library);
+    } catch {
+        return path.resolve(library);
+    }
+}
+
+/** Throws for a target inside the photo library, or one that holds it: the owner's originals are never GC's. */
+function assertOutsideLibrary(realRoot: string, entry: GcEntry): void {
+    const library = libraryRealPath();
+    if (library === null) return;
+    const target = path.join(realRoot, ...entry.path.split('/'));
+    if (target === library || isInside(target, library) || isInside(library, target)) throw new UnsafePathError(entry.path, 'is inside the photo library, or holds it');
+}
+
+/** Apply's one plain line, said before the first delete. */
+export function deleteLine(plan: Pick<GcPlan, 'delete'>): string {
+    const assets = plan.delete.filter((entry) => entry.class === 'tombstoned');
+    const others = plan.delete.filter((entry) => entry.class !== 'tombstoned');
+    const sum = (entries: readonly GcEntry[]) => entries.reduce((total, entry) => total + entry.bytes, 0);
+    const n = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+    const tombstones = new Set(assets.flatMap((entry) => entry.tombstoneIds ?? []));
+    const parts: string[] = [];
+    if (assets.length > 0) parts.push(`${n(assets.length, 'asset folder')}, ${sizeText(sum(assets))}, from ${n(tombstones.size, 'tombstone')}`);
+    if (others.length > 0) parts.push(`${n(others.length, assets.length > 0 ? 'other path' : 'path')}, ${sizeText(sum(others))}`);
+    return `Deletes ${parts.join(', and ')}.`;
+}
+
+/** A byte count for the owner: 38.2 MB. */
+export function sizeText(bytes: number): string {
+    if (bytes < 1_000) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`;
+    const units = ['kB', 'MB', 'GB', 'TB'];
+    let value = bytes / 1_000;
+    let unit = 0;
+    while (value >= 999.95 && unit < units.length - 1) {
+        value /= 1_000;
+        unit += 1;
+    }
+    return `${value.toFixed(1)} ${units[unit]}`;
 }
 
 interface Checked {
@@ -371,6 +669,8 @@ interface Checked {
  */
 async function recheck(root: string, realRoot: string, entry: GcEntry, now: number): Promise<Checked> {
     if (!DELETABLE.some((shape) => shape.test(entry.path))) throw new UnsafePathError(entry.path, 'is not a path GC deletes');
+    if ((entry.class === 'tombstoned') !== ASSET_FOLDER_RE.test(entry.path)) throw new UnsafePathError(entry.path, `is not a path GC deletes as ${entry.class}`);
+    assertOutsideLibrary(realRoot, entry);
     const segments = entry.path.split('/');
     const checkedDir = await classDir(realRoot, segments.slice(0, -1));
     if (checkedDir === null) throw new EntryChangedError(`${entry.path} is gone.`);
@@ -382,12 +682,13 @@ async function recheck(root: string, realRoot: string, entry: GcEntry, now: numb
         if (hasErrorCode(error, 'ENOENT')) throw new EntryChangedError(`${entry.path} is gone.`);
         throw error;
     }
-    const isStaging = entry.class === 'abandoned-staging';
-    if (isStaging ? !stat.isDirectory() : !stat.isFile()) throw new EntryChangedError(`${entry.path} is no longer a ${isStaging ? 'folder' : 'file'}.`);
-    const facts = isStaging ? await folderFacts(target) : await candidateFacts(target, entry.path);
+    const isFolder = entry.class !== 'orphan-candidate';
+    if (isFolder ? !stat.isDirectory() : !stat.isFile()) throw new EntryChangedError(`${entry.path} is no longer a ${isFolder ? 'folder' : 'file'}.`);
+    const facts = isFolder ? await folderFacts(target) : await candidateFacts(target, entry.path);
     if (facts.bytes !== entry.bytes || facts.newestMs !== entry.newestMs) throw new EntryChangedError(`${entry.path} changed since the plan.`);
-    if (facts.newestMs >= now - GC_GRACE_MS) throw new EntryChangedError(`${entry.path} is within the grace period.`);
-    if (!isStaging) {
+    // A tombstoned folder's grace is its tombstone's, which nowProtected() checks again.
+    if (entry.class !== 'tombstoned' && facts.newestMs >= now - GC_GRACE_MS) throw new EntryChangedError(`${entry.path} is within the grace period.`);
+    if (entry.class === 'orphan-candidate') {
         const id = segments[segments.length - 1].replace(/\.json$/, '');
         if (await existsAtAll(path.join(catalogPaths(root).revisionsDir, `${id}.json`))) throw new EntryChangedError(`${entry.path} has a revision now.`);
     }
@@ -509,11 +810,42 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         if (plan.digest !== options.apply) {
             return finish('PLAN_CHANGED', `The plan is ${plan.digest} now, not ${options.apply}: a path was added to it, left it, became protected, or changed since the dry run. Nothing was deleted. Check the plan below, and apply it only if it is still what you want.`);
         }
+        if (plan.delete.length > 0) {
+            await hooks.afterPlan?.(plan);
+            const tombstoned = plan.delete.filter((entry) => entry.class === 'tombstoned');
+            try {
+                // #15's AC 8 again, read fresh: an Inbox item or a build that came to name a folder since the scan stops it all.
+                for (const entry of tombstoned) {
+                    const why = await nowProtected(root, entry, clock());
+                    if (why) return finish('NOW_PROTECTED', `${why} GC deleted nothing. Run the dry run again.`);
+                }
+            } catch (error) {
+                if (error instanceof EntryChangedError) return finish('PLAN_CHANGED', `${error.message} Nothing was deleted. Run the dry run again.`);
+                throw error;
+            }
+            for (const entry of plan.delete) assertOutsideLibrary(realRoot, entry);
+            // Written before the first byte goes, so a revoke can tell GC began, even after a crash.
+            for (const tombstoneId of [...new Set(tombstoned.flatMap((entry) => entry.tombstoneIds ?? []))].sort()) {
+                const paths = tombstoned.filter((entry) => entry.tombstoneIds?.includes(tombstoneId)).map((entry) => entry.path);
+                await atomicCreateJson(collectedFile(root, tombstoneId), { tombstoneId, planDigest: plan.digest, startedAt: iso(clock()), paths });
+            }
+            const line = deleteLine(plan);
+            logEvent(logger, 'catalog.gc.deleting', { digest: plan.digest, line });
+            options.announce?.(line);
+        }
         for (const entry of plan.delete) {
             if (!(await stillHeld(locks))) return finish('LOCK_LOST', `GC lost the catalog or authored lock.${deletedSoFar()}`);
             await hooks.beforeDelete?.(entry);
             try {
-                if (entry.class === 'abandoned-staging') {
+                if (entry.class === 'tombstoned') {
+                    const why = await nowProtected(root, entry, clock());
+                    if (why) return finish('NOW_PROTECTED', `${why} GC stopped there.${deletedSoFar()} Run the dry run again.`);
+                    const checked = await recheck(root, realRoot, entry, clock());
+                    await hooks.afterRecheck?.(entry);
+                    assertSameFolders(realRoot, checked);
+                    // In the same tick as the check. rm() unlinks a symlink inside the folder rather than following it.
+                    await fs.promises.rm(checked.target, { recursive: true, force: true });
+                } else if (entry.class === 'abandoned-staging') {
                     const id = entry.path.slice('staging/'.length);
                     await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.leaseMs }, async () => {
                         const checked = await recheck(root, realRoot, entry, clock());
@@ -537,7 +869,7 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
                 throw error;
             }
             result.deleted.push(entry.path);
-            logEvent(logger, 'catalog.gc.deleted', { class: entry.class, path: entry.path, rule: entry.rule, bytes: entry.bytes, newestAt: iso(entry.newestMs) });
+            logEvent(logger, 'catalog.gc.deleted', { class: entry.class, path: entry.path, rule: entry.rule, bytes: entry.bytes, newestAt: iso(entry.newestMs), ...(entry.tombstoneIds ? { tombstoneIds: entry.tombstoneIds } : {}) });
         }
         const count = result.deleted.length;
         return finish('APPLIED', count === 0 ? 'The plan was empty, so nothing was deleted.' : `Deleted ${count} ${count === 1 ? 'path' : 'paths'}.`);
