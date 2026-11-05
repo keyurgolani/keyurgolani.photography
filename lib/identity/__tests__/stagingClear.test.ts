@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { removeAbandonedStaging } from '../derivatives';
 
 /**
@@ -53,6 +53,8 @@ function setup() {
 }
 
 describe("the watcher's start-up staging clear (item 11)", () => {
+    afterEach(() => vi.restoreAllMocks());
+
     it('unlinks a symlink planted in staging/ as a link, and leaves assets/ and a library folder it points at byte for byte', async () => {
         const { root, staging, library } = setup();
         fs.symlinkSync(path.join(root, 'assets'), path.join(staging, 'assets-link'));
@@ -73,10 +75,13 @@ describe("the watcher's start-up staging clear (item 11)", () => {
         fs.renameSync(staging, path.join(dir, 'staging-moved'));
         fs.symlinkSync(library, staging);
         const owner = hashes(library);
+        const warnings: string[] = [];
 
-        const removed = await removeAbandonedStaging(root, { logger: quiet });
+        const removed = await removeAbandonedStaging(root, { logger: { ...quiet, warn: (line: string) => warnings.push(line) } });
 
         expect(removed).toEqual([]);
+        // The up-front check stops it before any entry is looked at, not the per-entry check.
+        expect(warnings).toEqual(['[derivatives] staging/ is a symlink or not a folder, so nothing in it was removed.']);
         expect(hashes(library)).toEqual(owner);
         expect(hashes(path.join(dir, 'staging-moved'))).toEqual(new Map([['killed-build', 'dir'], [path.join('killed-build', 'w400.webp'), createHash('sha256').update('partial').digest('hex')]]));
     });
@@ -99,6 +104,22 @@ describe("the watcher's start-up staging clear (item 11)", () => {
         expect(removed).toEqual([]);
         expect(hashes(library)).toEqual(new Map([...owner, ['killed-build', 'dir'], [path.join('killed-build', 'mine.jpg'), createHash('sha256').update("the owner's").digest('hex')]]));
         expect(fs.existsSync(path.join(dir, 'staging-moved', 'killed-build', 'w400.webp'))).toBe(true);
+    });
+
+    it("leaves an entry on another device than staging/ alone, as a mount there would be (item 23)", async () => {
+        const { root, staging } = setup();
+        const target = path.join(staging, 'killed-build');
+        const real = fs.lstatSync;
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+            if (typeof each !== 'string' || path.resolve(each) !== target || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { dev: stat.dev + 1 });
+        }) as typeof fs.lstatSync);
+        const warnings: string[] = [];
+        const removed = await removeAbandonedStaging(root, { logger: { ...quiet, warn: (line: string) => warnings.push(line) } });
+        expect(removed).toEqual([]);
+        expect(fs.existsSync(path.join(target, 'w400.webp'))).toBe(true);
+        expect(warnings).toEqual([expect.stringMatching(/^\[derivatives\] Could not remove staging\/killed-build: .*another device/)]);
     });
 
     it('leaves alone what a build never names: a file, and a name with no build lock shape', async () => {

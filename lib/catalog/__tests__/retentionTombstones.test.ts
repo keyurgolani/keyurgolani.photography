@@ -14,7 +14,7 @@ import { runPurge, runRevoke } from '../purge';
 import { CATALOG_LOCK } from '../repository';
 import { runPurgeCommand, purgeArgs } from '../purge-cli';
 import { references } from '../references';
-import { GC_EXIT_CODES, runGc, type GcOptions, type GcResult } from '../retention';
+import { GC_EXIT_CODES, planDigest, runGc, type GcEntry, type GcOptions, type GcResult } from '../retention';
 import { gcArgs, runGcCommand } from '../retention-cli';
 import { readTombstones, TOMBSTONE_GRACE_MS, tombstonesDir } from '../tombstones';
 import { addAssetRevision, B2, cleanupPurgeTemplates, purgeFixture, quiet, snapshot, stamps, writeOpenEvent, writeRevoke, writeStaging, writeTombstone, type PurgeFixture } from './purgeFixtures';
@@ -648,7 +648,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
             },
         } });
         expect(exitCode).toBe(4);
-        const whole = `set aside whole at ${aside}: rename it back to ${folderOf(built, built.d)}, then revoke`;
+        const whole = `set aside whole at ${aside}: rename it back to ${folderOf(built, built.d)}, then revoke, or rerun photos gc to finish the takedown`;
         expect(out.join('\n')).toContain(whole);
         // Everything that was in it is in the folder set aside, byte for byte.
         const moved = assetsOf(built.root);
@@ -910,7 +910,9 @@ describe('every stop after the rename puts the folder back (item 14, and the loc
             fs.mkdirSync(at);
         } }));
         expect(GC_EXIT_CODES[result.outcome]).toBe(4);
-        expect(result.message).toContain(aside);
+        expect(result.message).toContain(`GC can't find the folder it set aside; what is at ${aside} isn't it.`);
+        // Not GC's folder, so it is never called whole or permanent.
+        expect(result.message).not.toMatch(/permanent|set aside whole/);
         expect(result.deleted).toEqual([]);
         expect(fs.existsSync(path.join(built.root, folderOf(built, built.d)))).toBe(false);
         // What GC set aside is whole where the swap put it.
@@ -1008,5 +1010,86 @@ describe("manifests account for every byte, and the window after the rename is c
         expect(result.outcome).toBe('PLAN_CHANGED');
         expect(result.deleted).toEqual([]);
         expect(fs.readFileSync(path.join(built.root, folderOf(built, built.d), 'owner-notes.txt'), 'utf8')).toBe("the owner's notes");
+    });
+});
+
+describe('a whole folder set aside beats "reached" (item 21)', { timeout: 120_000 }, () => {
+    /**
+     * The reviewer's scenario: run A sets D's folder aside, and a rebuilt copy
+     * lands in its place, so A's put-back fails ENOTEMPTY and A exits 4.
+     */
+    async function stuckAside(built: PurgeFixture) {
+        const id = await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        let aside = '';
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { beforeRemove: (_entry, at) => {
+            aside = path.relative(fs.realpathSync(built.root), at).split(path.sep).join('/');
+            // A build rebuilds the set where it was.
+            fs.cpSync(at, path.join(built.root, folderOf(built, built.d)), { recursive: true });
+            throw new Error('a fault just before the delete');
+        } } });
+        expect(GC_EXIT_CODES[result.outcome]).toBe(4);
+        expect(result.message).toContain('ENOTEMPTY');
+        return { id, aside, whole: `set aside whole at ${aside}: rename it back to ${folderOf(built, built.d)}, then revoke, or rerun photos gc to finish the takedown` };
+    }
+
+    it('keeps the rebuilt folder in run B as set-aside-leftover, and revoke and status --check then agree', async () => {
+        const built = await fixture();
+        const { id, aside, whole } = await stuckAside(built);
+        const before = snapshot(built.root);
+        const planned = await gc(built.root, PAST_GRACE);
+        expect(planned.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
+        expect(planned.plan?.kept).toContainEqual(expect.objectContaining({ class: 'tombstoned', path: folderOf(built, built.d), reason: 'set-aside-leftover', detail: aside }));
+        const applied = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
+        expect(applied.deleted).toEqual([]);
+        expect(snapshot(built.root)).toEqual(before);
+        const refused = await revoke(built, id);
+        expect(refused.outcome).toBe('SET_ASIDE');
+        expect(refused.message).toContain(whole);
+        expect((await runStatusCommand({ dataRoot: built.root }, { check: true })).output).toContain(whole);
+    });
+
+    it('answers SET_ASIDE, never ALREADY_COLLECTED, while a whole aside holds what was recorded, though another run reached the folder', async () => {
+        const built = await fixture();
+        const { id, whole } = await stuckAside(built);
+        // Another run's marker recorded the rebuilt copy, which is cut short now.
+        const [first] = markers(built.root, id);
+        const recorded = readMarker(built.root, first).paths[0];
+        const digest = `gc_${'e'.repeat(64)}`;
+        fs.writeFileSync(path.join(tombstonesDir(built.root), `${id}.collected.${digest.slice(3, 19)}.json`), JSON.stringify({ tombstoneId: id, planDigest: digest, startedAt: new Date(PAST_GRACE).toISOString(), paths: [recorded] }));
+        const set = path.join(built.root, folderOf(built, built.d), built.profileId);
+        const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json').sort();
+        fs.truncateSync(path.join(set, file), 1);
+        const refused = await revoke(built, id);
+        expect(refused.outcome).toBe('SET_ASIDE');
+        expect(refused.message).toContain(whole);
+        expect(refused.message).not.toMatch(/permanent/);
+    });
+});
+
+describe("the files GC compares (item 23)", { timeout: 120_000 }, () => {
+    it('gives a plan whose folders differ only in their files another digest', () => {
+        const entry: GcEntry = { class: 'tombstoned', path: `assets/ph_00000000-0000-4000-8000-000000000001/sha256-${'a'.repeat(64)}`, rule: 'gc.tombstoned.past-grace', bytes: 10, newestMs: 1, tombstoneIds: [`tomb_${UUID}`], files: [{ name: 'p_0000000000000001/manifest.json', bytes: 300 }, { name: 'p_0000000000000001/w400.webp', bytes: 10 }] };
+        const other = { ...entry, files: [{ name: 'p_0000000000000001/manifest.json', bytes: 301 }, { name: 'p_0000000000000001/w400.webp', bytes: 10 }] };
+        expect(planDigest(TOMBSTONE_GRACE_MS, [entry])).not.toBe(planDigest(TOMBSTONE_GRACE_MS, [other]));
+        expect(planDigest(TOMBSTONE_GRACE_MS, [entry])).toBe(planDigest(TOMBSTONE_GRACE_MS, [structuredClone(entry)]));
+    });
+
+    it("stops before the rename when a folder's files differ from the plan, its bytes and newest change the same", async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        const folder = path.join(built.root, folderOf(built, built.d));
+        const set = path.join(folder, built.profileId);
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { beforeDelete: () => {
+            // The same manifest, reformatted: a valid set, the same listed bytes, and the times put back.
+            const file = path.join(set, 'manifest.json');
+            const stamps = [file, set, folder].map((each) => [each, fs.statSync(each)] as const);
+            fs.writeFileSync(file, `${JSON.stringify(JSON.parse(fs.readFileSync(file, 'utf8')))}\n`);
+            for (const [each, stat] of stamps) fs.utimesSync(each, stat.atime, stat.mtime);
+        } } });
+        expect(result.outcome).toBe('PLAN_CHANGED');
+        expect(result.message).toContain(`${folderOf(built, built.d)} holds other files than the plan.`);
+        expect(fs.existsSync(folder)).toBe(true);
     });
 });

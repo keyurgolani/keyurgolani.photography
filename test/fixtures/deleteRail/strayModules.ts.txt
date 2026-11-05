@@ -7,3 +7,7 @@ import * as fse from 'fs-extra';
 import trash from 'trash';
 const again = require('fs-extra');
 export const later = () => import('rimraf');
+export * from 'fs-extra/lib/remove';
+export { sync } from 'rimraf/dist/sync';
+import fsAlias = require('node:fs');
+export const dyn = (name: string) => fsAlias[name];

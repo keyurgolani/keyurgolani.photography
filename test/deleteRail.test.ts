@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { callersAcross, callSites, deleteCalls, scanSource, sourceFiles, type DeleteCall } from './helpers/deleteCalls';
+import { callersAcross, callSites, deleteCalls, identifierSites, scanSource, sourceFiles, type DeleteCall } from './helpers/deleteCalls';
 import { REPO_ROOT } from './helpers/runTsx';
 
 /**
@@ -56,7 +56,7 @@ const ALLOWLIST: readonly Allowed[] = [
     { file: 'lib/identity/decisions.ts', fn: 'settleDecisions', calls: 1, reason: 'on each identity pass that rejects a decision: removes the decision file from identity/decisions/ once its contents are written to rejected/' },
     { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: 1, reason: "when photos edit's editor fails: removes photos edit's own working copy" },
     { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: 1, reason: "when photos edit saves: removes photos edit's own working copy" },
-    { file: 'lib/catalog/edit-record.ts', fn: 'shellEditor', calls: 1, reason: "when the owner runs photos edit: runs the owner's $VISUAL or $EDITOR, a script that isn't a literal, on photos edit's own working copy" },
+    { file: 'lib/catalog/edit-record.ts', fn: 'shellEditor', calls: 1, reason: "the owner's own program, run at his request, not an app delete" },
     { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: 1, reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
     // Legacy derivatives, until A12 fences or removes them.
     { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: 1, reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
@@ -99,7 +99,7 @@ describe('the delete-call rail', () => {
     });
 
     it('gives every entry a reason that says when it runs, and allows the legacy imageOptimizer deletes only inside the photo library until A12', () => {
-        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)/;
+        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)|run at his request/;
         for (const entry of ALLOWLIST) expect(entry.reason, key(entry)).toMatch(WHEN);
         expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').every((entry) => entry.until === 'A12' && entry.reason.startsWith('inside the photo library, until A12'))).toBe(true);
         expect(ALLOWLIST.filter((entry) => entry.until !== undefined).every((entry) => entry.file === 'utils/imageOptimizer.ts')).toBe(true);
@@ -112,6 +112,20 @@ describe('the delete-call rail', () => {
         expect(callersAcross(SCANNED, 'clearStagingEntry')).toEqual(['lib/identity/derivatives.ts removeAbandonedStaging']);
         expect(callersAcross(SCANNED, 'pruneVersions')).toEqual(['lib/storage/document.ts writeVersionedDocument']);
         expect(callSites('lib/catalog/retention.ts', 'removeSetAside')).toHaveLength(1);
+        // Every reference, not only calls: its declaration, and the call and the hand-off to the test seam in collectTombstoned.
+        expect(identifierSites(SCANNED, 'removeSetAside')).toEqual([
+            'lib/catalog/retention.ts <module>',
+            'lib/catalog/retention.ts runGc.collectTombstoned',
+            'lib/catalog/retention.ts runGc.collectTombstoned',
+        ]);
+    });
+
+    it('lets no shipped caller hand runGc hooks (item 23)', () => {
+        // runGc takes hooks only through runGcCommand's fourth argument, which only tests pass.
+        const commands = SCANNED.filter((file) => !file.endsWith('.sh')).flatMap((file) => callSites(file, 'runGcCommand').map((site) => ({ file, args: site.node.arguments.length })));
+        expect(commands).toEqual([{ file: 'scripts/photos.ts', args: 3 }]);
+        const direct = SCANNED.filter((file) => !file.endsWith('.sh')).flatMap((file) => callSites(file, 'runGc').map((site) => `${file} ${site.fn} ${site.node.arguments.map((arg) => arg.getText()).join(', ')}`));
+        expect(direct).toEqual(["lib/catalog/retention-cli.ts runGcCommand { ...options, dataRoot, apply: args.apply, announce: (line) => io.out(line) }"]);
     });
 
     it('catches a stray delete in every form, the positive control', () => {
@@ -153,6 +167,36 @@ describe('the delete-call rail', () => {
             ['viaExtraNames', 'fse.emptyDir'],
             ['viaExtraNames', 'fse.emptyDirSync'],
             ['Janitor.sweep', 'fs.rmSync'],
+            // Round 4: git clean with options, and git with a list it can't read.
+            ['viaGitOptions', 'cp.execSync runs git clean'],
+            ['viaGitOptions', 'execFileSync runs git clean'],
+            ['viaGitOptions', "execFileSync runs git with arguments that aren't a literal list"],
+            // Shells and interpreters it can't read fail it closed (item 24).
+            ['viaInterpreters', "spawnSync runs bash with arguments that aren't a literal list"],
+            ['viaInterpreters', "spawnSync runs a shell script that isn't a literal"],
+            ['viaInterpreters', "spawnSync runs a node script that isn't a literal"],
+            ['viaInterpreters', "spawnSync runs a perl script that isn't a literal"],
+            ['viaInterpreters', "spawnSync runs a python3 script that isn't a literal"],
+            ['viaInterpreters', "spawnSync with shell: true and arguments that aren't literals"],
+            // The rm family as commands.
+            ['viaRmFamily', 'cp.execSync runs rm'],
+            ['viaRmFamily', 'cp.execSync runs rm'],
+            ['viaRmFamily', 'execFileSync runs rmdir'],
+            ['viaRmFamily', 'execFileSync runs unlink'],
+            // child_process reached indirectly.
+            ['viaIndirectProcess', "exec with a command that isn't a literal"],
+            ['viaIndirectProcess', 'loaded.execSync runs rm'],
+            ['viaIndirectProcess', 'run runs rm'],
+            // fs reached through an alias.
+            ['viaFsAliases', "computed access p[name as 'rm']"],
+            ['viaFsAliases', "computed access promises[name as 'rm']"],
+            ['viaFsAliases', "destructure ['rm']: r"],
+            ['viaFsAliases', "Reflect.get(require('fs'), …)"],
+            // Modules it can't name, and banned ones through createRequire.
+            ['viaDynamicModule', "require of a module that isn't a literal"],
+            ['viaDynamicModule', "import() of a module that isn't a literal"],
+            ['viaDynamicModule', 'module rimraf/dist/sync'],
+            ['viaDynamicModule', 'module del'],
         ]);
     });
 
@@ -166,6 +210,10 @@ describe('the delete-call rail', () => {
             ['<module>', 'module trash'],
             ['<module>', 'module fs-extra'],
             ['later', 'module rimraf'],
+            // Round 4: subpaths, re-exports, and an alias by import-equals.
+            ['<module>', 'module fs-extra/lib/remove'],
+            ['<module>', 'module rimraf/dist/sync'],
+            ['dyn', 'computed access fsAlias[name]'],
         ]);
     });
 });

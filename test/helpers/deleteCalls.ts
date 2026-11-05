@@ -249,6 +249,27 @@ export function deleteCalls(files: readonly string[]): DeleteCall[] {
     });
 }
 
+/**
+ * Every identifier named `name` in each of `files`, calls, references and its
+ * declaration alike, as `<file> <functions>`. A declaration's own name counts
+ * where the declaration sits.
+ */
+export function identifierSites(files: readonly string[], name: string): string[] {
+    return files.filter((file) => !file.endsWith('.sh')).flatMap((file) => {
+        const source = parse(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'));
+        const found: string[] = [];
+        const visit = (node: ts.Node) => {
+            if (ts.isIdentifier(node) && node.text === name) {
+                const declared = (node.parent as { name?: ts.Node }).name === node;
+                found.push(`${file} ${enclosingFunction(declared ? node.parent : node)}`);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(source);
+        return found;
+    });
+}
+
 /** Every call to a function named `name` in each of `files`, as `<file> <functions>`. */
 export function callersAcross(files: readonly string[], name: string): string[] {
     return files.filter((file) => !file.endsWith('.sh')).flatMap((file) => callSites(file, name).map((site) => `${file} ${site.fn}`));
