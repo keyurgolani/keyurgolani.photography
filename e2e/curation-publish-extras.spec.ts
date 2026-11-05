@@ -111,7 +111,8 @@ test('says Base moved once another revision went live, and offers only Load the 
     await expect(liveRegion(page)).toHaveText('Base moved. Revision 3 went live after this page loaded. Load the updated ledger.');
     await expect(page.getByText(/^Base moved\. Revision 3 went live after this page loaded, so this compares the draft against revision 2\.$/)).toBeVisible();
     await expect(page.getByText('Current public revision 3')).toBeVisible();
-    await expect(bar(page).getByRole('link', { name: 'Load the updated ledger' })).toBeVisible();
+    // Out of date, the bar has no submit, so it's a plain container rather than the form (as curation-publish.spec.ts finds it).
+    await expect(page.locator('main [data-sticky-bar]').getByRole('link', { name: 'Load the updated ledger' })).toBeVisible();
     await expect(page.locator('main button[value="validate"]')).toHaveCount(0);
 });
 
