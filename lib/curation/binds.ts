@@ -52,6 +52,20 @@ export async function pendingBindOf(root: string, photoId: string): Promise<Pend
     return null;
 }
 
+/**
+ * A5: the pending restore decision that brings `photoId` back, or null, so a
+ * second duplicate's approval isn't written beside it. A decision file that
+ * can't be read could be one, so it throws.
+ */
+export async function pendingRestoreOf(root: string, photoId: string): Promise<PendingBind | null> {
+    for (const file of await readPendingDecisions(root)) {
+        if (file.raw === null) throw new Error(`The identity decision ${file.name} can't be read, so nothing shows whether it restores ${photoId}`);
+        const decision = file.decision;
+        if (decision?.type === 'restore' && decision.photoId === photoId) return { decisionId: decision.decisionId, path: decision.path };
+    }
+    return null;
+}
+
 export interface PendingArchive {
     decisionId: string;
 }

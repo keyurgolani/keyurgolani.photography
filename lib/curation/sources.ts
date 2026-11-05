@@ -1,13 +1,16 @@
 import type { BuildOptions } from '../identity/derivatives';
 import type { FactSink } from '../identity/pass';
 import { currentProfileId } from '../identity/profile';
-import { readRegistry } from '../identity/registry';
+import { identityPaths, readRegistry } from '../identity/registry';
 import { folderOf } from '../identity/scan';
 import { PHOTO_ID_RE } from '../identity/ids';
 import type { DerivativeJob, IdentityFact, PhotoRecord, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { candidateOf, readUsableEvent, replacementEventIds, type BuildFunction, type OwedSettles } from './candidates';
+import fs from 'node:fs';
+import path from 'node:path';
 import { references, ReferenceScanError } from '../catalog/references';
+import { readAuthoredRecord } from '../catalog/working-layer';
 import {
     CLOSE_REASONS,
     CURATION_SCHEMA_VERSION,
@@ -20,6 +23,8 @@ import {
     type CurationDecision,
     type CurationEvent,
 } from './events';
+import { decisionState, pendingBindOf, type DecisionState } from './binds';
+import { ownerCopyOf } from './owner-copy';
 import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
 
@@ -54,6 +59,10 @@ import { SINK_WAIT_MS } from './sink';
  *   `processing-failure` item, unless a replacement item already carries it.
  *   It closes once the set builds, as after #14's retry, or once the photo
  *   moves on to other bytes or is retired.
+ *
+ * A new item approved to restore an archived photograph opens again,
+ * saying why, if #10 refuses the restore (A5 review); a delivery after a
+ * refusal looks at every item.
  *
  * The sink's first delivery, at the watcher's start, looks at every item
  * once, which recovers what a crash left unsettled. Each later one reads
@@ -324,39 +333,122 @@ export function returnedChange(event: CurationEvent, registry: Registry, at: str
 }
 
 /**
- * A5 (#17): the missing items, and the open or deferred new items, of a
- * photograph whose file is gone and that no catalog revision, candidate, or
- * draft series lists, closed as `withdrawn`, and withdrawn ones opened again
- * once one does. One references() scan for all of them, and only when
- * there is one to look at. A scan that can't tell changes nothing, so a
- * damaged file never closes an item. Pure but for the scan.
+ * What A5's withdrawn and refused-restore rules read beyond the registry and
+ * the items, read once without the curation lock (A5 review), and only when
+ * there is an item to look at: the photographs a catalog revision, a
+ * candidate, or a draft series lists (null when references() can't tell),
+ * those whose photo record holds owner copy, those a bind waits for, and
+ * what became of each pending restore.
  */
-async function withdrawnChanges(root: string, events: readonly CurationEvent[], registry: Registry, at: string, skip: ReadonlySet<string>): Promise<CurationEvent[]> {
-    const open = (event: CurationEvent) => event.status === 'open' || event.status === 'deferred';
-    const withdrawn = (event: CurationEvent) => watcherCloseOf(event)?.cause === 'withdrawn';
-    const looked = events.filter((event) => (event.type === 'missing' || event.type === 'new') && !skip.has(event.id) && (open(event) || withdrawn(event)) && stillMissing(event, registry));
-    if (looked.length === 0) return [];
-    let listed: Set<string>;
-    try {
-        listed = new Set((await references(root)).filter((entry) => entry.source !== 'working-layer-photo').map((entry) => entry.photoId));
-    } catch (error) {
-        if (error instanceof ReferenceScanError) return [];
-        throw error;
+interface Outside {
+    listed: Set<string> | null;
+    /** The photographs withdrawnChanges() may judge: those the scan looked at. */
+    checked: Set<string>;
+    owned: Set<string>;
+    binding: Set<string>;
+    restores: Map<string, DecisionState>;
+}
+
+const isOpen = (event: CurationEvent) => event.status === 'open';
+const isWithdrawn = (event: CurationEvent) => watcherCloseOf(event)?.cause === 'withdrawn';
+/** Items the withdrawn rule looks at: an open missing or new item, or a withdrawn one, whose photograph's file is still gone. */
+const withdrawable = (events: readonly CurationEvent[], registry: Registry, skip: ReadonlySet<string>) =>
+    events.filter((event) => (event.type === 'missing' || event.type === 'new') && !skip.has(event.id) && (isOpen(event) || isWithdrawn(event)) && stillMissing(event, registry));
+/** A new item approved to restore an archived photograph, with that approval, while its photograph isn't merged yet. */
+function restoreOf(event: CurationEvent, registry: Registry): CurationDecision | null {
+    if (event.type !== 'new' || event.status !== 'approved') return null;
+    const approve = event.decisions.findLast((decision) => decision.action === 'approve');
+    if (approve?.restores === undefined || approve.identityDecisionId === undefined) return null;
+    return photoOf(registry, event.photoId)?.mergedInto === undefined ? approve : null;
+}
+
+async function readOutside(root: string, events: readonly CurationEvent[], registry: Registry, skip: ReadonlySet<string>): Promise<Outside> {
+    const outside: Outside = { listed: null, checked: new Set(), owned: new Set(), binding: new Set(), restores: new Map() };
+    const looked = withdrawable(events, registry, skip);
+    if (looked.length > 0) {
+        try {
+            outside.listed = new Set((await references(root)).filter((entry) => entry.source !== 'working-layer-photo').map((entry) => entry.photoId));
+        } catch (error) {
+            if (!(error instanceof ReferenceScanError)) throw error;
+        }
+        for (const photoId of new Set(looked.map((event) => event.photoId as string))) {
+            // A record that can't be read might hold copy, so it counts as owned, and nothing withdraws on a guess.
+            const record = await readAuthoredRecord(root, 'photo', photoId).catch(() => undefined);
+            if (record === undefined || (record !== null && ownerCopyOf(record).length > 0)) outside.owned.add(photoId);
+            if (looked.some((event) => event.type === 'missing' && event.photoId === photoId)) {
+                const bind = await pendingBindOf(root, photoId).catch(() => ({ decisionId: 'unreadable', path: '' }));
+                if (bind !== null) outside.binding.add(photoId);
+            }
+            outside.checked.add(photoId);
+        }
     }
+    for (const event of events) {
+        const approve = skip.has(event.id) ? null : restoreOf(event, registry);
+        if (approve?.identityDecisionId) outside.restores.set(approve.identityDecisionId, await decisionState(root, approve.identityDecisionId).catch((): DecisionState => ({ state: 'pending' })));
+    }
+    return outside;
+}
+
+/**
+ * A5 (#17): a photograph whose file is gone and that no catalog revision,
+ * candidate, or draft series lists, and whose photo record holds no owner
+ * copy, is withdrawn: its open missing item and its open new item close as
+ * `withdrawn`, and withdrawn ones open again once one lists it. A deferred
+ * item is the curator's and stays (A5 review). So does a missing item a bind
+ * waits for, and the items of a photograph whose failed build still asks for
+ * judgment, which `curation archive` settles. A scan that can't tell
+ * changes nothing, so a damaged file never closes an item.
+ */
+function withdrawnChanges(events: readonly CurationEvent[], registry: Registry, at: string, skip: ReadonlySet<string>, outside: Outside): CurationEvent[] {
+    if (outside.listed === null) return [];
     const changes: CurationEvent[] = [];
-    for (const event of looked) {
-        const isListed = listed.has(event.photoId as string);
-        if (open(event) && !isListed) changes.push(withDecision(event, { ...watcherDecision('close', at, CLOSE_REASONS.withdrawn), resolution: 'withdrawn' }, { status: 'resolved' }));
-        else if (withdrawn(event) && isListed) changes.push(withDecision(event, watcherDecision('reopen', at, 'A catalog revision or a draft series lists the photograph again, and its source is still missing.'), { status: 'open' }));
+    for (const event of withdrawable(events, registry, skip)) {
+        const photoId = event.photoId as string;
+        if (!outside.checked.has(photoId)) continue;
+        const listed = outside.listed.has(photoId) || outside.owned.has(photoId);
+        const failing = events.some((other) => other.type === 'processing-failure' && other.photoId === photoId && (other.status === 'open' || other.status === 'failed'));
+        const waiting = event.type === 'missing' && outside.binding.has(photoId);
+        if (isOpen(event) && !listed && !failing && !waiting) {
+            changes.push(withDecision(event, { ...watcherDecision('close', at, CLOSE_REASONS.withdrawn), resolution: 'withdrawn' }, { status: 'resolved' }));
+        } else if (isWithdrawn(event) && listed) {
+            changes.push(withDecision(event, watcherDecision('reopen', at, 'A catalog revision, a draft series, or the copy on its photo record lists the photograph again, and its source is still missing.'), { status: 'open' }));
+        }
     }
     return changes;
 }
 
-/** Every change for one listing: the registry's, then the withdrawals the catalog calls for on the items those leave alone. */
-async function allChangesFor(root: string, events: readonly CurationEvent[], registry: Registry, at: string, profileId: string, only?: readonly string[]): Promise<CurationEvent[]> {
+/**
+ * A5 review: a new item approved to restore an archived photograph whose
+ * restore the watcher refused, as when the file moved first, a second
+ * duplicate's restore went first, or a v1.7.x rollback didn't know the
+ * decision, opens again for judgment, saying why, so the owner's decision is
+ * never dropped silently.
+ */
+function refusedRestoreChanges(events: readonly CurationEvent[], registry: Registry, at: string, skip: ReadonlySet<string>, outside: Outside): CurationEvent[] {
+    const changes: CurationEvent[] = [];
+    for (const event of events) {
+        const approve = skip.has(event.id) ? null : restoreOf(event, registry);
+        if (!approve?.identityDecisionId) continue;
+        const found = outside.restores.get(approve.identityDecisionId);
+        if (found === undefined || found.state === 'pending' || found.state === 'applied') continue;
+        const why = found.state === 'rejected' ? found.reason : `the decision ${approve.identityDecisionId} can't be found or read`;
+        const reason = `The watcher refused the restore of ${approve.restores}: ${why}. Nothing changed: ${approve.restores} stays archived. Approve it again, or dismiss it.`;
+        changes.push(withDecision(event, watcherDecision('reopen', at, reason), { status: 'open' }));
+    }
+    return changes;
+}
+
+/** Every change for one listing: the registry's, then what A5's rules call for on the items those leave alone. */
+function allChangesFor(events: readonly CurationEvent[], registry: Registry, at: string, profileId: string, only: readonly string[] | undefined, outside: Outside): CurationEvent[] {
     const changes = changesFor(events, registry, at, profileId, only);
     const changed = new Set(changes.map((event) => event.id));
-    return [...changes, ...await withdrawnChanges(root, events, registry, at, changed)];
+    return [...changes, ...withdrawnChanges(events, registry, at, changed, outside), ...refusedRestoreChanges(events, registry, at, changed, outside)];
+}
+
+/** The pure changes, and what A5's rules read outside the lock for the items those leave alone. */
+async function outsideFor(root: string, events: readonly CurationEvent[], registry: Registry, at: string, profileId: string, only?: readonly string[]): Promise<Outside> {
+    const changed = new Set(changesFor(events, registry, at, profileId, only).map((event) => event.id));
+    return readOutside(root, events, registry, changed);
 }
 
 /** The items this module settles for one photo: per revision, its missing, new, and failed-build items, and the observed revision's replacement items. */
@@ -401,7 +493,10 @@ export async function settleSources(root: string, options: SourcesOptions = {}):
     const at = () => new Date(clock()).toISOString();
 
     const looked = options.registry ?? await readRegistry(root);
-    const due = await allChangesFor(root, await eventsFor(root, looked, only), looked, at(), profileId, only);
+    const first = await eventsFor(root, looked, only);
+    // Read once, without the curation lock: the catalog scan and the decision folders are the costly reads.
+    const outside = await outsideFor(root, first, looked, at(), profileId, only);
+    const due = allChangesFor(first, looked, at(), profileId, only, outside);
     if (due.length === 0) return result;
 
     await withCurationLock(root, { waitMs }, async (hold) => {
@@ -409,7 +504,7 @@ export async function settleSources(root: string, options: SourcesOptions = {}):
         const current = await eventsFor(root, registry, only);
         const byId = new Map(current.map((event) => [event.id, event]));
         const wanted = new Set(due.map((event) => event.id));
-        for (const next of await allChangesFor(root, current, registry, at(), profileId, only)) {
+        for (const next of allChangesFor(current, registry, at(), profileId, only, outside)) {
             if (!wanted.has(next.id)) continue;
             const before = byId.get(next.id) ?? null;
             hold.signal.throwIfAborted();
@@ -459,6 +554,15 @@ export function namedPhotos(facts: readonly IdentityFact[]): string[] {
     return [...new Set(facts.flatMap((fact) => (typeof fact.photoId === 'string' && PHOTO_ID_RE.test(fact.photoId) ? [fact.photoId] : [])))];
 }
 
+/** The decisions #10 has refused so far, by file name. A new one may be a restore whose item opens again (A5 review). */
+async function rejectedIn(root: string): Promise<Set<string>> {
+    try {
+        return new Set(await fs.promises.readdir(path.join(/*turbopackIgnore: true*/ identityPaths(root).decisions, 'rejected')));
+    } catch {
+        return new Set();
+    }
+}
+
 const retiredIn = (registry: Registry) => new Set(Object.values(registry.photos).filter(isRetired).map((photo) => photo.photoId));
 const heldIn = (registry: Registry) => new Set(registry.holds.map((held) => `${held.assetRevision}|${held.path}`));
 /** Whether a delivered `ambiguous` fact's bytes are held by no hold now: one that started and ended between deliveries. */
@@ -483,15 +587,19 @@ export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
     const { root, owed, ...rest } = options;
     let retired: Set<string> | null = null;
     let held: Set<string> | null = null;
+    let refused: Set<string> | null = null;
     return async (facts) => {
         const at = readyRoot(root);
         const registry = await readRegistry(at);
         const now = retiredIn(registry);
         const holding = heldIn(registry);
+        const rejected = await rejectedIn(at);
         const known = retired;
         const ended = held === null || [...held].some((hold) => !holding.has(hold)) || unheldFact(facts, registry);
+        // A refusal names no fact, and a refused restore's item is the duplicate's, which no fact may name either.
+        const newlyRefused = refused === null || [...rejected].some((name) => !refused?.has(name));
         const taken = owed?.take();
-        if (known === null || ended) await settleSources(at, { ...rest, registry });
+        if (known === null || ended || newlyRefused) await settleSources(at, { ...rest, registry });
         else {
             const owedPhotos = (taken?.refs ?? []).map((ref) => ref.photoId);
             await settleSources(at, { ...rest, registry, only: [...namedPhotos(facts), ...owedPhotos, ...[...now].filter((photoId) => !known.has(photoId))] });
@@ -499,6 +607,7 @@ export function createSourcesSink(options: SourcesSinkOptions = {}): FactSink {
         taken?.settled();
         retired = now;
         held = holding;
+        refused = rejected;
     };
 }
 

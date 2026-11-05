@@ -178,7 +178,7 @@ export class EventMovedError extends Error {
 export async function writeEvent(root: string, event: CurationEvent, expectedVersion: number, hold: LockContext, hooks?: VersionedWriteHooks): Promise<CurationEvent> {
     if (hold.name !== CURATION_LOCK || hold.signal.aborted) throw new Error('An event is written only under a live hold on the curation lock.');
     // Stamped for the oldest build that reads it, so a v1.7.x rollback still reads every item that holds nothing newer.
-    const parsed = parseEvent({ ...event, schemaVersion: schemaVersionFor(event), version: expectedVersion + 1 });
+    const parsed = parseEvent({ ...event, schemaVersion: schemaVersionFor({ ...event, version: expectedVersion + 1 }), version: expectedVersion + 1 });
     if (!parsed.ok) throw new InvalidEventError(String(event.id), parsed.issues);
     const paths = curationPaths(root);
     // A first version survives a crash only with every folder above it synced, including ones another writer made.

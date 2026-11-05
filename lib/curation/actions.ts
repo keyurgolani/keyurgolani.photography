@@ -9,9 +9,10 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
-import { pendingMergeOf } from './binds';
+import { pendingMergeOf, pendingRestoreOf } from './binds';
 import { backAtItsPath, unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
 import { mergeBlockers, photoHolders } from './holders';
+import { ownerCopyOf } from './owner-copy';
 import { placementIndex } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
@@ -544,19 +545,36 @@ async function restoreArchived(step: Step, input: ActionInput & { choices: Choic
     if (choices.seriesId !== undefined || choices.placement !== undefined || choices.description !== undefined) {
         fail('needs-choice', `${photoId}'s bytes are the archived photograph ${archived}'s, so approving it restores ${archived} under its old ID, with its own photo record and copy. Approve it with no series, position, or description, then place ${archived} from its own item once the watcher restores it. Nothing was written.`);
     }
+    // One restore of a photograph at a time: a second duplicate's would only be refused by the watcher.
+    const waiting = await pendingRestoreOf(root, archived).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+    if (waiting) {
+        fail('refused', `A restore of ${archived} already waits for the watcher's next pass: the decision ${waiting.decisionId}, with ${waiting.path}. Wait for that pass. If the watcher refuses it, its item opens again and says why. Nothing was written.`);
+    }
     const found = await mergeBlockers(root, photoId);
     if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${photoId} is in use. Nothing was written.`);
-    const { shown, retained } = found as Exclude<typeof found, { unknown: unknown }>;
+    const { shown, retained, record } = found as Exclude<typeof found, { unknown: unknown }>;
     if (shown.length > 0 || retained.length > 0) {
         fail('refused', `${photoId} is in use (${[...shown, ...retained.map((id) => `the retained revision ${id}`)].join(', ')}), and restoring ${archived} would retire it. Take it out first. Nothing was written.`);
     }
+    // As a bind's merge refuses it (lib/curation/resolutions.ts): the merge retires the duplicate and drops its record's copy.
+    if (record) {
+        const authored = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
+        const copy = authored ? ownerCopyOf(authored) : [];
+        if (copy.length > 0) {
+            fail('refused', `${photoId} has a photo record in the draft with the owner's ${copy.join(', ')}. Restoring ${archived} merges ${photoId} into it, which drops that copy. Move the copy to ${archived} once it is back, or clear it, then approve again. Nothing was written.`);
+        }
+    }
+    const edits = step.event.edits;
+    const saved = edits !== null && (edits.seriesId !== undefined || edits.placement !== undefined || edits.description !== undefined);
     const decision = createDecision({ type: 'restore', path: at, photoId: archived, merge: photoId, actor: input.actor, reason: `curation ${step.event.id}` }, { clock: input.clock });
     await writeDecision(root, decision);
     return {
-        event: decided(step, input, { action: 'approve', restores: archived, identityDecisionId: decision.decisionId, writes: [] }, 'approved'),
+        event: decided(step, input, { action: 'approve', restores: archived, path: at, identityDecisionId: decision.decisionId, writes: [] }, 'approved'),
         notes: [
             `Approved: the restore decision ${decision.decisionId} restores ${archived} under its old ID with ${at}, merging ${photoId} into it, on the watcher's next pass, unless the file is still changing.`,
             `${archived} keeps its photo record. Its own new item opens again then, to place it in a series. Nothing is published until photos publish runs.`,
+            ...(saved ? [`The edits saved on this item are not used: ${archived} keeps its own photo record and copy.`] : []),
+            `If the watcher refuses it, as when the file moves first, this item opens again and says why.`,
         ],
     };
 }

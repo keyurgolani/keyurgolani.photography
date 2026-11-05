@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { IdentityFact, IdentityFactType, Registry } from '../identity/types';
 import { SERIES_ID_RE } from '../catalog/schema';
+import { v1Reads } from './events-v1';
 
 /**
  * Curation events: the inbox items #10's facts open. One event per
@@ -45,10 +46,6 @@ export type CurationEventStatus = (typeof EVENT_STATUSES)[number];
  */
 export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'close', 'resolve', 'confirm-missing'] as const;
 export type CurationAction = (typeof ACTIONS)[number];
-/** The types, statuses, and actions version 1 reads. A type or status added later is stamped 2 by schemaVersionFor(). */
-const V1_TYPES: ReadonlySet<string> = new Set(['new', 'replacement', 'missing', 'reappeared', 'ambiguous', 'processing-failure']);
-const V1_STATUSES: ReadonlySet<string> = new Set(['open', 'deferred', 'dismissed', 'approved', 'failed', 'resolved']);
-const V1_ACTIONS: ReadonlySet<string> = new Set(['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'close']);
 
 /**
  * What the watcher's close says became of an item, recorded on the close
@@ -183,8 +180,6 @@ export const derivedFactsSchema = z.strictObject({
     suggestedBy: z.enum(['basename', 'capture-time']).optional(),
 });
 export type DerivedFacts = z.infer<typeof derivedFactsSchema>;
-/** The derived facts version 1 reads. */
-const V1_DERIVED_FACTS: ReadonlySet<string> = new Set(['factType', 'sourcePath', 'folder', 'fromPath', 'candidates', 'duplicateOf', 'samePathAs', 'revert', 'failure', 'capturedDate', 'width', 'height', 'sourceFormat']);
 
 /** A working-layer record an action wrote, and the version it wrote. */
 const writeSchema = z.strictObject({ record: z.string().min(1), version: z.number().int().positive() });
@@ -215,8 +210,6 @@ export const decisionSchema = z.strictObject({
     restores: photoId.optional(),
 });
 export type CurationDecision = z.infer<typeof decisionSchema>;
-/** The decision fields version 1 reads. */
-const V1_DECISION_FIELDS: ReadonlySet<string> = new Set(['action', 'at', 'by', 'baseRevisionId', 'reason', 'seriesId', 'placement', 'writes', 'identityDecisionId', 'fromRevision', 'path']);
 
 /** Why a replacement's derivative set wasn't built: #10's writer's failure, without its text, which may name a host path. */
 export const CANDIDATE_FAILURES = ['superseded', 'integrity', 'undecodable', 'build'] as const;
@@ -279,15 +272,15 @@ export function parseEvent(value: unknown): ParsedEvent {
 }
 
 /**
- * The oldest schema version that reads `event` as it is: 1 unless it holds
- * an action, a decision field, or a derived fact only version 2 knows. The
- * repository stamps each version file with it, so v1.7.x, after an image
- * rollback, reads what it can and reports the rest as a newer build's.
+ * The oldest schema version that reads `event` as it is: 1 only when a
+ * frozen copy of v1.7.0's schema (lib/curation/events-v1.ts), enum values
+ * included, parses it as version 1, else 2. The repository stamps each
+ * version file with it, so v1.7.x, after an image rollback, reads what it
+ * can, and reads the rest as a newer build's. A new type, status, action,
+ * field, or enum value is stamped 2 by itself.
  */
-export function schemaVersionFor(event: Pick<CurationEvent, 'type' | 'status' | 'decisions' | 'derivedFacts'>): 1 | 2 {
-    const newer = !V1_TYPES.has(event.type) || !V1_STATUSES.has(event.status) || event.decisions.some((decision) => !V1_ACTIONS.has(decision.action) || Object.keys(decision).some((key) => !V1_DECISION_FIELDS.has(key)))
-        || Object.keys(event.derivedFacts).some((key) => !V1_DERIVED_FACTS.has(key));
-    return newer ? 2 : 1;
+export function schemaVersionFor(event: CurationEvent): 1 | 2 {
+    return v1Reads({ ...event, schemaVersion: 1 }) ? 1 : 2;
 }
 
 /** The source fingerprint for an asset revision: `fp_` plus its 64 hex. */

@@ -406,7 +406,7 @@ describe('a missing photograph', { timeout: 60_000 }, () => {
         const item = (await listEvents(w.root)).events.find((entry) => entry.type === 'new' && entry.photoId === added.photoId) as CurationEvent;
         expect(item.derivedFacts).toMatchObject({ suggestedFor: w.p, suggestedBy: 'basename' });
         const shown = (await runCurationCli(['show', w.missingId], { dataRoot: w.root, libraryRoot: w.lib.root }, {})).output;
-        expect(shown).toContain('Linked: edits/landscape.jpg');
+        expect(shown).toContain('Suggested: edits/landscape.jpg has its file name');
         const missing = await w.event(w.missingId);
         // A suggestion is the owner's to pick: only a file at the photograph's last path binds with no --path (A5 review).
         expect(await bindReplacement({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: false, code: 'needs-choice' });

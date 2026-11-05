@@ -344,15 +344,27 @@ async function refuseWhileArchiving(root: string, photoId: string): Promise<void
 
 /**
  * The open `new` items for other bytes at this photo's last path, which #10
- * marked with `samePathAs`, or for other pixels with its file name or its
- * capture time at a new path, which #10 marked with `suggestedFor` (A5),
- * whose photo is still present there: a file gone since links nothing.
+ * marked with `samePathAs`, whose photo is still present there: a file gone
+ * since links nothing. Only these bind with no --path.
  */
-export async function linkedNewItems(root: string, photoId: string, registry: Registry): Promise<CurationEvent[]> {
+export function linkedNewItems(root: string, photoId: string, registry: Registry): Promise<CurationEvent[]> {
+    return newItemsFor(root, photoId, registry, (facts) => facts.samePathAs === photoId);
+}
+
+/**
+ * A5: the open `new` items for other pixels at a new path with this photo's
+ * file name or capture time, which #10 marked with `suggestedFor`, whose
+ * photo is still present there. A suggestion only: a camera's IMG_0001.JPG
+ * from another shoot has the same name, so the owner picks one with --path.
+ */
+export function suggestedNewItems(root: string, photoId: string, registry: Registry): Promise<CurationEvent[]> {
+    return newItemsFor(root, photoId, registry, (facts) => facts.suggestedFor === photoId && facts.samePathAs !== photoId);
+}
+
+async function newItemsFor(root: string, photoId: string, registry: Registry, linked: (facts: CurationEvent['derivedFacts']) => boolean): Promise<CurationEvent[]> {
     const { events } = await listEvents(root);
     return events.filter((event) => {
-        const linked = event.derivedFacts.samePathAs === photoId || event.derivedFacts.suggestedFor === photoId;
-        if (event.type !== 'new' || !(MISSING_STATES as readonly string[]).includes(event.status) || !linked || event.photoId === null) return false;
+        if (event.type !== 'new' || !(MISSING_STATES as readonly string[]).includes(event.status) || !linked(event.derivedFacts) || event.photoId === null) return false;
         const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
         return photo !== undefined && photo.sourceHealth !== 'archived' && photo.mergedInto === undefined && photo.source.present && photo.source.path === event.derivedFacts.sourcePath;
     });
@@ -368,37 +380,8 @@ export function holdRefusal(at: string, candidates: readonly string[], photoId: 
     return `${doubt} Settle that path's ambiguous item first, with photos identity bind or photos identity new, then bind again. Nothing was written.`;
 }
 
-/**
- * The owner-set fields of a photo record, by the names the bind note uses.
- * With MANAGED_PHOTO_FIELDS they cover authoredPhotoSchema, which a test
- * checks, so a new schema field has to be sorted into one or the other.
- */
-export const OWNER_FIELDS = {
-    alt: 'description',
-    title: 'title',
-    caption: 'caption',
-    focalPoint: 'focal point',
-    crop: 'crop',
-    accent: 'accent',
-    credit: 'credit',
-    location: 'location',
-    capturedAt: 'capture date',
-} as const satisfies Partial<Record<keyof AuthoredPhoto, string>>;
-
-/**
- * The photo record fields the tools set: the record's identity, the asset
- * revision draft:init pins, the version and rebase fields, #16's review
- * stamps, and `photos carry-over`'s marker, which are the tools' metadata and
- * never the owner's copy.
- */
-export const MANAGED_PHOTO_FIELDS = ['schemaVersion', 'version', 'baseRevisionId', 'conflicts', 'review', 'kind', 'id', 'assetRevision', 'carryOver'] as const satisfies readonly (keyof AuthoredPhoto)[];
-
-/** What the owner set on a photo record, which a merge would lose. Empty for the bare record draft:init writes. */
-export function ownerCopyOf(record: AuthoredPhoto): string[] {
-    return (Object.entries(OWNER_FIELDS) as [keyof typeof OWNER_FIELDS, string][])
-        .filter(([field]) => record[field] !== undefined && record[field] !== null)
-        .map(([field, name]) => (field === 'alt' && record.alt?.kind === 'decorative' ? 'decorative flag' : name));
-}
+export { MANAGED_PHOTO_FIELDS, OWNER_FIELDS, ownerCopyOf } from './owner-copy';
+import { ownerCopyOf } from './owner-copy';
 
 interface BindPlan {
     /** The photo the decision names to merge, when #10 needs it named. */
@@ -521,7 +504,9 @@ export function bindReplacement(input: ActionInput & { path?: string; reason?: s
         if (target === undefined) {
             const linked = await linkedNewItems(root, photo.photoId, registry);
             if (linked.length === 0) {
-                fail('needs-choice', `No file is linked to ${photo.photoId}. Other bytes at its last path link here by themselves; for a file anywhere else, pass --path <library path>. Nothing was written.`);
+                const suggested = await suggestedNewItems(root, photo.photoId, registry);
+                const hint = suggested.length === 0 ? '' : ` The watcher suggests ${suggested.map((item) => `${item.derivedFacts.sourcePath}, by its ${item.derivedFacts.suggestedBy === 'capture-time' ? 'capture time' : 'file name'}`).join(', and ')}: if it is this photograph, pass --path ${suggested[0].derivedFacts.sourcePath}.`;
+                fail('needs-choice', `No file is linked to ${photo.photoId}. Other bytes at its last path link here by themselves; for a file anywhere else, pass --path <library path>.${hint} Nothing was written.`);
             }
             if (linked.length > 1) {
                 fail('needs-choice', `${linked.length} files are linked to ${photo.photoId}: ${linked.map((item) => item.derivedFacts.sourcePath).join(', ')}. Pass --path with the one that replaces it. Nothing was written.`);
@@ -669,6 +654,15 @@ async function refusePendingAnswer(root: string, event: CurationEvent): Promise<
     }
 }
 
+/** A5 review: as bindReplacement() refuses, no answer gives a file to a photograph an archive or a bind already waits for. */
+async function refuseWhileWaiting(root: string, photoId: string): Promise<void> {
+    await refuseWhileArchiving(root, photoId);
+    const waiting = await pendingBindOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+    if (waiting) {
+        fail('refused', `A bind for ${photoId} already waits for the watcher's next pass: the decision ${waiting.decisionId} gives it ${waiting.path}. Wait for that pass, or for the watcher to refuse it. Nothing was written.`);
+    }
+}
+
 /** The photograph a file is given to, or a failure saying why #10 would refuse it, before anything is written. */
 function answerTarget(registry: Registry, photoId: string, at: string): PhotoRecord {
     const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
@@ -744,6 +738,7 @@ export function resolveItem(input: ActionInput & { as: 'new' | 'replacement-of';
             };
         }
         const to = input.photoId as string;
+        await refuseWhileWaiting(root, to);
         const photo = answerTarget(registry, to, at);
         const plan = await bindPlan(root, registry, photo, at, { answersHold: true });
         const decision = createDecision({ type: 'bind', path: at, photoId: to, ...(plan.merge === undefined ? {} : { merge: plan.merge }), actor: input.actor, reason }, { clock: input.clock });
@@ -778,6 +773,7 @@ export function bindAmbiguous(input: ActionInput & { to: string; reason?: string
             const named = held?.candidates.length ? `#10 holds it in doubt for ${held.candidates.join(' and ')}` : '#10 names no photograph it may be';
             fail('refused', `${input.to} isn't one of the photographs ${at} may be: ${named}. To make it new bytes for ${input.to}, run curation resolve ${event.id} --version ${event.version} --as replacement-of ${input.to}. Nothing was written.`);
         }
+        await refuseWhileWaiting(root, input.to);
         const photo = answerTarget(registry, input.to, at);
         const plan = await bindPlan(root, registry, photo, at, { answersHold: true });
         const decision = createDecision({ type: 'bind', path: at, photoId: input.to, ...(plan.merge === undefined ? {} : { merge: plan.merge }), actor: input.actor, reason: input.reason ?? `curation ${event.id}` }, { clock: input.clock });

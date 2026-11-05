@@ -26,7 +26,7 @@ import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
-import { archiveMissing, bindAmbiguous, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems, resolveItem } from './resolutions';
+import { archiveMissing, bindAmbiguous, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems, resolveItem, suggestedNewItems } from './resolutions';
 import { decisionState, pendingMergeOf, type DecisionState } from './binds';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
@@ -491,21 +491,21 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
 }
 
 /**
- * What became of the item's latest bind or resolve: still waiting for the watcher, with when the curator asked
- * (A5), or refused, with #10's reason.
+ * What became of the item's latest bind, resolve, or restore: still waiting for the watcher, with when the curator
+ * asked and who (A5), or refused, with #10's reason.
  */
 async function bindLines(root: string, event: CurationEvent): Promise<string[]> {
-    const bind = event.decisions.findLast((decision) => (decision.action === 'bind' || decision.action === 'resolve') && decision.identityDecisionId !== undefined);
+    const bind = event.decisions.findLast((decision) => (decision.action === 'bind' || decision.action === 'resolve' || (decision.action === 'approve' && decision.restores !== undefined)) && decision.identityDecisionId !== undefined);
     if (!bind?.identityDecisionId) return [];
     const id = bind.identityDecisionId;
-    const what = bind.action === 'bind' ? 'Bind' : 'Resolve';
+    const what = bind.action === 'bind' ? 'Bind' : bind.action === 'resolve' ? 'Resolve' : 'Restore';
     const where = bind.path ? ` for ${printable(bind.path)}` : '';
     const found = await decisionState(root, id).catch((): DecisionState => ({ state: 'unknown' }));
     switch (found.state) {
         case 'pending':
             return [`${what} pending: the watcher applies the decision ${id}${where} on its next pass, unless the file is still changing. Requested at ${bind.at} by ${printable(bind.by)}.`];
         case 'rejected':
-            return [`${what} refused: the watcher rejected the decision ${id}${where}: ${printable(found.reason)}. Nothing changed. ${bind.action === 'bind' ? 'Bind another file' : 'Resolve it again'}, or settle it another way.`];
+            return [`${what} refused: the watcher rejected the decision ${id}${where}: ${printable(found.reason)}. Nothing changed. ${bind.action === 'bind' ? 'Bind another file' : bind.action === 'resolve' ? 'Resolve it again' : `${bind.restores} stays archived. Approve it again`}, or settle it another way.`];
         default:
             return [];
     }
@@ -565,10 +565,13 @@ async function missingLines(root: string, event: CurationEvent, registry: Regist
     lines.push(...await bindLines(root, event));
     const linked = registry === null ? [] : await linkedNewItems(root, event.photoId, registry).catch(() => []);
     for (const item of linked) {
-        const why = item.derivedFacts.samePathAs === event.photoId
-            ? 'holds other bytes at its last path'
-            : item.derivedFacts.suggestedBy === 'capture-time' ? 'was taken at the same moment, with other pixels' : 'has its file name, with other pixels';
-        lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} ${why}, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
+        lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} holds other bytes at its last path, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
+    }
+    // A5: only a suggestion, since another shoot's IMG_0001.JPG has the same name. The owner picks it with --path.
+    const suggested = registry === null ? [] : await suggestedNewItems(root, event.photoId, registry).catch(() => []);
+    for (const item of suggested) {
+        const why = item.derivedFacts.suggestedBy === 'capture-time' ? 'was taken at the same moment' : 'has its file name';
+        lines.push(`Suggested: ${printable(item.derivedFacts.sourcePath)} ${why}, with other pixels, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). If it is ${event.photoId}, curation bind --path ${printable(item.derivedFacts.sourcePath)} gives it the file.`);
     }
     lines.push(
         'To settle it:',
@@ -615,7 +618,7 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         ...comparisonLines(event),
         ...(await missingLines(root, event, registry)),
         ...confirmedMissingLines(event),
-        ...(event.type === 'ambiguous' && (event.status === 'open' || event.status === 'deferred') ? await bindLines(root, event) : []),
+        ...((event.type === 'ambiguous' && (event.status === 'open' || event.status === 'deferred')) || event.type === 'new' ? await bindLines(root, event) : []),
         ...(await pendingMergeLines(root, event)),
         ...failedBuildLines(event),
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
