@@ -72,9 +72,10 @@ function writeBack(held: HeldKeys): void {
 
 /**
  * A return that asked the server for its photograph's page (`?photo=`), until
- * that page mounts. Module scope, not a ref: the answer is another page
- * segment, so the series page under it mounts afresh. Its own marker is the
- * URL it asked for, so nothing depends on how Next rewrites the entry.
+ * that page lands. Module scope, not a ref, so it's found whether the answer
+ * renders this component again in place (Next 16, for a query-only replace)
+ * or the series page under it mounts afresh. Its own marker is the URL it
+ * asked for, so nothing depends on how Next rewrites the entry.
  */
 let pendingFind: (HeldKeys & { path: string; timer: ReturnType<typeof setTimeout> }) | null = null;
 
@@ -116,7 +117,7 @@ function navigationType(): string | undefined {
  * - When a return's saved pages can't bring its photograph back (no extent,
  *   one for another revision, or one that ended without it), it asks the
  *   server once for the page that holds it, with `?photo=` and no scroll.
- *   That page mounts afresh, writes `kgSeriesPages` and `kgSeriesReturn`
+ *   When that page lands (in place, or mounted afresh), it writes `kgSeriesPages` and `kgSeriesReturn`
  *   back before #6 reads them (the navigation drops both, #6's limit 24),
  *   and focuses the photograph. Only when the server's answer doesn't hold
  *   it (it left the revision) does focus go to the series heading. If the
@@ -163,8 +164,12 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
         return () => document.removeEventListener('click', onClick, true);
     }, [path]);
 
-    // The page a return asked the server for has mounted: put #6's extent and the record back before #6's effects read
+    // The page a return asked the server for has landed: put #6's extent and the record back before #6's effects read
     // them, then focus the photograph, or the heading when the server's page doesn't hold it (it left the revision).
+    // After every commit, not once per mount: Next 16 keys the page segment `__PAGE__` whatever the query, so a replace
+    // that only adds ?photo= renders this component again in place (SeriesSequence, keyed by the server's page, is the
+    // one that mounts afresh). Next writes the new URL in an insertion effect of that same commit, so the URL check
+    // passes only once the answer's page is in the DOM, and #6 reads its extent in a passive effect, after this one.
     useLayoutEffect(() => {
         const held = pendingFind;
         if (held === null || held.path !== path || photoInUrl() !== held.record.photoId) return;
@@ -173,9 +178,7 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
         writeBack(held);
         window.history.replaceState(withArrival(window.history.state, held.record.photoId), '');
         landReturn(held);
-        // Once per mount.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    });
 
     useEffect(() => {
         if (landed.current) return;
