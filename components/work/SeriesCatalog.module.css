@@ -61,14 +61,17 @@
   text-decoration: none;
 }
 
-/* The whole entry is the link's target: its ::after covers the entry, out to the cover's surround on every side, above
-   the print, so a click or tap anywhere on the cover or the copy opens the series. The room never passes the gutter:
-   the surround already fits it, and the column gap reserves both neighbours' (below). */
+/* The whole entry is the link's target: its ::after covers the entry, above the print, so a click or tap anywhere on
+   the cover or the copy opens the series. It reaches past the entry by the cover's surround, or by what the ring
+   paints (its width and offset) where that's more, so the inset ring rings the print from outside and never paints
+   over the copy, which has no side padding (B3's review, 1). That's Dark's 6 px; Light's and Bright's rooms are 6 px
+   or more already. It stays inside the 16 px gutter at 375, and two neighbours' never meet: the column gap is at
+   least 19 px plus both rooms. */
 .link::after {
   content: '';
   position: absolute;
   z-index: 1;
-  inset: calc(-1 * var(--work-room));
+  inset: calc(-1 * max(var(--work-room), var(--focus-ring-width) + var(--focus-ring-offset)));
   border-radius: var(--gah-radius);
 }
 
@@ -225,6 +228,13 @@
 
 :global(html[data-theme='black']) .fallback {
   box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
+}
+
+/* Black's target can't grow sideways, where the covers meet the screen's edge and each other at a 2 px seam, and the
+   copy keeps the gutter there anyway. The ring rings the print from inside, so the target grows below only, past the
+   count. */
+:global(html[data-theme='black']) .link::after {
+  inset: 0 0 calc(-1 * (var(--focus-ring-width) + var(--focus-ring-offset)));
 }
 
 @media (min-width: 768px) {

@@ -248,9 +248,12 @@ for (const theme of THEMES) {
         const ring = await measure(link, { pseudo: '::after' });
         const frame = await cover.evaluate((el) => el.getBoundingClientRect().toJSON() as DOMRect);
         expect(ring.outline.offset + ring.outline.width, "Work's ring is inset").toBe(0);
-        expect(ring.box.left, 'the target takes in the surround on the left').toBeCloseTo(frame.left - ROOM[theme].sm, 1);
-        expect(ring.box.right, 'and on the right').toBeCloseTo(frame.right + ROOM[theme].sm, 1);
-        expect(ring.box.top, 'and above').toBeCloseTo(frame.top - ROOM[theme].sm, 1);
+        // The surround's room, or what the ring paints (3 px wide and 3 px offset) where that's more, so it clears the
+        // copy (B3's review, 1): Dark's 6 px, Light's 7 and Bright's 6.
+        const reach = Math.max(ROOM[theme].sm, 6);
+        expect(ring.box.left, 'the target takes in the surround on the left').toBeCloseTo(frame.left - reach, 1);
+        expect(ring.box.right, 'and on the right').toBeCloseTo(frame.right + reach, 1);
+        expect(ring.box.top, 'and above').toBeCloseTo(frame.top - reach, 1);
         expect(ring.box.left, "the ring's left edge inside the gutter").toBeGreaterThanOrEqual(1);
         expect(ring.viewport.width - ring.box.right, "the ring's right edge inside the gutter").toBeGreaterThanOrEqual(1);
     });
