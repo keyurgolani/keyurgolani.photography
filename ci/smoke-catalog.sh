@@ -12,9 +12,10 @@
 #    308 to /work, and each legacy WebP a v1.6 watcher wrote, planted under
 #    web's public/ folder, 404s and is refused at /_next/image.
 # 2. A published catalog. ci/publish-fixture.ts publishes a small test
-#    catalog into a second data root, and web serves it with the planted
-#    legacy WebPs still in place. It names its revision at /api/ready and
-#    at the Home records endpoint, still 404s /api/photos and each legacy
+#    catalog into a second data root, twice, the second revision only
+#    retitling a series, and web serves it with the planted legacy WebPs
+#    still in place. It names revision 2 at /api/ready and at the Home
+#    records endpoint, still 404s /api/photos and each legacy
 #    WebP, serves a set the revision holds from /media with 200,
 #    `immutable`, and an ETag of its bytes, answers 304 to that ETag, and
 #    404s a set whose files exist but which no revision holds. After a
@@ -26,13 +27,21 @@
 #    served set flipped in place, its size kept, which only the digest check
 #    sees: exit 1, naming the file, and a record that fails the revision. The
 #    byte goes back, and a third run passes again.
+# 4. #15's history and rollback, in the image, on the published root (A11):
+#    `photos history --json --revisions` lists both publishes, revision 2
+#    live and revision 1 one a rollback can return to, and `photos rollback
+#    --to 1 --yes --expect-active <revision 2>` rolls back. The running web
+#    names revision 1 at /api/ready with no restart, the same after a
+#    restart, and still serves the set, and `photos history --json` lists
+#    the rollback as live.
 #
 #   ci/smoke-catalog.sh <tag>
 #
 # ghcr.io/keyurgolani/keyurgolani.photography:<tag> must already exist
 # locally, since nothing pulls here. ci/publish-fixture.ts runs on this
 # machine, so it needs Node and `npm ci`, and the checks need curl and jq.
-# web publishes a random port on 127.0.0.1 only.
+# web publishes a random port on 127.0.0.1 only. The temp root goes under
+# $RUNNER_TEMP, the job's own temp folder in CI, or $TMPDIR elsewhere.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -43,7 +52,7 @@ fi
 cd "$(dirname "$0")/.."
 
 IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:$1
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-catalog.XXXXXX")
 LIB=$TMP/library
 # A v1.6 host's legacy WebPs, which web gets under public/, where Next would serve them.
 LEGACY=$TMP/legacy
@@ -119,12 +128,17 @@ stop_web() {
   WEB_STARTED=false
 }
 
-# Runs photos verify in the image on the published root, with any further
-# arguments, as this machine's user, who owns that root here, so the run can
-# write its record. Production runs it in image-watcher, as uid 1001.
-verify_published() {
+# Runs photos.mjs in the image on the published root with <args>, as this
+# machine's user, who owns that root here, so verify can write its record and
+# rollback its activation. Production runs them in image-watcher, as uid 1001.
+photos_published() {
   docker run --rm --pull never --user "$(id -u):$(id -g)" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
-    -v "$PUBLISHED:/data/portfolio" "$IMAGE" node dist/scripts/photos.mjs verify "$@"
+    -v "$PUBLISHED:/data/portfolio" "$IMAGE" node dist/scripts/photos.mjs "$@"
+}
+
+# Runs photos verify in the image on the published root, with any further arguments.
+verify_published() {
+  photos_published verify "$@"
 }
 
 # The SHA-256 of file <file>.
@@ -253,20 +267,22 @@ echo "Nothing published: /api/ready and the #6 Home records endpoint answered 50
 npx tsx ci/publish-fixture.ts "$PUBLISHED" >"$TMP/fixture.json" || fail "ci/publish-fixture.ts failed."
 chmod -R a+rX "$PUBLISHED"
 revision=$(jq -r .revisionId "$TMP/fixture.json")
+first=$(jq -r .firstRevisionId "$TMP/fixture.json")
 active=$(jq -r .active "$TMP/fixture.json")
 inactive=$(jq -r .inactive "$TMP/fixture.json")
 featured_series=$(jq -r .featuredSeries "$TMP/fixture.json")
 featured=$(jq -r .featured "$TMP/fixture.json")
-[[ $revision == rev_* && $active == /media/* && $inactive == /media/* && $featured_series == ser_* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
+[[ $revision == rev_* && $first == rev_* && $first != "$revision" && $active == /media/* && $inactive == /media/* && $featured_series == ser_* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
 start_web "$LEGACY" "$PUBLISHED"
 # shellcheck disable=SC2016 # $revision and $featured are jq's
-expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 1' --arg revision "$revision"
+expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 2' --arg revision "$revision"
 cp "$TMP/body.json" "$TMP/ready-before.json"
 # shellcheck disable=SC2016
 expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$revision" 200 no-cache '.revisionId == $revision and any(.photos[]; .id == $featured)' --arg revision "$revision" --arg featured "$featured"
 [ "$(header x-catalog-revision)" = "$revision" ] || fail "The #6 Home records endpoint sent X-Catalog-Revision '$(header x-catalog-revision)', expected $revision."
 expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$NO_REVISION" 409 no-store '. == {reason: "revision-changed"}'
-echo "/api/ready and the #6 Home records endpoint name $revision."
+expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$first" 409 no-store '. == {reason: "revision-changed"}'
+echo "/api/ready and the #6 Home records endpoint name $revision, revision 2."
 check_closed
 echo "With $revision live, /api/photos returned 404, /gallery 308, and every legacy WebP 404, and 400 through /_next/image."
 
@@ -346,4 +362,42 @@ verify_published >"$TMP/verify-again.txt" 2>&1 || verify_code=$?
 jq -e 'any(.revisions[]; .revisionId == $revision and .live and .ok)' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
   fail "status/verify.json doesn't pass $revision again once the byte was back: $(cat "$PUBLISHED/status/verify.json")"
 echo "photos verify passed $revision and recorded it, failed it with exit 1 for a byte flipped in ${active#/media/} with its size kept, and passed it again once the byte was back."
+
+# 10. #15's history and rollback in the image: revision 1 is one a rollback
+#     can return to, `photos rollback --to 1` takes the site back to it, and
+#     web follows without a restart and keeps it across one.
+history_code=0
+photos_published history --json --revisions >"$TMP/history-before.json" || history_code=$?
+[ "$history_code" = 0 ] || fail "photos history --json --revisions exited $history_code, expected 0: $(cat "$TMP/history-before.json")"
+# shellcheck disable=SC2016 # $revision and $first are jq's
+jq -e '
+  .total == 2 and .pointer.revisionId == $revision
+  and ([.rows[] | [.kind, .revisionNumber, .revisionId, .live, .state]] == [["publish", 1, $first, false, "committed"], ["publish", 2, $revision, true, "committed"]])
+  and ([.revisions[] | [.revisionNumber, .revisionId, .live, .eligible]] == [[2, $revision, true, false], [1, $first, false, true]])' \
+  --arg revision "$revision" --arg first "$first" "$TMP/history-before.json" >/dev/null ||
+  fail "photos history --json --revisions should list revision 2 live and revision 1 eligible: $(cat "$TMP/history-before.json")"
+rollback_code=0
+photos_published rollback --to 1 --reason "Catalog smoke: back to revision 1." --actor ci --yes --expect-active "$revision" >"$TMP/rollback.txt" 2>&1 || rollback_code=$?
+[ "$rollback_code" = 0 ] || fail "photos rollback --to 1 exited $rollback_code, expected 0: $(cat "$TMP/rollback.txt")"
+grep -qF -- "[photos] ROLLED_BACK: Rolled back to revision 1 ($first) from revision 2 ($revision)." "$TMP/rollback.txt" ||
+  fail "photos rollback --to 1 didn't say it rolled back to $first: $(cat "$TMP/rollback.txt")"
+chmod -R a+rX "$PUBLISHED"
+# shellcheck disable=SC2016 # $first is jq's
+expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $first and .revisionNumber == 1' --arg first "$first"
+cp "$TMP/body.json" "$TMP/ready-rolled-back.json"
+docker restart "$WEB" >/dev/null
+wait_for_web
+# shellcheck disable=SC2016 # $first is jq's
+expect_json /api/ready 200 no-store '.revisionId == $first and .revisionNumber == 1' --arg first "$first"
+diff -u "$TMP/ready-rolled-back.json" "$TMP/body.json" || fail "/api/ready changed when web restarted after the rollback."
+expect_code "$active" 200
+[ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the rollback."
+history_code=0
+photos_published history --json >"$TMP/history-after.json" || history_code=$?
+[ "$history_code" = 0 ] || fail "photos history --json exited $history_code after the rollback, expected 0: $(cat "$TMP/history-after.json")"
+# shellcheck disable=SC2016 # $first is jq's
+jq -e '.total == 3 and .pointer.revisionId == $first and (.rows[-1] | .kind == "rollback" and .revisionId == $first and .revisionNumber == 1 and .live and .state == "committed")' \
+  --arg first "$first" "$TMP/history-after.json" >/dev/null ||
+  fail "photos history --json doesn't list the rollback to $first as live: $(cat "$TMP/history-after.json")"
+echo "photos history listed revision 1 as one a rollback can return to, photos rollback --to 1 rolled back to $first, and /api/ready named revision 1 before and after a restart."
 echo "smoke-catalog passed."
