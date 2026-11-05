@@ -124,7 +124,7 @@ describe('photos purge, the dry run', { timeout: 120_000 }, () => {
         expect(out[0]).toMatch(new RegExp(`^Takes down ${built.d}: 1 asset revision, 1 set, \\d+\\.\\d kB\\. They answer 410 at once\\. GC can delete the bytes from 2026-12-09 10:00 UTC\\.$`));
         expect(out).toContainEqual(expect.stringMatching(new RegExp(`^  ${built.first[built.d]}: 1 set, `)));
         expect(out).toContainEqual(expect.stringMatching(new RegExp(`^    assets/${built.d}/${built.first[built.d]}/${built.profileId}: `)));
-        expect(out).toContainEqual(`No rollback can return to these while it stands, since they show it: revision 1 (${built.revisions[1]}).`);
+        expect(out).toContainEqual(expect.stringMatching(new RegExp(`^No rollback can return to these while it stands, since they show it: revision 1 \\(${built.revisions[1]}\\)\\. A revoke brings them back until photos gc --apply deletes a folder it lists\\. After that the takedown is permanent`)));
         expect(out.at(-1)).toBe('[photos] PLANNED: This was a dry run. Nothing was written. Run it again with --yes to take it down.');
     });
 

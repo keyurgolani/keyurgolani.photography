@@ -1,5 +1,7 @@
 import { count, parseFlags, PRINTED_ISSUES, UsageError } from './owner-cli';
-import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, sizeText, type GcEntry, type GcKeptReason, type GcOptions, type GcPlan, type GcProtection, type GcResult } from './retention';
+import { sizeText } from './asset-folders';
+import { PERMANENT_TEXT } from './tombstones';
+import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, type GcEntry, type GcKeptReason, type GcOptions, type GcPlan, type GcProtection, type GcResult } from './retention';
 
 /**
  * `photos gc` and `photos gc --apply <planDigest>`, #15's 15-3: argv
@@ -28,7 +30,8 @@ const KEPT_TEXT: Record<GcKeptReason, string> = {
     'has-revision': 'a revision of the same ID exists',
     'named-by-activation': 'an activation names it',
     'named-by-last-publish': 'the last publish names it',
-    'tombstone-within-grace': 'taken down less than 7 days ago, so it can still be revoked',
+    'tombstone-within-grace': `taken down less than 7 days ago; photos purge --revoke takes it back until photos gc --apply deletes it. ${PERMANENT_TEXT.replace(/\.$/, '')}`,
+    'unexpected-content': "taken down, but it holds a file a build didn't make, so GC deletes none of it",
     'active-revision': 'taken down, but the live revision shows it',
     'working-layer-series': "taken down, but a draft series lists it at this asset revision",
     'open-inbox': 'taken down, but an open Inbox item names it',
@@ -53,7 +56,7 @@ function entryLine(entry: GcEntry): string {
     const at = new Date(entry.newestMs).toISOString();
     if (entry.class === 'tombstoned') {
         const ids = (entry.tombstoneIds ?? []).join(', ');
-        return `Delete ${entry.path}: tombstoned, ${sizeText(entry.bytes)} (${count(entry.bytes, 'byte')}). ${entry.rule}: ${ids} took it down more than 7 days ago, and nothing that always keeps an asset names it: not the live revision, a draft series, an open Inbox item, or a staging folder.`;
+        return `Delete ${entry.path}: tombstoned, ${sizeText(entry.bytes)} (${count(entry.bytes, 'byte')}) its manifests list. ${entry.rule}: ${ids} took it down more than 7 days ago, and nothing that always keeps an asset names it: not the live revision, a draft series, an open Inbox item, or a staging folder.`;
     }
     const why = entry.class === 'abandoned-staging'
         ? `no build holds its lock, and nothing in it changed since ${at}`
@@ -66,7 +69,10 @@ export function gcPlanLines(plan: GcPlan): string[] {
     const lines = plan.delete.slice(0, PRINTED_ISSUES).map(entryLine);
     if (plan.delete.length > PRINTED_ISSUES) lines.push(`And ${plan.delete.length - PRINTED_ISSUES} more.`);
     if (plan.kept.length > 0) {
-        const why = (kept: GcPlan['kept'][number]) => (kept.class === 'tombstoned' && kept.reason === 'not-a-folder' ? 'taken down, but a symlink or a file, which GC never deletes through' : KEPT_TEXT[kept.reason]);
+        const why = (kept: GcPlan['kept'][number]) => {
+            if (kept.class === 'tombstoned' && kept.reason === 'not-a-folder') return 'taken down, but a symlink or a file, which GC never deletes through';
+            return kept.detail ? `${KEPT_TEXT[kept.reason]}: ${kept.detail}` : KEPT_TEXT[kept.reason];
+        };
         const shown = plan.kept.slice(0, PRINTED_ISSUES).map((kept) => `${kept.path} (${why(kept)})`);
         const more = plan.kept.length > PRINTED_ISSUES ? `, and ${plan.kept.length - PRINTED_ISSUES} more` : '';
         lines.push(`Kept ${plan.kept.length}: ${shown.join(', ')}${more}.`);
@@ -83,6 +89,9 @@ export function gcPlanLines(plan: GcPlan): string[] {
     const kept = PROTECTION_ORDER.filter((key) => (plan.bytes.protected[key] ?? 0) > 0).map((key) => `${PROTECTION_TEXT[key]} ${sizeText(plan.bytes.protected[key] ?? 0)}`);
     lines.push(`Bytes: deletes ${sizeText(plan.bytes.delete)}, unreferenced ${sizeText(plan.bytes.unreferenced)}${kept.length > 0 ? `. Kept for ${kept.join(', ')}` : ''}.`);
     if (plan.assetsNote) lines.push(plan.assetsNote);
+    if (plan.leftovers.length > 0) {
+        lines.push(`Set aside by a photos gc --apply run that stopped, reported only: ${plan.leftovers.join(', ')}. GC never deletes a folder it set aside in another run.`);
+    }
     lines.push(`Plan digest: ${plan.digest}`);
     return lines;
 }
@@ -104,6 +113,7 @@ export async function runGcCommand(dataRoot: string, args: GcArgs, io: GcIo, opt
     const print = exitCode === 0 ? io.out : io.err;
     print(`[photos] ${result.outcome}: ${result.message}`);
     for (const path of result.deleted) print(`Deleted ${path}`);
+    for (const path of result.partial) print(`Partly deleted ${path}`);
     if (result.plan && result.outcome !== 'APPLIED' && result.deleted.length === 0) {
         for (const line of gcPlanLines(result.plan)) print(line);
         if (result.outcome === 'PLANNED' && result.plan.delete.length > 0) print(`Run photos gc --apply ${result.plan.digest} to delete exactly these.`);

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { STAGING_ID, stagingLockName, stagingRoot } from '../identity/derivatives';
@@ -6,11 +6,12 @@ import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import { atomicCreateJson } from '../storage/atomicWrite';
 import { canonicalJson } from '../storage/canonical';
 import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
-import { hasErrorCode, isInside } from '../storage/fsx';
+import { hasErrorCode, isInside, realpathLoose } from '../storage/fsx';
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
+import { folderFacts, manifestContent, sizeText } from './asset-folders';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
 import { ALWAYS_PROTECTED, liveReferences, references, ReferenceScanError, type AssetReference, type ReferenceSource } from './references';
-import { collectedFile, graceEndsMs, problemText, readTombstones, standingFor, type TombstoneRead } from './tombstones';
+import { collectedFile, graceEndsMs, problemText, readTombstones, SET_ASIDE_PREFIX, standingFor, TOMBSTONES_DIR, type CollectedPath, type TombstoneRead } from './tombstones';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish } from './repository';
 import { errorText as sharedErrorText } from './error-text';
 import { holderText } from './rollback';
@@ -53,11 +54,28 @@ import { catalogPaths } from './working-layer';
  * nothing references and no tombstone lists are `unreferenced`: reported
  * with their bytes, and never deleted.
  *
+ * A tombstoned folder goes only when its manifests account for every file
+ * in it: each entry a real profile folder with a regular `manifest.json` for
+ * that set, and each other file one its manifest lists. Anything else, such
+ * as an owner's file, keeps the whole folder as `unexpected-content`.
+ *
  * Before its first asset delete, apply checks every planned folder against
  * the always-protected set again, read fresh, and stops with NOW_PROTECTED,
- * deleting nothing, if one is protected now. It then writes each tombstone's
- * `.collected.json` marker, prints one plain line saying what it deletes, and
- * checks each folder once more right before its delete.
+ * deleting nothing, if one is protected now. It then writes this run's marker
+ * for each tombstone, `<tombstoneId>.collected.<digest-prefix>.json`, with
+ * every exact folder it will delete for it, and prints one plain line saying
+ * what it deletes. Per folder, it checks it again, renames it aside to
+ * `assets/<photoId>/.gc-<assetRevision>-<uuid>`, checks the always-protected
+ * set once more, puts it back and stops if something names it now, and only
+ * then deletes the folder it set aside. A delete that fails partway is
+ * reported as "partly deleted", and what is left stays aside: GC reports a
+ * `.gc-` folder in every plan and never deletes one it didn't make in the
+ * same run.
+ *
+ * Bytes go only here, on the owner's explicit `photos gc --apply <digest>`:
+ * never on a timer, at startup, or as a side effect of another command
+ * (retentionBoundary.test.ts, and test/deleteRail.test.ts for every other
+ * delete call in the tree).
  *
  * The dry run and apply take the same path: both the catalog and the
  * authored lock, held from the scan through the last delete (#13's
@@ -86,8 +104,10 @@ export type GcKeptReason =
     | 'has-revision'
     | 'named-by-activation'
     | 'named-by-last-publish'
-    /** A tombstoned asset folder whose newest standing tombstone is 7 days old or less. */
+    /** A tombstoned asset folder every standing tombstone for which is 7 days old or less. */
     | 'tombstone-within-grace'
+    /** A tombstoned asset folder holding something its manifests don't list, such as an owner's file. GC deletes none of it. */
+    | 'unexpected-content'
     /** A tombstoned asset folder #15's always-protected set names, by the source that names it. */
     | 'active-revision'
     | 'working-layer-series'
@@ -100,7 +120,7 @@ export interface GcEntry {
     path: string;
     /** The rule that made it safe to delete. */
     rule: string;
-    /** Its size, in bytes, counting every file in a folder. */
+    /** Its size, in bytes: every file in a staging folder, and the files a tombstoned folder's manifests list. */
     bytes: number;
     /** The newest change GC found in it, in ms. */
     newestMs: number;
@@ -114,6 +134,8 @@ export interface GcKept {
     reason: GcKeptReason;
     /** `tombstoned` only: the standing tombstones that list it. */
     tombstoneIds?: string[];
+    /** For `unexpected-content`: the first path in it its manifests don't account for, relative to the data root. */
+    detail?: string;
 }
 
 /** A set nothing references and no standing tombstone lists. GC reports it and deletes none. */
@@ -146,6 +168,8 @@ export interface GcPlan {
     bytes: { delete: number; unreferenced: number; protected: Partial<Record<GcProtection, number>> };
     /** Why GC reports no asset totals, such as `assets/` being a symlink, or null. */
     assetsNote: string | null;
+    /** `assets/<photoId>/.gc-…` folders a stopped run set aside. Reported, never deleted, and not in the digest. */
+    leftovers: string[];
     /** What `photos gc --apply` takes: a hash of every path in `delete` with its class, size, and newest change. */
     digest: string;
 }
@@ -192,6 +216,8 @@ export interface GcResult {
     plan: GcPlan | null;
     /** The paths deleted, in plan order. */
     deleted: string[];
+    /** The paths whose delete failed partway: part of what was in them is gone, and the rest is in a `.gc-` folder. */
+    partial: string[];
     holder?: LockRecord | null;
 }
 
@@ -202,6 +228,10 @@ export interface GcHooks {
     beforeDelete?(entry: GcEntry): void | Promise<void>;
     /** Runs after an entry's last check and before the delete-time check of its folders. A test changes a folder here. */
     afterRecheck?(entry: GcEntry): void | Promise<void>;
+    /** Runs once a tombstoned folder is set aside as `aside`, before the always-protected check that follows. A test opens an Inbox item here. */
+    afterAside?(entry: GcEntry, aside: string): void | Promise<void>;
+    /** Stands in for the delete of a folder set aside. A test makes it fail partway here. */
+    remove?(aside: string): Promise<void>;
 }
 
 export interface GcOptions {
@@ -231,6 +261,9 @@ export class UnsafePathError extends Error {
 
 /** A path changed between its plan and its delete. */
 class EntryChangedError extends Error {}
+
+/** A folder GC set aside and couldn't put back, after another stop. Exit 4: the owner has to know where it is. */
+class SetAsideError extends Error {}
 
 const STAGING_RULE = 'gc.staging.unlocked-past-grace';
 const CANDIDATE_RULE = 'gc.candidate.unpublished-past-grace';
@@ -305,26 +338,6 @@ async function classDir(realRoot: string, segments: readonly string[]): Promise<
     // where GC started, and on a case-insensitive disk a folder that answers for another spelling.
     if ((await fs.promises.realpath(current)) !== current) throw new UnsafePathError(posix(path.relative(realRoot, current)), 'resolves somewhere else');
     return { dir: current, chain };
-}
-
-/** Every file's size under `dir` and the newest change to it or anything in it, read with lstat, so no symlink is followed. */
-export async function folderFacts(dir: string): Promise<{ bytes: number; newestMs: number }> {
-    const stat = await fs.promises.lstat(dir);
-    let bytes = 0;
-    let newestMs = Math.trunc(stat.mtimeMs);
-    for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
-        const inner = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-            const facts = await folderFacts(inner);
-            bytes += facts.bytes;
-            newestMs = Math.max(newestMs, facts.newestMs);
-            continue;
-        }
-        const innerStat = await fs.promises.lstat(inner);
-        if (innerStat.isFile()) bytes += innerStat.size;
-        newestMs = Math.max(newestMs, Math.trunc(innerStat.mtimeMs));
-    }
-    return { bytes, newestMs };
 }
 
 /** A candidate file's size and newest change: its mtime or its compiledAt, whichever is later. */
@@ -447,6 +460,7 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
         tombstones: tombstones.tombstones.filter((entry) => entry.revoked === null).length,
         bytes: { delete: deleteBytes, unreferenced: assets.unreferenced.reduce((sum, set) => sum + set.bytes, 0), protected: assets.protectedBytes },
         assetsNote: assets.note,
+        leftovers: assets.leftovers,
         digest: planDigest(GC_GRACE_MS, toDelete),
     };
 }
@@ -463,6 +477,8 @@ interface AssetFolder {
     assetRevision: string;
     /** Relative to the data root. */
     path: string;
+    /** Absolute. */
+    dir: string;
     /** False for a symlink or a file in its place, which GC never deletes through. */
     isFolder: boolean;
     sets: { profileId: string; path: string; bytes: number }[];
@@ -471,12 +487,13 @@ interface AssetFolder {
 }
 
 /** Every asset folder in the store, read with lstat, so nothing is followed through a symlink. Throws UnsafePathError for a store that is one. */
-async function assetFolders(realRoot: string): Promise<{ folders: AssetFolder[]; notFolders: string[] }> {
+async function assetFolders(realRoot: string): Promise<{ folders: AssetFolder[]; notFolders: string[]; leftovers: string[] }> {
     const store = await classDir(realRoot, ['assets']);
     const folders: AssetFolder[] = [];
     // Photo folders that are a symlink or a file: GC reasons about nothing under them.
     const notFolders: string[] = [];
-    if (store === null) return { folders, notFolders };
+    const leftovers: string[] = [];
+    if (store === null) return { folders, notFolders, leftovers };
     const byName = (a: fs.Dirent, b: fs.Dirent) => (a.name < b.name ? -1 : 1);
     for (const photo of (await fs.promises.readdir(store.dir, { withFileTypes: true })).sort(byName)) {
         if (!PHOTO_ID_RE.test(photo.name)) continue;
@@ -486,22 +503,23 @@ async function assetFolders(realRoot: string): Promise<{ folders: AssetFolder[];
         }
         const photoDir = path.join(store.dir, photo.name);
         for (const revision of (await fs.promises.readdir(photoDir, { withFileTypes: true })).sort(byName)) {
+            if (revision.name.startsWith(SET_ASIDE_PREFIX)) leftovers.push(`assets/${photo.name}/${revision.name}`);
             if (!ASSET_REVISION_RE.test(revision.name)) continue;
             const relative = `assets/${photo.name}/${revision.name}`;
+            const dir = path.join(photoDir, revision.name);
             if (!revision.isDirectory()) {
-                folders.push({ photoId: photo.name, assetRevision: revision.name, path: relative, isFolder: false, sets: [], bytes: 0, newestMs: 0 });
+                folders.push({ photoId: photo.name, assetRevision: revision.name, path: relative, dir, isFolder: false, sets: [], bytes: 0, newestMs: 0 });
                 continue;
             }
-            const dir = path.join(photoDir, revision.name);
             const sets: AssetFolder['sets'] = [];
             for (const profile of (await fs.promises.readdir(dir, { withFileTypes: true })).sort(byName)) {
                 if (!PROFILE_ID_RE.test(profile.name) || !profile.isDirectory()) continue;
                 sets.push({ profileId: profile.name, path: `${relative}/${profile.name}`, bytes: (await folderFacts(path.join(dir, profile.name))).bytes });
             }
-            folders.push({ photoId: photo.name, assetRevision: revision.name, path: relative, isFolder: true, sets, ...(await folderFacts(dir)) });
+            folders.push({ photoId: photo.name, assetRevision: revision.name, path: relative, dir, isFolder: true, sets, ...(await folderFacts(dir)) });
         }
     }
-    return { folders, notFolders };
+    return { folders, notFolders, leftovers };
 }
 
 /**
@@ -527,7 +545,7 @@ async function assetPlan(realRoot: string, refs: readonly AssetReference[], tomb
     } catch (error) {
         // A store GC can't walk safely: with nothing taken down that's only a missing report, but a tombstone could need a delete there.
         if (error instanceof UnsafePathError && !tombstones.tombstones.some((entry) => entry.revoked === null)) {
-            return { delete: toDelete, kept, unreferenced, protectedBytes, note: `${error.message.replace(/ Nothing was deleted\.$/, '')}, so GC reports no asset bytes.` };
+            return { delete: toDelete, kept, unreferenced, protectedBytes, leftovers: [] as string[], note: `${error.message.replace(/ Nothing was deleted\.$/, '')}, so GC reports no asset bytes.` };
         }
         throw error;
     }
@@ -550,7 +568,7 @@ async function assetPlan(realRoot: string, refs: readonly AssetReference[], tomb
             continue;
         }
         const tombstoneIds = standing.map((entry) => entry.tombstoneId).sort();
-        const keep = (reason: GcKeptReason) => kept.push({ class: 'tombstoned', path: folder.path, reason, tombstoneIds });
+        const keep = (reason: GcKeptReason, detail?: string) => kept.push({ class: 'tombstoned', path: folder.path, reason, tombstoneIds, ...(detail ? { detail } : {}) });
         if (!folder.isFolder) {
             keep('not-a-folder');
             continue;
@@ -567,9 +585,15 @@ async function assetPlan(realRoot: string, refs: readonly AssetReference[], tomb
             count('tombstone-within-grace', folder.bytes);
             continue;
         }
-        toDelete.push({ class: 'tombstoned', path: folder.path, rule: TOMBSTONE_RULE, bytes: folder.bytes, newestMs: folder.newestMs, tombstoneIds: past });
+        // Only what a build made: a folder its manifests don't account for stays whole.
+        const content = await manifestContent(folder.dir, folder.path, folder.photoId, folder.assetRevision);
+        if (!content.listed) {
+            keep('unexpected-content', content.unexpected);
+            continue;
+        }
+        toDelete.push({ class: 'tombstoned', path: folder.path, rule: TOMBSTONE_RULE, bytes: content.bytes, newestMs: folder.newestMs, tombstoneIds: past });
     }
-    return { delete: toDelete, kept, unreferenced, protectedBytes, note: null as string | null };
+    return { delete: toDelete, kept, unreferenced, protectedBytes, leftovers: found.leftovers, note: null as string | null };
 }
 
 /**
@@ -611,23 +635,46 @@ export function protectedText(ref: Pick<AssetReference, 'source' | 'holder'>): s
     }
 }
 
-/** The library's real path, when one is set: GC never deletes in it, or in a folder that holds it. */
-function libraryRealPath(): string | null {
-    const library = configuredLibraryRoot();
-    if (!library) return null;
-    try {
-        return fs.realpathSync(library);
-    } catch {
-        return path.resolve(library);
-    }
+const sameFile = (a: fs.Stats, b: fs.Stats) => a.dev === b.dev && a.ino === b.ino;
+
+/** `dir` and every folder above it, up to the filesystem's root. */
+function withAncestors(dir: string): string[] {
+    const chain = [dir];
+    for (let current = dir; path.dirname(current) !== current; current = path.dirname(current)) chain.push(path.dirname(current));
+    return chain;
 }
 
-/** Throws for a target inside the photo library, or one that holds it: the owner's originals are never GC's. */
+/**
+ * Throws for a target inside the photo library, the library itself, or one
+ * that holds it: the owner's originals are never GC's. It compares paths,
+ * symlinks resolved, and then identities: the dev and inode of the target
+ * and each folder above it against the library's, and the library and each
+ * folder above it against the target's, so another path to the same folder,
+ * a bind mount or a case GC can't spell, doesn't get past. A stat that fails,
+ * the library's included, refuses too, since then GC can't tell.
+ */
 function assertOutsideLibrary(realRoot: string, entry: GcEntry): void {
-    const library = libraryRealPath();
+    const library = configuredLibraryRoot();
     if (library === null) return;
     const target = path.join(realRoot, ...entry.path.split('/'));
-    if (target === library || isInside(target, library) || isInside(library, target)) throw new UnsafePathError(entry.path, 'is inside the photo library, or holds it');
+    const refuse = (detail: string) => new UnsafePathError(entry.path, detail);
+    const libraryPath = realpathLoose(library);
+    if (isInside(target, libraryPath) || isInside(libraryPath, target)) throw refuse('is inside the photo library, or holds it');
+    const stat = (file: string, what: string) => {
+        try {
+            return fs.statSync(file);
+        } catch (error) {
+            throw refuse(`can't be checked against the photo library, since ${what} can't be read (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})`);
+        }
+    };
+    const libraryStat = stat(library, 'PHOTOGRAPHY_LIBRARY_DIR');
+    for (const dir of withAncestors(target)) {
+        if (sameFile(stat(dir, dir === target ? 'it' : 'a folder above it'), libraryStat)) throw refuse('is inside the photo library, or is it');
+    }
+    const targetStat = stat(target, 'it');
+    for (const dir of withAncestors(libraryPath)) {
+        if (sameFile(stat(dir, 'a folder above the photo library'), targetStat)) throw refuse('holds the photo library');
+    }
 }
 
 /** Apply's one plain line, said before the first delete. */
@@ -643,23 +690,13 @@ export function deleteLine(plan: Pick<GcPlan, 'delete'>): string {
     return `Deletes ${parts.join(', and ')}.`;
 }
 
-/** A byte count for the owner: 38.2 MB. */
-export function sizeText(bytes: number): string {
-    if (bytes < 1_000) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`;
-    const units = ['kB', 'MB', 'GB', 'TB'];
-    let value = bytes / 1_000;
-    let unit = 0;
-    while (value >= 999.95 && unit < units.length - 1) {
-        value /= 1_000;
-        unit += 1;
-    }
-    return `${value.toFixed(1)} ${units[unit]}`;
-}
-
 interface Checked {
     target: string;
     /** The data root and the folders down to the target's parent, each with the identity classDir() checked. */
     chain: CheckedFolder[];
+    /** The target's own identity, from the same lstat. */
+    dev: number;
+    ino: number;
 }
 
 /**
@@ -685,6 +722,12 @@ async function recheck(root: string, realRoot: string, entry: GcEntry, now: numb
     const isFolder = entry.class !== 'orphan-candidate';
     if (isFolder ? !stat.isDirectory() : !stat.isFile()) throw new EntryChangedError(`${entry.path} is no longer a ${isFolder ? 'folder' : 'file'}.`);
     const facts = isFolder ? await folderFacts(target) : await candidateFacts(target, entry.path);
+    if (entry.class === 'tombstoned') {
+        const [, photoId, assetRevision] = segments;
+        const content = await manifestContent(target, entry.path, photoId, assetRevision);
+        if (!content.listed) throw new EntryChangedError(`${entry.path} holds ${content.unexpected} now, which its manifests don't list.`);
+        facts.bytes = content.bytes;
+    }
     if (facts.bytes !== entry.bytes || facts.newestMs !== entry.newestMs) throw new EntryChangedError(`${entry.path} changed since the plan.`);
     // A tombstoned folder's grace is its tombstone's, which nowProtected() checks again.
     if (entry.class !== 'tombstoned' && facts.newestMs >= now - GC_GRACE_MS) throw new EntryChangedError(`${entry.path} is within the grace period.`);
@@ -692,7 +735,7 @@ async function recheck(root: string, realRoot: string, entry: GcEntry, now: numb
         const id = segments[segments.length - 1].replace(/\.json$/, '');
         if (await existsAtAll(path.join(catalogPaths(root).revisionsDir, `${id}.json`))) throw new EntryChangedError(`${entry.path} has a revision now.`);
     }
-    return { target, chain: checkedDir.chain };
+    return { target, chain: checkedDir.chain, dev: stat.dev, ino: stat.ino };
 }
 
 /**
@@ -724,6 +767,37 @@ function assertSameFolders(realRoot: string, checked: Checked): void {
     }
 }
 
+/** Throws unless `aside` is the very folder `checked` checked, moved: same dev and inode, a folder, no symlink. */
+function assertSetAside(realRoot: string, aside: string, checked: Checked): void {
+    let stat: fs.Stats;
+    try {
+        stat = fs.lstatSync(aside);
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) throw new UnsafePathError(posix(path.relative(realRoot, aside)), 'is gone just after GC set it aside');
+        throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory() || stat.dev !== checked.dev || stat.ino !== checked.ino) throw new UnsafePathError(posix(path.relative(realRoot, aside)), 'is not the folder GC set aside');
+}
+
+/** Put a folder set aside back where it was. Null when it's back, else why it isn't. */
+function putBack(aside: string, target: string): string | null {
+    try {
+        fs.renameSync(aside, target);
+        return null;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code ?? 'an I/O error';
+    }
+}
+
+/**
+ * The one delete of an asset folder: one GC set aside this run, as
+ * `.gc-<assetRevision>-<uuid>`, after every check. rm() unlinks a symlink
+ * inside it rather than following it.
+ */
+async function removeSetAside(aside: string): Promise<void> {
+    await fs.promises.rm(aside, { recursive: true, force: true });
+}
+
 /**
  * An error for a message, without the data root's absolute path: 15-2's
  * errorText(), which gives a Node fs error as its code and the path relative
@@ -751,19 +825,22 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
     const leaseMs = options.leaseMs ?? CATALOG_LEASE_MS;
     if (options.apply !== undefined && !GC_DIGEST_RE.test(options.apply)) throw new TypeError(`A plan digest is gc_ plus 64 hex, not ${JSON.stringify(options.apply)}.`);
     const applying = options.apply !== undefined;
-    const result: GcResult = { outcome: 'STORAGE_ERROR', message: '', plan: null, deleted: [] };
+    const result: GcResult = { outcome: 'STORAGE_ERROR', message: '', plan: null, deleted: [], partial: [] };
     const finish = (outcome: GcOutcome, message: string, details: Partial<GcResult> = {}): GcResult => {
         Object.assign(result, details, { outcome, message });
         if (applying) {
-            const fields = { outcome, digest: options.apply, deleted: result.deleted.length };
+            const fields = { outcome, digest: options.apply, deleted: result.deleted.length, ...(result.partial.length > 0 ? { partlyDeleted: result.partial } : {}) };
             logEvent(logger, outcome === 'APPLIED' ? 'catalog.gc.applied' : 'catalog.gc.failed', fields);
         }
         return result;
     };
     const deletedSoFar = () => {
         const count = result.deleted.length;
-        return count > 0 ? ` It had deleted ${count} of the plan's ${result.plan?.delete.length ?? count} paths, and deleted nothing else.` : ' Nothing was deleted.';
+        const partly = result.partial.length > 0 ? ` and part of ${result.partial.length} more` : '';
+        if (count === 0 && partly) return ` It had deleted part of ${result.partial.length === 1 ? 'that path' : `${result.partial.length} paths`}, and nothing else.`;
+        return count > 0 ? ` It had deleted ${count} of the plan's ${result.plan?.delete.length ?? count} paths${partly}, and deleted nothing else.` : ' Nothing was deleted.';
     };
+    const relative = (file: string) => posix(path.relative(realRoot, file));
 
     const status = dataRootStatus({ write: true, root });
     // The detail can carry a Node message with the root's absolute path, so it is said relative to the root.
@@ -788,6 +865,7 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
     }
 
     function failed(error: unknown): GcResult {
+        if (error instanceof SetAsideError) return finish('STORAGE_ERROR', `${error.message}${deletedSoFar()}`);
         if (error instanceof UnsafePathError) return finish('UNSAFE_PATH', `${error.message.replace(/ Nothing was deleted\.$/, '')}${deletedSoFar()}`);
         if (error instanceof ReferenceScanError) return finish('INTEGRITY_MISMATCH', `${error.message.replace(/ Nothing was deleted\.$/, '')}${deletedSoFar()}`);
         if (error instanceof CatalogIntegrityError) return finish('INTEGRITY_MISMATCH', `${sentence(error.message)}${deletedSoFar()}`);
@@ -824,10 +902,16 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
                 throw error;
             }
             for (const entry of plan.delete) assertOutsideLibrary(realRoot, entry);
-            // Written before the first byte goes, so a revoke can tell GC began, even after a crash.
+            // This run's marker for each tombstone, written before its first byte goes, so a revoke can tell exactly
+            // which folders a run may have reached, even after a crash. One per run: a later run adds its own.
             for (const tombstoneId of [...new Set(tombstoned.flatMap((entry) => entry.tombstoneIds ?? []))].sort()) {
-                const paths = tombstoned.filter((entry) => entry.tombstoneIds?.includes(tombstoneId)).map((entry) => entry.path);
-                await atomicCreateJson(collectedFile(root, tombstoneId), { tombstoneId, planDigest: plan.digest, startedAt: iso(clock()), paths });
+                const paths: CollectedPath[] = tombstoned.filter((entry) => entry.tombstoneIds?.includes(tombstoneId)).map((entry) => ({ path: entry.path, bytes: entry.bytes, newestMs: entry.newestMs }));
+                if (await atomicCreateJson(collectedFile(root, tombstoneId, plan.digest), { tombstoneId, planDigest: plan.digest, startedAt: iso(clock()), paths })) continue;
+                // The same plan began once before and stopped: its marker has to list the same folders.
+                const before = (await readTombstones(root)).tombstones.find((each) => each.tombstoneId === tombstoneId)?.collected.find((each) => each.planDigest === plan.digest);
+                if (!before || canonicalJson(before.paths) !== canonicalJson(paths)) {
+                    throw new CatalogIntegrityError(TOMBSTONES_DIR, `${TOMBSTONES_DIR} holds a marker for ${tombstoneId} and this plan that lists other folders`);
+                }
             }
             const line = deleteLine(plan);
             logEvent(logger, 'catalog.gc.deleting', { digest: plan.digest, line });
@@ -838,13 +922,8 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
             await hooks.beforeDelete?.(entry);
             try {
                 if (entry.class === 'tombstoned') {
-                    const why = await nowProtected(root, entry, clock());
-                    if (why) return finish('NOW_PROTECTED', `${why} GC stopped there.${deletedSoFar()} Run the dry run again.`);
-                    const checked = await recheck(root, realRoot, entry, clock());
-                    await hooks.afterRecheck?.(entry);
-                    assertSameFolders(realRoot, checked);
-                    // In the same tick as the check. rm() unlinks a symlink inside the folder rather than following it.
-                    await fs.promises.rm(checked.target, { recursive: true, force: true });
+                    const stopped = await collectTombstoned(entry);
+                    if (stopped) return stopped;
                 } else if (entry.class === 'abandoned-staging') {
                     const id = entry.path.slice('staging/'.length);
                     await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.leaseMs }, async () => {
@@ -873,5 +952,46 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         }
         const count = result.deleted.length;
         return finish('APPLIED', count === 0 ? 'The plan was empty, so nothing was deleted.' : `Deleted ${count} ${count === 1 ? 'path' : 'paths'}.`);
+    }
+
+    /**
+     * One tombstoned folder: check it again, set it aside, check the
+     * always-protected set once more, and put it back if something names it
+     * now. Only then delete what was set aside. Returns the stop, or null
+     * once it's deleted.
+     */
+    async function collectTombstoned(entry: GcEntry): Promise<GcResult | null> {
+        const checked = await recheck(root, realRoot, entry, clock());
+        await hooks.afterRecheck?.(entry);
+        const aside = path.join(path.dirname(checked.target), `${SET_ASIDE_PREFIX}${path.basename(checked.target)}-${randomUUID()}`);
+        assertSameFolders(realRoot, checked);
+        // In the same tick as the check. A rename moves the folder itself, and follows no symlink in it.
+        fs.renameSync(checked.target, aside);
+        let why: string | null;
+        try {
+            await hooks.afterAside?.(entry, aside);
+            assertSetAside(realRoot, aside, checked);
+            // The check after the rename: a build or an Inbox item that comes to name it from here on finds no folder to lose.
+            why = await nowProtected(root, entry, clock());
+        } catch (error) {
+            const stuck = putBack(aside, checked.target);
+            if (stuck !== null) throw new SetAsideError(`${sentence(errorText(error, [realRoot, root]))} GC had set ${entry.path} aside as ${relative(aside)} and couldn't put it back (${stuck}), so it is there, whole, and GC never deletes it.`);
+            throw error;
+        }
+        if (why) {
+            const stuck = putBack(aside, checked.target);
+            const where = stuck === null ? 'GC put it back' : `GC had set it aside as ${relative(aside)} and couldn't put it back (${stuck}), so it is there, whole, and GC never deletes it`;
+            return finish('NOW_PROTECTED', `${why} ${where}. GC stopped there.${deletedSoFar()} Run the dry run again.`);
+        }
+        assertSameFolders(realRoot, checked);
+        assertSetAside(realRoot, aside, checked);
+        try {
+            await (hooks.remove ?? removeSetAside)(aside);
+        } catch (error) {
+            result.partial.push(entry.path);
+            const ids = (entry.tombstoneIds ?? []).join(', ');
+            return finish('STORAGE_ERROR', `GC stopped: partly deleted: ${entry.path}. Its delete failed (${errorText(error, [realRoot, root])}), and what is left of it is in ${relative(aside)}, which every plan reports and GC never deletes. ${ids} can't be revoked for it now.${deletedSoFar()}`);
+        }
+        return null;
     }
 }

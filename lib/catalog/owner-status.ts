@@ -11,6 +11,7 @@ import { dataRootStatus } from '../storage/config';
 import { usualProfile } from './compile';
 import { checkPublished, type PublishState } from './mode';
 import { lastCommitted, listActivations, readLastPublish, readRevisionFile, type LastPublishFile } from './repository';
+import { setAsideFolders } from './tombstones';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { Activation, AuthoredPhoto, AuthoredSeries, WorkingLayer } from './types';
 import { readActivePointer, readWorkingLayer } from './working-layer';
@@ -309,7 +310,9 @@ export type CheckCode =
     | 'last-pass-failed'
     | 'pass-stalled'
     | 'heartbeat-missing'
-    | 'heartbeat-stale';
+    | 'heartbeat-stale'
+    /** #181's A10: a folder a stopped `photos gc --apply` run set aside, which GC never deletes. */
+    | 'gc-set-aside';
 
 export interface StatusCheck {
     ok: boolean;
@@ -393,10 +396,24 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
     if (stalled) problems.push(stalled);
     const late = heartbeatProblem(heartbeat);
     if (late) problems.push(late);
+    const aside = dataRoot === null ? null : await setAsideProblem(path.resolve(dataRoot));
+    if (aside) problems.push(aside);
     const held = status.inbox && !('error' in status.inbox) ? status.inbox.held.length : 0;
     // Review nit: a superseded set isn't a failure of these bytes.
     const permanent = status.identity.failedProfiles.filter((failed) => failed.error !== 'source-superseded').length;
     return { ok: problems.length === 0, problems, counts: { held, retrying: status.identity.retryingJobs, permanent } };
+}
+
+/** The folders a stopped `photos gc --apply` run set aside, as a problem, or null when there are none. */
+async function setAsideProblem(dataRoot: string): Promise<StatusCheck['problems'][number] | null> {
+    let found: string[];
+    try {
+        found = await setAsideFolders(dataRoot);
+    } catch (error) {
+        return { code: 'gc-set-aside', message: `assets/ can't be listed for folders photos gc --apply set aside (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})` };
+    }
+    if (found.length === 0) return null;
+    return { code: 'gc-set-aside', message: `${count(found.length, 'folder')} a stopped photos gc --apply run set aside, which GC never deletes: ${found.join(', ')}. photos gc lists ${found.length === 1 ? 'it' : 'them'}` };
 }
 
 function checkLines(check: StatusCheck): string {

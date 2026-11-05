@@ -250,7 +250,9 @@ export async function liveReferences(dataRoot: string): Promise<AssetReference[]
             ? [event.photoId]
             : [...new Set([...(facts.candidates ?? []), ...(facts.duplicateOf ? [facts.duplicateOf] : []), ...(facts.samePathAs ? [facts.samePathAs] : [])])];
         for (const photoId of photoIds) {
-            found.push({ source: 'open-inbox', holder: event.id, photoId, assetRevision: event.assetRevision, profileId: event.photoId !== null ? event.candidate?.profileId ?? null : null });
+            // With no photo ID yet, the item's own asset revision is the new file's, not one of the photos it names has, so it keeps every one.
+            const named = event.photoId !== null;
+            found.push({ source: 'open-inbox', holder: event.id, photoId, assetRevision: named ? event.assetRevision : null, profileId: named ? event.candidate?.profileId ?? null : null });
         }
     }
 

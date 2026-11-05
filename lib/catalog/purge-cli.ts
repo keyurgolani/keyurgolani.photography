@@ -1,8 +1,8 @@
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import { count, parseFlags, PRINTED_ISSUES, UsageError } from './owner-cli';
 import { PURGE_EXIT_CODES, runPurge, runRevoke, type PurgeOptions, type PurgePlan, type PurgeResult, type RevokeOptions } from './purge';
-import { sizeText } from './retention';
-import { TOMBSTONE_ID_RE } from './tombstones';
+import { sizeText } from './asset-folders';
+import { PERMANENT_TEXT, TOMBSTONE_ID_RE } from './tombstones';
 
 /**
  * `photos purge` and `photos purge --revoke`, #181's A10: argv parsing and
@@ -55,7 +55,8 @@ export function purgePlanLines(plan: PurgePlan): string[] {
     if (plan.losing.length === 0) {
         lines.push('No revision that was live before shows it, so no rollback loses a target.');
     } else {
-        lines.push(`No rollback can return to these while it stands, since they show it: ${plan.losing.map((revision) => `revision ${revision.revisionNumber} (${revision.revisionId})`).join(', ')}.`);
+        // When restore stops being possible, in the words purge's success line and GC use too.
+        lines.push(`No rollback can return to these while it stands, since they show it: ${plan.losing.map((revision) => `revision ${revision.revisionNumber} (${revision.revisionId})`).join(', ')}. A revoke brings them back until photos gc --apply deletes a folder it lists. ${PERMANENT_TEXT}`);
     }
     return lines;
 }

@@ -66,7 +66,8 @@ describe('/media under the catalog', { timeout: 60_000 }, () => {
         expect((await get(d)).status).toBe(404);
         expect((await get(a)).status).toBe(200);
 
-        const T0 = Date.parse('2026-11-01T00:00:00.000Z');
+        // GC's grace runs from the later of createdAt and the tombstone file's ctime, so the clock starts now.
+        const T0 = Date.now();
         const purged = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'model release withdrawn', actor: 'owner', yes: true, clock: () => T0, logger: quiet });
         expect(purged.outcome).toBe('PURGED');
         const gone = await get(d);
@@ -91,7 +92,8 @@ describe('/media under the catalog', { timeout: 60_000 }, () => {
         cleanups.push(async () => built.cleanup());
         vi.stubEnv('PHOTOGRAPHY_DATA_DIR', built.root);
         const d: AssetRef = { photoId: built.d, assetRevision: built.first[built.d], profileId: built.profileId };
-        const T0 = Date.parse('2026-11-01T00:00:00.000Z');
+        // GC's grace runs from the later of createdAt and the tombstone file's ctime, so the clock starts now.
+        const T0 = Date.now();
         expect((await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'x', actor: 'owner', yes: true, clock: () => T0, logger: quiet })).outcome).toBe('PURGED');
         const later = () => T0 + 8 * 24 * 60 * 60 * 1000;
         const planned = await runGc({ dataRoot: built.root, clock: later, logger: quiet });

@@ -13,7 +13,7 @@ import { errorText } from './error-text';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
 import { references, ReferenceScanError, type AssetReference } from './references';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
-import { folderFacts, sizeText } from './retention';
+import { folderFacts, manifestContent, sizeText } from './asset-folders';
 import { holderText } from './rollback';
 import {
     graceEndsMs,
@@ -23,8 +23,10 @@ import {
     standingFor,
     tombstoneFile,
     tombstonesDir,
+    PERMANENT_TEXT,
     TOMBSTONE_ID_RE,
     TOMBSTONES_DIR,
+    type CollectedPath,
     type Tombstone,
     type TombstoneEntry,
     type TombstoneRead,
@@ -196,6 +198,35 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const NOTHING = ' Nothing was written.';
+
+
+/** How a folder a GC run recorded is now: as the run planned it, gone, or changed. */
+async function recordedState(root: string, recorded: CollectedPath): Promise<'same' | 'gone' | 'changed'> {
+    const dir = path.join(root, ...recorded.path.split('/'));
+    let stat: fs.Stats;
+    try {
+        stat = await fs.promises.lstat(dir);
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT')) return 'gone';
+        throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return 'changed';
+    const [, photoId, assetRevision] = recorded.path.split('/');
+    const content = await manifestContent(dir, recorded.path, photoId, assetRevision);
+    if (!content.listed || content.bytes !== recorded.bytes) return 'changed';
+    return (await folderFacts(dir)).newestMs === recorded.newestMs ? 'same' : 'changed';
+}
+
+/** Every folder `markers` recorded that is gone or changed now, sorted. */
+async function reachedFolders(root: string, markers: TombstoneEntry['collected']): Promise<string[]> {
+    const reached = new Set<string>();
+    for (const marker of markers) {
+        for (const recorded of marker.paths) if ((await recordedState(root, recorded)) !== 'same') reached.add(recorded.path);
+    }
+    return [...reached].sort();
+}
+
+const isAre = (n: number) => (n === 1 ? 'is' : 'are');
 
 /** A time for the owner: 2026-12-09 10:00 UTC. */
 export const whenText = (ms: number) => `${iso(ms).slice(0, 16).replace('T', ' ')} UTC`;
@@ -388,15 +419,17 @@ export async function runPurge(options: PurgeOptions): Promise<PurgeResult> {
             return finish('STORAGE_ERROR', `${TOMBSTONES_DIR}/${tombstone.tombstoneId}.json is there already.${NOTHING}`);
         }
         result.tombstone = tombstone;
-        return finish('PURGED', `Wrote ${TOMBSTONES_DIR}/${tombstone.tombstoneId}.json. Its sets answer 410 from the next request. GC can delete the bytes from ${whenText(graceEnds)}. Until then, photos purge --revoke ${tombstone.tombstoneId} --reason <text> takes it back.`);
+        return finish('PURGED', `Wrote ${TOMBSTONES_DIR}/${tombstone.tombstoneId}.json. Its sets answer 410 from the next request. photos gc --apply can delete the bytes from ${whenText(graceEnds)}. photos purge --revoke ${tombstone.tombstoneId} --reason <text> takes it back until photos gc --apply deletes a folder it lists. ${PERMANENT_TEXT}`);
     }
 }
 
 /**
- * `photos purge --revoke <tombstoneId>`: during the grace, write the
- * tombstone's revoke under the catalog lock, after which `/media`,
- * `assets.tombstoned` and GC ignore it. Refused once GC deleted any folder
- * it listed. Never throws for an expected stop.
+ * `photos purge --revoke <tombstoneId>`: write the tombstone's revoke under
+ * the catalog lock, after which `/media`, `assets.tombstoned` and GC ignore
+ * it. Refused once a folder a GC run recorded for it in its marker is gone or
+ * changed, and only then: a marker whose folders all stand, or an asset
+ * revision that never had a folder, doesn't refuse it. Never throws for an
+ * expected stop.
  */
 export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
     const root = path.resolve(options.dataRoot);
@@ -429,22 +462,18 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         if (!entry) return finish('UNKNOWN_TOMBSTONE', `There's no tombstone ${options.tombstoneId} in ${TOMBSTONES_DIR}.${NOTHING}`);
         result.tombstone = entry;
         if (entry.revoked) return finish('ALREADY_REVOKED', `${entry.tombstoneId} was revoked at ${entry.revoked.createdAt} by ${entry.revoked.actor}.${NOTHING}`, { revoke: entry.revoked });
-        if (entry.collected) {
-            // GC writes its marker before its first delete. A folder it planned, or any the tombstone lists, gone now means a revoke would bring nothing back.
-            const gone: string[] = [];
-            const listed = entry.assetRevisions.map((assetRevision) => `assets/${entry.photoId}/${assetRevision}`);
-            for (const relative of [...new Set([...entry.collected.paths, ...listed])].sort()) {
-                try {
-                    await fs.promises.lstat(path.join(root, ...relative.split('/')));
-                } catch (error) {
-                    if (hasErrorCode(error, 'ENOENT')) gone.push(relative);
-                    else throw error;
-                }
-            }
-            if (gone.length > 0) return finish('ALREADY_COLLECTED', `photos gc deleted ${gone.join(', ')} for ${entry.tombstoneId} in a run that began at ${entry.collected.startedAt}, so a revoke can't bring it back.${NOTHING}`);
+        // Each GC run writes its marker, with every exact folder it will delete, before its first delete. Only a
+        // recorded folder that is gone or changed now means a revoke would bring back less than it says.
+        const reached = await reachedFolders(root, entry.collected);
+        if (reached.length > 0) {
+            const it = reached.length === 1 ? 'it' : 'them';
+            return finish('ALREADY_COLLECTED', `photos gc --apply began deleting ${reached.join(', ')} for ${entry.tombstoneId}, and ${reached.length === 1 ? "it's" : "they're"} gone or changed now, so a revoke can't bring ${it} back.${NOTHING} ${PERMANENT_TEXT}`);
         }
         const what = entry.assetRevision === null ? `${entry.photoId}, ${plural(entry.assetRevisions.length, 'asset revision')}` : `${entry.photoId} at ${entry.assetRevision}`;
-        const revokePlan: RevokePlan = { tombstone: entry, summary: `Revokes ${entry.tombstoneId}, written ${entry.createdAt} by ${entry.actor}: ${what}. From the next request /media serves their sets again wherever the live revision shows them, and GC keeps their bytes.` };
+        const notes = await othersText(entry, tombstones);
+        let back = ' From the next request /media serves their sets again wherever the live revision shows them, and GC keeps their bytes.';
+        if (notes.text) back = notes.rest > 0 ? ' The rest is served again from the next request wherever the live revision shows it, and GC keeps its bytes.' : '';
+        const revokePlan: RevokePlan = { tombstone: entry, summary: `Revokes ${entry.tombstoneId}, written ${entry.createdAt} by ${entry.actor}: ${what}.${notes.text}${back}` };
         result.revokePlan = revokePlan;
         options.onPlan?.(revokePlan);
         if (!options.yes) return finish('REVOKE_PLANNED', `This was a dry run.${NOTHING} Run it again with --yes to revoke it.`);
@@ -453,6 +482,32 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         await hooks.beforeWrite?.();
         const revoke: TombstoneRevoke = { tombstoneId: entry.tombstoneId, actor: options.actor.trim(), reason: options.reason.trim(), createdAt: iso(clock()) };
         if (!(await atomicCreateJson(revokeFile(root, entry.tombstoneId), revoke))) return finish('ALREADY_REVOKED', `${entry.tombstoneId} has a revoke already.${NOTHING}`);
-        return finish('REVOKED', `Wrote ${TOMBSTONES_DIR}/${entry.tombstoneId}.revoked.json. Its sets answer as the live revision says from the next request, and no revision that shows them is refused for it any more.`, { revoke });
+        return finish('REVOKED', `Wrote ${TOMBSTONES_DIR}/${entry.tombstoneId}.revoked.json. ${notes.text ? 'Apart from the above, its' : 'Its'} sets answer as the live revision says from the next request, and no revision that shows them is refused for it any more.`, { revoke });
+    }
+
+    /**
+     * What a revoke of `entry` leaves down anyway: the asset revisions another
+     * standing tombstone still takes down, and the folders a GC run for
+     * another tombstone deleted, which stay gone. `rest` is how many of its
+     * asset revisions come back.
+     */
+    async function othersText(entry: TombstoneEntry, read: TombstoneRead): Promise<{ text: string; rest: number }> {
+        const others = read.tombstones.filter((each) => each.tombstoneId !== entry.tombstoneId && each.photoId === entry.photoId);
+        const down = new Set<string>();
+        const parts: string[] = [];
+        for (const other of others.filter((each) => each.revoked === null)) {
+            const shared = entry.assetRevisions.filter((assetRevision) => other.assetRevisions.includes(assetRevision));
+            if (shared.length === 0) continue;
+            shared.forEach((assetRevision) => down.add(assetRevision));
+            parts.push(` ${other.tombstoneId} still takes down ${shared.join(', ')}, so ${shared.length === 1 ? 'that stays' : 'those stay'} down.`);
+        }
+        const listed = new Set(entry.assetRevisions.map((assetRevision) => `assets/${entry.photoId}/${assetRevision}`));
+        for (const other of others) {
+            const gone = (await reachedFolders(root, other.collected)).filter((folder) => listed.has(folder));
+            if (gone.length === 0) continue;
+            gone.forEach((folder) => down.add(folder.split('/')[2]));
+            parts.push(` photos gc --apply deleted ${gone.join(', ')} for ${other.tombstoneId}, so ${gone.length === 1 ? 'it' : 'they'} ${isAre(gone.length)} gone for good: only a backup of the data root brings ${gone.length === 1 ? 'it' : 'them'} back.`);
+        }
+        return { text: parts.join(''), rest: entry.assetRevisions.filter((assetRevision) => !down.has(assetRevision)).length };
     }
 }

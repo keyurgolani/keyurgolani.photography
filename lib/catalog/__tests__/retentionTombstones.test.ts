@@ -265,7 +265,7 @@ describe('photos gc with tombstones, the dry run and the apply', { timeout: 120_
         expect(exitCode).toBe(0);
         expect(snapshot(built.root)).toEqual(before);
         expect(out[0]).toBe('[photos] PLANNED: 1 path can go. Nothing was deleted.');
-        expect(out).toContainEqual(expect.stringMatching(new RegExp(`^Delete ${folderOf(built, built.d)}: tombstoned, \\d+\\.\\d kB \\(\\d+ bytes\\)\\. gc\\.tombstoned\\.past-grace: tomb_${UUID} took it down more than 7 days ago`)));
+        expect(out).toContainEqual(expect.stringMatching(new RegExp(`^Delete ${folderOf(built, built.d)}: tombstoned, \\d+\\.\\d kB \\(\\d+ bytes\\) its manifests list\\. gc\\.tombstoned\\.past-grace: tomb_${UUID} took it down more than 7 days ago`)));
         expect(out).toContainEqual(expect.stringMatching(/^GC deletes 1 asset folder, each one a standing tombstone took down more than 7 days ago\. Every other asset stays/));
         expect(out).toContainEqual(expect.stringMatching(/^Bytes: deletes \d+\.\d kB, unreferenced 0 bytes\. Kept for the live revision [\d.]+ kB, older revisions [\d.]+ kB/));
         expect(out.at(-1)).toMatch(/^Run photos gc --apply gc_[0-9a-f]{64} to delete exactly these\.$/);
@@ -400,7 +400,7 @@ describe('a revoke after GC', { timeout: 120_000 }, () => {
         const out: string[] = [];
         const exitCode = await runPurgeCommand(built.root, purgeArgs(['--revoke', id, '--reason', 'too late', '--yes'], { PHOTOS_ACTOR: 'owner' }), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet });
         expect(exitCode).toBe(1);
-        expect(out.at(-1)).toMatch(new RegExp(`^\\[photos\\] ALREADY_COLLECTED: photos gc deleted ${folderOf(built, built.d)} for ${id}`));
+        expect(out.at(-1)).toMatch(new RegExp(`^\\[photos\\] ALREADY_COLLECTED: photos gc --apply began deleting ${folderOf(built, built.d)} for ${id}, and it's gone or changed now`));
         expect(snapshot(built.root)).toEqual(before);
     });
 });
@@ -476,7 +476,12 @@ describe("GC's per-run markers and revoke (S1)", { timeout: 120_000 }, () => {
         expect(applied.deleted).toEqual([folderOf(built, built.d, D2)]);
         const names = markers(built.root, id);
         expect(names).toHaveLength(2);
-        expect(names.map((name) => readMarker(built.root, name).paths.map((entry) => entry.path)).sort()).toEqual([[folderOf(built, built.d)], [folderOf(built, built.d, D2)]].sort());
+        // The first run planned both, so its marker names both. The second planned D2 only.
+        const recorded = names.map((name) => readMarker(built.root, name)).map((marker) => [marker.planDigest, marker.paths.map((entry) => entry.path)]);
+        expect(recorded).toEqual(expect.arrayContaining([
+            [first.plan?.digest, [folderOf(built, built.d), folderOf(built, built.d, D2)]],
+            [second.plan?.digest, [folderOf(built, built.d, D2)]],
+        ]));
         const refused = await revoke(built, id);
         expect(refused.outcome).toBe('ALREADY_COLLECTED');
         expect(refused.message).toContain(`${folderOf(built, built.d)}, ${folderOf(built, built.d, D2)}`);
@@ -585,7 +590,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
                 event = writeOpenEvent(built.root, built.d, built.first[built.d]).id;
             },
             afterAside: (_entry, aside) => {
-                asides.push(path.relative(built.root, aside).split(path.sep).join('/'));
+                asides.push(path.relative(fs.realpathSync(built.root), aside).split(path.sep).join('/'));
                 expect(fs.existsSync(path.join(built.root, folderOf(built, built.d)))).toBe(false);
             },
         } });
@@ -597,7 +602,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
         // Back where it was, byte for byte. Only the Inbox item and GC's marker are new.
         const after = snapshot(built.root);
         for (const [file, value] of before) expect(after.get(file), file).toBe(value);
-        expect([...after.keys()].filter((file) => !before.has(file) && !file.startsWith('curation/')).sort()).toEqual([`catalog/tombstones/${markers(built.root, id)[0]}`]);
+        expect([...after.keys()].filter((file) => !before.has(file) && !/^curation(?:\/|$)/.test(file)).sort()).toEqual([`catalog/tombstones/${markers(built.root, id)[0]}`]);
         expect((await revoke(built, id)).outcome).toBe('REVOKED');
     });
 
@@ -610,7 +615,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
         const out: string[] = [];
         const exitCode = await runGcCommand(built.root, { apply: planned.plan?.digest }, { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet, waitMs: 200, hooks: {
             afterAside: (_entry, at) => {
-                aside = path.relative(built.root, at).split(path.sep).join('/');
+                aside = path.relative(fs.realpathSync(built.root), at).split(path.sep).join('/');
                 writeOpenEvent(built.root, built.d, built.first[built.d]);
                 // Something now in its place, so the rename back fails.
                 fs.mkdirSync(path.join(built.root, folderOf(built, built.d), 'in-the-way'), { recursive: true });

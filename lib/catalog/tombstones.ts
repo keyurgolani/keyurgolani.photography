@@ -13,10 +13,12 @@ import { hasErrorCode } from '../storage/fsx';
  * may delete their folders under `assets/`, within #15's limits.
  *
  * Beside it, `<tombstoneId>.revoked.json` is the undo `photos purge --revoke`
- * writes during the grace, after which nothing here counts the tombstone,
- * and `<tombstoneId>.collected.json` is the marker GC writes before it
- * deletes the first byte a tombstone lists, after which a revoke is refused.
- * Every file is created whole by a hard link and never rewritten.
+ * writes, after which nothing here counts the tombstone, and
+ * `<tombstoneId>.collected.<digest-prefix>.json` is the marker each
+ * `photos gc --apply` run writes before its first delete: every exact folder
+ * that run will delete for the tombstone, with its bytes and newest change.
+ * A revoke is refused once one of those folders is gone or has changed, and
+ * only then. Every file is created whole by a hard link and never rewritten.
  *
  * This module only reads. The web process imports it for `/media`, and the
  * rule engine for `assets.tombstoned`, so it must never reach purge.ts or
@@ -29,6 +31,13 @@ export const TOMBSTONE_ID_RE = /^tomb_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab
 
 /** How long a tombstone stands before GC may delete what it lists: 7 days, GC_GRACE_MS. */
 export const TOMBSTONE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * When restore stops being possible, in the same words wherever purge, GC and
+ * the docs say it: revoke works until `photos gc --apply` deletes a listed
+ * folder, and after that the takedown is permanent.
+ */
+export const PERMANENT_TEXT = 'After that the takedown is permanent: the revisions that show it can never be rolled back to, and only a backup of the data root brings it back.';
 
 /** A tombstone file is a few hundred bytes. Anything far larger is not one. */
 const MAX_FILE_BYTES = 256 * 1024;
@@ -52,18 +61,31 @@ export interface TombstoneRevoke {
     createdAt: string;
 }
 
-/** GC's marker, written before its first delete for the tombstone. */
+/** One folder a GC run will delete for a tombstone, as the run's plan saw it. */
+export interface CollectedPath {
+    /** `assets/<photoId>/<assetRevision>`, relative to the data root. */
+    path: string;
+    /** The bytes its manifests list. */
+    bytes: number;
+    /** The newest change in it, in ms. */
+    newestMs: number;
+}
+
+/** One GC run's marker, written before that run's first delete for the tombstone. */
 export interface TombstoneCollected {
     tombstoneId: string;
     planDigest: string;
     startedAt: string;
-    /** The asset folders the run planned to delete for it, relative to the data root. */
-    paths: string[];
+    /** Every folder the run will delete for it, each exactly as planned. */
+    paths: CollectedPath[];
 }
 
 export interface TombstoneEntry extends Tombstone {
     revoked: TombstoneRevoke | null;
-    collected: TombstoneCollected | null;
+    /** Every GC run's marker for it, oldest first. Empty until a run began deleting what it lists. */
+    collected: TombstoneCollected[];
+    /** The tombstone file's ctime, in ms: the grace starts no earlier than this, whatever createdAt says. */
+    ctimeMs: number;
 }
 
 export type TombstoneProblemReason = 'unreadable' | 'not-a-file' | 'not-a-folder' | 'too-large' | 'invalid-json' | 'invalid' | 'file-name' | 'orphan';
@@ -94,24 +116,52 @@ function checkedId(tombstoneId: string): string {
 
 export const tombstoneFile = (root: string, tombstoneId: string) => path.join(/*turbopackIgnore: true*/ tombstonesDir(root), `${checkedId(tombstoneId)}.json`);
 export const revokeFile = (root: string, tombstoneId: string) => path.join(/*turbopackIgnore: true*/ tombstonesDir(root), `${checkedId(tombstoneId)}.revoked.json`);
-export const collectedFile = (root: string, tombstoneId: string) => path.join(/*turbopackIgnore: true*/ tombstonesDir(root), `${checkedId(tombstoneId)}.collected.json`);
+/** `gc_` plus 64 hex, a GC plan's digest. */
+const PLAN_DIGEST_RE = /^gc_[0-9a-f]{64}$/;
+
+/** The part of a plan digest a marker's name carries. */
+export const digestPrefix = (planDigest: string) => {
+    if (!PLAN_DIGEST_RE.test(planDigest)) throw new TypeError(`${JSON.stringify(planDigest)} is not a plan digest.`);
+    return planDigest.slice(3, 19);
+};
+
+export const collectedFile = (root: string, tombstoneId: string, planDigest: string) => path.join(/*turbopackIgnore: true*/ tombstonesDir(root), `${checkedId(tombstoneId)}.collected.${digestPrefix(planDigest)}.json`);
 
 type FileKind = 'tombstone' | 'revoked' | 'collected';
 
-const NAME_RE = /^(tomb_[^.]*)(\.revoked|\.collected)?\.json$/;
+const NAME_RE = /^(tomb_[^.]*)(?:\.(revoked)|\.collected\.([0-9a-f]{16}))?\.json$/;
 
 /** What a name in the folder is, or null for one this module doesn't make. Dot-files are temp files and OS metadata. */
-function classify(name: string): { id: string; kind: FileKind } | null | 'skip' {
+function classify(name: string): { id: string; kind: FileKind; prefix?: string } | null | 'skip' {
     if (name.startsWith('.')) return 'skip';
     const match = NAME_RE.exec(name);
     if (!match || !TOMBSTONE_ID_RE.test(match[1])) return null;
-    return { id: match[1], kind: match[2] === '.revoked' ? 'revoked' : match[2] === '.collected' ? 'collected' : 'tombstone' };
+    if (match[2]) return { id: match[1], kind: 'revoked' };
+    if (match[3]) return { id: match[1], kind: 'collected', prefix: match[3] };
+    return { id: match[1], kind: 'tombstone' };
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const hasExactly = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => key in value);
 const isText = (value: unknown): value is string => typeof value === 'string' && /\S/.test(value);
-const isTime = (value: unknown): value is string => typeof value === 'string' && !Number.isNaN(Date.parse(value));
+/**
+ * Strict ISO-8601 in UTC with Z, as toISOString() writes it, and a real
+ * date: no date alone, no offset, no space, and no 30 February. A looser one
+ * could start the grace somewhere else than it reads.
+ */
+const STRICT_TIME_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/;
+export function isStrictTime(value: unknown): value is string {
+    if (typeof value !== 'string') return false;
+    const match = STRICT_TIME_RE.exec(value);
+    if (!match) return false;
+    const ms = Date.parse(value);
+    return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 19) === match[1];
+}
+const isTime = isStrictTime;
+
+/** `assets/<photoId>/<assetRevision>`, the one shape a marker's path may take. */
+const ASSET_FOLDER_RE = /^assets\/([^/]+)\/([^/]+)$/;
+const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 
 const TOMBSTONE_KEYS = ['tombstoneId', 'photoId', 'assetRevision', 'assetRevisions', 'actor', 'reason', 'createdAt'] as const;
 const REVOKE_KEYS = ['tombstoneId', 'actor', 'reason', 'createdAt'] as const;
@@ -128,7 +178,7 @@ export function parseTombstone(value: unknown, id: string): Tombstone | string {
     if (new Set(revisions).size !== revisions.length) return 'assetRevisions lists one twice';
     if (value.assetRevision !== null && (revisions.length !== 1 || revisions[0] !== value.assetRevision)) return 'assetRevisions is not the one assetRevision names';
     if (!isText(value.actor) || !isText(value.reason)) return 'actor or reason is empty';
-    if (!isTime(value.createdAt)) return 'createdAt is not a time';
+    if (!isTime(value.createdAt)) return 'createdAt is not a strict ISO-8601 time in UTC, such as 2026-12-02T10:00:00.000Z';
     return value as unknown as Tombstone;
 }
 
@@ -136,22 +186,39 @@ export function parseRevoke(value: unknown, id: string): TombstoneRevoke | strin
     if (!isObject(value) || !hasExactly(value, REVOKE_KEYS)) return `it doesn't have exactly the fields ${REVOKE_KEYS.join(', ')}`;
     if (value.tombstoneId !== id) return `it holds ${String(value.tombstoneId)}`;
     if (!isText(value.actor) || !isText(value.reason)) return 'actor or reason is empty';
-    if (!isTime(value.createdAt)) return 'createdAt is not a time';
+    if (!isTime(value.createdAt)) return 'createdAt is not a strict ISO-8601 time in UTC';
     return value as unknown as TombstoneRevoke;
 }
 
-export function parseCollected(value: unknown, id: string): TombstoneCollected | string {
+const PATH_KEYS = ['path', 'bytes', 'newestMs'] as const;
+
+/**
+ * `value` as GC's marker for tombstone `id` from the run whose digest starts
+ * `prefix`, or why it isn't one. Each path must be an asset folder by shape,
+ * `assets/<photoId>/<assetRevision>`, so a marker can never name anything
+ * else for revoke to look at; assemble() checks it is one the tombstone lists.
+ */
+export function parseCollected(value: unknown, id: string, prefix?: string): TombstoneCollected | string {
     if (!isObject(value) || !hasExactly(value, COLLECTED_KEYS)) return `it doesn't have exactly the fields ${COLLECTED_KEYS.join(', ')}`;
     if (value.tombstoneId !== id) return `it holds ${String(value.tombstoneId)}`;
-    if (typeof value.planDigest !== 'string' || !isTime(value.startedAt)) return 'planDigest or startedAt is missing';
-    if (!Array.isArray(value.paths) || !value.paths.every((entry) => typeof entry === 'string')) return 'paths is not a list';
+    if (typeof value.planDigest !== 'string' || !PLAN_DIGEST_RE.test(value.planDigest)) return 'planDigest is not a plan digest';
+    if (prefix !== undefined && value.planDigest.slice(3, 19) !== prefix) return `planDigest is not the run its name says, ${prefix}`;
+    if (!isTime(value.startedAt)) return 'startedAt is not a strict ISO-8601 time in UTC';
+    const paths = value.paths;
+    if (!Array.isArray(paths) || paths.length === 0) return 'paths is not a list of folders';
+    for (const entry of paths) {
+        if (!isObject(entry) || !hasExactly(entry, PATH_KEYS) || !isCount(entry.bytes) || !isCount(entry.newestMs)) return 'a path is not {path, bytes, newestMs}';
+        const match = typeof entry.path === 'string' ? ASSET_FOLDER_RE.exec(entry.path) : null;
+        if (!match || !PHOTO_ID_RE.test(match[1]) || !ASSET_REVISION_RE.test(match[2])) return `${JSON.stringify(entry.path)} is not an asset folder, assets/<photoId>/<assetRevision>`;
+    }
+    if (new Set(paths.map((entry) => (entry as CollectedPath).path)).size !== paths.length) return 'paths lists a folder twice';
     return value as unknown as TombstoneCollected;
 }
 
 const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code ?? 'an I/O error';
 
-/** One name's contents as read, or why it couldn't be. */
-type Loaded = { value: unknown } | { problem: Omit<TombstoneProblem, 'file'> };
+/** One name's contents as read, with its ctime, or why it couldn't be. */
+type Loaded = { value: unknown; ctimeMs: number } | { problem: Omit<TombstoneProblem, 'file'> };
 
 /** How one file reads: a regular file, small, valid JSON. Shared by the sync and async readers. */
 function loadedFrom(stat: () => fs.Stats, read: () => string): Loaded | null {
@@ -173,7 +240,7 @@ function loadedFrom(stat: () => fs.Stats, read: () => string): Loaded | null {
         return { problem: { reason: 'unreadable', detail: `it can't be read (${errorCode(error)})` } };
     }
     try {
-        return { value: JSON.parse(text) as unknown };
+        return { value: JSON.parse(text) as unknown, ctimeMs: info.ctimeMs };
     } catch {
         return { problem: { reason: 'invalid-json', detail: 'it is not valid JSON' } };
     }
@@ -182,7 +249,12 @@ function loadedFrom(stat: () => fs.Stats, read: () => string): Loaded | null {
 /** The folder's listing as tombstones, their revokes and their GC markers, every name it can't use a problem. */
 function assemble(names: readonly string[], load: (name: string) => Loaded | null): TombstoneRead {
     const problems: TombstoneProblem[] = [];
-    const found = new Map<string, Partial<Record<FileKind, unknown>>>();
+    const found = new Map<string, { tombstone?: Tombstone; ctimeMs?: number; revoked?: TombstoneRevoke; collected: { file: string; marker: TombstoneCollected }[] }>();
+    const of = (id: string) => {
+        const files = found.get(id) ?? { collected: [] };
+        found.set(id, files);
+        return files;
+    };
     for (const name of [...names].sort()) {
         const file = `${TOMBSTONES_DIR}/${name}`;
         const kind = classify(name);
@@ -197,13 +269,17 @@ function assemble(names: readonly string[], load: (name: string) => Loaded | nul
             problems.push({ file, ...loaded.problem });
             continue;
         }
-        const parse = kind.kind === 'tombstone' ? parseTombstone : kind.kind === 'revoked' ? parseRevoke : parseCollected;
-        const parsed = parse(loaded.value, kind.id);
+        const parsed = kind.kind === 'tombstone' ? parseTombstone(loaded.value, kind.id) : kind.kind === 'revoked' ? parseRevoke(loaded.value, kind.id) : parseCollected(loaded.value, kind.id, kind.prefix);
         if (typeof parsed === 'string') {
             problems.push({ file, reason: 'invalid', detail: parsed });
             continue;
         }
-        found.set(kind.id, { ...found.get(kind.id), [kind.kind]: parsed });
+        const files = of(kind.id);
+        if (kind.kind === 'tombstone') {
+            files.tombstone = parsed as Tombstone;
+            files.ctimeMs = loaded.ctimeMs;
+        } else if (kind.kind === 'revoked') files.revoked = parsed as TombstoneRevoke;
+        else files.collected.push({ file, marker: parsed as TombstoneCollected });
     }
     const tombstones: TombstoneEntry[] = [];
     for (const [id, files] of found) {
@@ -212,11 +288,16 @@ function assemble(names: readonly string[], load: (name: string) => Loaded | nul
             problems.push({ file: `${TOMBSTONES_DIR}/${id}.json`, reason: 'orphan', detail: 'its revoke or GC marker is there, but the tombstone is not' });
             continue;
         }
-        tombstones.push({
-            ...(files.tombstone as Tombstone),
-            revoked: (files.revoked as TombstoneRevoke | undefined) ?? null,
-            collected: (files.collected as TombstoneCollected | undefined) ?? null,
-        });
+        const tombstone = files.tombstone;
+        const listed = new Set(tombstone.assetRevisions.map((assetRevision) => `assets/${tombstone.photoId}/${assetRevision}`));
+        const collected: TombstoneCollected[] = [];
+        for (const { file, marker } of files.collected) {
+            const stray = marker.paths.find((entry) => !listed.has(entry.path));
+            if (stray) problems.push({ file, reason: 'invalid', detail: `${stray.path} is not a folder ${id} lists` });
+            else collected.push(marker);
+        }
+        collected.sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : a.planDigest < b.planDigest ? -1 : 1));
+        tombstones.push({ ...tombstone, revoked: files.revoked ?? null, collected, ctimeMs: files.ctimeMs ?? 0 });
     }
     tombstones.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.tombstoneId < b.tombstoneId ? -1 : 1));
     problems.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
@@ -292,11 +373,45 @@ export function standingFor(read: Pick<TombstoneRead, 'tombstones'>, photoId: st
     return read.tombstones.filter((entry) => isStanding(entry) && entry.photoId === photoId && entry.assetRevisions.includes(assetRevision));
 }
 
-/** When GC may first delete what `entry` lists: more than 7 days after it was written. */
-export const graceEndsMs = (entry: Pick<Tombstone, 'createdAt'>) => Date.parse(entry.createdAt) + TOMBSTONE_GRACE_MS;
+/**
+ * When GC may first delete what `entry` lists: more than 7 days after it was
+ * written, counted from the later of its createdAt and its file's ctime, so a
+ * back-dated createdAt can't shorten the grace.
+ */
+export const graceEndsMs = (entry: Pick<Tombstone, 'createdAt'> & { ctimeMs?: number }) => Math.max(Date.parse(entry.createdAt), Math.ceil(entry.ctimeMs ?? 0)) + TOMBSTONE_GRACE_MS;
 
 /** A problem as one line, for a message. */
 export const problemText = (problem: TombstoneProblem) => `${problem.file}: ${problem.detail}`;
+
+/** `.gc-<assetRevision>-<uuid>`, the name `photos gc --apply` gives a folder it sets aside before its delete. */
+export const SET_ASIDE_PREFIX = '.gc-';
+
+/**
+ * Every folder a `photos gc --apply` run set aside and didn't finish with,
+ * `assets/<photoId>/.gc-…`, relative to the data root and sorted: one whose
+ * delete failed partway, or that couldn't be put back. GC reports them and
+ * never deletes one it didn't make in the same run. Reads with lstat and
+ * follows no symlink. A missing `assets/` holds none.
+ */
+export async function setAsideFolders(root: string): Promise<string[]> {
+    const store = path.join(/*turbopackIgnore: true*/ root, 'assets');
+    let photos: fs.Dirent[];
+    try {
+        if ((await fs.promises.lstat(store)).isSymbolicLink()) return [];
+        photos = await fs.promises.readdir(store, { withFileTypes: true });
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return [];
+        throw error;
+    }
+    const found: string[] = [];
+    for (const photo of photos) {
+        if (!photo.isDirectory() || !PHOTO_ID_RE.test(photo.name)) continue;
+        for (const name of await fs.promises.readdir(path.join(store, photo.name))) {
+            if (name.startsWith(SET_ASIDE_PREFIX)) found.push(`assets/${photo.name}/${name}`);
+        }
+    }
+    return found.sort();
+}
 
 const keyOf = (photoId: string, assetRevision: string) => `${photoId}/${assetRevision}`;
 
