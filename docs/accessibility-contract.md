@@ -21,7 +21,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 
 "Passes the #1 automated and keyboard checks at desktop and mobile widths" means the route has a spec under `e2e/` that calls `checkSurface()` on both projects and tests Enter on its links and Enter and Space on its buttons. #4, #18, #2, #3, #5, #7, #9, #12, #11, #14, #16, #15, and #21 all have it as an acceptance criterion.
 
-`checkSurface(page, { entries, controls, chrome })` in `e2e/support/surface.ts` runs axe, checks that Tab moves through the entries in row-major visual order, and checks every entry and control for a 44 px target, a visible focus ring that no overflow clips and no `chrome` element hides, and a unique name of its own.
+`checkSurface(page, { entries, controls, chrome, pseudo })` in `e2e/support/surface.ts` runs axe, checks that Tab moves through the entries in row-major visual order, and checks every entry and control for a 44 px target, a visible focus ring that no overflow clips and no `chrome` element hides, and a unique name of its own. Entries whose target and ring are a stretched link's pseudo-element, as Work's are, pass `pseudo: '::after'`, and their order, size and ring are checked on it. Controls keep their own boxes.
 
 ## Surfaces
 
@@ -30,7 +30,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 | Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, `e2e/home-immersive.spec.ts` from #18, and `e2e/home-catalog.spec.ts` from #4, all on the catalog server's published Home since #13's slice E | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4, and `e2e/about-links.spec.ts` from #11 | #1 for the subset below, #11 for the links, then #12 for the artist statement |
 | The focus token on `SiteNav` and its theme control | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
-| Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves | #3 |
+| Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves, with #171's heading-link entries, their target and ring in all five themes, and Try again after a missing pointer on a server of its own | #3, then #171 for the entries |
 | Series pages, `/work/<slug>` | `e2e/series.spec.ts` and `e2e/series-return.spec.ts` from #5, the second for Viewer entry from the cover and the sequence and the return to it | #5 |
 | Viewer, `/work/<slug>/photo/<photoId>` | `e2e/viewer.spec.ts` from #7, `e2e/viewer-modal.spec.ts` and `e2e/viewer-touch.spec.ts` from #9 | #7, then #9 |
 | Site navigation, `SiteNav` | `e2e/shell/nav.spec.ts` from #21, with `server-html`, `theme`, and `confinement` in `e2e/shell/` | #21, then #18 for its reveal on Home |
@@ -46,6 +46,8 @@ On `/about`, #1 checks the navigation links and theme control in full, and Tab r
 
 `app/globals.css` defines it right after the Tailwind directives, so it wins ties with the base utilities. A 3 px `--focus-ring-light` (`#ffffff`) outline sits outside a 3 px `--focus-ring-dark` (`#000000`) band that fills the offset. The outline survives forced colors. Tailwind appends its variants, such as `dark:` and `hover:`, to the end of the file, so a shadow variant would replace the band at the same specificity. The band's `box-shadow` is `!important` for that reason, and `--tw-shadow` keeps the element's own shadow under it. `expectFocusRingVisible()` fails when the band is missing. Keep the two colors at least 9:1 apart, so one of them reaches at least 3:1 on any background (4.58:1 for the current white and black). #21 may retune them within that rule, but not to the review shell's Focus Ice (`#d5f0ef`, about 1.15:1 on `#FAFAFA`).
 
+A stretched target draws the token inset instead: Work's entry (#171) is its title link, whose `::after` covers the whole entry, out to the cover's surround, a layer above the print. The `::after` carries the light outline at its edge, at `outline-offset: calc(-1 * var(--focus-ring-width))`, over an inset `--focus-ring-dark` band of the width plus the offset, and the link itself draws no ring. That's the same two colors the other way in, so the screen's edge, a neighbour or the print never covers it, in every theme, and the outline still survives forced colors. `expectFocusRingVisible()` takes an inset band when the offset is negative, and fails one that shows less than 3 px inside the outline.
+
 `html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus reveals at full opacity with no fade and holds open, and settled Home's portrait badge sits under it and takes no pointer.
 
 ## Names
@@ -59,6 +61,8 @@ On `/about`, #1 checks the navigation links and theme control in full, and Tab r
 | `{ kind: 'described', text, reviewed: false }`, a #14 draft | `Photograph N of T` | `Photograph N of T` |
 | None, as `photos carry-over` names a photo in its plan | `Photograph N of T` | `Photograph N of T` |
 | `{ kind: 'position' }`, carried over at the launch with no description yet | `Photograph N of T` | `Photograph N of T` |
+
+Work's entries aren't photographs, so they don't use these: each is one link, the series title in its h2, named by the title alone, with the short statement and the photograph count as its `aria-describedby` description. The cover is outside the link, with `alt=""` (#171).
 
 A carried-over photo is named by its place once. In the Viewer, an untitled one says it on the image alone: the header's spelled-out position and the reading area's heading are left out, so neither the dialog, a region nor a heading repeats it. The shell still announces the position on a move, since that's an event, not a name.
 
@@ -80,6 +84,8 @@ Playwright builds the site and serves it on port 3100, or on `E2E_PORT` when tha
 | 4 | `expectFocusRingVisible()`, `expectNoFadeOnBlur()`, `expectRingNotClipped()`, `expectNotObscured()` |
 | 5 | `expectMinTargetSize()` |
 | 6 | `expectTabOrderMatchesVisualOrder()`, `expectReachableWithin()` |
+
+The rule 4, 5 and 6 helpers but `expectReachableWithin()` take `{ pseudo: '::after' }` (or `'::before'`) for a target drawn on a positioned pseudo-element, as a stretched link's is: they measure its box, outline, band and clips, and focus stays the element's own. `measure()` in `e2e/support/measure.ts` does the measuring.
 | 7 | `expectSingleTapActivates()` |
 | 8 | `expectContrastOverImage()` |
 | 9 | `expectReflow()` |
