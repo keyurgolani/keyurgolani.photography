@@ -26,6 +26,7 @@ import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
+import { libraryCauseText } from './library';
 import { archiveMissing, bindAmbiguous, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems, resolveItem, suggestedNewItems } from './resolutions';
 import { decisionState, pendingMergeOf, type DecisionState } from './binds';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
@@ -444,6 +445,11 @@ function factLines(event: CurationEvent): string[] {
     if (facts.duplicateOf) lines.push(`Same bytes as ${facts.duplicateOf}.`);
     if (facts.suggestedFor) lines.push(`Maybe the missing photograph ${facts.suggestedFor}: ${facts.suggestedBy === 'capture-time' ? 'taken at the same moment' : 'the same file name'}, with other pixels. Its missing item's bind takes it.`);
     if (facts.failure) lines.push(`Failure: ${facts.failure}. ${FAILURE_TEXT[facts.failure]}`);
+    // A6 (#17): the library item says why and since when; the missing items it holds count as held, not missing.
+    if (facts.library) {
+        lines.push(`Library: ${libraryCauseText(facts.library)}, since ${facts.library.since}. The watcher changes nothing and marks nothing missing while it can't see the library, and closes this once a pass finds it again.`);
+        if (facts.library.cause === 'mass-missing') lines.push('The missing items that pass opened are held, and count as held in photos status, until then. curation confirm-missing <eventId> releases one; dismissing this item releases them all.');
+    }
     return lines;
 }
 

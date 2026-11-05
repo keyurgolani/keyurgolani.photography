@@ -9,7 +9,8 @@
 import type { CurationEventStatus, CurationEventType, Placement } from './events';
 
 /** The watcher's reasons for making nothing from a file, as lib/curation/events.ts's FAILURE_REASONS names them. */
-export type FailureCode = 'unsupported-format' | 'digest-collision' | 'undecodable';
+/** A6 adds `io-error`. */
+export type FailureCode = 'unsupported-format' | 'digest-collision' | 'undecodable' | 'io-error';
 
 export const BADGE_LABELS: Record<CurationEventType, string> = {
     new: 'New photograph',
@@ -18,6 +19,7 @@ export const BADGE_LABELS: Record<CurationEventType, string> = {
     reappeared: 'Source reappeared',
     ambiguous: 'Ambiguous match',
     'processing-failure': 'Processing failure',
+    'library-unavailable': 'Library unavailable',
 };
 
 /** The item's title in the list, by type. */
@@ -38,6 +40,8 @@ export function itemTitle(type: CurationEventType, waiting: boolean): string {
             return 'Identity needs a choice';
         case 'processing-failure':
             return 'Processing failed';
+        case 'library-unavailable':
+            return 'Library unavailable';
     }
 }
 
@@ -62,6 +66,7 @@ export const SYSTEM_RESPONSE: Record<CurationEventType, string> = {
     reappeared: 'The source is back. Nothing a visitor sees changed.',
     ambiguous: 'It matches more than one photograph, so no identity is bound until you choose one.',
     'processing-failure': "The watcher couldn't process it, so nothing was made from it.",
+    'library-unavailable': "The watcher can't see the library, so it changes nothing and marks nothing missing until it can. The site keeps serving what it published.",
 };
 
 /**
@@ -305,7 +310,7 @@ export interface InboxDetail extends InboxItem {
  * brought an archived one back.
  */
 export type ResolvedCause =
-    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' }
+    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' | 'available' }
     | { kind: 'merged'; into: string | null };
 
 /**
@@ -371,6 +376,8 @@ export function resolvedResponse(cause: ResolvedCause | null, type: CurationEven
             return "The file is its own photograph now, and that photograph's new item reviews it.";
         case 'restored':
             return 'This file brought the archived photograph back under its old ID, so its own item places it.';
+        case 'available':
+            return 'The library is available again. A source it held that is still gone now shows as missing.';
         default:
             return 'The watcher closed it. History says what it found.';
     }
@@ -810,6 +817,8 @@ export function failureNotice(
         case 'digest-collision':
             // The failure doesn't record the other file, so the step can't name it.
             return { reason, next: `Find the other copy in the library and keep the one you mean, or dismiss this one with a reason.${keep}` };
+        case 'io-error':
+            return { reason, next: `Check the file's permissions, or the disk it is on. The watcher reads it again on every pass; once it can, dismiss this one with a reason.${keep}` };
         case 'undecodable':
             return {
                 reason,

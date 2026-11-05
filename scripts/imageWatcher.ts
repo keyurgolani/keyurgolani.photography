@@ -19,6 +19,11 @@
  * The library root is PHOTOGRAPHY_LIBRARY_DIR, /data/library in both compose
  * files, with no default. Both modes exit 1 if it's unset or the root is
  * missing, and watch mode also exits 1 if the root disappears while it runs.
+ * Since v2.0.0 (A6) a missing root is first reported as the inbox's
+ * `library-unavailable` item in the data root, which `photos status --check`
+ * fails on, and a root that is empty or can't be read keeps the watcher
+ * running, refusing each pass, looking again after 1 minute and then less
+ * often, up to every 10 minutes.
  * Both exit 1 with no data root, since there is nothing else to do. An
  * unknown flag, and --force, which rebuilt the legacy derivatives, exit 2.
  *
@@ -44,6 +49,7 @@ import { parseArgs } from 'node:util';
 import chokidar from 'chokidar';
 import { createCandidateSink, owedSettles, settlingAfterBuild } from '../lib/curation/candidates';
 import { createCurationSink } from '../lib/curation/sink';
+import { createLibraryReporter } from '../lib/curation/library';
 import { createSourcesSink, recordingFailuresAfterBuild } from '../lib/curation/sources';
 import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
@@ -106,11 +112,22 @@ function libraryRootExists(root: string): boolean {
 }
 
 /**
+ * A6 (#17): record the library as missing in the data root's inbox, before
+ * an exit, so `photos status --check` sees it. Best effort: with no ready
+ * data root it logs why and records nothing. Docker restarts the container
+ * with its own backoff, and each start finds the same open item, so a
+ * library that stays gone writes nothing more.
+ */
+async function reportMissingLibrary(): Promise<void> {
+    await createLibraryReporter()({ available: false, cause: 'missing' });
+}
+
+/**
  * Exit 1 unless the library is configured and there, and the data root is
  * named. Never creates a missing root, which would hide an unmounted library,
  * and never falls back to another folder.
  */
-function requireRoots(): string {
+async function requireRoots(): Promise<string> {
     let root: string;
     try {
         root = libraryRoot();
@@ -123,6 +140,7 @@ function requireRoots(): string {
         console.error(
             `[ImageWatcher] Library root not found: ${root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. Nothing was processed.`,
         );
+        if (dataRoot() !== null) await reportMissingLibrary();
         process.exit(1);
     }
     // Outside production dataRoot() falls back to ./portfolio-data, so this only stops an unconfigured production watcher.
@@ -175,8 +193,8 @@ async function drainIdentity(identity: ReturnType<typeof createIdentityStep>, ti
     }
 }
 
-function startWatcher(): void {
-    const root = requireRoots();
+async function startWatcher(): Promise<void> {
+    const root = await requireRoots();
     const setup = watchSetup(root);
 
     console.log(`[ImageWatcher] Starting chokidar watcher for: ${root}${setup.path === root ? '' : ` (${setup.path})`}`);
@@ -186,6 +204,7 @@ function startWatcher(): void {
     const identity = createIdentityStep({
         sinks: factSinks(),
         worker: workerBuilds(),
+        library: createLibraryReporter(),
         requestPass: (reason, delayMs) => watch?.schedule(reason, delayMs),
     });
     watch = watchIdentity(identity);
@@ -196,7 +215,7 @@ function startWatcher(): void {
     // The startup pass runs once chokidar has its baseline, so a file saved during the initial scan isn't missed.
     attachWatcher(watcher, {
         root: setup.path,
-        onRootRemoved: () => void shutdown(1, `Library root removed: ${root}`),
+        onRootRemoved: () => void shutdown(1, `Library root removed: ${root}`, { libraryGone: true }),
         onLibraryChange: (event, changedPath) => {
             if (concernsIdentity(event, changedPath)) watch?.schedule('event');
         },
@@ -205,18 +224,20 @@ function startWatcher(): void {
 
     // Polling may not report the root itself going away, so check it directly too
     const rootCheck = setInterval(() => {
-        if (!libraryRootExists(root)) void shutdown(1, `Library root disappeared: ${root}`);
+        if (!libraryRootExists(root)) void shutdown(1, `Library root disappeared: ${root}`, { libraryGone: true });
     }, ROOT_CHECK_MS);
 
     // Stop taking events, close chokidar, give a pass or build under way a bounded time to finish, then exit
     let shuttingDown = false;
-    async function shutdown(code: number, reason: string): Promise<void> {
+    async function shutdown(code: number, reason: string, { libraryGone = false }: { libraryGone?: boolean } = {}): Promise<void> {
         if (shuttingDown) return;
         shuttingDown = true;
         clearInterval(rootCheck);
         (code === 0 ? console.log : console.error)(`[ImageWatcher] ${reason}. Shutting down...`);
         watch?.stop();
         identity.stop();
+        // A6: a bind mount whose host folder went needs a restart to see it again, so report it before going.
+        if (libraryGone) await reportMissingLibrary();
         try {
             await watcher.close();
         } catch (err) {
@@ -240,8 +261,8 @@ function startWatcher(): void {
  */
 async function runOnce(): Promise<number> {
     console.log('[ImageWatcher] Running in one-shot mode...');
-    requireRoots();
-    return runIdentityOnce({ sinks: factSinks(), worker: workerBuilds() });
+    await requireRoots();
+    return runIdentityOnce({ sinks: factSinks(), worker: workerBuilds(), library: createLibraryReporter() });
 }
 
 // Main execution
@@ -255,5 +276,8 @@ if (ONCE_MODE) {
             process.exit(1);
         });
 } else {
-    startWatcher();
+    startWatcher().catch((error) => {
+        console.error('[ImageWatcher] Error:', error);
+        process.exit(1);
+    });
 }

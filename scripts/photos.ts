@@ -493,6 +493,11 @@ async function decide(type: DecisionInput['type'], args: string[]): Promise<numb
             console.error(`[photos] The library has no photos, but the registry has ${outcome.present} present, so the pass marked nothing missing and applied nothing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
             return 1;
         }
+        if (outcome.reason === 'library-unavailable') {
+            const why = outcome.cause === 'missing' ? `Library root not found: ${configuredLibraryRoot()}` : `The library root can't be read (${outcome.detail ?? 'unknown'})`;
+            console.error(`[photos] ${why}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
+            return 1;
+        }
         console.error(`[photos] The data root is ${outcome.state}${outcome.detail ? `: ${outcome.detail}` : ''}. The decision is saved in ${file}.`);
         return 1;
     }

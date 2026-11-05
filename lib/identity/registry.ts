@@ -11,7 +11,7 @@ import {
 } from '../storage/document';
 import { ensureDirectory, pathExists } from '../storage/fsx';
 import { ASSET_REVISION_RE, DECISION_ID_RE, isLibraryPath, PHOTO_ID_RE } from './ids';
-import type { ImageInspection, UnsupportedInspection } from './inspect';
+import type { ImageInspection, UnreadableInspection, UnsupportedInspection } from './inspect';
 import { EXTRACTOR_VERSION } from './metadata';
 import { emptyRegistry, REGISTRY_SCHEMA_VERSION, type Registry } from './types';
 
@@ -141,9 +141,12 @@ export interface StatCacheEntry {
     /** Also compared, so an in-place edit that keeps the size and restores the mtime is still read again. */
     ctimeMs: number;
     ino: number;
-    inspection: ImageInspection | UnsupportedInspection;
+    /** A6: `unreadable` for a file that read EACCES, EPERM or EIO, kept only to count `skipped`. v1.7.x reads such an entry as changed. */
+    inspection: ImageInspection | UnsupportedInspection | UnreadableInspection;
     /** Keys of failure facts already emitted for this version of the file, so they aren't repeated every pass. */
     emitted: string[];
+    /** A6: how many passes in a row this version of the file was skipped as unreadable. */
+    skipped?: number;
 }
 
 /** `identity/stat-cache.json`. Disposable: losing it only means files are read again. */
