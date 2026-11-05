@@ -810,8 +810,28 @@ const ABOUT_FRAME: Allowance[] = (
     ];
 });
 
+/**
+ * #179's frame again, in About's link hover at 390 (B1's CI). Playwright's hover scrolls its link into view when it's
+ * below the fold. In the base, the 354 px photo puts the statement's first link under the fold at 844, so the hover
+ * scrolls the page 159 px. In the head, the 4:3 photo is 105 px shorter, the link is in view already, and nothing
+ * scrolls. So every box, the nav's too, sits 159 px apart in the viewport: 54 px below the photo, where the shorter
+ * frame takes back 105. Only this state, and only at 390: its focus twin focuses without scrolling, and at 1024 and
+ * 1440 the hover passes under ABOUT_FRAME's bounds. Every paint, type and style is still compared exactly.
+ */
+const ABOUT_LINK_SCROLL: Allowance[] = (() => {
+    const why = "#179: About's portrait frame, 4:3 stacked; the base's hover scrolls to the link, the head's doesn't";
+    const at = { page: 'about-link-hover', width: 390, maxDelta: 165, why };
+    return [
+        { ...at, selector: 'body' },
+        { ...at, selector: 'body > next-route-announcer' },
+        { ...at, selector: 'nav[aria-label="Primary"]', subtree: true },
+        { ...at, selector: 'main[data-surface="about"]', subtree: true },
+    ];
+})();
+
 const ALLOWANCES: Allowance[] = [
     ...ABOUT_FRAME,
+    ...ABOUT_LINK_SCROLL,
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
     { page: 'inbox', selector: 'main ul a[aria-current="true"]', properties: ['box-shadow', 'border-bottom-color'], why: "P2-8: the Inbox's selected row's outline" },
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
@@ -820,7 +840,8 @@ const ALLOWANCES: Allowance[] = [
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
-const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => entry.page === (pair.stateOf ?? pair.name) && (entry.width === undefined || entry.width === width));
+/** A state's own allowances, and those of the page it's a state of. */
+const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => (entry.page === pair.name || entry.page === pair.stateOf) && (entry.width === undefined || entry.width === width));
 
 interface Walked2 {
     walk: Walk;
@@ -919,16 +940,14 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
             const named = allowancesFor(pair, viewport.width).filter((entry) => against.walk.resolved[entry.selector]);
-            // A subtree allowance covers the element and every path under it in the base's walk.
-            const allowances = Object.fromEntries(
-                named
-                    .filter((entry) => entry.maxDelta !== undefined)
-                    .flatMap((entry) => {
-                        const root = against.walk.resolved[entry.selector];
-                        const paths = entry.subtree ? against.walk.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
-                        return paths.map((path) => [path, entry.maxDelta!] as const);
-                    }),
-            );
+            // A subtree allowance covers the element and every path under it in the base's walk. A path that two
+            // allowances name (a state's own and its page's) takes the larger.
+            const allowances: Record<string, number> = {};
+            for (const entry of named.filter((candidate) => candidate.maxDelta !== undefined)) {
+                const root = against.walk.resolved[entry.selector];
+                const paths = entry.subtree ? against.walk.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
+                for (const path of paths) allowances[path] = Math.max(allowances[path] ?? 0, entry.maxDelta!);
+            }
             const sanctioned = Object.fromEntries(named.filter((entry) => entry.properties).map((entry) => [against.walk.resolved[entry.selector], entry.properties!]));
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];
