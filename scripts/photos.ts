@@ -68,9 +68,10 @@
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
  *   npx tsx scripts/photos.ts carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
- *     One-time setup for a new data root, before the launch publish: put
- *     every photo the legacy Gallery lists into one published series,
- *     Gallery, in its order, featured and alone in Work's order. The photos
+ *     One-time setup before the launch publish, only on a library the
+ *     legacy site served; a fresh library skips it. It puts every photo the
+ *     legacy Gallery lists into one published series, Gallery, in its
+ *     order, featured and alone in Work's order. The photos
  *     keep the names the Gallery gives them, "Photograph N of T", with no
  *     description, and their records say they were carried over. Without
  *     --apply it writes nothing and prints the plan. It refuses a working
@@ -118,9 +119,9 @@
  *     its revision, and make that revision active. The actor is --actor or
  *     PHOTOS_ACTOR, and one is required. --reason defaults to publish.
  *     --expect stops unless the candidate has that ID, and --dry-run stops
- *     after validation. The first publish replaces the legacy Home and
- *     Gallery, so it needs --confirm-launch, and prints what changes: a
- *     one-time setup step for a new data root, never a routine publish.
+ *     after validation. The first publish is the launch, so it needs
+ *     --confirm-launch, and prints how many photographs it puts on the site:
+ *     a one-time setup step for a new data root, never a routine publish.
  *     --reprofile moves every photograph the watcher can rebuild to the
  *     current profile: run identity reprofile --all first. Exits 0 when
  *     published, unchanged, or a dry run passes, 1 on validation errors, 2
@@ -326,7 +327,7 @@ const USAGE = `Usage:
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
   ${PROGRAM} carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
-        One-time setup for a new data root, before the launch publish.
+        One-time setup before the launch publish, only on a library the legacy site served; a fresh library skips it.
   ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
@@ -341,7 +342,7 @@ const USAGE = `Usage:
   ${PROGRAM} series featured (<seriesId>... | --clear) [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
-        --confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site.
+        --confirm-launch is for the launch publish only, a one-time setup step for a new data root, never a routine publish.
   ${PROGRAM} diff [--json]
   ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
         Marks the rows photos diff printed reviewed, each named, and rows that share a stamp together; there is no --all.
