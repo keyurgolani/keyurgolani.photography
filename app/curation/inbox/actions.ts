@@ -2,8 +2,9 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireCurator } from '@/lib/curation/auth';
+import { runInboxBulk } from '@/lib/curation/inbox-bulk';
 import { runInboxAction } from '@/lib/curation/inbox-form';
-import type { InboxActionKind, InboxActionState } from '@/lib/curation/inbox-view';
+import type { BulkKind, InboxActionKind, InboxActionState, InboxBulkState } from '@/lib/curation/inbox-view';
 
 /**
  * The inbox's server actions, one per 14-1 action, and #118's three for #17's
@@ -65,4 +66,19 @@ export async function bindItem(_previous: InboxActionState, form: FormData): Pro
 export async function archiveItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
     await requireCurator();
     return settle('archive', form);
+}
+
+/**
+ * #14 (v2.0.0 A8): the list's bulk Decide later and Leave unassigned. The form's submit button names which as
+ * `intent`; anything else is refused before any item is read. Each checked row carries its own item and version, and
+ * lib/curation/inbox-bulk.ts runs them one by one through the same writers and checks as a single action, capped at
+ * one page. The page refreshes when any went through.
+ */
+export async function bulkItems(_previous: InboxBulkState, form: FormData): Promise<InboxBulkState> {
+    await requireCurator();
+    const intent = form instanceof FormData ? form.get('intent') : null;
+    const kind: BulkKind | null = intent === 'defer' || intent === 'unassigned' ? intent : null;
+    const state = await runInboxBulk(kind ?? ('none' as BulkKind), form);
+    if (state.status === 'done' || state.status === 'partial') revalidatePath('/curation/inbox');
+    return state;
 }
