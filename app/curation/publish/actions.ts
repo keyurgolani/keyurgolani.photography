@@ -348,7 +348,10 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
     }
     if (result.outcome === 'ACCEPTANCE_REQUIRED') {
         const titles = result.plan?.seriesTitles ?? {};
-        reasons = editorialWords(result.plan?.issues ?? [], result.unaccepted ?? [], (seriesId) => titles[seriesId] || `Series ${seriesId.slice(4, 12)}`);
+        // Both revisions' addresses, so #5's address changes say from where to where.
+        const content = (id: string | undefined) => (id ? readRevisionFile(root, id).then((file) => file?.content.series ?? [], () => []) : Promise.resolve([]));
+        const [live, target] = await Promise.all([content(result.plan?.active?.revisionId), content(result.plan?.target?.revisionId)]);
+        reasons = editorialWords(result.plan?.issues ?? [], result.unaccepted ?? [], (seriesId) => titles[seriesId] || `Series ${seriesId.slice(4, 12)}`, { live, target });
     }
     // The expected stops, which the dialog explains, aren't logged.
     const expectedStops = ['NO_CHANGES', 'ACTIVE_CHANGED', 'CATALOG_LOCKED', 'VALIDATION_FAILED', 'ACCEPTANCE_REQUIRED'];

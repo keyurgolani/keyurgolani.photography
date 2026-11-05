@@ -280,13 +280,17 @@ async function plan(root: string, to: RollbackTarget): Promise<RollbackPlan> {
     const targetRevision = await stored(root, target.revisionId);
     if (!('content' in targetRevision)) return { ...targetRevision, target, active };
     // A live revision that can't be read is a reason to roll back, not to refuse: warn, list everything the target
-    // publishes, and leave the decision to activateRevision(), which never reads the revision it replaces.
+    // publishes, and leave the decision to activateRevision(), which reads the revision it replaces only for #5's
+    // route rules, and goes on without it.
     let activeProblem: string | undefined;
     let activeContent: RevisionContent = EMPTY_CONTENT;
+    let replaces: RevisionFile | null = null;
     try {
         const activeRevision = await stored(root, active.revisionId);
-        if ('content' in activeRevision) activeContent = activeRevision.content;
-        else activeProblem = activeRevision.message.replace(/\.? Nothing was rolled back\.$/, '');
+        if ('content' in activeRevision) {
+            activeContent = activeRevision.content;
+            replaces = activeRevision;
+        } else activeProblem = activeRevision.message.replace(/\.? Nothing was rolled back\.$/, '');
     } catch (error) {
         activeProblem = errorText(error, root);
     }
@@ -302,7 +306,9 @@ async function plan(root: string, to: RollbackTarget): Promise<RollbackPlan> {
         const reason = errorText(error, root);
         return emptyPlan('STORAGE_ERROR', `The identity registry can't be read, so ${target.revisionId}'s sets can't be checked: ${sentence(reason)} Nothing was rolled back.`, base);
     }
-    const { issues } = validateStored(root, targetRevision, registry);
+    // Against the live revision, so #5's route rules flag a rollback across a rename. Off a live revision that can't
+    // be read they have nothing to compare against, and activateRevision() reads it the same way.
+    const { issues } = validateStored(root, targetRevision, registry, replaces);
     const editorialIds = editorialRuleIds();
     const editorial = [...new Set(issues.filter((issue) => issue.severity === 'error' && editorialIds.has(issue.code)).map((issue) => issue.code))].sort();
     const blocking = blockingIssues(issues, editorial);

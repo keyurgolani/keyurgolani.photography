@@ -442,7 +442,7 @@ describe("a slug change against the live site (#5)", () => {
         ctx.candidate.series = ctx.candidate.series.filter((series) => series.id !== 'ser_fixture-01');
         const hidden = ctx.authored?.series.find((series) => series.id === 'ser_fixture-01');
         if (hidden) Object.assign(hidden, { slug: 'fixture-retired', visibility: 'hidden' });
-        readdress(ctx, 0, old);
+        readdress(ctx, 0, old, [ctx.candidate.series[0].slug]);
         expect(routeIssues(ctx)).toEqual([{
             code: 'route.alias-reassigned',
             severity: 'error',

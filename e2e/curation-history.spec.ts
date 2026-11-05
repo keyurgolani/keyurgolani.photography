@@ -528,7 +528,9 @@ test.describe('a restore across a slug rename', () => {
     test('asks for the address change in plain words, restores once accepted, and the site follows', async ({ page, request }) => {
         fixture = await createRenameFixture({ dir: DIR });
         if (!web) throw new Error('The catalog server did not start');
+        // Revision 4 kept the old address, so it redirects to the new one.
         expect((await request.get(`${web.origin}/work/${RENAMED_SLUG}`, { maxRedirects: 0 })).status()).toBe(200);
+        expect((await request.get(`${web.origin}/work/salt-roads`, { maxRedirects: 0 })).status()).toBe(308);
         await open(page);
         await openDialog(page, 3);
         await expect(dialog(page).getByRole('group', { name: "Today's checks flag one address change on revision 3." })).toBeVisible();

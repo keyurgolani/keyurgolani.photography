@@ -7,7 +7,7 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 import { cameraSettingsCaption } from './legacy-photos';
 import { ORDER_RULES } from './order-rules';
 import { CARRY_OVER_SERIES_ID, MAX_SLUG_LENGTH, RESERVED_SLUGS, SERIES_ID_RE, SLUG_RE } from './schema';
-import type { Gate, Issue, IssueRecord, Rule, RuleContext, RuleFinding } from './types';
+import type { Gate, Issue, IssueRecord, RevisionFile, Rule, RuleContext, RuleFinding } from './types';
 
 /**
  * The validation rule registry, #13's rules, and #8's order rules from
@@ -117,6 +117,16 @@ function allSeries(ctx: RuleContext): SeriesLike[] {
 /** Published series: the working layer's, or a stored revision's, which holds only published ones. */
 function publishedSeries(ctx: RuleContext): SeriesLike[] {
     return ctx.authored ? ctx.authored.series.filter((series) => series.visibility === 'published') : ctx.candidate.series;
+}
+
+/**
+ * What visitors reach today, which #5's route rules compare the candidate
+ * against: the active revision for a draft, and for a stored revision the
+ * one it would replace. Null before the first publish, when that revision
+ * can't be read, or for a check with nothing to replace (photos verify).
+ */
+function liveContent(ctx: RuleContext): RevisionFile['content'] | null {
+    return (ctx.authored ? ctx.active : ctx.replaces)?.content ?? null;
 }
 
 /** A series' slug and aliases, with the field each sits in. */
@@ -665,6 +675,52 @@ const SLICE_A_RULES: RuleDefinition[] = [
                     field: entry.field,
                     message: others.length ? `The slug is also used by ${others.join(', ')}.` : 'The slug is used twice in this series.',
                 };
+            }));
+        },
+    },
+    // #5: a rename keeps every inbound link. Both rules compare against what's live, not the stored revision alone,
+    // so they're editorial: a rollback across a rename asks for an accept, as the owner's call on his own addresses,
+    // and photos verify's verdict on a revision never depends on which one is live.
+    {
+        id: 'route.slug-change',
+        severity: 'error',
+        gate: 'publish',
+        rollbackClass: 'editorial',
+        check: (ctx) => {
+            const live = liveContent(ctx);
+            if (!live) return [];
+            const before = new Map(live.series.map((series) => [series.id, series.slug]));
+            return ctx.candidate.series.flatMap((series) => {
+                const old = before.get(series.id);
+                if (old === undefined || old === series.slug || series.slugAliases.includes(old)) return [];
+                return [{
+                    record: seriesRecord(series.id),
+                    field: 'slug',
+                    message: `The address changes from /work/${old} to /work/${series.slug}, and nothing keeps /work/${old}, so every link to it would break.`,
+                    hint: `Add ${old} to slugAliases with photos edit ${series.id}, so /work/${old} leads to the new address.`,
+                }];
+            });
+        },
+    },
+    {
+        id: 'route.alias-reassigned',
+        severity: 'error',
+        gate: 'publish',
+        rollbackClass: 'editorial',
+        check: (ctx) => {
+            const live = liveContent(ctx);
+            if (!live) return [];
+            const holders = new Map<string, string>();
+            for (const series of live.series) for (const [, slug] of slugsOf(series)) holders.set(slug, series.id);
+            return ctx.candidate.series.flatMap((series) => slugsOf(series).flatMap(([field, slug]) => {
+                const holder = holders.get(slug);
+                if (holder === undefined || holder === series.id) return [];
+                return [{
+                    record: seriesRecord(series.id),
+                    field,
+                    message: `/work/${slug} belongs to ${holder} on the live site. Giving it to this series would send every link to ${holder} here instead.`,
+                    hint: `Choose another slug. An address moves to another series only once a publish has taken it off ${holder}.`,
+                }];
             }));
         },
     },

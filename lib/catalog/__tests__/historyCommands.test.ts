@@ -172,7 +172,9 @@ describe('photos rollback --accept', () => {
 
     it('refuses an ID that is no rule, and an integrity rule, as usage errors', () => {
         // Only the rules a rollback can flag: #16's review.* rules are editorial too, but never fire on a stored revision.
-        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format), not contrast.');
+        // #5's route rules are flaggable: a rollback across a rename trips them against the live revision.
+        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format, route.alias-reassigned, route.slug-change), not contrast.');
+        expect(rollbackArgs([...base, '--accept', 'route.slug-change', '--accept', 'route.alias-reassigned']).accept).toEqual(['route.slug-change', 'route.alias-reassigned']);
         expect(usage(() => rollbackArgs([...base, '--accept=']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
         expect(usage(() => rollbackArgs([...base, '--accept', 'accent.contrast', '--accept', ' ']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
         expect(usage(() => rollbackArgs([...base, '--accept', 'assets.size']))).toBe('assets.size is an integrity rule, which no rollback can accept.');

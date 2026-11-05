@@ -287,9 +287,14 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
     return { ok: true, activation: committed };
 }
 
-/** Run every rule over a stored revision, as a rollback or a repair records it. */
-export function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
-    const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } });
+/**
+ * Run every rule over a stored revision, as a rollback or a repair records
+ * it. `replaces` is the live revision a rollback would replace, or null when
+ * it can't be read, for #5's route rules; without it they have nothing to
+ * compare against and stay quiet.
+ */
+export function validateStored(root: string, revision: RevisionFile, registry: Registry | null, replaces?: RevisionFile | null): { validation: Activation['validation']; issues: Issue[] } {
+    const issues = runRules({ candidate: revision.content, authored: null, active: revision, ...(replaces === undefined ? {} : { replaces }), registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } });
     return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
 }
 
@@ -614,7 +619,10 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         return { outcome: 'STORAGE_ERROR', message: `The identity registry can't be read, so ${revision.revisionId}'s sets can't be checked: ${reason}${/[.!?]$/.test(reason) ? '' : '.'} Nothing was activated.`, activation: null, recovery };
     }
     const acceptedRules = options.acceptedRules ?? [];
-    const { validation, issues } = validateStored(root, revision, registry);
+    // The revision this replaces, for #5's route rules only. One that can't be read is no reason to refuse, since
+    // moving off it is what a rollback is for, so the route rules then have nothing to compare against, as in the plan.
+    const replaces = await readRevisionFile(root, pointer.revisionId).catch(() => null);
+    const { validation, issues } = validateStored(root, revision, registry, replaces);
     const blocking = blockingIssues(issues, acceptedRules);
     if (blocking.length > 0) {
         const codes = [...new Set(blocking.map((issue) => issue.code))].sort().join(', ');
