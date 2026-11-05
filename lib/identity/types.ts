@@ -99,7 +99,8 @@ export type IdentityFactType =
     | 'missing'
     | 'processing-failed';
 
-export type ProcessingFailure = 'unsupported-format' | 'digest-collision' | 'undecodable';
+/** A6 (#17) adds `io-error`: a file that read EACCES, EPERM or EIO for IO_ERROR_AFTER_PASSES passes in a row. */
+export type ProcessingFailure = 'unsupported-format' | 'digest-collision' | 'undecodable' | 'io-error';
 
 export interface IdentityFact {
     type: IdentityFactType;

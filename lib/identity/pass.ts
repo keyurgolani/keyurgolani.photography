@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dataRootStatus, libraryRoot, type DataRootState } from '../storage/config';
 import { UnsupportedSchemaError, type VersionedWriteHooks } from '../storage/document';
 import { LockTimeoutError, withLock, type LockRecord } from '../storage/lock';
@@ -6,9 +6,10 @@ import { readPendingDecisions, settleDecisions, type DecisionFile, type Decision
 import { namedUuid, sha256, type Hasher } from './ids';
 import { inspectEntry, type Inspection } from './inspect';
 import { currentProfileId } from './profile';
-import { isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
+import { IO_ERROR_CODES } from './failures';
+import { IO_ERROR_AFTER_PASSES, isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
 import { emptyStatCache, readRegistry, readStatCache, writeRegistry, writeStatCache, type StatCache, type StatCacheEntry } from './registry';
-import { scanLibrary, type LibraryScan } from './scan';
+import { folderOf, LibraryRootMissingError, LibraryRootUnreadableError, scanLibrary, type LibraryScan } from './scan';
 import type { DerivativeJob, IdentityFact, RecordedDecision, Registry } from './types';
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
@@ -74,6 +75,15 @@ function sameSignature(a: Signature, b: Signature): boolean {
 }
 
 /**
+ * A6 (#17): the revision an unreadable file's `io-error` fact names. A bound
+ * file names its photo's observed revision. An unbound one has no bytes to
+ * name, so it gets a digest of its path, stable while the path is.
+ */
+function unreadableRevision(relativePath: string): string {
+    return `sha256-${createHash('sha256').update(`unreadable\0${relativePath}`, 'utf8').digest('hex')}`;
+}
+
+/**
  * `latest`'s readings with `committed`'s record of reported failures: what
  * observeLibrary() should start from when it observes again without having
  * committed anything, as the dry run does while it waits for changing files.
@@ -104,7 +114,8 @@ export async function observeLibrary(
     const entries: Record<string, StatCacheEntry> = {};
     for (const entry of scan.entries) {
         const cached = statCache.entries[entry.path];
-        const unchanged = cached !== undefined && sameSignature(cached, entry) && (cached.inspection.kind === 'image') === (entry.kind === 'source');
+        // An unreadable file is always read again: A6 keeps its entry only to count the passes it was skipped.
+        const unchanged = cached !== undefined && sameSignature(cached, entry) && cached.inspection.kind !== 'unreadable' && (cached.inspection.kind === 'image') === (entry.kind === 'source');
         if (isStillChanging(entry, scan.observedAt)) {
             // Too fresh to read. reconcile() skips it, and its cache entry carries over.
             if (unchanged) entries[entry.path] = cached;
@@ -121,10 +132,42 @@ export async function observeLibrary(
                 inspection,
                 emitted: unchanged ? [...cached.emitted] : [],
             };
+        } else if (inspection.kind === 'unreadable' && IO_ERROR_CODES.includes(inspection.error)) {
+            // A6: one more pass this version of the file was skipped for EACCES, EPERM or EIO.
+            const before = cached !== undefined && sameSignature(cached, entry) && cached.inspection.kind === 'unreadable' ? cached : undefined;
+            entries[entry.path] = {
+                size: entry.size,
+                mtimeMs: entry.mtimeMs,
+                ctimeMs: entry.ctimeMs,
+                ino: entry.ino,
+                inspection,
+                emitted: before ? [...before.emitted] : [],
+                skipped: (before?.skipped ?? 0) + 1,
+            };
         }
     }
 
     const result = reconcile(scan, registry, (entry) => inspections.get(entry.path), { idGen, profileId, decisions });
+
+    // A6: a file skipped IO_ERROR_AFTER_PASSES passes in a row is reported, once per version below, as io-error.
+    const observedAt = new Date(scan.observedAt).toISOString();
+    for (const entry of scan.entries) {
+        const cached = entries[entry.path];
+        if (cached?.inspection.kind !== 'unreadable' || (cached.skipped ?? 0) < IO_ERROR_AFTER_PASSES) continue;
+        const bound = Object.values(result.registry.photos).find((photo) => photo.source.present && photo.sourceHealth !== 'archived' && photo.mergedInto === undefined && photo.source.key === entry.key);
+        const photoId = bound?.photoId ?? null;
+        const assetRevision = bound?.source.observedRevision ?? unreadableRevision(entry.path);
+        result.facts.push({
+            type: 'processing-failed',
+            key: `processing-failed:${photoId ?? assetRevision}:${assetRevision}`,
+            photoId,
+            assetRevision,
+            path: entry.path,
+            folder: folderOf(entry.path),
+            observedAt,
+            reason: 'io-error',
+        });
+    }
 
     // An unsupported file or a digest collision changes no registry state, so report it once per version of the file.
     const facts = result.facts.filter((fact) => {
@@ -196,7 +239,14 @@ export type PassOutcome =
      * still empty at boot. Committing would mark every photo missing, so the
      * pass writes nothing and applies no decision.
      */
-    | { status: 'skipped'; reason: 'library-empty'; present: number };
+    | { status: 'skipped'; reason: 'library-empty'; present: number }
+    /**
+     * A6 (#17): the library root is missing, or exists but can't be read
+     * (`detail` is the errno). The pass writes nothing and applies no
+     * decision, as for an empty one.
+     */
+    | { status: 'skipped'; reason: 'library-unavailable'; cause: 'missing' }
+    | { status: 'skipped'; reason: 'library-unavailable'; cause: 'unreadable'; detail: string };
 
 /** Only the fields a recorded decision has. */
 function recordOf(outcome: RecordedDecision | Exclude<DecisionOutcome, { status: 'deferred' }>): RecordedDecision {
@@ -288,6 +338,7 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
             if (observed.scan.entries.length === 0 && present > 0) return { status: 'skipped' as const, reason: 'library-empty' as const, present };
             const { outcomes, decided } = replay.settle(observed.decisions);
             signal.throwIfAborted();
+            // The stat cache counts the passes in a row each was skipped (A6), and the IO_ERROR_AFTER_PASSES-th reports it.
             for (const skipped of observed.report.unreadable) logger.warn(`[identity] Skipped ${skipped}: it can't be read.`);
             for (const folder of observed.scan.unreadableDirs) logger.warn(`[identity] Skipped folder ${folder}: it can't be listed.`);
 
@@ -338,6 +389,8 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
     } catch (error) {
         if (error instanceof LockTimeoutError) return { status: 'skipped', reason: 'locked', holder: error.holder };
         if (error instanceof UnsupportedSchemaError) return { status: 'skipped', reason: 'data-root', state: 'unavailable', detail: error.message };
+        if (error instanceof LibraryRootMissingError) return { status: 'skipped', reason: 'library-unavailable', cause: 'missing' };
+        if (error instanceof LibraryRootUnreadableError) return { status: 'skipped', reason: 'library-unavailable', cause: 'unreadable', detail: error.code };
         throw error;
     }
 }

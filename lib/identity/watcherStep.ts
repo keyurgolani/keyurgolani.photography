@@ -2,6 +2,7 @@ import os from 'node:os';
 import { dataRootStatus, libraryRoot, type DataRootState, type DataRootStatus } from '../storage/config';
 import { readPendingDecisions } from './decisions';
 import { writeWatcherHeartbeat, type PassResult } from './heartbeat';
+import type { LibraryVerdict } from './library';
 import { jsonLogSink, runReconcilePass, type FactSink, type PassOptions } from './pass';
 import { currentProfileId } from './profile';
 import { readRegistry } from './registry';
@@ -15,18 +16,27 @@ import { createWorker, onceExitCode, pendingJobs, retryingResults, summarizeResu
  * once per state. Each pass, and the 30 s check, update
  * `status/watcher.json` when the data root can be written. Nothing here
  * deletes anything: the worker only adds sets to the asset store.
+ *
+ * A6 (#17): a library root that is missing, empty, or unreadable refuses
+ * the pass. The step tells its `library` hook, which the watcher points at
+ * the curation inbox's `library-unavailable` item, after every pass, logs
+ * once per cause, and looks again after LIBRARY_RETRY_MS, doubling up to
+ * LIBRARY_RETRY_MAX_MS, so an unmounted library costs one look every ten
+ * minutes, not a pass a minute.
  */
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>;
 
 /** Why a pass was asked for. */
-export type PassReason = 'startup' | 'event' | 'timer' | 'decisions' | 'facts' | 'pending-sets' | 'settling' | 'locked' | 'worker' | 'library-empty';
+export type PassReason = 'startup' | 'event' | 'timer' | 'decisions' | 'facts' | 'pending-sets' | 'settling' | 'locked' | 'worker' | 'library-empty' | 'library-unavailable';
 
 export type PassReport =
     | { status: 'committed'; facts: number; queued: number; retryAfterMs: number | null }
     | { status: 'off'; state: Exclude<DataRootState, 'ready'> }
     | { status: 'locked' }
     | { status: 'refused'; reason: 'library-empty'; present: number }
+    | { status: 'refused'; reason: 'library-unavailable'; cause: 'missing' }
+    | { status: 'refused'; reason: 'library-unavailable'; cause: 'unreadable'; detail: string }
     | { status: 'failed'; error: string }
     | { status: 'stopped' };
 
@@ -56,6 +66,12 @@ export interface IdentityStepOptions {
     /** Where committed facts go. Defaults to one JSON log line per fact. */
     sinks?: FactSink[];
     /**
+     * A6: told after each pass that reached the library whether it was
+     * available, and why not. The watcher passes the curation inbox's
+     * reporter (lib/curation/library.ts). A throw is logged, never fatal.
+     */
+    library?: (verdict: LibraryVerdict) => void | Promise<void>;
+    /**
      * Keep what each build did until the caller takes it, as `--once` does.
      * Otherwise each pass drops the results, so a watcher that runs for
      * months doesn't keep one per build.
@@ -82,8 +98,12 @@ export interface IdentityStep {
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** How soon the watcher looks again after a pass found the library empty. */
-export const LIBRARY_EMPTY_RETRY_MS = 60_000;
+/** How soon the watcher looks again after a pass found the library empty, missing, or unreadable. */
+export const LIBRARY_RETRY_MS = 60_000;
+/** v2.0.0 keeps the name it had. */
+export const LIBRARY_EMPTY_RETRY_MS = LIBRARY_RETRY_MS;
+/** The backoff doubles to this, the periodic pass's 10 minutes. */
+export const LIBRARY_RETRY_MAX_MS = 10 * 60_000;
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
@@ -115,6 +135,32 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     let lastProgressAt = iso(clock());
     let running: Promise<PassReport> | null = null;
     let waiting: Promise<PassReport> | null = null;
+    // A6: the library's last cause, logged once, and the backoff's last delay. Both reset once a pass gets through.
+    let libraryCause: string | null = null;
+    let libraryDelay = 0;
+
+    /** Tell the library hook, logging a throw. */
+    async function tellLibrary(verdict: LibraryVerdict): Promise<void> {
+        if (!options.library) return;
+        try {
+            await options.library(verdict);
+        } catch (error) {
+            logger.warn(`[identity] Could not report the library ${verdict.available ? 'available' : 'unavailable'} to the inbox; the next pass tries again: ${errorText(error)}`);
+        }
+    }
+
+    /** The next look at an unavailable library: 1 min, doubling to 10 min. */
+    function nextLibraryDelay(): number {
+        libraryDelay = libraryDelay === 0 ? LIBRARY_RETRY_MS : Math.min(libraryDelay * 2, LIBRARY_RETRY_MAX_MS);
+        return libraryDelay;
+    }
+
+    /** Log an unavailable library once per cause. */
+    function noteUnavailable(cause: string, line: () => string): void {
+        if (libraryCause === cause) return;
+        libraryCause = cause;
+        logger.error(line());
+    }
 
     /** Log the data root's state when it changes, so a step that stays off says so once. */
     function noteState(status: Pick<DataRootStatus, 'state' | 'root' | 'detail'>): void {
@@ -187,10 +233,22 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
             }
             if (outcome.reason === 'library-empty') {
                 // An unmounted or emptied library: committing would mark every photo missing. Look again soon, marking nothing.
-                logger.error(`[identity] The library at ${libraryRoot()} has no photos, but the registry has ${outcome.present} present. It looks unmounted or emptied, so this pass marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.`);
+                noteUnavailable('empty', () => `[identity] The library at ${libraryRoot()} has no photos, but the registry has ${outcome.present} present. It looks unmounted or emptied, so this pass marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.`);
                 lastPassResult = 'library-empty';
-                requestPass('library-empty', LIBRARY_EMPTY_RETRY_MS);
+                await tellLibrary({ available: false, cause: 'empty' });
+                requestPass('library-empty', nextLibraryDelay());
                 return { status: 'refused', reason: 'library-empty', present: outcome.present };
+            }
+            if (outcome.reason === 'library-unavailable') {
+                // A6: the root is gone or can't be read. Nothing is marked missing, and the next look waits longer each time.
+                const why = outcome.cause === 'missing' ? 'The library root is missing' : `The library root can't be read (${outcome.detail})`;
+                noteUnavailable(`${outcome.cause}\0${outcome.cause === 'unreadable' ? outcome.detail : ''}`, () => `[identity] ${why}, so this pass changed nothing and marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR. The watcher looks again in a minute, then less often.`);
+                lastPassResult = 'library-unavailable';
+                await tellLibrary(outcome.cause === 'missing' ? { available: false, cause: 'missing' } : { available: false, cause: 'unreadable', detail: outcome.detail });
+                requestPass('library-unavailable', nextLibraryDelay());
+                return outcome.cause === 'missing'
+                    ? { status: 'refused', reason: 'library-unavailable', cause: 'missing' }
+                    : { status: 'refused', reason: 'library-unavailable', cause: 'unreadable', detail: outcome.detail };
             }
             // The data root changed since this pass looked, or its registry comes from a newer build. Never ready here.
             const state = outcome.state as Exclude<DataRootState, 'ready'>;
@@ -200,6 +258,10 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
         }
 
         lastPassResult = 'committed';
+        if (libraryCause !== null) logger.log('[identity] The library is back, so passes run as usual again.');
+        libraryCause = null;
+        libraryDelay = 0;
+        await tellLibrary({ available: true });
         deferredDecisions = new Set(outcome.decisions.filter((decision) => decision.status === 'deferred').map((decision) => decision.name));
         if (!options.keepResults) worker?.takeResults();
         const queued = await feedWorker();

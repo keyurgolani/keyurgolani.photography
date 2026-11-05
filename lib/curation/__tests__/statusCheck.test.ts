@@ -81,7 +81,7 @@ describe('photos status counts', () => {
         expect(output).not.toContain('Check:');
 
         const json = JSON.parse((await status(f, { json: true })).output) as { inbox: { counts: unknown; missing: { ageSeconds: number }[] } };
-        expect(json.inbox.counts).toEqual({ needsReview: 4, missing: 1, failed: 1, ambiguous: 1, stale: 0 });
+        expect(json.inbox.counts).toEqual({ needsReview: 4, missing: 1, held: 0, failed: 1, ambiguous: 1, stale: 0 });
         expect(json.inbox.missing[0].ageSeconds).toBe(3 * 3600);
     });
 

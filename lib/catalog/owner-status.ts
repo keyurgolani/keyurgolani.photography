@@ -301,6 +301,7 @@ function formatStatus(status: OwnerStatus, now: number): string {
 /** Why `photos status --check` fails, one code each, so a monitor can tell them apart. A6 adds `library-unavailable`. */
 export type CheckCode =
     | 'status-incomplete'
+    | 'library-unavailable'
     | 'inbox-unreadable'
     | 'missing-open'
     | 'failed-open'
@@ -313,6 +314,12 @@ export type CheckCode =
 export interface StatusCheck {
     ok: boolean;
     problems: { code: CheckCode; message: string }[];
+    /**
+     * A6: what the check counts without failing on it: the missing sources
+     * the library-unavailable item holds, the builds waiting for a retry, and
+     * the builds that failed for good, which the inbox's failures cover.
+     */
+    counts?: { held: number; retrying: number; permanent: number };
 }
 
 /** The heartbeat's problem for the check, or null while it's fresh. */
@@ -340,7 +347,7 @@ function heartbeatProblem(heartbeat: HeartbeatAge | null): StatusCheck['problems
  * when that one got through, else by the pass under way.
  */
 function stallProblem(heartbeat: Extract<HeartbeatAge, { found: true }>, now: number): StatusCheck['problems'][number] | null {
-    const progressed = heartbeat.lastPassResult === 'committed' || heartbeat.lastPassResult === 'library-empty';
+    const progressed = heartbeat.lastPassResult === 'committed' || heartbeat.lastPassResult === 'library-empty' || heartbeat.lastPassResult === 'library-unavailable';
     const running = heartbeat.passRunningMs === null ? null : new Date(now - heartbeat.passRunningMs).toISOString();
     const since = heartbeat.lastProgressAt ?? (progressed ? heartbeat.lastPassAt : null) ?? running;
     if (since === null || now - Date.parse(since) <= WATCHER_STALLED_AFTER_MS) return null;
@@ -355,7 +362,12 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
     const problems: StatusCheck['problems'] = [];
     if (!complete) problems.push({ code: 'status-incomplete', message: "Status couldn't read everything it reports, as above" });
     if (status.inbox && !('error' in status.inbox)) {
-        const { missing, failed, ambiguous, unreadable } = status.inbox;
+        const { missing, failed, ambiguous, unreadable, library, held } = status.inbox;
+        // A6: the library itself, before the per-photo items it holds.
+        if (library) {
+            const heldText = held.length > 0 ? `, so ${count(held.length, 'missing source')} ${held.length === 1 ? 'is' : 'are'} held` : '';
+            problems.push({ code: 'library-unavailable', message: `The library is unavailable (${library.causeText}) since ${library.since}, ${ageText(library.ageSeconds * 1000)} ago${heldText}` });
+        }
         // An item that can't be read may be an open missing source or failure, so the check can't pass over it.
         if (unreadable > 0) problems.push({ code: 'inbox-unreadable', message: `${count(unreadable, 'inbox item')} can't be read, so the check can't tell what ${unreadable === 1 ? 'it holds' : 'they hold'}. curation list names ${unreadable === 1 ? 'it' : 'them'}` });
         if (missing.length > 0) {
@@ -375,11 +387,16 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
     if (stalled) problems.push(stalled);
     const late = heartbeatProblem(heartbeat);
     if (late) problems.push(late);
-    return { ok: problems.length === 0, problems };
+    const held = status.inbox && !('error' in status.inbox) ? status.inbox.held.length : 0;
+    return { ok: problems.length === 0, problems, counts: { held, retrying: status.identity.retryingJobs, permanent: status.identity.failedProfiles.length } };
 }
 
 function checkLines(check: StatusCheck): string {
-    return check.ok ? 'Check: passed.\n' : `${['Check: failed.', ...check.problems.map((problem) => `  - ${problem.message}.`)].join('\n')}\n`;
+    // A6: what the check counts without failing on, before its verdict, so the verdict stays the last line.
+    const counts = check.counts
+        ? `Held: ${count(check.counts.held, 'missing source')}. Builds: ${check.counts.retrying} retrying, ${check.counts.permanent} failed for good.\n`
+        : '';
+    return `${counts}${check.ok ? 'Check: passed.\n' : `${['Check: failed.', ...check.problems.map((problem) => `  - ${problem.message}.`)].join('\n')}\n`}`;
 }
 
 /** `photos status [--json] [--check]`. */

@@ -8,6 +8,13 @@ import type { AssetRevisionRecord, DerivativeJob, Hold, IdentityFact, PhotoRecor
 export const STABILITY_MS = 5_000;
 
 /**
+ * A6 (#17): a file that reads EACCES, EPERM or EIO this many passes in a row
+ * is reported as `processing-failed` with `io-error` (lib/identity/pass.ts).
+ * Until then it is skipped, and its photo, if it has one, stays as it was.
+ */
+export const IO_ERROR_AFTER_PASSES = 3;
+
+/**
  * Whether a file changed within STABILITY_MS of `observedAt`, either way, so
  * it may still be being written or moved. Each timestamp counts on its own: a
  * rename or copy changes only the ctime, and a copy that keeps its source's

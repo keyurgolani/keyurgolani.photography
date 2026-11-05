@@ -10,6 +10,7 @@ const ICONS: Record<CurationEventType, LucideIcon> = {
     missing: CircleAlert,
     ambiguous: CircleAlert,
     'processing-failure': CircleAlert,
+    'library-unavailable': CircleAlert,
 };
 
 const TONES: Record<CurationEventType, 'new' | 'change' | 'alert'> = {
@@ -19,6 +20,7 @@ const TONES: Record<CurationEventType, 'new' | 'change' | 'alert'> = {
     missing: 'alert',
     ambiguous: 'alert',
     'processing-failure': 'alert',
+    'library-unavailable': 'alert',
 };
 
 /** An item's type, as an icon and its name, never color alone. A settled item's alert reads quiet, since nothing is wrong now. */

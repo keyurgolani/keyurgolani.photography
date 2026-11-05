@@ -1,5 +1,6 @@
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries, RecordUnusableError } from '../catalog/working-layer';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
+import { massMissing } from '../identity/library';
 import type { FactSink } from '../identity/pass';
 import { readRegistry } from '../identity/registry';
 import type { IdentityFact, Registry } from '../identity/types';
@@ -22,6 +23,7 @@ import {
     type Suggestions,
 } from './events';
 import { photoHolders, type ReferenceCache } from './holders';
+import { boundSources, openMassMissing } from './library';
 import { EventUnusableError, InvalidEventError, listEvents, readEvent, readRulesFile, RulesFileError, withCurationLock, writeEvent } from './repository';
 import { loadRules, suggestForNew, type LoadedRules } from './suggest';
 
@@ -351,6 +353,21 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 }
                 return true;
             };
+
+            // A6 (#17): one pass that marks at least 20 bound sources missing, over 10% of them, looks like the library
+            // going, so the library-unavailable item opens before their missing items do, and holds them from the start
+            // (lib/curation/library.ts). Facts from one pass share its observedAt. Without the registry, nothing is held.
+            if (registry !== null) {
+                const byPass = new Map<string, Set<string>>();
+                for (const { fact, type } of relevant) {
+                    if (type === 'missing' && fact.photoId !== null) byPass.set(fact.observedAt, (byPass.get(fact.observedAt) ?? new Set<string>()).add(fact.photoId));
+                }
+                const present = boundSources(registry);
+                for (const [at, photos] of byPass) {
+                    const bound = present + photos.size;
+                    if (massMissing(photos.size, bound)) await openMassMissing(root, hold, { at, missing: photos.size, bound }, logger);
+                }
+            }
 
             for (const { fact, type } of relevant) {
                 if (type === 'replacement' && fact.photoId !== null && await foldIntoNew(fact)) continue;

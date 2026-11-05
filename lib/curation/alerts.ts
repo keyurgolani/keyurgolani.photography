@@ -4,6 +4,7 @@ import { printable } from './commands';
 import { needsJudgment, shortPhotoId, waitingReason, type CurationEvent } from './events';
 import { photoHolders, type ReferenceCache } from './holders';
 import { ageText } from './inbox-view';
+import { heldMissingIds, libraryCauseText, LIBRARY_EVENT_ID } from './library';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
 
@@ -20,6 +21,10 @@ import { listEvents } from './repository';
  * `--check` reads: what needs review, counted as `curation list` and the
  * Inbox count it, the open missing, failed and ambiguous items, and the
  * stale approvals, whose photo no series or the live revision holds now.
+ *
+ * A6 adds the open `library-unavailable` item and the missing items it
+ * holds (lib/curation/library.ts): those count as held, not missing, since
+ * the library, not each photo, is what's wrong.
  */
 
 const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
@@ -48,15 +53,32 @@ export interface InboxCounts {
     /** Items that need the curator's judgment, as `curation list` and the Inbox count them (needsJudgment()). */
     needsReview: number;
     missing: number;
+    /** A6: missing items the open library-unavailable item holds. */
+    held: number;
     failed: number;
     ambiguous: number;
     /** Approvals whose photo no series or the live revision holds now. */
     stale: number;
 }
 
+/** A6: the open library-unavailable item. */
+export interface LibraryAlert {
+    eventId: string;
+    version: number;
+    cause: string;
+    /** What the cause means, without a path. */
+    causeText: string;
+    since: string;
+    ageSeconds: number;
+}
+
 export interface InboxAlerts {
     counts: InboxCounts;
+    /** A6: the open library-unavailable item, or null. */
+    library: LibraryAlert | null;
     missing: InboxAlert[];
+    /** A6: the missing items it holds. */
+    held: InboxAlert[];
     failed: InboxAlert[];
     /** Open ambiguous items: a file the watcher holds in doubt between photographs. */
     ambiguous: InboxAlert[];
@@ -94,6 +116,10 @@ export async function inboxAlerts(root: string, clock: () => number = Date.now):
     const failed: InboxAlert[] = [];
     const ambiguous: InboxAlert[] = [];
     const stale: InboxAlert[] = [];
+    const held: InboxAlert[] = [];
+    const libraryItem = events.find((event) => event.id === LIBRARY_EVENT_ID && event.type === 'library-unavailable') ?? null;
+    const holding = new Set(heldMissingIds(events, libraryItem));
+    let library: LibraryAlert | null = null;
     // The same lookups `curation list` makes, so status counts what needs review as the list and the Inbox do.
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
@@ -106,6 +132,17 @@ export async function inboxAlerts(root: string, clock: () => number = Date.now):
         const series = placements.unplaced.get(event.id);
         if (series !== undefined) {
             stale.push({ ...base, series });
+            continue;
+        }
+        if (event.type === 'library-unavailable') {
+            if (event.status === 'open') {
+                const since = event.derivedFacts.library?.since ?? event.lastObservedAt;
+                library = { eventId: event.id, version: event.version, cause: event.derivedFacts.library?.cause ?? 'unknown', causeText: libraryCauseText(event.derivedFacts.library), since, ageSeconds: Math.max(0, Math.floor((now - Date.parse(since)) / 1000)) };
+            }
+            continue;
+        }
+        if (holding.has(event.id)) {
+            held.push(base);
             continue;
         }
         if (event.type === 'missing' && STILL_OPEN.has(event.status)) {
@@ -121,8 +158,10 @@ export async function inboxAlerts(root: string, clock: () => number = Date.now):
         if (failure !== null) failed.push({ ...base, failure });
     }
     return {
-        counts: { needsReview, missing: missing.length, failed: failed.length, ambiguous: ambiguous.length, stale: stale.length },
+        counts: { needsReview, missing: missing.length, held: held.length, failed: failed.length, ambiguous: ambiguous.length, stale: stale.length },
+        library,
         missing: missing.sort(byAge),
+        held: held.sort(byAge),
         failed: failed.sort(byAge),
         ambiguous: ambiguous.sort(byAge),
         stale: stale.sort(byAge),
@@ -137,10 +176,17 @@ const ago = (item: InboxAlert) => `${ageText(item.ageSeconds * 1000)} ago`;
 
 /** The status lines: the counts, then one line per item. */
 export function inboxAlertLines(alerts: InboxAlerts): string[] {
-    const { counts, missing, failed, ambiguous, stale, unreadable } = alerts;
+    const { counts, missing, failed, ambiguous, stale, unreadable, library, held } = alerts;
+    const heldText = counts.held > 0 ? `, ${counts.held} held` : '';
     const lines = [
-        `Inbox: ${counts.needsReview} ${counts.needsReview === 1 ? 'needs' : 'need'} review, ${count(counts.missing, 'missing source')}, ${count(counts.failed, 'failure')}, ${counts.ambiguous} ambiguous, ${counts.stale} stale${unreadable > 0 ? `, ${count(unreadable, 'item')} unreadable (curation list names them)` : ''}`,
+        `Inbox: ${counts.needsReview} ${counts.needsReview === 1 ? 'needs' : 'need'} review, ${count(counts.missing, 'missing source')}${heldText}, ${count(counts.failed, 'failure')}, ${counts.ambiguous} ambiguous, ${counts.stale} stale${unreadable > 0 ? `, ${count(unreadable, 'item')} unreadable (curation list names them)` : ''}`,
     ];
+    if (library) {
+        lines.push(`  library unavailable since ${library.since}, ${ageText(library.ageSeconds * 1000)} ago: ${library.causeText}; ${count(held.length, 'missing source')} held until a pass finds the library again or confirm-missing runs  (${library.eventId}@${library.version})`);
+    }
+    for (const item of held) {
+        lines.push(`  held     ${shortPhotoId(item.photoId)}  ${printable(item.sourcePath)}  since ${item.since}, ${ago(item)}, ${item.status}  (${item.eventId}@${item.version})`);
+    }
     for (const item of missing) {
         const shown = item.shownBy === null || item.shownBy === undefined
             ? "the data root can't show whether anything references it"
@@ -157,6 +203,6 @@ export function inboxAlertLines(alerts: InboxAlerts): string[] {
         lines.push(`  stale    ${shortPhotoId(item.photoId)}  ${printable(item.sourcePath)}  since ${item.since}, approved into ${item.series}, but no series or the live revision holds it now  (${item.eventId}@${item.version})`);
     }
     if (alerts.placementUnknown) lines.push("  A revision or series can't be read, so needs-review and stale count every item by its stored status. curation list says which file.");
-    if (missing.length > 0 || failed.length > 0 || ambiguous.length > 0 || stale.length > 0) lines.push('  photos curation show <eventId> says what each one needs.');
+    if (library || missing.length > 0 || held.length > 0 || failed.length > 0 || ambiguous.length > 0 || stale.length > 0) lines.push('  photos curation show <eventId> says what each one needs.');
     return lines;
 }

@@ -9,7 +9,8 @@ import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
  * What the watcher's last pass did: committed a reconcile, found the registry
  * busy, failed, or found the data root not ready, by its state.
  */
-export type PassResult = 'committed' | 'locked' | 'failed' | 'library-empty' | `data-root-${Exclude<DataRootState, 'ready'>}`;
+/** A6 adds `library-unavailable`: a pass that refused a missing or unreadable library root. An empty one stays `library-empty`, as v1.7.x writes it. */
+export type PassResult = 'committed' | 'locked' | 'failed' | 'library-empty' | 'library-unavailable' | `data-root-${Exclude<DataRootState, 'ready'>}`;
 
 /** `status/watcher.json`, the watcher's sign of life for its healthcheck and `photos:identity status`. */
 export interface WatcherHeartbeat {
@@ -91,7 +92,7 @@ export const HEARTBEAT_PROBLEM_TEXT: Record<HeartbeatProblem, string> = {
     'bad-pass-started-at': 'status/watcher.json has an invalid passStartedAt',
 };
 
-const PASS_RESULT_RE = /^(committed|locked|failed|library-empty|data-root-(unset|unavailable|unwritable|uninitialized))$/;
+const PASS_RESULT_RE = /^(committed|locked|failed|library-empty|library-unavailable|data-root-(unset|unavailable|unwritable|uninitialized))$/;
 
 /** Read the heartbeat under `root`. Never throws. */
 export async function watcherHeartbeatAge(root: string, clock: () => number = Date.now): Promise<HeartbeatAge> {
@@ -164,7 +165,8 @@ export const WATCHER_PASS_LIMIT_MS = 30 * 60_000;
  * The watcher writes the heartbeat every 30 s while the data root exists and
  * is writable, initialized or not, so an unset, missing, or unwritable data
  * root reads as unhealthy too. So does a last pass that refused an empty
- * library while the registry has present photos, such as an unmounted NAS.
+ * library while the registry has present photos, such as an unmounted NAS,
+ * or a missing or unreadable library root (A6).
  */
 export async function checkWatcherHealth(
     { clock = Date.now, maxAgeMs = WATCHER_HEALTHY_WITHIN_MS, passLimitMs = WATCHER_PASS_LIMIT_MS }: { clock?: () => number; maxAgeMs?: number; passLimitMs?: number } = {},
@@ -182,6 +184,9 @@ export async function checkWatcherHealth(
     }
     if (age.libraryEmpty) {
         return { healthy: false, message: 'The last pass found no photo in the library while the registry has present ones, so it marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.' };
+    }
+    if (age.lastPassResult === 'library-unavailable') {
+        return { healthy: false, message: "The last pass found the library root missing or unreadable, so it changed nothing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR." };
     }
     return { healthy: true, message: `The last heartbeat was ${age.ageMs < 0 ? 0 : seconds} s ago.` };
 }

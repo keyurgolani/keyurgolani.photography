@@ -46,6 +46,21 @@ export class LibraryRootMissingError extends Error {
     }
 }
 
+/** A6 (#17): the library root exists but can't be listed or searched. `code` is the errno, such as EACCES. */
+export class LibraryRootUnreadableError extends Error {
+    readonly root: string;
+    readonly code: string;
+
+    constructor(root: string, code: string) {
+        super(`Library root can't be read (${code}): ${root}`);
+        this.name = 'LibraryRootUnreadableError';
+        this.root = root;
+        this.code = code;
+    }
+}
+
+const errnoOf = (error: unknown) => (typeof error === 'object' && error !== null && typeof (error as NodeJS.ErrnoException).code === 'string' ? (error as NodeJS.ErrnoException).code as string : 'unknown');
+
 /** The key a library path binds by: folded as foldName() folds it, the way a case-insensitive disk compares names. */
 export function keyOf(relativePath: string): string {
     return foldName(relativePath);
@@ -83,7 +98,8 @@ export function isScanExcluded(relativePath: string): boolean {
 /**
  * Walk the library with lstat. Skips symlinks, dot-entries at any depth, and
  * the root-level legacy output folders. Throws LibraryRootMissingError when
- * the root is missing, so an unmounted library never reads as an empty one.
+ * the root is missing, so an unmounted library never reads as an empty one,
+ * and LibraryRootUnreadableError when it can't be read (A6). It only reads.
  */
 export async function scanLibrary(root: string, { clock = Date.now }: { clock?: () => number } = {}): Promise<LibraryScan> {
     const observedAt = clock();
@@ -91,7 +107,7 @@ export async function scanLibrary(root: string, { clock = Date.now }: { clock?: 
         if (!(await fs.promises.stat(root)).isDirectory()) throw new LibraryRootMissingError(root);
     } catch (error) {
         if (error instanceof LibraryRootMissingError || hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw new LibraryRootMissingError(root);
-        throw error;
+        throw new LibraryRootUnreadableError(root, errnoOf(error));
     }
 
     const entries: ScanEntry[] = [];
@@ -103,7 +119,10 @@ export async function scanLibrary(root: string, { clock = Date.now }: { clock?: 
         try {
             names = await fs.promises.readdir(path.join(root, relativeDir));
         } catch (error) {
-            if (relativeDir === '') throw error;
+            if (relativeDir === '') {
+                if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw new LibraryRootMissingError(root);
+                throw new LibraryRootUnreadableError(root, errnoOf(error));
+            }
             if (!hasErrorCode(error, 'ENOENT')) unreadableDirs.push(relativeDir);
             continue;
         }
