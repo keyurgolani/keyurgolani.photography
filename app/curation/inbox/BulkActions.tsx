@@ -40,8 +40,11 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
         // As ItemActions: aria-disabled, never `disabled`, so a focused button keeps focus while the action is out.
         if (pending) return;
         const submitter = (event.nativeEvent as SubmitEvent).submitter;
+        // A8 review N5: only a bulk button sends this form. Enter in a checkbox submits it with no submitter, or the first
+        // button, which it never meant to press, so a submit no bulk button made sends nothing.
+        if (!(submitter instanceof HTMLButtonElement) || submitter.name !== 'intent' || (submitter.value !== 'defer' && submitter.value !== 'unassigned')) return;
         const form = new FormData(event.currentTarget);
-        if (submitter instanceof HTMLButtonElement && submitter.name) form.set(submitter.name, submitter.value);
+        form.set(submitter.name, submitter.value);
         startTransition(() => dispatch(form));
     };
     const off = { 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined };
@@ -49,6 +52,8 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
     const left = answered?.results.filter((result) => result.status !== 'done') ?? [];
     const leftTitle = left.length === 1 ? '1 item was left as it is' : `${left.length} items were left as they are`;
     const entries: SummaryEntry[] = left.map((result) => ({ text: rows[result.eventId]?.label ?? 'An item no longer on this page', href: rows[result.eventId]?.href ?? `/curation/inbox?item=${result.eventId}#item`, note: result.message }));
+    // A8 review S1: items that went through with an answer of their own, said with the headline, once.
+    const noted = answered?.results.filter((result) => result.status === 'done' && result.note) ?? [];
     return (
         <form method="post" onSubmit={submit} aria-label="Bulk actions" id="inbox-bulk" className={styles.bulk}>
             <input type="hidden" name="base" value={base ?? 'none'} />
@@ -71,7 +76,21 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
             ) : null}
             {/* What went through, said once. A refusal of the whole selection is the summary's alone. */}
             <div role="status" aria-label="Bulk answer" className={styles.bulkAnswer}>
-                {answered && answered.status !== 'invalid' ? <p key={answered.serial}>{answered.message}</p> : null}
+                {answered && answered.status !== 'invalid' ? (
+                    <div key={answered.serial}>
+                        <p>{answered.message}</p>
+                        {noted.length > 0 ? (
+                            <ul className={styles.errorList}>
+                                {noted.map((result) => (
+                                    <li key={result.eventId}>
+                                        <a href={rows[result.eventId]?.href ?? `/curation/inbox?item=${result.eventId}#item`}>{rows[result.eventId]?.label ?? 'An item no longer on this page'}</a>
+                                        <span>: {result.message}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : null}
+                    </div>
+                ) : null}
             </div>
             {answered?.status === 'invalid' ? (
                 <ErrorSummary id="bulk-summary" title={answered.message} focusKey={answered.serial} state="invalid" entries={firstPick ? [{ text: 'The items to select', href: `#${firstPick}`, target: firstPick }] : []} />

@@ -643,7 +643,11 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
 
 /** 14-1's actions on the selected item, each a form the page's server actions take. */
 export default function ItemActions({ detail, order, open, activeRevisionId, series, seriesProblem, note }: ItemActionsProps) {
-    const [state, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    const [answered, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    // A8 review S4: the version the last press was sent for. A stale answer stands only while the page still shows
+    // that version: once a refresh shows a newer one, it's about a page that's gone.
+    const [sentFor, setSentFor] = useState<number | null>(null);
+    const state = answered.status === 'stale' && sentFor !== detail.version ? IDLE : answered;
     // The list order as the page first showed it, so the next item is the one after this in the list the curator saw.
     const [seen] = useState(order);
     // The version an approval or Decide later was sent for. Once the page shows a newer one, the refresh after it has landed, and `open` is current.
@@ -662,6 +666,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         if (submitter instanceof HTMLButtonElement && submitter.name) form.set(submitter.name, submitter.value);
         const intent = form.get('intent');
         sentVersion.current = intent === 'approve' || intent === 'defer' ? detail.version : null;
+        setSentFor(detail.version);
         // On the plain inbox URL a wide screen shows the first item that needs judgment, and the refresh after an action
         // would show the next one in its place, with no answer. Naming this item in the URL before the action is sent
         // keeps it on the page, so its answer shows and moving on runs. The data must not be Next's own history state, or
@@ -693,10 +698,13 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         moveOn({ to: nextItemId(seen, detail.id, open), from: detail.id, fromName, message: arrivalMessage(state.action, fromName, state.message) });
     }, [state, detail.id, detail.version, detail.sourcePath, seen, open]);
     // #14 (A8): the poll saw this item change since the page loaded. Its alert says so, and the form keeps what was typed.
-    const [polledStale, setPolledStale] = useState(false);
+    // A8 review S4: it records the version the poll compared against, and shows only while the page still shows that
+    // one, so a poll in flight during the curator's own Save, which compared against the version before it, says nothing.
+    const [polledFor, setPolledFor] = useState<number | null>(null);
     useEffect(() => {
         const heard = (event: Event) => {
-            if ((event as CustomEvent<{ id?: unknown }>).detail?.id === detail.id) setPolledStale(true);
+            const said = (event as CustomEvent<{ id?: unknown; version?: unknown }>).detail;
+            if (said?.id === detail.id && typeof said.version === 'number') setPolledFor(said.version);
         };
         window.addEventListener(ITEM_CHANGED_EVENT, heard);
         return () => window.removeEventListener(ITEM_CHANGED_EVENT, heard);
@@ -799,7 +807,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {/* Every answer but a dismissal, a bind or an archive lands here, right under the buttons that produced it. */}
             <AnswerRegion show={slot === 'actions'} state={state} detail={detail} regionRef={answerRef} />
             {/* #14 (A8): the poll's word that the item moved, unless an action already said so. */}
-            {polledStale && state.status !== 'stale' ? <StaleAlert message={POLLED_STALE} detail={detail} /> : null}
+            {polledFor === detail.version && state.status !== 'stale' ? <StaleAlert message={POLLED_STALE} detail={detail} /> : null}
 
             {/* Keyed by the version the page showed, as the suggestion is, so a form left open across a refresh never reads as another state's. */}
             {can.bind ? <BindForm key={`bind-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} slot={slot} submit={submit} /> : null}

@@ -158,7 +158,7 @@ test('Decide later on two selected items sends one version each, and lists the o
     const summary = page.getByRole('region', { name: '1 item was left as it is' });
     await expect(summary).toBeFocused();
     await expect(summary.getByRole('link')).toHaveAttribute('href', new RegExp(`item=${moved}#item$`));
-    await expect(page.getByRole('status', { name: 'Bulk answer' })).toHaveText('Left 1 of 2 items for later. 1 was left as it is.');
+    await expect(page.getByRole('status', { name: 'Bulk answer' })).toHaveText('Left 1 of 2 items for later.');
     expect(await readEvent(data().root, moved)).toEqual(before);
     expect((await readEvent(data().root, kept))?.status).toBe('deferred');
 });
