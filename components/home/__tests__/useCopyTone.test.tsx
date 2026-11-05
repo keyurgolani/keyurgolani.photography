@@ -16,13 +16,13 @@ vi.mock('../../badgePlace', async (importOriginal) => {
   };
 });
 
-function Slides({ shown, loaded }: { shown?: string; loaded: boolean }) {
+function Slides({ shown, loaded, contain }: { shown?: string; loaded: boolean; contain?: string }) {
   const carousel = useRef<HTMLDivElement>(null);
   useCopyTone(carousel, shown, loaded);
   return (
     <div ref={carousel}>
       {['a', 'b'].map((id) => (
-        <div key={id} data-photo-id={id} aria-hidden={id !== shown}>
+        <div key={id} data-photo-id={id} data-crop={id === contain ? 'contain' : 'cover'} aria-hidden={id !== shown}>
           <img alt="" src={`/${id}.webp`} />
         </div>
       ))}
@@ -30,14 +30,14 @@ function Slides({ shown, loaded }: { shown?: string; loaded: boolean }) {
   );
 }
 
-const home = (shown: string | undefined, loaded: boolean, story = true) => (
+const home = (shown: string | undefined, loaded: boolean, story = true, contain?: string) => (
   <main data-testid="home">
     {story && (
       <div data-chrome-region="story">
         <h1>Coastline, early</h1>
       </div>
     )}
-    <Slides shown={shown} loaded={loaded} />
+    <Slides shown={shown} loaded={loaded} contain={contain} />
   </main>
 );
 
@@ -51,6 +51,24 @@ describe('useCopyTone', () => {
 
   const withBoxes = () =>
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ left: 40, top: 480, right: 600, bottom: 720, width: 560, height: 240, x: 40, y: 480, toJSON: () => ({}) });
+
+  it("measures nothing over a contain slide, which leaves the theme's own scrim, and measures again once a cover one is on screen (B7 review)", async () => {
+    withBoxes();
+    tone.next = 'dark';
+    const view = render(home('a', true, true, 'a'));
+    const root = view.getByTestId('home');
+    await act(async () => undefined);
+    // Its sampler reads the photograph as if it covered the box, but a contain one leaves the mat under part of the copy.
+    expect(tone.calls).toBe(0);
+    expect(root.hasAttribute('data-copy-tone')).toBe(false);
+    view.rerender(home('b', true, true, 'a'));
+    await act(async () => undefined);
+    expect(root.getAttribute('data-copy-tone')).toBe('dark');
+    // Back to the contain one: the cover photograph's tone doesn't stay over it.
+    view.rerender(home('a', true, true, 'a'));
+    await act(async () => undefined);
+    expect(root.hasAttribute('data-copy-tone')).toBe(false);
+  });
 
   it("keeps its tone when the image can't be read now, and measures again once the image loads its new source (M5)", async () => {
     withBoxes();

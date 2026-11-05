@@ -8,6 +8,7 @@ import type { HomeImage, HomePhoto, PublishedHome } from '@/lib/catalog/projecti
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from '../homeChromeConfig';
 import { HOME_AUTO_ADVANCE_MS } from '../homePlayback';
+import { heroSizes } from '../heroSizes';
 import { setDocumentVisibility } from '@/test/visibility';
 
 // Like the real intro without its timers: loading while Home loads, revealing after, then settled.
@@ -1678,6 +1679,38 @@ describe('CatalogHome', () => {
       expect(slideOf(0).style.getPropertyValue('--focal-y')).toBe('50%');
       // The frame sits on the slide, never on the image, whose own style is ResponsivePhoto's LQIP.
       expect(slideImage(3)?.style.getPropertyValue('--focal-x')).toBe('');
+    });
+
+    it('rounds the focal percentages to two places (B7 review)', async () => {
+      // 0.07 * 100 is 7.000000000000001 in floating point.
+      await renderHome(published({ photos: ORDER.map((n) => photo(n, n === 3 ? { focalPoint: { x: 0.07, y: 1 / 3 } } : {})) }));
+      expect([slideOf(3).style.getPropertyValue('--focal-x'), slideOf(3).style.getPropertyValue('--focal-y')]).toEqual(['7%', '33.33%']);
+    });
+
+    it('marks each slide decoded once its image has, which is when a contain slide drops its LQIP (B7 review)', async () => {
+      await renderHome(framed());
+      expect(slideOf(3)).not.toHaveAttribute('data-decoded');
+      load(3);
+      expect(slideOf(3)).toHaveAttribute('data-decoded', '');
+      expect(slideOf(0)).toHaveAttribute('data-crop', 'contain');
+      expect(slideOf(0)).not.toHaveAttribute('data-decoded');
+      load(0);
+      expect(slideOf(0)).toHaveAttribute('data-decoded', '');
+    });
+
+    it("asks a contain slide for #6's contain rung, and the opening's preload follows it (B7 review)", async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const home = published({ photos: ORDER.map((n) => photo(n, n === 3 ? { crop: 'contain' } : {})) });
+      const host = document.createElement('div');
+      host.innerHTML = serverHtml(<CatalogHome home={home} />);
+      const contain = heroSizes(image(3), 'contain');
+      expect(contain).not.toBe(heroSizes(image(3)));
+      expect(host.querySelector(`[data-photo-id="${id(3)}"] source[type="image/avif"]`)).toHaveAttribute('sizes', contain);
+      expect(preloadsIn(host.innerHTML).map((link) => link.getAttribute('imagesizes'))).toEqual([contain]);
+      // A cover slide keeps the cover rung.
+      await renderHome(home);
+      load(3);
+      expect(slideOf(0).querySelector('source[type="image/avif"]')).toHaveAttribute('sizes', heroSizes(image(0)));
     });
 
     it('frames the opening photograph in the server HTML, so the first paint is cut where the client cuts it', async () => {

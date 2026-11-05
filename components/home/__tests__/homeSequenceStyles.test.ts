@@ -40,6 +40,9 @@ describe("Home's slide framing", () => {
     // ResponsivePhoto draws the LQIP as an inline `background-size: cover`, which only `!important` outranks.
     expect(image['background-size']).toBe('contain !important');
     expect(image['background-repeat']).toBe('no-repeat');
+    // Once the print has decoded, the LQIP goes: its own shape drifts from the photograph's, so it would show as a strip on
+    // the mat around the print (B7 review).
+    expect(declarations(".slide[data-crop='contain'][data-decoded] .slideImage")['background-image']).toBe('none !important');
     // The mat is the carousel's ground: each theme's --gah-mat-fill (HomeChrome.module.css), Dark's and Black's black.
     expect(declarations('.carousel')['background-color']).toBe('var(--gah-mat-fill, #000)');
     expect(declarations('.slide').background).toBeUndefined();
