@@ -217,6 +217,8 @@ describe('the delete-call rail', () => {
             ['viaEscapes', 'loaded.rmSync'],
             ['viaEscapes', 'escapes cp'],
             ['viaEscapes', 'escapes fsp'],
+            // The alias is followed, and each use of it escapes too.
+            ['viaEscapes', 'escapes alias'],
             ['viaEscapes', 'escapes fs.promises'],
             ['<module>', 'escapes fsp'],
             // A shell or interpreter with no literal script may read one on stdin.

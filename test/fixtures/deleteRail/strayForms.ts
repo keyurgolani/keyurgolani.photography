@@ -135,8 +135,8 @@ export function viaBuiltinLoaders(): void {
     load('node:child_process').execSync('rm -rf z');
 }
 
-export function viaEscapes(use: (value: unknown) => void): unknown {
-    use(fs);
+export function viaEscapes(hand: (value: unknown) => void): unknown {
+    hand(fs);
     void import('node:fs').then((loaded) => loaded.rmSync('x'));
     const copy = { ...cp };
     const alias: unknown = fsp;
@@ -175,9 +175,7 @@ export function viaInterpreterScripts(): void {
 }
 
 export function viaEval(code: string): void {
-    // eslint-disable-next-line no-eval -- the rail's positive control: a form it must catch
     eval(code);
-    // eslint-disable-next-line no-new-func -- the rail's positive control: a form it must catch
     void new Function(code);
     void new Worker(code, { eval: true });
 }

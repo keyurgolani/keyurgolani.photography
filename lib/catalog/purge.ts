@@ -26,6 +26,8 @@ import {
     holdsRecorded,
     PERMANENT_TEXT,
     setAsideName,
+    setAsideFolders,
+    setAsideFrom,
     setAsideText,
     TOMBSTONE_ID_RE,
     TOMBSTONES_DIR,
@@ -494,20 +496,30 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         // Each GC run writes its marker, with every exact folder it will delete, before its first delete. Only a
         // recorded folder that is gone, or a recorded file missing or cut short, means a revoke would bring back less than it says.
         const { reached, aside } = await recordedFolders(root, entry.collected);
+        // The same words as photos gc and status --check give for each folder set aside (setAsideFolders()).
+        const leftovers = await setAsideFolders(root, tombstones);
+        const listed = entry.assetRevisions.map((assetRevision) => `assets/${entry.photoId}/${assetRevision}`);
+        const wholeText = (folder: { path: string; original: string }, then?: string) => {
+            const found = leftovers.find((each) => each.path === folder.path);
+            return setAsideText({ path: folder.path, original: folder.original, state: 'whole', occupied: found?.occupied ?? false, originalHolds: false }, then);
+        };
         if (reached.length > 0) {
             const it = reached.length === 1 ? 'it' : 'them';
-            return finish('ALREADY_COLLECTED', `photos gc --apply began deleting ${reached.join(', ')} for ${entry.tombstoneId}, and ${reached.length === 1 ? "it's" : "they're"} gone or cut short now, so a revoke can't bring ${it} back.${NOTHING} ${PERMANENT_TEXT}`);
+            // Item 26's S2: the revoke can't go through, but a folder set aside whole still comes back to finish the takedown with.
+            const whole = aside.length > 0 ? ` Of the rest, ${aside.map((folder) => wholeText(folder, 'then rerun photos gc')).join('; ')}.` : '';
+            return finish('ALREADY_COLLECTED', `photos gc --apply began deleting ${reached.join(', ')} for ${entry.tombstoneId}, and ${reached.length === 1 ? "it's" : "they're"} gone or cut short now, so a revoke can't bring ${it} back.${NOTHING} ${PERMANENT_TEXT}${whole}`);
         }
         if (aside.length > 0) {
-            // Not deleted: a stopped run left it whole beside its place. Renamed back, the revoke goes through.
-            const texts = aside.map((folder) => setAsideText({ ...folder, state: 'whole' }));
-            return finish('SET_ASIDE', `photos gc --apply stopped with ${aside.map((folder) => folder.original).join(', ')} out of place for ${entry.tombstoneId}: ${texts.join('; ')}.${NOTHING}`);
+            // Not deleted: a stopped run left it whole beside its place. Moved back as the text says, the revoke goes through.
+            return finish('SET_ASIDE', `photos gc --apply stopped with ${aside.map((folder) => folder.original).join(', ')} out of place for ${entry.tombstoneId}: ${aside.map((folder) => wholeText(folder)).join('; ')}.${NOTHING}`);
         }
+        // What a stopped run left beside its folders that doesn't block the revoke, said as everywhere else.
+        const left = leftovers.filter((folder) => folder.state !== 'whole' && listed.some((target) => setAsideFrom(folder, target))).map((folder) => ` ${folder.text.charAt(0).toUpperCase()}${folder.text.slice(1)}.`).join('');
         const what = entry.assetRevision === null ? `${entry.photoId}, ${plural(entry.assetRevisions.length, 'asset revision')}` : `${entry.photoId} at ${entry.assetRevision}`;
         const notes = await othersText(entry, tombstones);
         let back = ' From the next request /media serves their sets again wherever the live revision shows them, and GC keeps their bytes.';
         if (notes.text) back = notes.rest > 0 ? ' The rest is served again from the next request wherever the live revision shows it, and GC keeps its bytes.' : '';
-        const revokePlan: RevokePlan = { tombstone: entry, summary: `Revokes ${entry.tombstoneId}, written ${entry.createdAt} by ${entry.actor}: ${what}.${notes.text}${back}` };
+        const revokePlan: RevokePlan = { tombstone: entry, summary: `Revokes ${entry.tombstoneId}, written ${entry.createdAt} by ${entry.actor}: ${what}.${notes.text}${back}${left}` };
         result.revokePlan = revokePlan;
         options.onPlan?.(revokePlan);
         if (!options.yes) return finish('REVOKE_PLANNED', `This was a dry run.${NOTHING} Run it again with --yes to revoke it.`);

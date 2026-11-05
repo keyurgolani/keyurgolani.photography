@@ -72,6 +72,9 @@ export function gcPlanLines(plan: GcPlan): string[] {
     if (plan.kept.length > 0) {
         const why = (kept: GcPlan['kept'][number]) => {
             if (kept.class === 'tombstoned' && kept.reason === 'not-a-folder') return 'taken down, but a symlink or a file, which GC never deletes through';
+            // A leftover is named by the same words, with the owner's steps, as everywhere else.
+            const leftover = kept.reason === 'set-aside-leftover' ? plan.leftovers.find((each) => each.path === kept.detail) : undefined;
+            if (leftover) return `${KEPT_TEXT[kept.reason]}: ${leftover.text}`;
             return kept.detail ? `${KEPT_TEXT[kept.reason]}: ${kept.detail}` : KEPT_TEXT[kept.reason];
         };
         const shown = plan.kept.slice(0, PRINTED_ISSUES).map((kept) => `${kept.path} (${why(kept)})`);

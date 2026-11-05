@@ -11,7 +11,7 @@ import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '.
 import { folderFacts, manifestContent, sizeText, type SetFile } from './asset-folders';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
 import { ALWAYS_PROTECTED, liveReferences, references, ReferenceScanError, type AssetReference, type ReferenceSource } from './references';
-import { collectedFile, graceEndsMs, problemText, readTombstones, setAsideFolders, setAsideName, setAsideText, standingFor, TOMBSTONES_DIR, type CollectedPath, type SetAsideFolder, type TombstoneRead } from './tombstones';
+import { collectedFile, graceEndsMs, holdsRecorded, problemText, readTombstones, setAsideFolders, setAsideFrom, setAsideName, setAsideText, standingFor, TOMBSTONES_DIR, type CollectedPath, type SetAsideFolder, type TombstoneRead } from './tombstones';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish } from './repository';
 import { errorText as sharedErrorText } from './error-text';
 import { holderText } from './rollback';
@@ -591,7 +591,7 @@ async function assetPlan(realRoot: string, refs: readonly AssetReference[], tomb
             continue;
         }
         // A stopped run's .gc- folder for this asset revision, whole or not, waits for the owner: nothing is planned over it (item 21).
-        const left = leftovers.find((each) => each.original === folder.path);
+        const left = leftovers.find((each) => setAsideFrom(each, folder.path));
         if (left) {
             keep('set-aside-leftover', left.path);
             continue;
@@ -993,7 +993,8 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         await hooks.afterRecheck?.(entry);
         const [, photoId, assetRevision] = entry.path.split('/');
         const aside = path.join(path.dirname(checked.target), setAsideName(assetRevision, digest, randomUUID()));
-        const whole = setAsideText({ path: relative(aside), original: entry.path, state: 'whole' });
+        // Said once the folder is stuck aside, with whatever is in its place then.
+        const whole = () => setAsideText({ path: relative(aside), original: entry.path, state: 'whole', occupied: fs.existsSync(checked.target), originalHolds: false });
         assertSameFolders(realRoot, checked);
         // In the same tick as the check. A rename moves the folder itself, and follows no symlink in it.
         fs.renameSync(checked.target, aside);
@@ -1019,7 +1020,7 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
                 // Exit 4 either way, and the owner learns where the folder is, or that what is there isn't it.
                 const where = stuck === NOT_OURS
                     ? `GC can't find the folder it set aside; what is at ${relative(aside)} isn't it.`
-                    : `GC couldn't put ${entry.path} back (${stuck}), so it is ${whole}. GC never deletes it.`;
+                    : `GC couldn't put ${entry.path} back (${stuck}), so it is ${whole()}. GC never deletes it.`;
                 return finish(error instanceof ProtectedNowError ? 'NOW_PROTECTED' : 'STORAGE_ERROR', `${why} ${where} GC stopped there.${deletedSoFar()}`);
             }
             const back = `GC put ${entry.path} back and stopped there.${deletedSoFar()}`;
@@ -1033,6 +1034,10 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
             if (hooks.remove) await hooks.remove(aside, removeSetAside);
             else await removeSetAside(aside);
         } catch (error) {
+            // Item 26's S1: a delete that failed before it removed anything leaves the folder whole, and it is said so.
+            if (await holdsRecorded(aside, entry.files ?? []).catch(() => false)) {
+                return finish('STORAGE_ERROR', `GC stopped: the delete of ${entry.path} failed (${errorText(error, [realRoot, root])}) before it removed anything, so it is ${whole()}. GC never deletes it.${deletedSoFar()}`);
+            }
             result.partial.push(entry.path);
             const ids = (entry.tombstoneIds ?? []).join(', ');
             return finish('STORAGE_ERROR', `GC stopped: partly deleted: ${entry.path}. Its delete failed (${errorText(error, [realRoot, root])}), and what is left of it is in ${relative(aside)}, which every plan reports and GC never deletes. ${ids} can't be revoked for it now.${deletedSoFar()}`);

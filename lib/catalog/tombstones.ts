@@ -423,20 +423,47 @@ export async function holdsRecorded(dir: string, files: readonly { name: string;
 export interface SetAsideFolder {
     /** `assets/<photoId>/.gc-…`, relative to the data root. */
     path: string;
-    /** `assets/<photoId>/<assetRevision>`, where it came from. */
+    /** `assets/<photoId>/<assetRevision>`, where it came from, or `assets/<photoId>/*` when its name doesn't say which revision. */
     original: string;
     /** `whole`: every file the run's marker recorded is there. `partial`: a delete reached it. `unknown`: no marker says what it held. */
     state: 'whole' | 'partial' | 'unknown';
+    /** Whether something is at `original` now. */
+    occupied: boolean;
+    /** Whether what is at `original` holds every file the run recorded, so a partial leftover's takedown isn't permanent. */
+    originalHolds: boolean;
     /** What to say about it, the same in revoke, the plan and `photos status --check`. */
     text: string;
 }
 
-/** The one sentence for a folder set aside, wherever it's reported. */
-export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state'>): string {
-    if (folder.state === 'whole') return `set aside whole at ${folder.path}: rename it back to ${folder.original}, then revoke, or rerun photos gc to finish the takedown`;
-    if (folder.state === 'partial') return `${folder.path} is what is left of ${folder.original}, partly deleted by photos gc --apply: that takedown is permanent, and only a backup of the data root brings it back`;
-    return `${folder.path} was set aside by photos gc --apply, which never deletes it, and no marker says what it held`;
+/** The owner's way to move something out without deleting it. */
+const toTrash = (relative: string) => `(mv ${relative} ~/.Trash/ from the data root), never rm`;
+
+/**
+ * The one sentence for a folder set aside, wherever it's reported, with the
+ * owner's real steps (#181's A10 review, item 25). A whole one: move what is
+ * in its place out of the data root to the Trash, rename it back, then
+ * revoke or rerun `photos gc` (`then` says which). A partial or unknown one:
+ * move it out of `assets/` to the Trash, then rerun `photos gc`. "Permanent"
+ * only when nothing in the folder's place holds what the run recorded.
+ */
+export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state' | 'occupied' | 'originalHolds'>, then = 'then revoke, or rerun photos gc'): string {
+    const out = `move ${folder.path} out of assets/ to the Trash ${toTrash(folder.path)}, then rerun photos gc`;
+    if (folder.state === 'whole') {
+        const back = `rename it back to ${folder.original}; ${then}`;
+        return folder.occupied
+            ? `set aside whole at ${folder.path}, and something else is at ${folder.original}: move that out of the data root to the Trash ${toTrash(folder.original)}, then ${back}`
+            : `set aside whole at ${folder.path}: ${back}`;
+    }
+    if (folder.state === 'partial') {
+        return folder.originalHolds
+            ? `${folder.path} is what is left of a partly deleted copy of ${folder.original}, and ${folder.original} holds everything recorded: ${out}`
+            : `${folder.path} is what is left of ${folder.original}, partly deleted by photos gc --apply: that takedown is permanent, and only a backup of the data root brings it back. M${out.slice(1)}`;
+    }
+    return `${folder.path} was set aside by photos gc --apply, and no marker says what it held: ${out}`;
 }
+
+/** `.gc-<assetRevision>…`, as much of a set-aside name as says which asset revision it came from. */
+const SET_ASIDE_REVISION_RE = /^\.gc-(sha256-[0-9a-f]{64})(?:-|$)/;
 
 /**
  * Every folder a `photos gc --apply` run set aside and didn't finish with,
@@ -444,7 +471,8 @@ export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 
  * whether it is whole by its run's marker: one whose delete failed partway,
  * or that couldn't be put back. GC reports them and never deletes one it
  * didn't make in the same run. Reads with lstat and follows no symlink. A
- * missing `assets/` holds none.
+ * missing `assets/` holds none. A `.gc-` name that only half matches still
+ * counts, for the revision it names, or for the whole photo when it names none.
  */
 export async function setAsideFolders(root: string, read?: TombstoneRead): Promise<SetAsideFolder[]> {
     const store = path.join(/*turbopackIgnore: true*/ root, 'assets');
@@ -464,18 +492,35 @@ export async function setAsideFolders(root: string, read?: TombstoneRead): Promi
             if (!entry.name.startsWith(SET_ASIDE_PREFIX)) continue;
             const relative = `assets/${photo.name}/${entry.name}`;
             const match = SET_ASIDE_RE.exec(entry.name);
-            const original = match ? `assets/${photo.name}/${match[1]}` : `assets/${photo.name}/?`;
+            const revision = SET_ASIDE_REVISION_RE.exec(entry.name)?.[1];
+            const original = revision ? `assets/${photo.name}/${revision}` : `assets/${photo.name}/*`;
             const recorded = match
                 ? tombstones.tombstones.flatMap((each) => each.collected).filter((marker) => digestPrefix(marker.planDigest) === match[2]).flatMap((marker) => marker.paths).find((each) => each.path === original)
                 : undefined;
             let state: SetAsideFolder['state'] = 'unknown';
             if (recorded && entry.isDirectory()) state = (await holdsRecorded(path.join(store, photo.name, entry.name), recorded.files)) ? 'whole' : 'partial';
             else if (recorded) state = 'partial';
-            found.push({ path: relative, original, state, text: setAsideText({ path: relative, original, state }) });
+            let occupied = false;
+            let originalHolds = false;
+            if (revision) {
+                const place = path.join(store, photo.name, revision);
+                try {
+                    const stat = await fs.promises.lstat(place);
+                    occupied = true;
+                    originalHolds = recorded !== undefined && stat.isDirectory() && (await holdsRecorded(place, recorded.files));
+                } catch (error) {
+                    if (!hasErrorCode(error, 'ENOENT')) throw error;
+                }
+            }
+            const folder = { path: relative, original, state, occupied, originalHolds };
+            found.push({ ...folder, text: setAsideText(folder) });
         }
     }
     return found.sort((a, b) => (a.path < b.path ? -1 : 1));
 }
+
+/** Whether a set-aside folder `folder` came from `assets/<photoId>/<assetRevision>` `target`: its revision's, or any of its photo's when its name names none. */
+export const setAsideFrom = (folder: Pick<SetAsideFolder, 'original'>, target: string) => folder.original === target || (folder.original.endsWith('/*') && target.startsWith(folder.original.slice(0, -1)));
 
 const keyOf = (photoId: string, assetRevision: string) => `${photoId}/${assetRevision}`;
 
