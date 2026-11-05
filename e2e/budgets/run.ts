@@ -89,6 +89,8 @@ try {
     const library = path.join(scratch, 'library');
     fs.mkdirSync(library);
     const siteConfig = path.join(scratch, 'site-config');
+    // write-site-config.ts resolves the folder before it writes into it, so the folder must exist first (CI run 42101984876).
+    fs.mkdirSync(siteConfig);
     const env: NodeJS.ProcessEnv = {
         ...(Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.test(name))) as NodeJS.ProcessEnv),
         NEXT_TELEMETRY_DISABLED: '1',
