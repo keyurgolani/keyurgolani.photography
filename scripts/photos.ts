@@ -351,6 +351,16 @@
  *     when something took its place, it exits 4 (PUT_BACK_BLOCKED), leaves it
  *     in trash/, and photos status names it with its holder. Emptying trash/
  *     is the owner's own step.
+ *   npx tsx scripts/photos.ts legacy-derivatives
+ *     Judge the legacy folders a watcher before v1.7.0 wrote at the top of
+ *     the library, for scripts/host/legacy-move-aside.sh. For each of the
+ *     eight names the library's root lists exactly, case-sensitively, it
+ *     records every file with its size and mtime when each is a derivative
+ *     of an original the scan sees at the root, and otherwise why the folder
+ *     stays. It only reads the library, and writes only
+ *     status/legacy-derivatives.json in the data root, which the script takes
+ *     for 24 hours and one --apply. Exits 0 when written, 1 when the library
+ *     or the data root isn't there or ready, and 2 on a usage error.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
  * reads the library exits 1 when it's unset. The data root is
@@ -393,6 +403,7 @@ import { createDecision, decisionFileName, isLibraryPath, writeDecision, type De
 import { ASSET_REVISION_RE } from '../lib/identity/ids';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
 import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
+import { runLegacyDerivativesCommand } from '../lib/identity/legacy-derivatives';
 import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
@@ -450,6 +461,8 @@ ${curationUsage(PROGRAM)}
   ${PROGRAM} gc [--apply <planDigest>]
   ${PROGRAM} gc --set-aside <assets/photoId/assetRevision>
         Moves that folder, or a .gc- folder beside it, into the data root's trash/. It never deletes.
+  ${PROGRAM} legacy-derivatives
+        Writes the manifest scripts/host/legacy-move-aside.sh needs; it only reads the library.
 ${credentialUsage(PROGRAM)}
 A flag given twice is refused, except --accept. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
@@ -751,6 +764,18 @@ async function gcCommand(args: string[]): Promise<number> {
     return runGcCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
 }
 
+async function legacyDerivativesCommand(args: string[]): Promise<number> {
+    if (args.length > 0) throw new UsageError('photos legacy-derivatives takes no arguments.');
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    const status = dataRootStatus({ write: true });
+    if (status.state !== 'ready') {
+        console.error(`[photos] The data root isn't ready (${status.state}${status.detail ? `: ${status.detail}` : ''}). Nothing was written.`);
+        return 1;
+    }
+    return printed(await runLegacyDerivativesCommand({ dataRoot: root, library: libraryRoot() }));
+}
+
 /** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
 function printed(result: CommandResult): number {
     (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
@@ -862,6 +887,7 @@ async function main(argv: string[]): Promise<number> {
         }
         if (command === 'purge') return await purgeCommand(args);
         if (command === 'gc') return await gcCommand(args);
+        if (command === 'legacy-derivatives') return await legacyDerivativesCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {
         if (error instanceof UsageError) {
