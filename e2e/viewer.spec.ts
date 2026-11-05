@@ -78,7 +78,7 @@ test('a former series slug answers 308 to the canonical URL, and nothing it can\
     const moved = await request.get(`${origin()}${href(P[1], 'sentinel-old-slug')}`, { maxRedirects: 0 });
     expect(moved.status()).toBe(308);
     expect(moved.headers()['location']).toBe(href(P[1]));
-    const missing = [href(P[3]), href(P[0], 'ridge'), href(P[4], 'draft'), href(P[5], 'sentinel-hidden'), href(id(99)), href(P[0], 'Harbor'), href(P[0].toUpperCase()), '/work/harbor/photo/IMG_0001.jpg'];
+    const missing = [href(P[4], 'draft'), href(P[5], 'sentinel-hidden'), href(P[4], 'no-such-series'), href(id(99)), href(id(99).toUpperCase()), '/work/harbor/photo/IMG_0001.jpg'];
     for (const path of missing) {
         const response = await request.get(`${origin()}${path}`, { maxRedirects: 0 });
         expect(response.status(), path).toBe(404);
@@ -89,6 +89,34 @@ test('a former series slug answers 308 to the canonical URL, and nothing it can\
         const leaks = ['Fixture harbor', 'Fixture ridge', 'data-surface="viewer"', ...SENTINELS].filter((text) => !path.includes(text));
         for (const text of leaks) expect(html, `${path}: ${text}`).not.toContain(text);
     }
+});
+
+test('a letter-case variant, or a photograph moved to another series, answers 308 to the canonical URL, keeping the query (#7, decided)', async ({ request }) => {
+    for (const [path, location] of [
+        [href(P[0], 'Harbor'), href(P[0])],
+        [href(P[0].toUpperCase()), href(P[0])],
+        [href(P[1], 'SENTINEL-OLD-SLUG'), href(P[1])],
+        // P[0] is in harbor and P[3] in ridge, so each asked for under the other moves to its own.
+        [href(P[0], 'ridge'), href(P[0])],
+        [href(P[3]), href(P[3], 'ridge')],
+        [`${href(P[3], 'Harbor')}?utm_source=mail&tag=one&tag=two`, `${href(P[3], 'ridge')}?utm_source=mail&tag=one&tag=two`],
+        [`${href(P[1], 'sentinel-old-slug')}?photo=${P[1]}`, `${href(P[1])}?photo=${P[1]}`],
+        // A published photo's one home, from any slug in shape: unknown, draft, and hidden slugs answer alike.
+        [href(P[0], 'no-such-series'), href(P[0])],
+        [href(P[0], 'draft'), href(P[0])],
+        [href(P[0], 'sentinel-hidden'), href(P[0])],
+    ]) {
+        const response = await request.get(`${origin()}${path}`, { maxRedirects: 0 });
+        expect(response.status(), path).toBe(308);
+        expect(response.headers()['location'], path).toBe(location);
+        expect(response.headers()['cache-control'], path).toContain('no-store');
+        // One hop, then the Viewer: no redirect loops.
+        const followed = await request.get(new URL(location, origin()).toString(), { maxRedirects: 0 });
+        expect(followed.status(), `${path} -> ${location}`).toBe(200);
+    }
+    // The Location is built from the canonical path, so a query can't send it off the site.
+    const away = await request.get(`${origin()}${href(P[0], 'Harbor')}?next=//evil.example/x`, { maxRedirects: 0 });
+    expect(away.headers()['location']).toBe(`${href(P[0])}?next=%2F%2Fevil.example%2Fx`);
 });
 
 test('a visitor on a photo the Viewer can\'t serve sees the not-found page', async ({ page }) => {

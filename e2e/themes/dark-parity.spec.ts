@@ -781,7 +781,11 @@ const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width) => {
  * layout and left out of the walk in both builds, so the rest of the page is still compared exactly. The report
  * lists them.
  */
-const HEAD_ONLY: { selector: string; why: string }[] = [{ selector: 'header nav a[href="/curation/series"]', why: "#150: the curator header's Series link" }];
+const HEAD_ONLY: { selector: string; why: string }[] = [
+    { selector: 'header nav a[href="/curation/series"]', why: "#150: the curator header's Series link" },
+    // The series header's first child, its only <p>, so nothing after it in the header changes its path.
+    { selector: 'main > article > header > p:first-child:has(> a[href="/work"])', why: "#173 (B4): the series page's All work link above the title" },
+];
 
 const ALLOWANCES: Allowance[] = [
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.

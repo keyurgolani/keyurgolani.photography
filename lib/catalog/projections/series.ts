@@ -6,7 +6,7 @@ import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import { sequenceSections, type SequenceSection } from '../series-sections';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
 import { imageOf, type Ladder } from './ladder';
-import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
+import { CENTER, focal, openableSeries, routeSlug, seriesParams, text, type ScreenCatalog } from './shared';
 
 export { seriesParams } from './shared';
 
@@ -80,6 +80,8 @@ export interface SeriesCover {
     photoId: string;
     /** The cover's place in the sequence, 1-based. */
     position: number;
+    /** The photograph's authored title, or null, as its entry carries it, so the cover's name leads with it too. */
+    title: string | null;
     /** The cover's Viewer link. */
     href: string;
     image: SeriesImage;
@@ -187,7 +189,11 @@ export type SeriesContinuationResult =
 
 export type SeriesPageResult =
     | { kind: 'ok'; page: PublishedSeriesPage }
-    /** The slug is a former one. The route answers 308 to `location`, the canonical series path. */
+    /**
+     * The slug is a former one, or a letter-case variant of the slug or a
+     * former one. The route answers 308 to `location`, the canonical series
+     * path, with the request's query after it.
+     */
     | { kind: 'redirect'; slug: string; location: string }
     /** Malformed, unknown, draft, hidden, removed, or empty. The route renders the one public not-found page. */
     | { kind: 'not-found' };
@@ -272,18 +278,20 @@ type Resolved =
  * The series `slug` names in one source, for the page and its continuation
  * alike: a malformed slug, an unknown one, and a series openableSeries()
  * refuses (a repeated ID, no positive published count, or no member that
- * resolves) are all not-found. Members are the ones that resolve, in
+ * resolves) are all not-found. A letter-case variant of a slug or a former
+ * one finds its series too, as not canonical, so the page redirects it and
+ * the continuation refuses it. Members are the ones that resolve, in
  * `photoIds` order, the list #7's Viewer counts, so positions agree.
  */
 function resolveSeries(source: SeriesSource, slug: unknown): Resolved {
-    const params = seriesParams(slug);
+    const params = routeSlug(slug);
     if (params === null) return NOT_FOUND;
     const hit = source.seriesBySlug(params.slug);
     if (hit === null) return NOT_FOUND;
     const { series } = hit;
     // Work's rule, so Work never links a page that is not-found and the page never serves a series Work leaves out.
     if (!openableSeries(source, series)) return NOT_FOUND;
-    return { kind: 'ok', series, canonical: hit.canonical, members: source.photosOf(series.id), photoCount: series.derived.photoCount };
+    return { kind: 'ok', series, canonical: hit.canonical && params.exact, members: source.photosOf(series.id), photoCount: series.derived.photoCount };
 }
 
 /** The entries of one page, from member `offset` on, with their absolute positions. */
@@ -308,7 +316,9 @@ function nextHrefOf(revisionId: string, series: SeriesRecord, offset: number, to
  * Resolve `/work/<slug>` in one source: resolveSeries()'s not-found cases,
  * then a former slug whose canonical slug the route would refuse, the series
  * #3's Work leaves out, so Work never links a missing page and the page never
- * serves a series Work hides; a former slug redirects; anything else is the
+ * serves a series Work hides; a former slug, or a letter-case variant of the
+ * slug or a former one, redirects to the canonical slug, which renders, so a
+ * redirect never loops; anything else is the
  * projection, with the first page of entries and the path to the next.
  * Hrefs come from `routes`: #13's `publicRoutes` on the site, a preview's own
  * builder in a preview. The continuation path comes from it too: the
@@ -323,6 +333,8 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes
         // Only route.slug-format, at render, checks a canonical slug's shape. If the route's own check would refuse it, the
         // 308 would be permanent and point at a page that is always not-found, so a series the route can't serve has no former slugs.
         if (seriesParams(series.slug) === null) return NOT_FOUND;
+        // A hand-written revision can give two series one slug, and the later takes it: the 308 would show the other series.
+        if (source.seriesBySlug(series.slug)?.series !== series) return NOT_FOUND;
         return { kind: 'redirect', slug: series.slug, location: routes.seriesHref(series.slug) };
     }
 
@@ -336,6 +348,7 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes
         ? {
             photoId: coverPhoto.id,
             position: coverIndex + 1,
+            title: text(coverPhoto.title),
             href: routes.photoHref(series.slug, coverPhoto.id),
             image: coverImage,
             focalPoint: { ...(focal(series.cover.focalPoint) ?? focal(coverPhoto.focalPoint) ?? CENTER) },
@@ -443,11 +456,11 @@ export async function seriesPageFrom<Reason extends string>(
     slug: unknown,
     routes: Routes,
 ): Promise<SeriesPageResult | { kind: 'unavailable'; reason: Reason }> {
-    const params = seriesParams(slug);
-    if (params === null) return NOT_FOUND;
+    // A letter-case variant is in shape once folded, so it reads the catalog, and the projection answers its 308.
+    if (routeSlug(slug) === null) return NOT_FOUND;
     const catalog = await load();
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
-    return catalog.reader.getSeriesPage(params.slug, routes);
+    return catalog.reader.getSeriesPage(slug as string, routes);
 }
 
 /**

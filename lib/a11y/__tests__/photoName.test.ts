@@ -44,6 +44,32 @@ describe('photoEntryName', () => {
         expect(photoEntryName({ alt: untyped({ kind: 'described', text }), position: 2, total: 10 })).toBe('Photograph 2 of 10');
     });
 
+    it('leads with the title when there is one, then the description, then the position', () => {
+        expect(photoEntryName({ title: 'Harbor at dusk', alt: heron, position: 2, total: 10 })).toBe('Harbor at dusk, A heron lifting off a gray lake, photograph 2 of 10');
+    });
+
+    it('is the title and the position for a titled decorative photo, or one with no alt', () => {
+        expect(photoEntryName({ title: 'Harbor at dusk', alt: decorative, position: 2, total: 10 })).toBe('Harbor at dusk, photograph 2 of 10');
+        expect(photoEntryName({ title: 'Harbor at dusk', position: 2, total: 10 })).toBe('Harbor at dusk, photograph 2 of 10');
+    });
+
+    it('drops the title\'s own trailing punctuation and space before the comma', () => {
+        expect(photoEntryName({ title: ' Harbor at dusk. ', alt: heron, position: 2, total: 10 })).toBe('Harbor at dusk, A heron lifting off a gray lake, photograph 2 of 10');
+    });
+
+    it('says the words once when the description is the title', () => {
+        for (const text of ['Harbor at dusk', ' harbor at dusk. ', 'HARBOR AT DUSK']) {
+            expect(photoEntryName({ title: 'Harbor at dusk', alt: { kind: 'described', text }, position: 2, total: 10 }), text).toBe('Harbor at dusk, photograph 2 of 10');
+        }
+        expect(photoEntryName({ title: 'Harbor at dusk.', alt: { kind: 'described', text: 'Harbor at dusk' }, position: 2, total: 10 })).toBe('Harbor at dusk, photograph 2 of 10');
+        // Only the same words: a description that starts with the title stays.
+        expect(photoEntryName({ title: 'Harbor', alt: { kind: 'described', text: 'Harbor at dusk' }, position: 2, total: 10 })).toBe('Harbor, Harbor at dusk, photograph 2 of 10');
+    });
+
+    it.each([null, undefined, '', '  ', ' . ', 42, ['Harbor']])('leaves out a title of %j', (title) => {
+        expect(photoEntryName({ title: title as string | null, alt: heron, position: 2, total: 10 })).toBe('A heron lifting off a gray lake, photograph 2 of 10');
+    });
+
     it('gives each position in a set its own name', () => {
         const names = Array.from({ length: 12 }, (_, index) => photoEntryName({ position: index + 1, total: 12 }));
         expect(new Set(names).size).toBe(12);

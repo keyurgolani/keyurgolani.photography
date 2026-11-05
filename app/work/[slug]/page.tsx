@@ -7,6 +7,7 @@ import { seriesPageFrom } from '@/lib/catalog/projections/series';
 import { CatalogUnavailableError, getActiveCatalog, publicRoutes } from '@/lib/catalog/public-reader';
 import { getSiteOrigin } from '@/lib/site/config';
 import { siteOpenGraph } from '@/lib/site/metadata';
+import { redirectLocation, type PageSearchParams } from '@/lib/site/redirect';
 
 // Per request, never at build: the image builds with no data root, so a build-time read would freeze the series.
 // Dynamic responses also go out uncacheable, so a 308 doesn't stick in a browser after a rollback.
@@ -16,6 +17,8 @@ export const dynamic = 'force-dynamic';
 
 interface SeriesRouteProps {
     params: Promise<{ slug: string }>;
+    /** Read only for a redirect, which keeps the query. Optional, since generateMetadata and the tests don't pass it. */
+    searchParams?: Promise<PageSearchParams>;
 }
 
 /**
@@ -44,6 +47,8 @@ export async function generateMetadata({ params }: SeriesRouteProps): Promise<Me
         title: metadata.title,
         ...(metadata.description !== null && { description: metadata.description }),
         ...(hasOrigin && { alternates: { canonical: metadata.canonicalPath } }),
+        // The revision the page came from, the same one main carries: <meta name="catalog-revision">, for #12's freshness checks.
+        other: { 'catalog-revision': result.page.catalogRevision },
         // Next replaces openGraph whole, so the site's fields go first.
         openGraph: {
             ...siteOpenGraph,
@@ -55,16 +60,18 @@ export async function generateMetadata({ params }: SeriesRouteProps): Promise<Me
 
 /**
  * A published series (#5). The canonical slug renders the series, a former
- * slug answers 308 to the canonical one, and everything else (malformed,
- * unknown, draft, hidden, removed) is the one public not-found. While the
- * catalog is unavailable, nothing published included, it throws, so #21's
- * error page answers 500 with Try again, never a 404.
+ * slug or a letter-case variant answers 308 to the canonical one with the
+ * query kept, and everything else (malformed, unknown, draft, hidden,
+ * removed) is the one public not-found. The Location is the projection's
+ * canonical path, never the requested one, so no request can send it off
+ * the site. While the catalog is unavailable, nothing published included, it
+ * throws, so #21's error page answers 500 with Try again, never a 404.
  */
-export default async function SeriesRoute({ params }: SeriesRouteProps) {
+export default async function SeriesRoute({ params, searchParams }: SeriesRouteProps) {
     const result = await seriesFor((await params).slug);
     switch (result.kind) {
         case 'redirect':
-            return permanentRedirect(result.location);
+            return permanentRedirect(redirectLocation(result.location, await searchParams));
         case 'not-found':
             return notFound();
         case 'unavailable':

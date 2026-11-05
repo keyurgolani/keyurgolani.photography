@@ -7,6 +7,8 @@ export type PhotoAlt = { kind: 'described'; text: string; reviewed?: true } | { 
 
 type Input = {
     alt?: PhotoAlt;
+    /** The photograph's authored title, or null. Only photoEntryName() reads it. */
+    title?: string | null;
     /** 1-based. */
     position: number;
     total: number;
@@ -39,16 +41,31 @@ function description(alt: PhotoAlt | undefined): string | undefined {
     return trimmed.replace(TRAILING, '') ? trimmed : undefined;
 }
 
+/** The trimmed title without its trailing punctuation, or undefined when there's none to use. A JSON record can carry anything. */
+function titleOf(title: unknown): string | undefined {
+    if (typeof title !== 'string') return undefined;
+    const trimmed = title.trim().replace(TRAILING, '');
+    return trimmed === '' ? undefined : trimmed;
+}
+
 /**
  * The name of the control that opens a photograph. described: "<text>,
  * photograph N of T", without the text's trailing punctuation. decorative,
  * unreviewed, or no alt, as `photos carry-over` names a photo: "Photograph N
- * of T".
+ * of T". A title leads when there is one (#5): "<title>, <text>, photograph
+ * N of T", or "<title>, photograph N of T", with its own trailing
+ * punctuation dropped too, and when the description is the title. The
+ * position still keeps each name unique.
  */
 export function photoEntryName(input: Input): string {
     const position = counter(input);
     const text = description(input.alt);
-    return text ? `${text.replace(TRAILING, '')}, photograph ${position}` : `Photograph ${position}`;
+    const named = text ? `${text.replace(TRAILING, '')}, photograph ${position}` : `Photograph ${position}`;
+    const title = titleOf(input.title);
+    if (!title) return named;
+    // A description that is the title, letter case and its trailing punctuation aside, is said once.
+    const same = text !== undefined && text.replace(TRAILING, '').toLowerCase() === title.toLowerCase();
+    return `${title}, ${text && !same ? named : `photograph ${position}`}`;
 }
 
 /**

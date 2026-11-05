@@ -60,7 +60,7 @@ function EntryList({ entries, total }: { entries: SeriesEntry[]; total: number }
                         id={`photo-${entry.photoId}`}
                         href={entry.href}
                         prefetch={false}
-                        aria-label={photoEntryName({ alt: altOf(entry.description), position: entry.position, total })}
+                        aria-label={photoEntryName({ title: entry.title, alt: altOf(entry.description), position: entry.position, total })}
                         className={styles.entry}
                         // The focus ring clears the thumbnail's surround (--ring-room, SeriesPage.module.css).
                         data-ring-room=""

@@ -11,8 +11,9 @@ import { expect, test } from './support/test';
 import { expectSingleTapActivates } from './support/touch';
 
 // A series page (#5) on a published catalog, on both #1 projects: the 200,
-// the 308 from a former slug, one not-found for every case, canonical and
-// share metadata on SITE_URL, the title,
+// the 308 from a former slug and a letter-case variant, with the query kept,
+// one not-found for every case, canonical and share metadata on SITE_URL,
+// the revision marker, the page with JavaScript off, the title,
 // statement, facts, cover, chapters, and authored sequence, the cover's box,
 // focal point, and crop at desktop and mobile sizes, nothing unpublished in
 // the HTML or the RSC payload, the #1 surface checks, Enter and a single tap
@@ -71,10 +72,12 @@ const SENTINELS = [
 ];
 
 /** Every path that must answer exactly like an unknown slug on the catalog server. */
-const NOT_FOUND_PATHS = ['/work/no-such-series', '/work/sentinel-draft', '/work/sentinel-old-draft', '/work/sentinel-hidden', '/work/sentinel-old-hidden', '/work/Harbor', '/work/ser_e2e-harbor'];
+const NOT_FOUND_PATHS = ['/work/no-such-series', '/work/sentinel-draft', '/work/sentinel-old-draft', '/work/sentinel-hidden', '/work/sentinel-old-hidden', '/work/Sentinel-Draft', '/work/ser_e2e-harbor'];
 
 let catalog: TestCatalog | undefined;
 let server: CatalogServer | undefined;
+/** The revision the fixture's publish activated, which the page's markers name. */
+let revisionId: string | null = null;
 
 test.beforeAll(async () => {
     test.setTimeout(HOOK_TIMEOUT);
@@ -115,6 +118,7 @@ test.beforeAll(async () => {
     });
     const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+    revisionId = outcome.revisionId;
     // One entry's derivative set goes missing, as after a partial derivative failure.
     const broken = catalog.content.photos.find((record) => record.id === BROKEN);
     if (!broken) throw new Error('The broken entry is not in the published content');
@@ -159,6 +163,35 @@ test('the canonical slug answers 200 and a former slug 308 to it, neither cachea
     expect(moved.headers()['cache-control']).toContain('no-store');
 });
 
+test('a letter-case variant answers 308 to the canonical slug, and every redirect keeps the query (#5, decided)', async ({ request }) => {
+    for (const [path, location] of [
+        ['/work/Harbor', '/work/harbor'],
+        ['/work/HARBOR', '/work/harbor'],
+        ['/work/Old-Harbor', '/work/harbor'],
+        ['/work/old-harbor?utm_source=mail', '/work/harbor?utm_source=mail'],
+        ['/work/Harbor?tag=one&tag=two', '/work/harbor?tag=one&tag=two'],
+        ['/work/Single?x=a%20b', '/work/single?x=a+b'],
+    ]) {
+        const response = await request.get(`${origin()}${path}`, { maxRedirects: 0 });
+        expect(response.status(), path).toBe(308);
+        expect(response.headers()['location'], path).toBe(location);
+        expect(response.headers()['cache-control'], path).toContain('no-store');
+    }
+});
+
+test('a redirect never leaves the site or loops: the Location is the canonical path, and following it renders the series', async ({ request }) => {
+    const response = await request.get(`${origin()}/work/Old-Harbor?next=//evil.example/x&%23=https://evil.example`, { maxRedirects: 0 });
+    expect(response.status()).toBe(308);
+    const location = response.headers()['location'] ?? '';
+    expect(location).toBe('/work/harbor?next=%2F%2Fevil.example%2Fx&%23=https%3A%2F%2Fevil.example');
+    const target = new URL(location, origin());
+    expect([target.origin, target.pathname]).toEqual([origin(), '/work/harbor']);
+    // One hop, then the page.
+    const followed = await request.get(target.toString(), { maxRedirects: 0 });
+    expect(followed.status()).toBe(200);
+    expect(await followed.text()).toContain('Fixture harbor');
+});
+
 test('every not-found case answers the same status, title, and page', async ({ page, request }) => {
     const answers: { url: string; status: number; headers: Record<string, string | undefined>; title: string | undefined; robots: string | undefined; body: string }[] = [];
     // The harness server has published nothing, so its series pages are #21's error page, not a not-found (e2e/cutover.spec.ts).
@@ -199,6 +232,8 @@ test('the series has its title, statement, canonical link, and share metadata on
     expect(meta(html, 'og:image:alt')).toBeTruthy();
     expect(meta(html, 'twitter:card')).toBe('summary_large_image');
     expect(meta(html, 'twitter:image')).toBe(image);
+    // The revision the page came from, the same one main carries (#5).
+    expect(meta(html, 'catalog-revision')).toBe(revisionId);
     // The share image is a real file /media serves.
     const share = await request.get(`${origin()}${new URL(image).pathname}`);
     expect(share.status()).toBe(200);
@@ -220,6 +255,43 @@ test('the page opens with the title, the statement as text, the derived facts ap
     await expect.poll(() => cover.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     expect(await cover.getAttribute('src')).toMatch(new RegExp(`^/media/${P[1]}/`));
     await expect(main.locator('figure figcaption')).toHaveText('Photograph 3 of 5');
+    await expect(main).toHaveAttribute('data-catalog-revision', revisionId ?? '');
+});
+
+test('an All work link sits above the title, and another after the sequence', async ({ page }) => {
+    await openHarbor(page);
+    const links = page.getByRole('main').getByRole('link', { name: /^All work/ });
+    await expect(links).toHaveCount(2);
+    // Both go to /work, so the top one's name says where, to keep every name unique (the contract's rule 2).
+    await expect(links.first()).toHaveAccessibleName('All work, back to the series list');
+    await expect(links.last()).toHaveAccessibleName('All work');
+    for (const index of [0, 1]) await expect(links.nth(index)).toHaveAttribute('href', '/work');
+    const top = await links.first().boundingBox();
+    const title = await page.getByRole('main').getByRole('heading', { level: 1 }).boundingBox();
+    expect(top && title && top.y + top.height).toBeLessThanOrEqual(title?.y ?? 0);
+    const end = await links.last().boundingBox();
+    const last = await entry(page, HARBOR.at(-1) ?? '').boundingBox();
+    expect(end && last && end.y).toBeGreaterThan(last?.y ?? 0);
+    await links.first().click();
+    await expect(page).toHaveURL(`${origin()}/work`);
+});
+
+test.describe('with JavaScript disabled', () => {
+    test.use({ javaScriptEnabled: false });
+
+    test('the server HTML holds the h1, the statement, the cover, every entry, and both All work links', async ({ page }) => {
+        await page.goto(`${origin()}/work/harbor`);
+        const main = page.getByRole('main');
+        await expect(main.getByRole('heading', { level: 1 })).toHaveText('Fixture harbor');
+        await expect(main.getByText('The first paragraph of the harbor.')).toBeVisible();
+        const cover = main.locator('figure img');
+        await expect.poll(() => cover.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+        expect(await cover.getAttribute('src')).toMatch(new RegExp(`^/media/${P[1]}/`));
+        await expect(entries(page)).toHaveCount(HARBOR.length);
+        for (const [index, photoId] of HARBOR.entries()) await expect(entries(page).nth(index)).toHaveAttribute('href', viewerPath(photoId));
+        await expect(main.getByRole('link', { name: /^All work/ })).toHaveCount(2);
+        await expect(main).toHaveAttribute('data-catalog-revision', revisionId ?? '');
+    });
 });
 
 type Box = { x: number; y: number; width: number; height: number } | null;
@@ -295,7 +367,9 @@ test('the sequence keeps the authored order across its chapter, each entry a lin
     await expect(chapter.locator('ol')).toHaveAttribute('start', '3');
     await expect(chapter.locator('ol > li > a')).toHaveCount(3);
     await expect(entry(page, P[0]).locator('xpath=..').locator('p')).toContainText('Fixture harbor title');
-    const end = page.getByRole('main').getByRole('link', { name: 'All work' });
+    // A titled photograph's name leads with its title (#5).
+    await expect(entry(page, P[0])).toHaveAccessibleName(/^Fixture harbor title, .*photograph 2 of 5$/);
+    const end = page.getByRole('main').getByRole('link', { name: 'All work', exact: true }).last();
     await expect(end).toHaveAttribute('href', '/work');
 });
 
@@ -331,7 +405,7 @@ test('the page passes the #1 checks, with SiteNav outside main, Work current, an
     await openHarbor(page);
     await checkSurface(page, {
         entries: entries(page),
-        controls: [primary(page).locator('a, button'), page.locator('#series-cover'), page.getByRole('main').getByRole('link', { name: 'All work' })],
+        controls: [primary(page).locator('a, button'), page.locator('#series-cover'), page.getByRole('main').getByRole('link', { name: /^All work/ })],
     });
     await expectHoverRulesGated(page);
     await expect(page.locator('main nav')).toHaveCount(0);
@@ -339,16 +413,16 @@ test('the page passes the #1 checks, with SiteNav outside main, Work current, an
     await expect(page.locator('[data-surface]')).toHaveCount(0);
 });
 
-test('Tab reaches the cover right after SiteNav, then the entries in order, then All work, and Enter opens the focused photograph\'s Viewer URL', async ({ page }) => {
+test('Tab reaches All work right after SiteNav, then the cover, the entries in order, then All work, and Enter opens the focused photograph\'s Viewer URL', async ({ page }) => {
     await openHarbor(page);
     // The wordmark, Home, Work, About, and the theme toggle come first.
     for (let press = 0; press < 5; press++) await page.keyboard.press('Tab');
     const hrefs: (string | null)[] = [];
-    for (let press = 0; press <= HARBOR.length + 1; press++) {
+    for (let press = 0; press <= HARBOR.length + 2; press++) {
         await page.keyboard.press('Tab');
         hrefs.push(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? null));
     }
-    expect(hrefs).toEqual([viewerPath(P[1]), ...HARBOR.map(viewerPath), '/work']);
+    expect(hrefs).toEqual(['/work', viewerPath(P[1]), ...HARBOR.map(viewerPath), '/work']);
     await entry(page, P[0]).focus();
     await page.keyboard.press('Enter');
     // e2e/series-return.spec.ts covers the Viewer this opens and the return from it.

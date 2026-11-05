@@ -29,14 +29,40 @@ export const dimension = (n: unknown): n is number => typeof n === 'number' && N
 
 /**
  * A series slug param when it is in #13's shape. Exact, so a letter-case
- * variant fails. Nothing here reads the catalog, and a param never reaches
- * a path. The not-found redirect rule runs it on a canonical slug too: a
- * former slug never 308s to one the route would refuse.
+ * variant fails: the continuation endpoint and the peek take only the
+ * canonical slug, and routeSlug() is the routes' own check. Nothing here
+ * reads the catalog, and a param never reaches a path. The not-found
+ * redirect rule runs it on a canonical slug too: a former slug never 308s to
+ * one the route would refuse.
  */
 export function seriesParams(slug: unknown): { slug: string } | null {
     if (typeof slug !== 'string') return null;
     if (slug.length > MAX_SLUG_LENGTH || !SLUG_RE.test(slug)) return null;
     return { slug };
+}
+
+/**
+ * `value` with its ASCII letters lowered and nothing else touched. Not
+ * toLowerCase(), which folds the Kelvin sign into `k` and `İ` into two
+ * characters, so only a plain letter-case variant ever folds onto a slug or
+ * a photo ID.
+ */
+export function foldLetterCase(value: string): string {
+    return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+/**
+ * The series slug a route param names, letter case aside (#5, decided: a
+ * letter-case variant answers 308 to the canonical URL): seriesParams() on
+ * the folded param, and whether the param was already that. Null for
+ * anything seriesParams() refuses once folded, so a malformed param still
+ * never reads the catalog. The folded slug only looks a series up; a
+ * redirect's Location is always the series' own slug.
+ */
+export function routeSlug(slug: unknown): { slug: string; exact: boolean } | null {
+    if (typeof slug !== 'string') return null;
+    const params = seriesParams(foldLetterCase(slug));
+    return params === null ? null : { slug: params.slug, exact: params.slug === slug };
 }
 
 /** What openableSeries() reads. Every screen's source has it. */

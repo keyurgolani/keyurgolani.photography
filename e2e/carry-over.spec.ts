@@ -80,9 +80,11 @@ test('the series page has the h1 and the facts, no statement, and names each pho
     await page.goto(`${origin()}/work/gallery`);
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Gallery');
-    // The header holds the h1 and the facts only: no statement block, so no empty band between them.
-    await expect(page.locator('article > header > *')).toHaveCount(2);
-    await expect(page.locator('article > header > section[aria-labelledby="series-facts"]')).toBeVisible();
+    // The header holds the All work link above the title (#173: "A second All work link sits above the title"),
+    // then the h1 and the facts only: no statement block, so no empty band between the h1 and the facts.
+    await expect(page.locator('article > header > *')).toHaveCount(3);
+    await expect(page.locator('article > header > p:first-child > a[href="/work"]')).toBeVisible();
+    await expect(page.locator('article > header > h1 + section[aria-labelledby="series-facts"]')).toBeVisible();
     for (const [index] of data().order.entries()) {
         await expect(page.getByRole('link', { name: `Photograph ${index + 1} of 12`, exact: true })).toHaveCount(1);
     }
