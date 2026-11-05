@@ -83,6 +83,7 @@ describe('buildLegacyManifest', () => {
             write(path.join(lib, relative), derivative(relative));
         }
         write(path.join(lib, 'cache', 'set-sources', 'b.json'), '{"source":"b.png","complete":false}\n');
+        write(path.join(lib, 'cache', 'upright-rebuild.json'), `${JSON.stringify({ rebuiltAt: '2026-01-02T03:04:05.000Z', photos: 2, retry: ['a.jpg'] }, null, 2)}\n`);
         fs.utimesSync(path.join(lib, 'thumbnails', 'a.webp'), 1_700_000_000, 1_700_000_123);
         const manifest = await buildLegacyManifest(lib, { clock: () => Date.parse('2026-11-05T03:00:00.000Z') });
         expect(manifest.schemaVersion).toBe(1);
@@ -118,6 +119,7 @@ describe('buildLegacyManifest', () => {
         ['a dot-file', 'thumbnails', ['thumbnails/a.webp', 'thumbnails/.DS_Store'], 'named for an original'],
         ['a subfolder', 'thumbnails', ['thumbnails/a.webp', 'thumbnails/sub/a.webp'], 'is a folder'],
         ['a file directly in cache/', 'cache', ['cache/a-400-75.webp'], "isn't in cache/dynamic/ or cache/set-sources/"],
+        ['another JSON file directly in cache/', 'cache', ['cache/legacy-derivatives.json'], "isn't in cache/dynamic/ or cache/set-sources/"],
         ['another subfolder of cache/', 'cache', ['cache/dynamic/a-400-75.webp', 'cache/other/a-400-75.webp'], 'is a folder'],
         ['a cache file of another shape', 'cache', ['cache/dynamic/a-401-75.webp'], "isn't named as the old image route's cache"],
         ["a JPEG cache file, an original's extension", 'cache', ['cache/dynamic/a-400-75.jpeg'], "has an original's extension"],
@@ -142,6 +144,11 @@ describe('buildLegacyManifest', () => {
         ['a set record that is no JSON', 'cache/set-sources/a.json', 'not json', "cache/set-sources/a.json isn't a set record the v1.x pipeline wrote"],
         ['a set record with another field', 'cache/set-sources/a.json', '{"source":"a.jpg","owner":"me"}', "isn't a set record"],
         ['a set record for another source', 'cache/set-sources/a.json', '{"source":"b.png"}', "isn't a set record"],
+        ['an upright marker with another field', 'cache/upright-rebuild.json', '{"rebuiltAt":"2026-01-02T03:04:05.000Z","photos":2,"owner":"me"}', "cache/upright-rebuild.json isn't the marker the v1.x pipeline wrote"],
+        ['an upright marker with a count that is no count', 'cache/upright-rebuild.json', '{"rebuiltAt":"2026-01-02T03:04:05.000Z","photos":-1}', "isn't the marker"],
+        ['an upright marker with no time', 'cache/upright-rebuild.json', '{"photos":2}', "isn't the marker"],
+        ['an upright marker with an empty retry list', 'cache/upright-rebuild.json', '{"rebuiltAt":"2026-01-02T03:04:05.000Z","photos":2,"retry":[]}', "isn't the marker"],
+        ['an upright marker that is no JSON', 'cache/upright-rebuild.json', 'done', "isn't the marker"],
     ])('says a folder stays for %s, by its content', async (_label, relative, bytes, reason) => {
         const lib = library(tempRoot());
         write(path.join(lib, relative), bytes);
