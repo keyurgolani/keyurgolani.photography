@@ -33,5 +33,6 @@ export const fitSizes = (width: number, height: number) =>
  */
 export function zoomWidth(fitted: number | null, natural: number): number {
     if (fitted === null || !(fitted > 0)) return natural;
-    return Math.round(Math.max(fitted, Math.min(2 * fitted, natural)));
+    // Up to a whole pixel, so it's never under the fitted width.
+    return Math.ceil(Math.max(fitted, Math.min(2 * fitted, natural)));
 }

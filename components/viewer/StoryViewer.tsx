@@ -46,34 +46,50 @@ type ViewerImage = NonNullable<PublishedViewerPhoto['photo']['image']>;
  */
 function Photograph({ image, alt, zoomed, largest }: { image: ViewerImage; alt: string; zoomed: boolean; largest: number }) {
     const frame = useRef<HTMLElement>(null);
+    const retryButton = useRef<HTMLButtonElement>(null);
     const [failed, setFailed] = useState(false);
     /** Each Retry is a new image: a failed one doesn't fetch again. */
     const [attempt, setAttempt] = useState(0);
     /** Set by Retry, whose button goes with the failure, so focus lands on the photograph's box instead of the page. */
     const [refocus, setRefocus] = useState(false);
-    /** The photograph's fitted width, read while it isn't zoomed, for zoomWidth(). */
+    /**
+     * The photograph's fitted width, for zoomWidth(), kept current while it isn't zoomed: read at once, then whenever the
+     * box resizes. In the modal the first read comes before showModal() gives the box its place, so the observer's
+     * later reads are the ones that count.
+     */
     const [fitted, setFitted] = useState<number | null>(null);
     useLayoutEffect(() => {
         const element = frame.current;
         if (zoomed || failed || element === null) return;
-        const measure = () => {
-            const { width } = element.getBoundingClientRect();
+        const take = (width: number) => {
             if (width > 0) setFitted(width);
         };
-        measure();
-        window.addEventListener('resize', measure);
-        return () => window.removeEventListener('resize', measure);
+        take(element.getBoundingClientRect().width);
+        if (typeof ResizeObserver === 'undefined') {
+            const onResize = () => take(element.getBoundingClientRect().width);
+            window.addEventListener('resize', onResize);
+            return () => window.removeEventListener('resize', onResize);
+        }
+        const observer = new ResizeObserver((entries) => {
+            for (const entry of entries) take(entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width);
+        });
+        observer.observe(element);
+        return () => observer.disconnect();
     }, [zoomed, failed, attempt]);
+    // After Retry, focus goes where the visitor can act: the photograph's box once it shows, or Retry again if it failed again.
     useEffect(() => {
-        if (refocus && !failed) frame.current?.focus({ preventScroll: true });
+        if (!refocus) return;
+        if (failed) retryButton.current?.focus({ preventScroll: true });
+        else frame.current?.focus({ preventScroll: true });
     }, [refocus, failed, attempt]);
     const shape = { '--ratio': `${image.width} / ${image.height}` } as CSSProperties;
     if (failed) {
         return (
             <div className={`${styles.missing} ${styles.failed}`} style={shape} data-photo="unavailable" data-viewer-current="">
-                <p className={styles.missingLabel}>{FAILED_LABEL}</p>
+                <p className={styles.failedLabel}>{FAILED_LABEL}</p>
                 {alt !== '' && <p className={styles.failedAlt}>{alt}</p>}
                 <button
+                    ref={retryButton}
                     type="button"
                     className={styles.control}
                     onClick={() => {

@@ -104,9 +104,13 @@ export default function ResponsivePhoto({
   ref,
 }: ResponsivePhotoProps) {
   const element = useRef<HTMLImageElement | null>(null);
-  /** Set once an AVIF file failed: the <picture> then offers WebP alone. */
-  const [webpOnly, setWebpOnly] = useState(false);
-  const retried = useRef(false);
+  /** The photograph's own file, which names it: a retry belongs to one photograph, and another in this element starts afresh. */
+  const photo = asset.variants.w1200.webp.url;
+  /** The photograph whose AVIF file failed: while it's this one, the <picture> offers WebP alone. */
+  const [webpFor, setWebpFor] = useState<string | null>(null);
+  const webpOnly = webpFor === photo;
+  /** The retry this element took: for which photograph, and the AVIF file that failed, whose error may arrive twice. */
+  const retried = useRef<{ photo: string; from: string } | null>(null);
   const setRef = useCallback(
     (node: HTMLImageElement | null) => {
       element.current = node;
@@ -127,11 +131,17 @@ export default function ResponsivePhoto({
   // The latest props, for the mount check, which runs once.
   const latest = useRef({ asset, onError, loading });
   latest.current = { asset, onError, loading };
+  // Idempotent: the mount check and the error event can both see one AVIF failure, in either order. Only a file other
+  // than the one the retry answered (the WebP the browser picked next) is the photograph's failure.
   const failed = useCallback((image: HTMLImageElement) => {
     const { asset: current, onError: report } = latest.current;
-    if (!retried.current && isAvif(current.variants, image.currentSrc)) {
-      retried.current = true;
-      setWebpOnly(true);
+    const own = current.variants.w1200.webp.url;
+    const retry = retried.current?.photo === own ? retried.current : null;
+    const picked = image.currentSrc === '' ? null : pathOf(image.currentSrc);
+    if (retry !== null && picked === retry.from) return;
+    if (retry === null && picked !== null && isAvif(current.variants, image.currentSrc)) {
+      retried.current = { photo: own, from: picked };
+      setWebpFor(own);
       return;
     }
     report?.();
@@ -145,6 +155,8 @@ export default function ResponsivePhoto({
     const image = element.current;
     if (checked.current) return;
     checked.current = true;
+    // An error event that came first already took the retry.
+    if (retried.current !== null) return;
     if (image && image.complete && image.naturalWidth === 0 && (image.currentSrc !== '' || latest.current.loading === 'eager')) failed(image);
   }, [failed]);
 

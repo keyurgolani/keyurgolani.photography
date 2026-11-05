@@ -82,12 +82,7 @@ export function positionLabel(position: number, total: number): string {
     return paddedPosition(position, total);
 }
 
-/** The header's heading as a screen reader hears it: the series, then the place in it. */
-export function headingText(seriesTitle: string, position: number, total: number): string {
-    return `${seriesTitle}, ${headingPosition(position, total)}`;
-}
-
-/** The part of the heading after the series title, which the header renders for screen readers only. */
+/** The heading's part after the series title, for screen readers only: the heading reads "{series}, photograph N of T". */
 export function headingPosition(position: number, total: number): string {
     return `photograph ${position} of ${total}`;
 }

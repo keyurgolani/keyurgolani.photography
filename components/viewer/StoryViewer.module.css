@@ -455,10 +455,23 @@
   max-width: min(100%, 65ch);
 }
 
-.failedAlt {
+/* The sentence says what happened, so it reads as written, in sentence case, not in the missing-image label's capitals. */
+.failedLabel {
   margin: 0;
+  color: var(--cc-ink);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.failedLabel,
+.failedAlt {
   padding: 0.125rem 0.25rem;
   background: var(--cc-chrome);
+}
+
+.failedAlt {
+  margin: 0;
   color: var(--cc-ink-soft);
   line-height: 1.5;
   overflow-wrap: anywhere;
