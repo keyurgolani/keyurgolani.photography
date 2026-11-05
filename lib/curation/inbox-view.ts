@@ -601,6 +601,20 @@ export function humanDate(date: string): string | null {
  * browser's own zone once the page runs. Anything that isn't a timestamp, or
  * a zone the runtime doesn't know, shows as it is.
  */
+/**
+ * How long ago, in the CLI's and the Inbox's short words: `under a minute`,
+ * `N min` below an hour, `N h` below two days, then `N days`. Rounded down,
+ * so a stale heartbeat never reads younger than it is.
+ */
+export function ageText(ms: number): string {
+    const minutes = Math.floor(Math.abs(ms) / 60_000);
+    if (minutes < 1) return 'under a minute';
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours} h`;
+    return `${Math.floor(hours / 24)} days`;
+}
+
 export function humanTime(iso: string, timeZone = 'UTC'): string {
     const at = new Date(iso);
     if (!/^\d{4}-\d{2}-\d{2}T/.test(iso) || Number.isNaN(at.getTime())) return iso;

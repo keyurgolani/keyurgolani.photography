@@ -98,7 +98,7 @@ describe('photos status --check', () => {
         await beat(f, 30_000);
         await deliver(f, [f.fact('new', f.fresh[0])]);
         const result = await status(f, { check: true });
-        expect(result.output).toContain('Inbox: 1 need review, 0 missing sources, 0 failures, 0 ambiguous, 0 stale');
+        expect(result.output).toContain('Inbox: 1 needs review, 0 missing sources, 0 failures, 0 ambiguous, 0 stale');
         expect(result.exitCode).toBe(0);
     });
 

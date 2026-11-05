@@ -35,12 +35,17 @@
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
  *
- *   npx tsx scripts/photos.ts status [--json]
+ *   npx tsx scripts/photos.ts status [--json] [--check]
  *     The data root, the catalog mode and active revision, the last publish,
  *     registry counts, the working layer's records, how many photos no series
  *     lists and how many have no reviewed description, the curation inbox's
- *     open missing sources and failures (#17), and the watcher's heartbeat.
- *     Exits 1 unless the data root is ready and everything reads.
+ *     counts (what needs review, and the open missing, failed, ambiguous and
+ *     stale items, each listed, a missing one with its age), and the
+ *     watcher's heartbeat. Exits 1 unless the data root is ready and
+ *     everything reads. --check is for a monitor: it also exits 1 on an open
+ *     missing, failed or ambiguous item, on a failed last watcher pass, or on
+ *     a heartbeat over 5 minutes old, and prints why; --json then adds a
+ *     `check` object with a code for each.
  *
  *   npx tsx scripts/photos.ts list [--unassigned] [--json]
  *     Every photo the registry holds, but not archived ones, with its library
@@ -316,7 +321,7 @@ const USAGE = `Usage:
   ${PROGRAM} identity archive <photoId> [--reason <text>]
   ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
   ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]
-  ${PROGRAM} status [--json]
+  ${PROGRAM} status [--json] [--check]
   ${PROGRAM} list [--unassigned] [--json]
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
@@ -625,9 +630,9 @@ function ownerRoot(): string | number {
 }
 
 async function statusCommand(args: string[]): Promise<number> {
-    const { values } = parseFlags({ args, options: { json: { type: 'boolean' } } });
+    const { values } = parseFlags({ args, options: { json: { type: 'boolean' }, check: { type: 'boolean' } } });
     // status is the diagnostic command, so it reports even with no data root.
-    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json }));
+    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check }));
 }
 
 async function listCommand(args: string[]): Promise<number> {

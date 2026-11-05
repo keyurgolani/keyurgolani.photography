@@ -52,8 +52,19 @@ export async function writeWatcherHeartbeat(root: string, heartbeat: WatcherHear
  * heartbeat predates the field), or why it says nothing.
  */
 export type HeartbeatAge =
-    | { found: true; heartbeatAt: string; ageMs: number; passRunningMs: number | null; libraryEmpty: boolean }
+    | {
+          found: true;
+          heartbeatAt: string;
+          ageMs: number;
+          passRunningMs: number | null;
+          libraryEmpty: boolean;
+          /** The last pass's result and when it finished, or null before the first or when the heartbeat doesn't say. */
+          lastPassResult: PassResult | null;
+          lastPassAt: string | null;
+      }
     | { found: false; reason: string };
+
+const PASS_RESULT_RE = /^(committed|locked|failed|library-empty|data-root-(unset|unavailable|unwritable|uninitialized))$/;
 
 /** Read the heartbeat under `root`. Never throws. */
 export async function watcherHeartbeatAge(root: string, clock: () => number = Date.now): Promise<HeartbeatAge> {
@@ -74,7 +85,31 @@ export async function watcherHeartbeatAge(root: string, clock: () => number = Da
     }
     const now = clock();
     const libraryEmpty = isRecord(heartbeat) && heartbeat.lastPassResult === 'library-empty';
-    return { found: true, heartbeatAt: at, ageMs: now - Date.parse(at), passRunningMs: typeof started === 'string' ? now - Date.parse(started) : null, libraryEmpty };
+    const result = isRecord(heartbeat) ? heartbeat.lastPassResult : undefined;
+    const lastAt = isRecord(heartbeat) ? heartbeat.lastPassAt : undefined;
+    return {
+        found: true,
+        heartbeatAt: at,
+        ageMs: now - Date.parse(at),
+        passRunningMs: typeof started === 'string' ? now - Date.parse(started) : null,
+        libraryEmpty,
+        lastPassResult: typeof result === 'string' && PASS_RESULT_RE.test(result) ? (result as PassResult) : null,
+        lastPassAt: typeof lastAt === 'string' && !Number.isNaN(Date.parse(lastAt)) ? lastAt : null,
+    };
+}
+
+/**
+ * #14 and #17: a heartbeat more than this old, or stamped more than this
+ * ahead of the reader's clock, is stale. `photos status --check` fails on
+ * it, and the curator's Inbox warns that new photographs won't appear until
+ * the watcher runs. Ten of the watcher's 30 s beats, so a slow pass or a
+ * restart doesn't page; the container's own healthcheck stays at 120 s.
+ */
+export const WATCHER_STALE_AFTER_MS = 5 * 60_000;
+
+/** Whether a heartbeat this old (negative: stamped ahead of the clock) is stale. */
+export function heartbeatStale(ageMs: number): boolean {
+    return ageMs > WATCHER_STALE_AFTER_MS || ageMs < -WATCHER_STALE_AFTER_MS;
 }
 
 /** The watcher's healthcheck passes while its heartbeat is at most this old, four of the 30 s beats. */

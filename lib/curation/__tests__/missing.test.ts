@@ -1438,7 +1438,7 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
 describe('photos status lines', { timeout: 60_000 }, () => {
     it('list each open missing source and failure, what still shows it, and no host path', async () => {
         const w = await world();
-        expect(inboxAlertLines(await inboxAlerts(w.root))).toEqual(['Inbox: 0 missing sources, 0 failures open']);
+        expect(inboxAlertLines(await inboxAlerts(w.root))).toEqual(['Inbox: 0 need review, 0 missing sources, 0 failures, 0 ambiguous, 0 stale']);
         removeP(w);
         await w.pass();
         fs.writeFileSync(w.lib.file('harbor/third.jpg'), images.third);
@@ -1451,7 +1451,7 @@ describe('photos status lines', { timeout: 60_000 }, () => {
         expect(alerts.missing).toEqual([expect.objectContaining({ eventId: w.missingId, photoId: w.p, sourcePath: P_PATH, shownBy: [`the active revision ${w.revisionId}`, `the series ${SERIES}`] })]);
         expect(alerts.failed).toEqual([expect.objectContaining({ eventId: failureEventId(r, assetRevision), failure: 'derivative set build' })]);
         const lines = inboxAlertLines(alerts);
-        expect(lines[0]).toBe('Inbox: 1 missing source, 1 failure open');
+        expect(lines[0]).toBe('Inbox: 3 need review, 1 missing source, 1 failure, 0 ambiguous, 0 stale');
         expect(lines[1]).toMatch(new RegExp(`^  missing  ${w.p.slice(0, 11)}  ${P_PATH}  since .+, open; the active revision ${w.revisionId} and the series ${SERIES} still show it  \\(${w.missingId}@\\d+\\)$`));
         expect(lines[2]).toContain('failed   ');
         expect(lines.join('\n')).not.toContain(w.root);

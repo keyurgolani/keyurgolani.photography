@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { inboxAlertLines, inboxAlerts, type InboxAlerts } from '../curation/alerts';
+import { ageText } from '../curation/inbox-view';
+import { heartbeatStale, WATCHER_STALE_AFTER_MS, watcherHeartbeatAge, type HeartbeatAge } from '../identity/heartbeat';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import { identityStatus, type IdentityStatus } from '../identity/status';
@@ -18,6 +20,10 @@ import { readActivePointer, readWorkingLayer } from './working-layer';
  * Like sequence-commands.ts, each takes parsed arguments and a data root and
  * returns the exit code and the text to print: 0 when everything read, 1 when
  * the data root isn't ready or a file it needs can't be read.
+ *
+ * `photos status --check` (#14 and #17, v2.0.0) is the monitor's form: it
+ * also exits 1 on an open missing, failed or ambiguous item, on a failed
+ * last pass, or on a heartbeat over 5 minutes old, and prints why.
  */
 
 /** A photo's description, as the description rules see it. */
@@ -211,7 +217,7 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
         status.working = workingSummary(await readWorkingLayer(root), await readRegistry(root));
     }
     try {
-        status.inbox = await inboxAlerts(root);
+        status.inbox = await inboxAlerts(root, clock);
     } catch (error) {
         status.inbox = { error: message(error) };
     }
@@ -277,17 +283,76 @@ function formatStatus(status: OwnerStatus): string {
     }
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
-    lines.push(`Watcher heartbeat: ${identity.watcher ? `${identity.watcher.ageSeconds} s ago (${identity.watcher.heartbeatAt})` : 'none yet'}`);
+    const late = identity.watcher !== null && identity.watcher.ageSeconds * 1000 > WATCHER_STALE_AFTER_MS
+        ? ", over 5 minutes old, so new photographs won't reach the Inbox until the watcher runs"
+        : '';
+    lines.push(`Watcher heartbeat: ${identity.watcher ? `${identity.watcher.ageSeconds} s ago (${identity.watcher.heartbeatAt})${late}` : 'none yet'}`);
     return `${lines.join('\n')}\n`;
 }
 
-/** `photos status [--json]`. */
-export async function runStatusCommand(layer: StatusHandle, { json = false, clock }: { json?: boolean; clock?: () => number } = {}): Promise<CommandResult> {
+/** Why `photos status --check` fails, one code each, so a monitor can tell them apart. A6 adds `library-unavailable`. */
+export type CheckCode = 'status-incomplete' | 'missing-open' | 'failed-open' | 'ambiguous-open' | 'last-pass-failed' | 'heartbeat-missing' | 'heartbeat-stale';
+
+export interface StatusCheck {
+    ok: boolean;
+    problems: { code: CheckCode; message: string }[];
+}
+
+/** The heartbeat's problem for the check, or null while it's fresh. */
+function heartbeatProblem(heartbeat: HeartbeatAge): StatusCheck['problems'][number] | null {
+    if (!heartbeat.found) {
+        return {
+            code: 'heartbeat-missing',
+            message: /doesn't exist$/.test(heartbeat.reason) ? "The watcher hasn't written a heartbeat, so nothing shows it runs" : `The watcher's heartbeat can't be used: ${heartbeat.reason}`,
+        };
+    }
+    if (!heartbeatStale(heartbeat.ageMs)) return null;
+    return {
+        code: 'heartbeat-stale',
+        message: heartbeat.ageMs < 0
+            ? `The watcher's heartbeat is stamped ${ageText(heartbeat.ageMs)} ahead of this clock, at ${heartbeat.heartbeatAt}`
+            : `The watcher's heartbeat is ${ageText(heartbeat.ageMs)} old, over 5 minutes, at ${heartbeat.heartbeatAt}`,
+    };
+}
+
+/** `--check`'s verdict on what status read, and on the heartbeat. `complete` is whether status itself read everything. */
+async function statusCheck(status: OwnerStatus, dataRoot: string | null, complete: boolean, clock: () => number): Promise<StatusCheck> {
+    const problems: StatusCheck['problems'] = [];
+    if (!complete) problems.push({ code: 'status-incomplete', message: "Status couldn't read everything it reports, as above, so nothing shows the photographs are safe" });
+    if (status.inbox && !('error' in status.inbox)) {
+        const { missing, failed, ambiguous } = status.inbox;
+        if (missing.length > 0) {
+            const oldest = Math.max(...missing.map((item) => item.ageSeconds));
+            problems.push({ code: 'missing-open', message: `${count(missing.length, 'missing source')} open, the oldest ${ageText(oldest * 1000)} old` });
+        }
+        if (failed.length > 0) problems.push({ code: 'failed-open', message: `${count(failed.length, 'failure')} open` });
+        if (ambiguous.length > 0) problems.push({ code: 'ambiguous-open', message: `${ambiguous.length} ambiguous ${ambiguous.length === 1 ? 'item' : 'items'} open` });
+    }
+    const heartbeat: HeartbeatAge = dataRoot === null
+        ? { found: false, reason: "PHOTOGRAPHY_DATA_DIR is not set, so there's no heartbeat to read" }
+        : await watcherHeartbeatAge(path.resolve(dataRoot), clock);
+    if (heartbeat.found && heartbeat.lastPassResult === 'failed') {
+        problems.push({ code: 'last-pass-failed', message: `The watcher's last pass failed${heartbeat.lastPassAt ? `, at ${heartbeat.lastPassAt}` : ''}` });
+    }
+    const late = heartbeatProblem(heartbeat);
+    if (late) problems.push(late);
+    return { ok: problems.length === 0, problems };
+}
+
+function checkLines(check: StatusCheck): string {
+    return check.ok ? 'Check: passed.\n' : `${['Check: failed.', ...check.problems.map((problem) => `  - ${problem.message}.`)].join('\n')}\n`;
+}
+
+/** `photos status [--json] [--check]`. */
+export async function runStatusCommand(layer: StatusHandle, { json = false, check = false, clock }: { json?: boolean; check?: boolean; clock?: () => number } = {}): Promise<CommandResult> {
     try {
-        const status = await ownerStatus({ ...layer, clock: clock ?? layer.clock });
+        const now = clock ?? layer.clock ?? Date.now;
+        const status = await ownerStatus({ ...layer, clock: now });
         const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined
             && status.inbox !== null && !('error' in status.inbox);
-        return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status) };
+        if (!check) return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status) };
+        const verdict = await statusCheck(status, layer.dataRoot, ok, now);
+        return { exitCode: verdict.ok ? 0 : 1, output: json ? `${JSON.stringify({ ...status, check: verdict }, null, 2)}\n` : `${formatStatus(status)}${checkLines(verdict)}` };
     } catch (error) {
         return { exitCode: 1, output: `Error: ${message(error)}\n` };
     }
