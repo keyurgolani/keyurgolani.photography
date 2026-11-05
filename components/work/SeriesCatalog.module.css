@@ -45,17 +45,46 @@
   min-width: 0;
 }
 
-/* One link per entry, the whole entry its target. The cover wears the theme's md surround (sm on a phone), and its
-   real thickness is the room the grid, the copy and the focus ring reserve (styles/themes.css). Black has none, so all
-   three are today's. The ring clears the room by 2 px and never passes the gutter ([data-ring-room], globals.css). */
+/* The entry: the cover and the copy, and the box its title link's target stretches over (#171). The cover wears the
+   theme's md surround (sm on a phone), and its real thickness is the room the grid, the copy and the target reserve
+   (styles/themes.css). Dark and Black have none, so all three are today's. */
 .entry {
   --work-surround: var(--gah-surround-md, none);
   --work-room: var(--gah-room-md, 0px);
-  --ring-room: var(--work-room);
-  display: block;
+  position: relative;
   border-radius: var(--gah-radius);
+}
+
+/* One link per entry, the title, which its h2 styles. */
+.link {
   color: inherit;
   text-decoration: none;
+}
+
+/* The whole entry is the link's target: its ::after covers the entry, out to the cover's surround on every side, above
+   the print, so a click or tap anywhere on the cover or the copy opens the series. The room never passes the gutter:
+   the surround already fits it, and the column gap reserves both neighbours' (below). */
+.link::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: calc(-1 * var(--work-room));
+  border-radius: var(--gah-radius);
+}
+
+/* The focus token, drawn inset on the target in every theme (#171): the light outline at its edge and the dark band
+   inside it, so the screen's edge, which Black's covers meet, a neighbour, or the print never covers it. The outline
+   survives forced colours, where the band goes. The title draws no ring of its own. */
+.entry .link:focus-visible {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.entry .link:focus-visible::after {
+  outline: var(--focus-ring-width) solid var(--focus-ring-light);
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
+  transition: none;
 }
 
 /* The cover's reserved box: it holds its shape on the ground while the image loads, fails, or is missing. */
@@ -137,8 +166,9 @@
   text-transform: uppercase;
 }
 
-/* Hover parity: keyboard focus marks the title the same way a pointer does. */
-.entry:focus-visible .seriesTitle {
+/* Hover parity: keyboard focus marks the title the same way a pointer does. On the h2, as today, so the line runs
+   under the link's text whichever box holds it. */
+.entry:has(.link:focus-visible) .seriesTitle {
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.15em;
@@ -183,7 +213,8 @@
 
 /* Black: the covers meet the screen's edge (the OLED review's P1-2), its black their only surround. Two covers in a row
    meet at a 2 px seam; the copy keeps the gutter. A missing photograph's box keeps an edge, since Black's plain rule is
-   dark. */
+   dark. The ring is every theme's, inset on the target (above), so it's one ring round the whole entry, cover and copy,
+   inside it, where the screen's edge never clips it, and above the print (the round 2 review's C2-1, P1-1). */
 :global(html[data-theme='black']) .list {
   margin-inline: calc(-1 * var(--site-gutter));
 }
@@ -194,34 +225,6 @@
 
 :global(html[data-theme='black']) .fallback {
   box-shadow: inset 0 0 0 1px var(--gah-rule-strong);
-}
-
-:global(html[data-theme='black']) .entry {
-  position: relative;
-}
-
-/* One ring round the whole entry, cover and copy (the round 2 review's C2-1), drawn inside it, so the screen's edge,
-   which the cover now meets, never clips it, and as an overlay above the print, so the photograph can't paint over
-   it: the light line at the edge, where the screen's black frames it, and the dark band inside it, where a pale print
-   meets it (P1-1). The overlay carries a transparent outline as well: forced colours drop the shadows and paint it in
-   the system's colour, above the print, where the entry's own outline sits under it (C2-1b). */
-:global(html[data-theme='black']) .entry:focus-visible {
-  outline-color: transparent;
-  outline-offset: calc(-1 * var(--focus-ring-width));
-  box-shadow: none !important;
-}
-
-:global(html[data-theme='black']) .entry:focus-visible::after {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  box-shadow:
-    inset 0 0 0 var(--focus-ring-width) var(--focus-ring-light),
-    inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark);
-  outline: var(--focus-ring-width) solid transparent;
-  outline-offset: calc(-1 * var(--focus-ring-width));
-  pointer-events: none;
 }
 
 @media (min-width: 768px) {
