@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Registry } from '../identity/types';
-import { canonicalJson } from '../storage/canonical';
-import { fieldReview, hashValue, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
+import { canonicalJson, sameCanonical } from '../storage/canonical';
+import { AUTHORED_PHOTO_FIELDS, fieldClass } from './fields';
+import { fieldReview, hashValue, publishedIndexes, type FieldRef, type FieldReviewState, type ReviewContext } from './review';
 import type { AuthoredPhoto, AuthoredSeries, CandidateContent, CandidatePhotoRecord, IssueRecord, PublicPhotoRecord, RevisionFile, SeriesRecord, WorkingLayer } from './types';
 
 /**
@@ -95,7 +96,7 @@ type PhotoLike = CandidatePhotoRecord | PublicPhotoRecord;
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const canon = (value: unknown) => canonicalJson(value ?? null);
-const same = (a: unknown, b: unknown) => canon(a) === canon(b);
+const same = (a: unknown, b: unknown) => sameCanonical(a, b);
 const json = (value: unknown): Json => (value === undefined ? null : (JSON.parse(canon(value)) as Json));
 const RECORD_ORDER: Record<IssueRecord['kind'], number> = { site: 0, series: 1, photo: 2 };
 
@@ -103,10 +104,7 @@ export function changeId(record: IssueRecord, field: string, category: ChangeCat
     return createHash('sha256').update(canonicalJson([record.kind, record.id, field, category])).digest('hex').slice(0, 16);
 }
 
-/** Photo fields compile copies from the photo record. The rest of a public photo record is derived, a capture date #10 read included. */
-const AUTHORED_PHOTO_FIELDS = ['alt', 'title', 'caption', 'focalPoint', 'crop', 'accent', 'credit', 'location'] as const;
-/** Series fields with their own rows. Any other field but `id`, `photoIds`, and `derived` is authored too, by its own name. */
-const ROUTE_FIELDS = new Set(['slug', 'slugAliases']);
+/** Which fields are authored, routes, members or derived is fields.ts's registry. */
 const SERIES_SURFACES: Record<string, Surface[]> = {
     slug: ['work', 'series'],
     slugAliases: ['series'],
@@ -185,6 +183,8 @@ function placements(series: readonly SeriesRecord[]): Map<string, { seriesId: st
 }
 
 const present = (record: object, field: string) => (record as Record<string, unknown>)[field] !== undefined;
+/** The fields either record has, sorted. */
+const keysOf = (a: object, b: object): string[] => [...new Set([...Object.keys(a), ...Object.keys(b)])].sort(compare);
 
 export function diffCatalog(input: DiffInput): CatalogDiff {
     const { active, candidate, authored, registry } = input;
@@ -195,11 +195,14 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
     const featured = new Set([...before.site.featuredSeriesIds, ...candidate.site.featuredSeriesIds]);
     const withHome = (seriesId: string, surfaces: Surface[]): Surface[] => (featured.has(seriesId) && (surfaces.includes('work') || surfaces.includes('series')) ? ['home', ...surfaces] : surfaces);
 
-    // The site: Home's featured series and the Work order.
-    if (!same(before.site.featuredSeriesIds, candidate.site.featuredSeriesIds)) {
+    // The site: Home's featured series, any other site field the candidate carries, and the Work order.
+    for (const field of keysOf(before.site, candidate.site)) {
+        const a = (before.site as Record<string, unknown>)[field];
+        const b = (candidate.site as Record<string, unknown>)[field];
+        if (same(a, b)) continue;
         rows.push({
-            record: site, field: 'featuredSeriesIds', category: 'authored', before: before.site.featuredSeriesIds, after: candidate.site.featuredSeriesIds,
-            surfaces: ['home'], provenance: 'authored', refs: [ref(site, 'featuredSeriesIds')], summary: 'Home features other series.',
+            record: site, field, category: 'authored', before: a, after: b, surfaces: ['home'], provenance: 'authored', refs: [ref(site, field)],
+            summary: field === 'featuredSeriesIds' ? 'Home features other series.' : `The site: ${field} changes.`,
         });
     }
     const activeIds = before.series.map((series) => series.id);
@@ -242,13 +245,15 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
             continue;
         }
         if (!was || !now) continue;
-        for (const field of [...new Set([...Object.keys(was), ...Object.keys(now)])].sort(compare)) {
-            if (field === 'id' || field === 'photoIds' || field === 'derived') continue;
+        for (const field of keysOf(was, now)) {
+            // `id` is the record, `photoIds` gives the moves below, and `derived` the derived row.
+            const kind = fieldClass('series', field);
+            if (kind !== 'authored' && kind !== 'route') continue;
             const a = (was as Record<string, unknown>)[field];
             const b = (now as Record<string, unknown>)[field];
             if (same(a, b)) continue;
             rows.push({
-                record, field, category: ROUTE_FIELDS.has(field) ? 'route' : 'authored', before: a, after: b,
+                record, field, category: kind, before: a, after: b,
                 surfaces: withHome(id, SERIES_SURFACES[field] ?? ['series']), provenance: 'authored', refs: [ref(record, field)],
                 summary: `${now.title || id}: ${field} changes.`,
             });
@@ -349,7 +354,9 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
         // A stamp counts only when it holds a value: the backfill stamps an absent date too, as a hash of null.
         const stamped = working?.review?.fields.capturedAt;
         const capturedAuthored = working?.capturedAt !== undefined || (stamped !== undefined && stamped.valueHash !== hashValue(null)) || overridden;
-        const authoredFields: string[] = [...AUTHORED_PHOTO_FIELDS, ...(capturedAuthored ? ['capturedAt'] : [])];
+        // A field the registry doesn't list is authored too, so it needs a review rather than passing as derived.
+        const unlisted = keysOf(was, now).filter((field) => !AUTHORED_PHOTO_FIELDS.includes(field) && fieldClass('photo', field) === 'authored');
+        const authoredFields: string[] = [...AUTHORED_PHOTO_FIELDS, ...(capturedAuthored ? ['capturedAt'] : []), ...unlisted];
         for (const field of authoredFields) {
             const a = (was as Record<string, unknown>)[field];
             const b = (now as Record<string, unknown>)[field];
@@ -360,9 +367,9 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
                 summary: field === 'alt' ? altSummary(id, a, b) : `${id}: ${field} changes.`,
             });
         }
-        const skip = new Set(['id', 'assetRevision', ...authoredFields]);
-        const derived = [...new Set([...Object.keys(was), ...Object.keys(now)])].sort(compare)
-            .filter((field) => !skip.has(field) && !same((was as Record<string, unknown>)[field], (now as Record<string, unknown>)[field]));
+        const derived = keysOf(was, now)
+            .filter((field) => ['derived', 'capture'].includes(fieldClass('photo', field)) && !authoredFields.includes(field))
+            .filter((field) => !same((was as Record<string, unknown>)[field], (now as Record<string, unknown>)[field]));
         if (derived.length > 0) {
             rows.push({
                 record, field: 'derived', category: 'derived', fields: derived,
@@ -375,7 +382,8 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
         }
     }
 
-    const env = authored ? { layer: authored, active: active ? { revisionId: active.revisionId, content: active.content } : null, review: input.review } : null;
+    // One index per revision for this diff, so each row's stale-base check finds its record without a search.
+    const env = authored ? { layer: authored, active: active ? { revisionId: active.revisionId, content: active.content } : null, review: input.review, published: publishedIndexes() } : null;
     const changes = rows.map((row): CatalogChange => {
         const visible = row.visible ?? true;
         const reviews = env && row.provenance !== 'derived' ? row.refs.map((entry) => fieldReview(entry, env)) : [];

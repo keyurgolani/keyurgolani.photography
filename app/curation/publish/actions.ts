@@ -8,18 +8,16 @@ import { rollback } from '@/lib/catalog/rollback';
 import { REVISION_ID_RE } from '@/lib/catalog/schema';
 import { hashValue } from '@/lib/catalog/review';
 import type { AuthoredKind } from '@/lib/catalog/schema';
-import type { FieldReviewState } from '@/lib/catalog/review';
-import type { AuthoredRecord, IssueRecord } from '@/lib/catalog/types';
+import { checkReviewable, markFieldsReviewed, ReviewRefusedError } from '@/lib/catalog/review-write';
 import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
 import { AuthoredWriteError, writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
 import { requireCurator } from '@/lib/curation/auth';
 import { WEB_ACTOR } from '@/lib/curation/inbox-form';
 import { countLine, rollbackStakes, type Answer, type Intent, type Publisher, type PublishState } from '@/lib/curation/publish-facts';
 import { blockingReasons, editorialWords, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
-import { INBOX_REASONS, restampReason } from '@/lib/curation/publish-view';
 import { dataRootStatus } from '@/lib/storage/config';
 import { loadHistoryView, numberFrom } from './history-load';
-import { ledgerOf, pointerFacts, readinessOf, readSnapshot, reviewNow, type Snapshot } from './load';
+import { ledgerOf, pointerFacts, readinessOf, readSnapshot, type Snapshot } from './load';
 
 /**
  * The Publish screen's one server action (16-3). Every intent calls
@@ -201,6 +199,7 @@ async function stamp(previous: PublishState, form: FormData, intent: Intent, row
         await write(status.root, pageActive);
     } catch (error) {
         if (error instanceof FixRefused) return next(previous, intent, { kind: 'fix-refused', rowId, text: error.message });
+        if (error instanceof ReviewRefusedError) return reviewRefused(previous, intent, rowId, what, error);
         if (error instanceof AuthoredWriteError && error.code === 'VERSION_CONFLICT') return refused(previous, intent, rowId, what);
         if (error instanceof AuthoredWriteError && error.code === 'AUTHORED_LOCKED') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'Another write holds the working catalog, so nothing was written. Try again in a moment.' });
         console.error('[curation] A Publish screen review could not be written:', error);
@@ -221,15 +220,16 @@ const reviewInputs = (base: string | null, reviewedAt: string, extra: { reviewed
 const INBOX_FIRST = 'Its Inbox item needs a decision again, so nothing was written. Decide it in the Inbox first.';
 
 /**
- * The fixes table, enforced here as well as on the screen (spec decision 3):
- * each field must wait for a reason `allowed` accepts, and no inbox item its
- * stamp names may need a decision, whatever reason reads first.
+ * The fixes table, enforced in lib/catalog/review-write.ts as well as on the
+ * screen (spec decision 3), in the screen's words: no inbox item a stamp
+ * names may need a decision, and each field must wait for a reason the fix
+ * may clear.
  */
-async function checkFields(root: string, record: IssueRecord, fields: readonly string[], allowed: (state: FieldReviewState) => boolean, what: string): Promise<void> {
-    for (const { state, inbox } of await reviewNow(root, record, fields)) {
-        if (inbox !== null || (state.reason !== undefined && INBOX_REASONS.has(state.reason))) throw new FixRefused(INBOX_FIRST);
-        if (!allowed(state)) throw new FixRefused(`${what} changed since the page loaded, so nothing was written.`);
-    }
+function reviewRefused(previous: PublishState, intent: Intent, rowId: string, what: string, error: ReviewRefusedError): PublishState {
+    if (error.code === 'inbox') return next(previous, intent, { kind: 'fix-refused', rowId, text: INBOX_FIRST });
+    if (error.code === 'active-moved') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'The live revision changed since the page loaded, so nothing was written.' });
+    if (error.code === 'conflict') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'This field changed both here and in the live revision, so nothing was written. Keep one value with photos edit, which clears the conflict.' });
+    return refused(previous, intent, rowId, what);
 }
 
 /** Review and mark description ready: the same photo record with `alt.reviewed: true`, refused when the alt isn't the one shown. */
@@ -245,7 +245,7 @@ async function markDescriptionReady(previous: PublishState, form: FormData): Pro
             throw new AuthoredWriteError('VERSION_CONFLICT', { kind: 'photo', id: photoId }, 'The description moved.');
         }
         const reviewedAt = new Date().toISOString();
-        await checkFields(root, { kind: 'photo', id: photoId }, ['alt'], (state) => state.reason === 'generated', 'The description');
+        await checkReviewable(root, { kind: 'photo', id: photoId }, ['alt'], (state) => state.reason === 'generated');
         // The description came from an inbox item, so its new stamp still names that item, and reopening it makes the description stale again.
         const event = record.review?.fields.alt?.event;
         await writeAuthoredRecord({ ...record, alt: { ...record.alt, reviewed: true } }, { expectedVersion: version, root, review: { ...reviewInputs(base, reviewedAt), ...(event ? { event } : {}) } });
@@ -268,15 +268,8 @@ async function markReviewed(previous: PublishState, form: FormData): Promise<Pub
     }
     if (kind === null || !AUTHORED_KINDS.includes(kind) || version === null || hashes === null || Object.keys(hashes).length === 0) return refused(previous, 'mark-reviewed', rowId, what);
     const shown = hashes;
-    return stamp(previous, form, 'mark-reviewed', rowId, what, async (root, base) => {
-        const record = (await readAuthoredRecord(root, kind, id)) as AuthoredRecord | null;
-        const moved = record === null || record.version !== version || Object.entries(shown).some(([field, hash]) => hashValue((record as unknown as Record<string, unknown>)[field]) !== hash);
-        if (moved) throw new AuthoredWriteError('VERSION_CONFLICT', { kind, id }, 'The value moved.');
-        // The fields are the client's to name, so each must wait for a reason a review here may clear (restampReason()).
-        const reviewedAt = new Date().toISOString();
-        await checkFields(root, { kind, id }, Object.keys(shown), restampReason, what);
-        await writeAuthoredRecord(record as never, { expectedVersion: version, root, review: reviewInputs(base, reviewedAt, { reviewedValues: shown }) });
-    });
+    // The fields are the client's to name, so markFieldsReviewed() checks each waits for a reason a review may clear, as photos review's do.
+    return stamp(previous, form, 'mark-reviewed', rowId, what, (root, base) => markFieldsReviewed({ root, record: { kind, id }, version, hashes: shown, baseRevisionId: base, actor: WEB_ACTOR }));
 }
 
 /** The screen's one action: the form's `intent` picks Validate, Publish, or a review fix. */
