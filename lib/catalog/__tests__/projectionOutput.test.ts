@@ -179,9 +179,11 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             // v1.6.0 removed v1.4.0's records route, and its pin, homePhotos, with it.
             homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
-            series: 'f4d331e31151bd9c2fe789acea02a746c5fcb026309e762287396071c0627123',
+            // v2.0.0 B4: the cover carries its photograph's title, and 'Pinned-Long' answers a 308, not a not-found.
+            series: 'd62c56cbac32baac591a10975e989833e4d62394c7dd477c8b7eccc476f7f61a',
             continuation: '85b8afb6bc10a95477fff9b2cbb7c938de4b1a1ab793d2dc402754f4ddb237b0',
-            viewer: 'f389deb2f6e1e737e7248a9f2a98eb8569cd3c0004ac6798e5eda944cadb1acf',
+            // v2.0.0 B4: a letter-case variant, and a photo under another published series, answer a 308, not a not-found.
+            viewer: '7a5b0bd70ea7de8d8a4a6a9f4f6c559fb15535a00e424c614250cc00846b748d',
         });
     });
 
@@ -192,9 +194,10 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
-            series: '1e5733d2c9fd8d57a584d21e0eb63cb8fd73f8733a39380e4915b02ce3a88dde',
+            // v2.0.0 B4: as on the public routes.
+            series: '68663b1aabc78c1b6679fd09c8d6e9f45796f7ead991f9b693189bf5b1c7281e',
             continuation: '6abcadfe8b9f3d40f2e35a6aa155a069cee65838c5447d499904cbc68bf09b6f',
-            viewer: 'f389deb2f6e1e737e7248a9f2a98eb8569cd3c0004ac6798e5eda944cadb1acf',
+            viewer: '7a5b0bd70ea7de8d8a4a6a9f4f6c559fb15535a00e424c614250cc00846b748d',
         });
     });
 

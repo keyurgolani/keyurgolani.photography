@@ -14,6 +14,11 @@
   padding: clamp(3rem, 9vw, 7.5rem) 0 clamp(2rem, 4vw, 3.5rem);
 }
 
+/* The All work link above the title (#5), the same link as the one at the end. */
+.back {
+  margin: 0 0 clamp(1rem, 2.5vw, 1.75rem);
+}
+
 /* The serif and its weight come from the global heading rule. */
 .title {
   margin: 0;

@@ -724,7 +724,7 @@ describe('the page', () => {
         const doc = new DOMParser().parseFromString(page, 'text/html');
         const cover = doc.querySelector('main figure img');
         expect(cover?.getAttribute('src')).toMatch(new RegExp(`^/media/${P[1]}/`));
-        expect(cover?.getAttribute('srcset')).toBeTruthy();
+        expect([...doc.querySelectorAll('main figure picture source')].map((source) => source.getAttribute('srcset'))).toEqual([expect.stringContaining(`/media/${P[1]}/`), expect.stringContaining(`/media/${P[1]}/`)]);
         // Every entry's link and image are there too, and both All work links, with no client step to add them.
         expect(entriesOf(doc)).toHaveLength(ORDER_A.length);
         expect([...doc.querySelectorAll('main a[href="/work"]')]).toHaveLength(2);

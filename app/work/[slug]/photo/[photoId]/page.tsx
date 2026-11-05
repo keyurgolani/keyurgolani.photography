@@ -7,6 +7,7 @@ import { DESCRIPTION_PENDING_COPY, viewerPhotoFrom } from '@/lib/catalog/project
 import { CatalogUnavailableError, getActiveCatalog, publicRoutes } from '@/lib/catalog/public-reader';
 import { getSiteOrigin } from '@/lib/site/config';
 import { siteOpenGraph } from '@/lib/site/metadata';
+import { redirectLocation, type PageSearchParams } from '@/lib/site/redirect';
 
 // Per request, never at build: the image builds with no data root, so a build-time read would freeze the photograph.
 // No generateStaticParams or revalidate, no loading.tsx here or above, and no Suspense around the lookup: a notFound()
@@ -15,6 +16,8 @@ export const dynamic = 'force-dynamic';
 
 interface ViewerRouteProps {
     params: Promise<{ slug: string; photoId: string }>;
+    /** Read only for a redirect, which keeps the query. Optional, since generateMetadata and the tests don't pass it. */
+    searchParams?: Promise<PageSearchParams>;
 }
 
 /**
@@ -58,18 +61,20 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
 
 /**
  * One published photograph in its series (#7). The canonical URL renders the
- * Viewer, a former series slug answers 308 to the canonical URL, and
- * everything else (malformed, unknown, unpublished, outside that series) is
+ * Viewer; a former series slug, a letter-case variant, or a photo that moved
+ * to another published series answers 308 to the canonical URL with the
+ * query kept, built from the projection's slug and photo ID, never the
+ * requested ones; and everything else (malformed, unknown, unpublished) is
  * the one public not-found. While the catalog is unavailable, nothing
  * published included, it throws, so #21's error page answers with Try again,
  * never a 404. No SiteNav: the Viewer's own header holds Close.
  */
-export default async function ViewerRoute({ params }: ViewerRouteProps) {
+export default async function ViewerRoute({ params, searchParams }: ViewerRouteProps) {
     const { slug, photoId } = await params;
     const result = await viewerFor(slug, photoId);
     switch (result.kind) {
         case 'redirect':
-            return permanentRedirect(publicRoutes.photoHref(result.slug, result.photoId));
+            return permanentRedirect(redirectLocation(publicRoutes.photoHref(result.slug, result.photoId), await searchParams));
         case 'not-found':
             return notFound();
         case 'unavailable':

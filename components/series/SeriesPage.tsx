@@ -5,7 +5,7 @@ import SeriesPhoto from './SeriesPhoto';
 import SeriesReturn from './SeriesReturn';
 import SeriesSequence from './SeriesSequence';
 import { coverSizes } from './seriesCopy';
-import { altOf, capturedSource, coverEntryName, yearsLabel } from './seriesLabels';
+import { altOf, capturedSource, coverEntryName, locationsLabel, yearsLabel } from './seriesLabels';
 import { COVER_ID } from './returnPosition';
 import styles from './SeriesPage.module.css';
 
@@ -50,7 +50,7 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
                     <div className={styles.fact}>
                         <dt>{facts.locations.values.length === 1 ? 'Location' : 'Locations'}</dt>
                         <dd data-source={facts.locations.source}>
-                            {facts.locations.values.join(', ')}
+                            {locationsLabel(facts.locations.values)}
                             <span className={styles.source}>From the photograph records</span>
                         </dd>
                     </div>
@@ -64,20 +64,30 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
  * A published series in Gallery After Hours (#5): the title, the authored
  * statement, the cover as the one decisive photograph, the derived facts set
  * apart, then the authored sequence, cut into its chapters without
- * reordering, and an All work link at its end. The sequence is
+ * reordering. An All work link sits above the title and another at the end,
+ * so the way back is there at both ends of a long sequence. The sequence is
  * SeriesSequence, which shows the first page and appends the rest on Show
  * more (#6); every prop it takes comes from the projection's allowlist.
  * The cover and each entry link to their canonical Viewer URL. Entries carry
  * `id="photo-<photoId>"` and the cover `id="series-cover"`, so SeriesReturn
  * (whose props are the series path, slug, revision, and total) and #9 can
- * put focus back on the one that opened the Viewer.
+ * put focus back on the one that opened the Viewer. `main` carries the
+ * revision the page came from (`data-catalog-revision`), as Work's list and
+ * Home's main do, for #12's freshness checks; generateMetadata puts the same
+ * one in a `catalog-revision` meta tag.
  */
 export default function SeriesPage({ page }: SeriesPageProps) {
     const { total, cover } = page;
     return (
-        <main className={styles.page}>
+        <main className={styles.page} data-catalog-revision={page.catalogRevision}>
             <article aria-labelledby="series-title">
                 <header className={styles.header}>
+                    {/* A paragraph, not a nav: SiteNav is the page's one navigation landmark. */}
+                    <p className={styles.back}>
+                        <Link href={page.workHref} className={styles.allWork}>
+                            {ALL_WORK}
+                        </Link>
+                    </p>
                     <h1 id="series-title" className={styles.title}>
                         {page.authored.title}
                     </h1>
@@ -98,7 +108,7 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                             id={COVER_ID}
                             href={cover.href}
                             prefetch={false}
-                            aria-label={coverEntryName({ alt: altOf(cover.description), position: cover.position, total })}
+                            aria-label={coverEntryName({ title: cover.title, alt: altOf(cover.description), position: cover.position, total })}
                             className={styles.coverLink}
                             style={{ '--ratio': `${cover.image.width} / ${cover.image.height}` } as CSSProperties}
                             // The focus ring clears the cover's surround (--ring-room, SeriesPage.module.css).

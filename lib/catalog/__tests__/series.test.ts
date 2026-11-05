@@ -178,6 +178,7 @@ describe('seriesPageOf on a revision', () => {
                 cover: {
                     photoId: P[1],
                     position: 3,
+                    title: null,
                     href: `/work/fixture-a/photo/${P[1]}`,
                     image: { width: cover.width, height: cover.height, variants: shippedLadder(cover.variants), lqip: cover.lqip },
                     focalPoint: { x: 0.4, y: 0.6 },
@@ -243,6 +244,16 @@ describe('seriesPageOf on a revision', () => {
             // The rest of the revision still resolves.
             expect(page(oddReader.getSeriesPage('fixture-b')).id).toBe('ser_fixture-b');
         }
+    });
+
+    it('never redirects to a slug another series\' record has taken, which would show that series', () => {
+        // A hand-written revision: two series under one slug. The later one takes it.
+        const clash = structuredClone(content);
+        clash.series[1].slug = 'fixture-a';
+        const clashReader = readerOf(clash);
+        expect(page(clashReader.getSeriesPage('fixture-a')).id).toBe('ser_fixture-b');
+        for (const slug of ['old-fixture-a', 'Old-Fixture-A']) expect(clashReader.getSeriesPage(slug), slug).toEqual({ kind: 'not-found' });
+        expect(clashReader.getSeriesPage('Fixture-A')).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
     });
 
     it('lets a current slug win over another series\' alias', () => {
@@ -707,7 +718,7 @@ describe('the allowlist', () => {
         const result = page(readerOf(revisionContent()).getSeriesPage('fixture-a'));
         expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'href', 'id', 'metadata', 'nextHref', 'slug', 'total', 'workHref']);
         expect(Object.keys(result.entries[0]).sort()).toEqual(['description', 'href', 'image', 'photoId', 'position', 'title']);
-        expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'description', 'focalPoint', 'href', 'image', 'photoId', 'position']);
+        expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'description', 'focalPoint', 'href', 'image', 'photoId', 'position', 'title']);
         expect(Object.keys(result.metadata).sort()).toEqual(['canonicalPath', 'description', 'shareImage', 'title']);
         const json = JSON.stringify(result);
         for (const leak of ['#a0b0c0', '#c08040', 'accent', 'old-fixture-a', 'slugAliases', 'Fixture caption', 'Fixture credit', 'Fixture Make', 'Fixture Model', 'technical', 'profileId', 'assetRevision', 'fixture-source-one', 'openingPhotoId', 'ser_fixture-b', 'fixture-draft', 'fixture-hidden', P[7], P[8], P[9]]) {
