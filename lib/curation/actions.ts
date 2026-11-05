@@ -11,7 +11,7 @@ import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
 import { pendingMergeOf } from './binds';
 import { backAtItsPath, unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
-import { photoHolders } from './holders';
+import { mergeBlockers, photoHolders } from './holders';
 import { placementIndex } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
@@ -378,7 +378,7 @@ export function approveEvent(
     return act(input, async (step) => {
         const { event } = step;
         if (event.type !== 'new') {
-            const owner = event.type === 'ambiguous' ? 'photos identity bind or photos identity new' : event.type === 'replacement' || event.type === 'missing' ? "#17's confirm and archive steps" : 'dismiss';
+            const owner = event.type === 'ambiguous' ? 'curation resolve or curation bind --to' : event.type === 'replacement' || event.type === 'missing' ? "#17's confirm and archive steps" : 'dismiss';
             fail('refused', `Only a new photograph is approved into the draft. A ${event.type} event is settled with ${owner}.`);
         }
         requireStatus(event, ['open', 'deferred'], 'approved');
@@ -397,13 +397,18 @@ export function approveEvent(
         // pending decision is either seen here or already a merge in the registry read below, which is then stale.
         const merge = await pendingMergeOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
         if (merge) {
-            fail('refused', `${photoId} is merged into ${merge.into} by the bind decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written.`);
+            fail('refused', `${photoId} is merged into ${merge.into} by the ${merge.kind} decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the ${merge.kind}, approve it then. Nothing was written.`);
         }
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
         const photo = registry.photos[photoId];
         if (!photo || photo.mergedInto !== undefined || photo.sourceHealth !== 'present' || photo.source.observedRevision !== assetRevision) {
             const now = !photo ? 'is not in the registry' : photo.mergedInto !== undefined ? `was merged into ${photo.mergedInto}` : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
             fail('stale', `The source changed since this event: ${photoId} ${now}. Review the newer event instead. Nothing was written.`);
+        }
+        // #17, A5 (Decided 10): an archived photograph whose bytes came back returns under its old ID.
+        const original = photo.duplicateOf === null ? undefined : registry.photos[photo.duplicateOf];
+        if (original !== undefined && original.sourceHealth === 'archived' && original.mergedInto === undefined) {
+            return restoreArchived(step, input, root, photoId, original.photoId, photo.source.path);
         }
 
         const writes: WrittenRecord[] = [];
@@ -521,6 +526,39 @@ export function approveEvent(
         const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved', { edits });
         return { event: next, notes };
     });
+}
+
+/**
+ * Approving a new photograph whose bytes or pixels are an archived
+ * photograph's (#17, A5): it writes #10's `restore` decision, which brings
+ * the archived one back under its old ID with this file and merges this
+ * photograph into it, and the event. It writes no photo record: the
+ * archived photograph keeps its own, copy and all. Its own new item opens
+ * again once the watcher applies the restore, to place it, and this item
+ * closes as `restored`. A photograph a series, the active revision, or a
+ * retained revision already shows can't be merged, so it is refused, as a
+ * bind's merge is.
+ */
+async function restoreArchived(step: Step, input: ActionInput & { choices: Choices }, root: string, photoId: string, archived: string, at: string): Promise<Change> {
+    const { choices } = input;
+    if (choices.seriesId !== undefined || choices.placement !== undefined || choices.description !== undefined) {
+        fail('needs-choice', `${photoId}'s bytes are the archived photograph ${archived}'s, so approving it restores ${archived} under its old ID, with its own photo record and copy. Approve it with no series, position, or description, then place ${archived} from its own item once the watcher restores it. Nothing was written.`);
+    }
+    const found = await mergeBlockers(root, photoId);
+    if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${photoId} is in use. Nothing was written.`);
+    const { shown, retained } = found as Exclude<typeof found, { unknown: unknown }>;
+    if (shown.length > 0 || retained.length > 0) {
+        fail('refused', `${photoId} is in use (${[...shown, ...retained.map((id) => `the retained revision ${id}`)].join(', ')}), and restoring ${archived} would retire it. Take it out first. Nothing was written.`);
+    }
+    const decision = createDecision({ type: 'restore', path: at, photoId: archived, merge: photoId, actor: input.actor, reason: `curation ${step.event.id}` }, { clock: input.clock });
+    await writeDecision(root, decision);
+    return {
+        event: decided(step, input, { action: 'approve', restores: archived, identityDecisionId: decision.decisionId, writes: [] }, 'approved'),
+        notes: [
+            `Approved: the restore decision ${decision.decisionId} restores ${archived} under its old ID with ${at}, merging ${photoId} into it, on the watcher's next pass, unless the file is still changing.`,
+            `${archived} keeps its photo record. Its own new item opens again then, to place it in a series. Nothing is published until photos publish runs.`,
+        ],
+    };
 }
 
 /** A working-layer record, or a damaged-data failure naming it. */

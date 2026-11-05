@@ -7,12 +7,15 @@ import { PHOTO_ID_RE } from '../identity/ids';
 import type { DerivativeJob, IdentityFact, PhotoRecord, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { candidateOf, readUsableEvent, replacementEventIds, type BuildFunction, type OwedSettles } from './candidates';
+import { references, ReferenceScanError } from '../catalog/references';
 import {
     CLOSE_REASONS,
     CURATION_SCHEMA_VERSION,
     eventIdOf,
     eventKey,
     fingerprintOf,
+    REOPEN_REASONS,
+    watcherCloseOf,
     type Candidate,
     type CurationDecision,
     type CurationEvent,
@@ -34,7 +37,16 @@ import { SINK_WAIT_MS } from './sink';
  *   #14's sink, whose source goes missing again opens again, whether or not
  *   anything shows the photo.
  * - A `new` item closes once a `bind` merged its photo into the missing one.
- * - A `new` item closes once its photo is archived, approved or not.
+ * - A missing photograph no catalog revision and no draft series lists is
+ *   withdrawn (A5): its missing item, and its new item if no one has
+ *   approved it yet, close as `withdrawn`, since its file going takes
+ *   nothing down and there is nothing left to place. The new item opens
+ *   again once the file is back, and both once something lists the
+ *   photograph while its file is still gone.
+ * - A `new` item closes once its photo is archived, approved or not, and
+ *   opens again once a restore brings the photograph back (A5).
+ * - A `new` item approved to restore an archived photograph closes as
+ *   `restored` once #10 applies the restore (A5).
  * - An `ambiguous` item closes once #10 holds its bytes in doubt no more:
  *   a `photos identity bind` or `new` applied, or the held file changed or
  *   left. #14's sink opens it again if #10 holds the same bytes again.
@@ -112,18 +124,39 @@ export function missingChange(event: CurationEvent, registry: Registry, at: stri
     const last = event.decisions.at(-1);
     const closedByWatcher = last?.by === 'watcher'
         && ((event.status === 'resolved' && last.action === 'close') || (event.status === 'dismissed' && last.action === 'dismiss'));
-    if (closedByWatcher && photo.sourceHealth === 'missing' && photo.source.observedRevision === event.assetRevision) {
+    // A withdrawn item was closed while the source was missing: withdrawnChanges() alone opens it again.
+    const withdrawn = event.status === 'resolved' && last?.resolution === 'withdrawn';
+    if (closedByWatcher && !withdrawn && photo.sourceHealth === 'missing' && photo.source.observedRevision === event.assetRevision) {
         return withDecision(event, watcherDecision('reopen', at, 'The source went missing again.'), { status: 'open' });
     }
     return null;
 }
 
-/** A `new` item whose photo a `bind` merged into another, resolved, or null. */
+/**
+ * A `new` item whose photo a `bind` merged into another, resolved, or null.
+ * One approved to restore the archived photograph it was merged into (A5)
+ * closes too, as `restored`.
+ */
 export function mergedChange(event: CurationEvent, registry: Registry, at: string): CurationEvent | null {
-    if (event.type !== 'new' || !STILL_OPEN.has(event.status)) return null;
+    if (event.type !== 'new') return null;
     const into = photoOf(registry, event.photoId)?.mergedInto;
     if (into === undefined) return null;
+    const restores = event.status === 'approved' && event.decisions.findLast((decision) => decision.action === 'approve')?.restores === into;
+    if (restores) return withDecision(event, { ...watcherDecision('close', at, CLOSE_REASONS.restored(into)), resolution: 'restored' }, { status: 'resolved' });
+    if (!STILL_OPEN.has(event.status)) return null;
     return withDecision(event, watcherDecision('close', at, CLOSE_REASONS.merged(into)), { status: 'resolved' });
+}
+
+/**
+ * A5: a `new` item the watcher closed because its photo was archived, open
+ * again once a restore brings the photograph back under its old ID, so the
+ * Inbox can place it again, or null.
+ */
+export function restoredChange(event: CurationEvent, registry: Registry, at: string): CurationEvent | null {
+    if (event.type !== 'new' || watcherCloseOf(event)?.cause !== 'archived') return null;
+    const photo = photoOf(registry, event.photoId);
+    if (!photo || isRetired(photo)) return null;
+    return withDecision(event, watcherDecision('reopen', at, REOPEN_REASONS.restored), { status: 'open' });
 }
 
 /**
@@ -257,8 +290,8 @@ function changesFor(events: readonly CurationEvent[], registry: Registry, at: st
     const byId = new Map(events.map((event) => [event.id, event]));
     const changes: CurationEvent[] = [];
     for (const event of events) {
-        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? archivedChange(event, registry, at) ?? staleFailureChange(event, registry, at)
-            ?? ambiguousChange(event, registry, at);
+        const next = missingChange(event, registry, at) ?? mergedChange(event, registry, at) ?? archivedChange(event, registry, at) ?? restoredChange(event, registry, at)
+            ?? returnedChange(event, registry, at) ?? staleFailureChange(event, registry, at) ?? ambiguousChange(event, registry, at);
         if (next) changes.push(next);
     }
     const photos = only === undefined ? Object.values(registry.photos) : only.map((photoId) => photoOf(registry, photoId)).filter((photo): photo is PhotoRecord => photo !== undefined);
@@ -270,6 +303,60 @@ function changesFor(events: readonly CurationEvent[], registry: Registry, at: st
         if (next) changes.push(next);
     }
     return changes;
+}
+
+/**
+ * Whether an item's photograph is still missing, so whether it is listed decides if the item stays open: a missing
+ * item's at the revision it names, a new item's at any.
+ */
+const stillMissing = (event: CurationEvent, registry: Registry) => {
+    const photo = photoOf(registry, event.photoId);
+    if (photo === undefined || isRetired(photo) || photo.sourceHealth !== 'missing') return false;
+    return event.type === 'new' || photo.source.observedRevision === event.assetRevision;
+};
+
+/** A5: a new photograph's item withdrawn while its file was gone, open again once the file is back, or null. */
+export function returnedChange(event: CurationEvent, registry: Registry, at: string): CurationEvent | null {
+    if (event.type !== 'new' || watcherCloseOf(event)?.cause !== 'withdrawn') return null;
+    const photo = photoOf(registry, event.photoId);
+    if (!photo || !isPresent(photo)) return null;
+    return withDecision(event, watcherDecision('reopen', at, 'The file is back, so the photograph needs judgment again.'), { status: 'open' });
+}
+
+/**
+ * A5 (#17): the missing items, and the open or deferred new items, of a
+ * photograph whose file is gone and that no catalog revision, candidate, or
+ * draft series lists, closed as `withdrawn`, and withdrawn ones opened again
+ * once one does. One references() scan for all of them, and only when
+ * there is one to look at. A scan that can't tell changes nothing, so a
+ * damaged file never closes an item. Pure but for the scan.
+ */
+async function withdrawnChanges(root: string, events: readonly CurationEvent[], registry: Registry, at: string, skip: ReadonlySet<string>): Promise<CurationEvent[]> {
+    const open = (event: CurationEvent) => event.status === 'open' || event.status === 'deferred';
+    const withdrawn = (event: CurationEvent) => watcherCloseOf(event)?.cause === 'withdrawn';
+    const looked = events.filter((event) => (event.type === 'missing' || event.type === 'new') && !skip.has(event.id) && (open(event) || withdrawn(event)) && stillMissing(event, registry));
+    if (looked.length === 0) return [];
+    let listed: Set<string>;
+    try {
+        listed = new Set((await references(root)).filter((entry) => entry.source !== 'working-layer-photo').map((entry) => entry.photoId));
+    } catch (error) {
+        if (error instanceof ReferenceScanError) return [];
+        throw error;
+    }
+    const changes: CurationEvent[] = [];
+    for (const event of looked) {
+        const isListed = listed.has(event.photoId as string);
+        if (open(event) && !isListed) changes.push(withDecision(event, { ...watcherDecision('close', at, CLOSE_REASONS.withdrawn), resolution: 'withdrawn' }, { status: 'resolved' }));
+        else if (withdrawn(event) && isListed) changes.push(withDecision(event, watcherDecision('reopen', at, 'A catalog revision or a draft series lists the photograph again, and its source is still missing.'), { status: 'open' }));
+    }
+    return changes;
+}
+
+/** Every change for one listing: the registry's, then the withdrawals the catalog calls for on the items those leave alone. */
+async function allChangesFor(root: string, events: readonly CurationEvent[], registry: Registry, at: string, profileId: string, only?: readonly string[]): Promise<CurationEvent[]> {
+    const changes = changesFor(events, registry, at, profileId, only);
+    const changed = new Set(changes.map((event) => event.id));
+    return [...changes, ...await withdrawnChanges(root, events, registry, at, changed)];
 }
 
 /** The items this module settles for one photo: per revision, its missing, new, and failed-build items, and the observed revision's replacement items. */
@@ -314,7 +401,7 @@ export async function settleSources(root: string, options: SourcesOptions = {}):
     const at = () => new Date(clock()).toISOString();
 
     const looked = options.registry ?? await readRegistry(root);
-    const due = changesFor(await eventsFor(root, looked, only), looked, at(), profileId, only);
+    const due = await allChangesFor(root, await eventsFor(root, looked, only), looked, at(), profileId, only);
     if (due.length === 0) return result;
 
     await withCurationLock(root, { waitMs }, async (hold) => {
@@ -322,7 +409,7 @@ export async function settleSources(root: string, options: SourcesOptions = {}):
         const current = await eventsFor(root, registry, only);
         const byId = new Map(current.map((event) => [event.id, event]));
         const wanted = new Set(due.map((event) => event.id));
-        for (const next of changesFor(current, registry, at(), profileId, only)) {
+        for (const next of await allChangesFor(root, current, registry, at(), profileId, only)) {
             if (!wanted.has(next.id)) continue;
             const before = byId.get(next.id) ?? null;
             hold.signal.throwIfAborted();

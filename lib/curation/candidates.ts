@@ -7,7 +7,7 @@ import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { DerivativeJob, IdentityFact, ProfileEntry, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { CLOSE_REASONS, eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationEvent } from './events';
+import { CLOSE_REASONS, eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationDecision, type CurationEvent } from './events';
 import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, readEvent, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
 
@@ -23,8 +23,12 @@ import { SINK_WAIT_MS } from './sink';
  * holds other bytes, an open or failed item has nothing left to review:
  * the newer bytes' own item reviews them (#183), so it closes, as
  * `superseded` when the writer refused its set for that, otherwise as
- * `moved`, ready set or not. #14's sink opens it again if these bytes come
- * back. A deferred replacement stays deferred, since Leave in draft is the
+ * `moved`, ready set or not, or as `reverted` (A5) when the source went
+ * back to bytes it held before, and an open revert onto the bytes the photo
+ * record already pins closes as `reverted` too, with nothing to confirm.
+ * #14's sink opens it again if these bytes come back. Once #10 gives the
+ * item's bytes to a photograph of their own, as `curation resolve --as new`
+ * asks, the item closes as `split` (A5). A deferred replacement stays deferred, since Leave in draft is the
  * curator's; an ambiguous item closes deferred or not (lib/curation/sources.ts).
  * An older revision's bytes coming back reuse the set already committed for
  * them, so that item is ready without a build, and an item already confirmed
@@ -103,22 +107,18 @@ function sameCandidate(candidate: Candidate | undefined, view: Extract<Candidate
  * and #10 requeued only the current one, so the item stays for review. A
  * deferred item stays deferred either way: Leave in draft is the curator's,
  * so a failure only lands in its `candidate`, which `show` reports.
- * Approved and dismissed items are never touched.
+ * `reverted` (A5) says the source went back to older bytes rather than on
+ * to newer ones, and the close then says `reverted`, whatever the writer
+ * said of the set. Approved and dismissed items are never touched.
  */
-export function withCandidate(event: CurationEvent, view: CandidateView, at: string, movedOn = false): CurationEvent | null {
+export function withCandidate(event: CurationEvent, view: CandidateView, at: string, movedOn = false, reverted = false): CurationEvent | null {
     if (event.type !== 'replacement' || !STILL_OPEN.has(event.status)) return null;
-    const settled = view.state === 'ready' || view.state === 'failed';
     if (movedOn && event.status !== 'deferred') {
-        const recorded = !settled || sameCandidate(event.candidate, view)
-            ? event.candidate
-            : { state: view.state, profileId: view.profileId, ...(view.state === 'failed' ? { failure: view.failure } : {}), at };
+        const recorded = recordedCandidate(event, view, at);
         const superseded = recorded?.state === 'failed' && recorded.failure === 'superseded';
-        return {
-            ...event,
-            ...(recorded === undefined ? {} : { candidate: recorded }),
-            status: 'resolved',
-            decisions: [...event.decisions, { action: 'close', at, by: 'watcher', baseRevisionId: null, reason: superseded ? CLOSE_REASONS.superseded : CLOSE_REASONS.moved }],
-        };
+        return closedAs(event, view, at, reverted
+            ? { reason: CLOSE_REASONS.reverted, resolution: 'reverted' }
+            : { reason: superseded ? CLOSE_REASONS.superseded : CLOSE_REASONS.moved });
     }
     if (view.state !== 'ready' && view.state !== 'failed') return null;
     if (sameCandidate(event.candidate, view)) return null;
@@ -127,6 +127,25 @@ export function withCandidate(event: CurationEvent, view: CandidateView, at: str
     if (view.state === 'failed' && status === 'open') status = 'failed';
     if (view.state === 'ready' && status === 'failed' && event.candidate?.state !== 'ready') status = 'open';
     return { ...event, candidate, status };
+}
+
+/** The candidate an item closing now keeps: what `view` says once it is settled, else what the item held. */
+function recordedCandidate(event: CurationEvent, view: CandidateView, at: string): Candidate | undefined {
+    const settled = view.state === 'ready' || view.state === 'failed';
+    return !settled || sameCandidate(event.candidate, view)
+        ? event.candidate
+        : { state: view.state, profileId: view.profileId, ...(view.state === 'failed' ? { failure: view.failure } : {}), at };
+}
+
+/** The item resolved with the watcher's close, keeping what `view` says of its set. */
+function closedAs(event: CurationEvent, view: CandidateView, at: string, close: Pick<CurationDecision, 'reason' | 'resolution'>): CurationEvent {
+    const recorded = recordedCandidate(event, view, at);
+    return {
+        ...event,
+        ...(recorded === undefined ? {} : { candidate: recorded }),
+        status: 'resolved',
+        decisions: [...event.decisions, { action: 'close', at, by: 'watcher', baseRevisionId: null, ...close }],
+    };
 }
 
 /** The replacement items #14's sink opens for a photo's revision: one per fact type, since #10's fact key names it. */
@@ -154,7 +173,7 @@ export interface SettleResult {
     failed: string[];
     /** Approved item IDs opened again, because their bytes came back while the photo record pins others. */
     reopened: string[];
-    /** Item IDs closed because the photograph's source moved on to other bytes, as `superseded` or `moved`. */
+    /** Item IDs closed because the photograph's source moved on to other bytes, as `superseded` or `moved`, went back, as `reverted`, or the file became its own photograph, as `split`. */
     superseded: string[];
 }
 
@@ -214,8 +233,22 @@ async function settleOne(root: string, event: CurationEvent, registry: Registry,
         return { next: withCandidate(reopened, view, at) ?? reopened, kind: 'reopened' };
     }
     const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
-    const movedOn = photo !== undefined && photo.mergedInto === undefined && photo.sourceHealth === 'present' && photo.source.present && photo.source.observedRevision !== revision;
-    const next = withCandidate(event, view, at, movedOn);
+    const own = photo && Object.hasOwn(photo.revisions, revision) ? photo.revisions[revision] : undefined;
+    // A5: `curation resolve --as new`, once #10 applied it, gave these bytes to a photograph of their own.
+    if (own?.reassignedTo !== undefined && STILL_OPEN.has(event.status)) {
+        return { next: closedAs(event, view, at, { reason: CLOSE_REASONS.split(own.reassignedTo), resolution: 'split' }), kind: 'superseded' };
+    }
+    const present = photo !== undefined && photo.mergedInto === undefined && photo.sourceHealth === 'present' && photo.source.present;
+    const movedOn = present && photo.source.observedRevision !== revision;
+    // A5 (#14): the source went back to bytes it held before these, rather than on to newer ones.
+    const observed = photo?.revisions[photo.source.observedRevision];
+    const reverted = movedOn && observed !== undefined && own !== undefined && observed.firstSeenAt < own.firstSeenAt;
+    // A5: a revert onto the bytes the photo record already pins leaves nothing to confirm.
+    if (!movedOn && present && event.derivedFacts.revert === true && (event.status === 'open' || event.status === 'failed')) {
+        const record = await photoRecordOf(root, photoId);
+        if (record?.assetRevision === revision) return { next: closedAs(event, view, at, { reason: CLOSE_REASONS.reverted, resolution: 'reverted' }), kind: 'superseded' };
+    }
+    const next = withCandidate(event, view, at, movedOn, reverted);
     if (next === null) return null;
     return { next, kind: next.status === 'resolved' ? 'superseded' : next.candidate?.state === 'ready' ? 'ready' : 'failed' };
 }
@@ -339,11 +372,16 @@ function readyRoot(root: string | undefined): string {
     return status.root;
 }
 
-/** The revisions a pass's replacement facts name, each once. A fact #14's sink would skip is left out. */
+/**
+ * The revisions a pass's replacement facts name, each once, and those its
+ * missing facts name: a photo whose source went may have given a revision to
+ * a photo of its own (A5's split), which settles every revision's item. A
+ * fact #14's sink would skip is left out.
+ */
 export function namedRevisions(facts: readonly IdentityFact[]): RevisionRef[] {
     const refs = new Map<string, RevisionRef>();
     for (const fact of facts) {
-        if (fact.type !== 'replaced' && fact.type !== 'metadata-changed') continue;
+        if (fact.type !== 'replaced' && fact.type !== 'metadata-changed' && fact.type !== 'missing') continue;
         if (typeof fact.photoId !== 'string' || !PHOTO_ID_RE.test(fact.photoId) || typeof fact.assetRevision !== 'string' || !ASSET_REVISION_RE.test(fact.assetRevision)) continue;
         refs.set(`${fact.photoId}/${fact.assetRevision}`, { photoId: fact.photoId, assetRevision: fact.assetRevision });
     }

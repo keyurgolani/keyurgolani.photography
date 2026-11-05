@@ -1355,7 +1355,8 @@ describe('a replacement superseded by newer bytes (#17)', { timeout: 60_000 }, (
         expect(back.status).toBe('open');
         expect(back.candidate).toBeUndefined();
         expect(back.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: REOPEN_REASONS.back });
-        expect((await w.event(replacementEventId(w.p, c))).decisions.at(-1)).toMatchObject({ action: 'close', reason: CLOSE_REASONS.moved });
+        // Going back to B reverts C (A5): its close says so, rather than moved.
+        expect((await w.event(replacementEventId(w.p, c))).decisions.at(-1)).toMatchObject({ action: 'close', reason: CLOSE_REASONS.reverted, resolution: 'reverted' });
         expect(await openReplacements(w)).toEqual([w.eventId]);
         expect(await w.build(w.job(w.b))).toMatchObject({ status: 'ready' });
         expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready' } });

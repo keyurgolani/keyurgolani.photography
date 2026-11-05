@@ -16,7 +16,7 @@ import { verifyDirectory } from '../storage/publish';
 import { act, decided, fail, readAuthored, requireStatus, type ActionInput, type ActionOutcome, type Change, type Step, type WrittenRecord } from './actions';
 import { candidateOf } from './candidates';
 import type { CandidateFailure, CurationEvent } from './events';
-import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
+import { decisionState, pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
 import { mergeBlockers, type MergeBlockers } from './holders';
 import { canPutBack, confirmStampOf, draftPlan, latestPin, stampedWayBack } from './pins';
 
@@ -344,13 +344,15 @@ async function refuseWhileArchiving(root: string, photoId: string): Promise<void
 
 /**
  * The open `new` items for other bytes at this photo's last path, which #10
- * marked with `samePathAs`, whose photo is still present there: a file gone
- * since links nothing.
+ * marked with `samePathAs`, or for other pixels with its file name or its
+ * capture time at a new path, which #10 marked with `suggestedFor` (A5),
+ * whose photo is still present there: a file gone since links nothing.
  */
 export async function linkedNewItems(root: string, photoId: string, registry: Registry): Promise<CurationEvent[]> {
     const { events } = await listEvents(root);
     return events.filter((event) => {
-        if (event.type !== 'new' || !(MISSING_STATES as readonly string[]).includes(event.status) || event.derivedFacts.samePathAs !== photoId || event.photoId === null) return false;
+        const linked = event.derivedFacts.samePathAs === photoId || event.derivedFacts.suggestedFor === photoId;
+        if (event.type !== 'new' || !(MISSING_STATES as readonly string[]).includes(event.status) || !linked || event.photoId === null) return false;
         const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
         return photo !== undefined && photo.sourceHealth !== 'archived' && photo.mergedInto === undefined && photo.source.present && photo.source.path === event.derivedFacts.sourcePath;
     });
@@ -428,7 +430,7 @@ interface BindPlan {
  *   already merges. A bare record, as draft:init writes it, is left unused.
  * - Bytes the photo gave to another photo come back only with that photo merged.
  */
-async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at: string): Promise<BindPlan> {
+async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at: string, { answersHold = false }: { answersHold?: boolean } = {}): Promise<BindPlan> {
     const key = keyOf(at);
     const held = registry.holds.find((entry) => keyOf(entry.path) === key);
     const holder = Object.values(registry.photos).find((other) => other.photoId !== photo.photoId && other.source.present
@@ -445,7 +447,8 @@ async function bindPlan(root: string, registry: Registry, photo: PhotoRecord, at
     const holderOwn = holder ? Object.values(holder.revisions).filter((revision) => !revision.reassignedTo) : [];
     if (own?.reassignedTo !== undefined && !(holderOwn.length === 1 && holderOwn[0].assetRevision === bytes)) givenAway();
     // A hold that doesn't list the photo is #10 unsure which other photo the file is, and a bind would merge one of them.
-    if (held && !held.candidates.includes(photo.photoId)) {
+    // Answering the ambiguous item for that hold (A5) is the curator saying which: then any photograph may be named.
+    if (held && !answersHold && !held.candidates.includes(photo.photoId)) {
         fail('refused', holdRefusal(at, held.candidates, photo.photoId));
     }
     let merged: string | null = null;
@@ -650,5 +653,160 @@ export function archiveMissing(input: ActionInput & { reason?: string; faults?: 
         ];
         const next = decided(step, input, { action: 'archive', writes, ...(decisionId ? { identityDecisionId: decisionId } : {}), ...(input.reason ? { reason: input.reason } : {}) }, 'approved');
         return { event: next, notes };
+    });
+}
+
+/**
+ * A5: the item's latest bind or resolve, while #10 hasn't applied or
+ * rejected it yet, so a second one can't be written beside it.
+ */
+async function refusePendingAnswer(root: string, event: CurationEvent): Promise<void> {
+    const last = event.decisions.findLast((decision) => (decision.action === 'bind' || decision.action === 'resolve') && decision.identityDecisionId !== undefined);
+    if (!last?.identityDecisionId) return;
+    const found = await decisionState(root, last.identityDecisionId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+    if (found.state === 'pending') {
+        fail('refused', `The decision ${last.identityDecisionId}, requested at ${last.at}, waits for the watcher's next pass. Wait for that pass, or for the watcher to refuse it; curation show ${event.id} says which. Nothing was written.`);
+    }
+}
+
+/** The photograph a file is given to, or a failure saying why #10 would refuse it, before anything is written. */
+function answerTarget(registry: Registry, photoId: string, at: string): PhotoRecord {
+    const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
+    if (!photo) return fail('refused', `The registry has no photo ${photoId}. Nothing was written.`);
+    if (photo.mergedInto) fail('refused', `${photoId} was merged into ${photo.mergedInto}. Nothing was written.`);
+    if (photo.sourceHealth === 'archived') fail('refused', `${photoId} is archived. To bring it back, approve the new item for its bytes, which restores it under its old ID. Nothing was written.`);
+    if (photo.sourceHealth === 'present' && photo.source.present && photo.source.key !== keyOf(at)) {
+        fail('refused', `${photoId} is present at ${photo.source.path}, and the watcher gives a file only to a photograph whose file is gone or that it holds this file in doubt for. Nothing was written.`);
+    }
+    return photo;
+}
+
+/** The ambiguous item's file, while #10 still holds it in doubt, or a failure saying the item settles itself. */
+function heldPath(event: CurationEvent, registry: Registry): string {
+    const at = event.derivedFacts.sourcePath;
+    const held = registry.holds.some((entry) => keyOf(entry.path) === keyOf(at) && entry.assetRevision === event.assetRevision);
+    if (!held) fail('stale', `#10 no longer holds ${at} in doubt, so the watcher closes this item on its next pass. Nothing was written.`);
+    return at;
+}
+
+/**
+ * Answer an ambiguous item, or split a replacement (A5, #14 and #17). It
+ * writes one #10 decision and the event, and nothing in the working layer:
+ *
+ * - On an ambiguous item, `--as new` writes #10's `new` decision, so the
+ *   held file becomes a photograph of its own, and `--as replacement-of`
+ *   writes its `bind`, so the file is new bytes for that photograph, whose
+ *   replacement item then reviews them. #10 holding nothing in doubt any
+ *   more closes the item (lib/curation/sources.ts).
+ * - On a replacement, `--as new` writes #10's `new` decision for the
+ *   photograph's file: the file becomes a photograph of its own, the item
+ *   closes as `split` once the watcher applies it, and the photograph it
+ *   replaced goes missing, its published output still serving.
+ */
+export function resolveItem(input: ActionInput & { as: 'new' | 'replacement-of'; photoId?: string; reason?: string }): Promise<ActionOutcome> {
+    return act(input, async (step) => {
+        const { event } = step;
+        if (event.type !== 'ambiguous' && event.type !== 'replacement') {
+            fail('refused', `Only an ambiguous item or a replacement is resolved. A ${event.type} event is settled another way. Nothing was written.`);
+        }
+        if (event.type === 'replacement' && input.as !== 'new') {
+            fail('refused', `A replacement is resolved only --as new. To take the new bytes for ${event.photoId}, confirm it. Nothing was written.`);
+        }
+        requireStatus(event, MISSING_STATES, 'resolved');
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
+        await refusePendingAnswer(root, event);
+        const registry = await readRegistryOrFail(root);
+        const reason = input.reason ?? `curation ${event.id}`;
+        if (event.type === 'replacement') {
+            const photoId = event.photoId as string;
+            const photo = Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
+            if (!photo || photo.mergedInto || photo.sourceHealth !== 'present' || !photo.source.present || photo.source.observedRevision !== event.assetRevision) {
+                fail('stale', `The source changed since this event: ${photoId} no longer holds ${event.assetRevision} at ${event.derivedFacts.sourcePath}. Review the newer event instead. Nothing was written.`);
+            }
+            const at = (photo as PhotoRecord).source.path;
+            const decision = createDecision({ type: 'new', path: at, actor: input.actor, reason }, { clock: input.clock });
+            await writeDecision(root, decision);
+            return {
+                event: decided(step, input, { action: 'resolve', resolveAs: 'new', path: at, identityDecisionId: decision.decisionId, ...(input.reason ? { reason: input.reason } : {}) }, event.status),
+                notes: [
+                    `Wrote the new decision ${decision.decisionId}. On the watcher's next pass, unless the file is still changing, ${at} becomes the new photograph ${decision.type === 'new' ? decision.photoId : ''}, whose new item reviews it, and this item closes as split.`,
+                    `${photoId} keeps its photo record, its series, and the revision that record pins, and its missing item opens. Visitors keep seeing it as it is until photos publish runs.`,
+                ],
+            };
+        }
+        const at = heldPath(event, registry);
+        if (input.as === 'new') {
+            const decision = createDecision({ type: 'new', path: at, actor: input.actor, reason }, { clock: input.clock });
+            await writeDecision(root, decision);
+            return {
+                event: decided(step, input, { action: 'resolve', resolveAs: 'new', path: at, identityDecisionId: decision.decisionId, ...(input.reason ? { reason: input.reason } : {}) }, event.status),
+                notes: [`Wrote the new decision ${decision.decisionId}. On the watcher's next pass, unless the file is still changing, ${at} becomes a photograph of its own, whose new item places it, and this item closes. If the watcher refuses it, curation show ${event.id} says why.`],
+            };
+        }
+        const to = input.photoId as string;
+        const photo = answerTarget(registry, to, at);
+        const plan = await bindPlan(root, registry, photo, at, { answersHold: true });
+        const decision = createDecision({ type: 'bind', path: at, photoId: to, ...(plan.merge === undefined ? {} : { merge: plan.merge }), actor: input.actor, reason }, { clock: input.clock });
+        await writeDecision(root, decision);
+        return {
+            event: decided(step, input, { action: 'resolve', resolveAs: 'replacement-of', to, path: at, identityDecisionId: decision.decisionId, ...(input.reason ? { reason: input.reason } : {}) }, event.status),
+            notes: [
+                `Wrote the bind decision ${decision.decisionId}. On the watcher's next pass, unless the file is still changing, ${at} becomes ${to}'s source, and this item closes. If the watcher refuses it, curation show ${event.id} says why.`,
+                plan.ownBytes ? `${at} holds ${to}'s own bytes, so nothing new needs confirming.` : `A replacement item opens for the new bytes. Confirm the new asset revision there once all its derivatives succeed. Visitors keep the current image until photos publish runs.`,
+            ],
+        };
+    });
+}
+
+/**
+ * `curation bind --to` on an ambiguous item (A5, #14): the held file is the
+ * photograph named, one of those #10 holds it in doubt for. It writes #10's
+ * `bind` decision and the event. A photograph the hold doesn't name is
+ * `resolve --as replacement-of`'s, which says so.
+ */
+export function bindAmbiguous(input: ActionInput & { to: string; reason?: string }): Promise<ActionOutcome> {
+    return act(input, async (step) => {
+        const { event } = step;
+        if (event.type !== 'ambiguous') fail('refused', `bind --to answers an ambiguous item. A ${event.type} event is settled another way${event.type === 'missing' ? ': curation bind with --path, or with no flag for the one linked file' : ''}. Nothing was written.`);
+        requireStatus(event, MISSING_STATES, 'bound');
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
+        await refusePendingAnswer(root, event);
+        const registry = await readRegistryOrFail(root);
+        const at = heldPath(event, registry);
+        const held = registry.holds.find((entry) => keyOf(entry.path) === keyOf(at));
+        if (!held?.candidates.includes(input.to)) {
+            const named = held?.candidates.length ? `#10 holds it in doubt for ${held.candidates.join(' and ')}` : '#10 names no photograph it may be';
+            fail('refused', `${input.to} isn't one of the photographs ${at} may be: ${named}. To make it new bytes for ${input.to}, run curation resolve ${event.id} --version ${event.version} --as replacement-of ${input.to}. Nothing was written.`);
+        }
+        const photo = answerTarget(registry, input.to, at);
+        const plan = await bindPlan(root, registry, photo, at, { answersHold: true });
+        const decision = createDecision({ type: 'bind', path: at, photoId: input.to, ...(plan.merge === undefined ? {} : { merge: plan.merge }), actor: input.actor, reason: input.reason ?? `curation ${event.id}` }, { clock: input.clock });
+        await writeDecision(root, decision);
+        return {
+            event: decided(step, input, { action: 'bind', to: input.to, path: at, identityDecisionId: decision.decisionId, ...(input.reason ? { reason: input.reason } : {}) }, event.status),
+            notes: [`Wrote the bind decision ${decision.decisionId}. On the watcher's next pass, unless the file is still changing, ${at} becomes ${input.to}'s source, and this item closes. If the watcher refuses it, curation show ${event.id} says why.`],
+        };
+    });
+}
+
+/**
+ * `curation confirm-missing` (A5, #17): the curator's word that a missing
+ * photograph's file is gone on purpose. It writes this item and nothing
+ * else, no #10 decision, no working-layer record, nothing in the library,
+ * and the item stays open, since Bind or Archive still settles it and the
+ * published output keeps serving until then.
+ */
+export function confirmMissing(input: ActionInput & { reason?: string }): Promise<ActionOutcome> {
+    return act(input, async (step) => {
+        const { event } = step;
+        requireStatus(event, MISSING_STATES, 'confirmed missing');
+        const root = path.resolve(/*turbopackIgnore: true*/ input.root);
+        const registry = await readRegistryOrFail(root);
+        const photo = missingPhoto(event, registry, 'confirm-missing');
+        if (photo.sourceHealth === 'archived') fail('refused', `${photo.photoId} is archived already. Nothing was written.`);
+        return {
+            event: decided(step, input, { action: 'confirm-missing', ...(input.reason ? { reason: input.reason } : {}) }, event.status),
+            notes: [`Recorded that ${photo.photoId}'s file is gone on purpose. Nothing else changed: it keeps its series, and the published output keeps serving it until you archive it and publish.`],
+        };
     });
 }

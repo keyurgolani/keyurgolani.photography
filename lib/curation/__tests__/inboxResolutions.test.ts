@@ -470,7 +470,7 @@ describe('landscape-rot6.jpg through the Inbox', { timeout: 60_000 }, () => {
             fs.writeFileSync(lib.file('landscape.jpg'), landscape);
             const [added] = await pass();
             const p = added.photoId as string;
-            await writeAuthoredRecord({ kind: 'photo', id: p, assetRevision: added.assetRevision }, { expectedVersion: 0, root: data.root });
+            await writeAuthoredRecord({ kind: 'photo', id: p, assetRevision: added.assetRevision, alt: null }, { expectedVersion: 0, root: data.root });
 
             fs.writeFileSync(lib.file('landscape.jpg'), rotated);
             const [replaced] = await pass();

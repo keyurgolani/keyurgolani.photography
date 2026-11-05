@@ -26,7 +26,7 @@ import { currentProfileId } from '../identity/profile';
 import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId, waitingReason, type CurationEvent, type CurationEventStatus, type Placement } from './events';
 import { placedItems } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
-import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
+import { archiveMissing, bindAmbiguous, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems, resolveItem } from './resolutions';
 import { decisionState, pendingMergeOf, type DecisionState } from './binds';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
@@ -66,8 +66,10 @@ export type CurationCommand =
     | { command: 'defer' | 'reopen' | 'retry'; eventId: string; version: number; base?: string | null; reason?: string }
     | { command: 'confirm'; eventId: string; version: number; base?: string | null }
     | { command: 'archive'; eventId: string; version: number; base?: string | null; reason?: string }
-    | { command: 'bind'; eventId: string; version: number; base?: string | null; path?: string; reason?: string }
-    | { command: 'dismiss'; eventId: string; version: number; base?: string | null; reason: string };
+    | { command: 'bind'; eventId: string; version: number; base?: string | null; path?: string; to?: string; reason?: string }
+    | { command: 'dismiss'; eventId: string; version: number; base?: string | null; reason: string }
+    | ({ command: 'resolve'; eventId: string; version: number; base?: string | null; reason?: string } & ({ as: 'new' } | { as: 'replacement-of'; photoId: string }))
+    | { command: 'confirm-missing'; eventId: string; version: number; base?: string | null; reason?: string };
 
 /** The program the CLI runs as when none is given: the source under tsx. */
 export const DEFAULT_PROGRAM = 'npx tsx scripts/photos.ts';
@@ -89,10 +91,16 @@ export function curationUsage(program: string = DEFAULT_PROGRAM): string {
         replacement, reopen and then defer put back the revision the confirm replaced, while that
         confirm is still the inbox's latest change to the photo's revision; reopen and show say
         what defer will do.
-  ${program} curation bind <eventId> --version <n> [--path <library path>] [--reason <text>]
-        Bind an intentional replacement to a missing photograph: the file at --path, or the other bytes found at its last path.
+  ${program} curation bind <eventId> --version <n> [--path <library path> | --to <photoId>] [--reason <text>]
+        Bind an intentional replacement to a missing photograph: the file at --path, or the one file linked to it, such as
+        other bytes at its last path. On an ambiguous item, --to names which of the photographs it may be the file is.
   ${program} curation archive <eventId> --version <n> [--reason <text>]
         Archive after removing series references: the takedown of a missing photograph, which photos publish then makes public.
+  ${program} curation resolve <eventId> --version <n> --as new | --as replacement-of <photoId> [--reason <text>]
+        Answer an ambiguous item: the file is a new photograph, or new bytes for <photoId>. On a replacement, --as new
+        makes the file its own photograph instead, and the photograph it replaced goes missing. The watcher applies it.
+  ${program} curation confirm-missing <eventId> --version <n> [--reason <text>]
+        Record that a missing photograph's file is gone on purpose. It writes this item and nothing else.
     Every item command also takes --base <revisionId|none> (the active revision it was reviewed against) and --actor <name>.
     approve, confirm, and archive need --base once a revision is active.`;
 }
@@ -103,7 +111,10 @@ const usage = (message: string): never => {
     throw new CurationUsageError(message);
 };
 
-const ITEM_COMMANDS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive'] as const;
+const ITEM_COMMANDS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'resolve', 'confirm-missing'] as const;
+
+/** Every `curation` command, in the order the usage text and README.md list them. */
+export const CURATION_COMMANDS = ['list', 'show', ...ITEM_COMMANDS] as const;
 
 function text(value: string, field: string, max: number): string {
     const checked = ownerText(value, { field, max });
@@ -135,6 +146,8 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
                 reason: { type: 'string' },
                 actor: { type: 'string' },
                 path: { type: 'string' },
+                as: { type: 'string' },
+                to: { type: 'string' },
             },
             allowPositionals: true,
             strict: true,
@@ -168,8 +181,13 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
     }
     const choiceFlags = ['series', 'unassigned', 'start', 'end', 'after', 'description', 'decorative', 'clear-description'];
     const common = ['version', 'base', 'actor'];
-    only(command === 'edit' || command === 'approve' ? [...common, ...choiceFlags] : command === 'confirm' ? common : command === 'bind' ? [...common, 'reason', 'path'] : [...common, 'reason']);
-    if (positionals.length !== 1) usage(`curation ${command} needs one event ID.`);
+    only(command === 'edit' || command === 'approve' ? [...common, ...choiceFlags] : command === 'confirm' ? common : command === 'bind' ? [...common, 'reason', 'path', 'to'] : command === 'resolve' ? [...common, 'reason', 'as'] : [...common, 'reason']);
+    const resolveAs = values.as as string | undefined;
+    if (command === 'resolve') {
+        if (resolveAs !== 'new' && resolveAs !== 'replacement-of') usage('curation resolve needs --as new or --as replacement-of <photoId>.');
+        if (resolveAs === 'replacement-of' && positionals.length !== 2) usage('curation resolve --as replacement-of needs the photo ID after it.');
+        if (resolveAs === 'new' && positionals.length !== 1) usage('curation resolve --as new takes no photo ID.');
+    } else if (positionals.length !== 1) usage(`curation ${command} needs one event ID.`);
     const [eventId] = positionals;
     if (!EVENT_ID_RE.test(eventId)) usage(`${eventId} is not an event ID.`);
     const versionText = values.version as string | undefined;
@@ -218,9 +236,20 @@ export function parseCurationArgs(args: readonly string[]): CurationCommand {
     }
     if (command === 'bind') {
         const target = values.path as string | undefined;
+        const to = values.to as string | undefined;
+        if (target !== undefined && to !== undefined) usage("--path and --to don't go together: --path binds a missing photograph, --to answers an ambiguous item.");
         if (target !== undefined && !isLibraryPath(target)) usage(`--path takes a path relative to the library, such as harbor/landscape.jpg.`);
-        return { command, ...item, ...(target === undefined ? {} : { path: target }), ...(reason === undefined ? {} : { reason }) };
+        if (to !== undefined && !PHOTO_ID_RE.test(to)) usage(`${to} is not a photo ID.`);
+        return { command, ...item, ...(target === undefined ? {} : { path: target }), ...(to === undefined ? {} : { to }), ...(reason === undefined ? {} : { reason }) };
     }
+    if (command === 'resolve') {
+        const extra = reason === undefined ? {} : { reason };
+        if (resolveAs === 'new') return { command, ...item, ...extra, as: 'new' };
+        const photoId = positionals[1];
+        if (!PHOTO_ID_RE.test(photoId)) usage(`${photoId} is not a photo ID.`);
+        return { command, ...item, ...extra, as: 'replacement-of', photoId };
+    }
+    if (command === 'confirm-missing') return { command, ...item, ...(reason === undefined ? {} : { reason }) };
     if (command === 'archive') return { command, ...item, ...(reason === undefined ? {} : { reason }) };
     return { command: command as 'defer' | 'reopen' | 'retry', ...item, ...(reason === undefined ? {} : { reason }) };
 }
@@ -413,6 +442,7 @@ function factLines(event: CurationEvent): string[] {
     if (details.length > 0) lines.push(`Derived metadata: ${details.join(', ')}`);
     if (facts.candidates?.length) lines.push(`Candidates: ${facts.candidates.join(', ')}`);
     if (facts.duplicateOf) lines.push(`Same bytes as ${facts.duplicateOf}.`);
+    if (facts.suggestedFor) lines.push(`Maybe the missing photograph ${facts.suggestedFor}: ${facts.suggestedBy === 'capture-time' ? 'taken at the same moment' : 'the same file name'}, with other pixels. Its missing item's bind takes it.`);
     if (facts.failure) lines.push(`Failure: ${facts.failure}. ${FAILURE_TEXT[facts.failure]}`);
     return lines;
 }
@@ -460,21 +490,53 @@ async function replacementLines(root: string, event: CurationEvent, registry: Re
     ];
 }
 
-/** What became of the item's latest bind: still waiting for the watcher, or refused, with #10's reason. */
+/**
+ * What became of the item's latest bind or resolve: still waiting for the watcher, with when the curator asked
+ * (A5), or refused, with #10's reason.
+ */
 async function bindLines(root: string, event: CurationEvent): Promise<string[]> {
-    const bind = event.decisions.findLast((decision) => decision.action === 'bind' && decision.identityDecisionId !== undefined);
+    const bind = event.decisions.findLast((decision) => (decision.action === 'bind' || decision.action === 'resolve') && decision.identityDecisionId !== undefined);
     if (!bind?.identityDecisionId) return [];
     const id = bind.identityDecisionId;
+    const what = bind.action === 'bind' ? 'Bind' : 'Resolve';
     const where = bind.path ? ` for ${printable(bind.path)}` : '';
     const found = await decisionState(root, id).catch((): DecisionState => ({ state: 'unknown' }));
     switch (found.state) {
         case 'pending':
-            return [`Bind pending: the watcher applies the decision ${id}${where} on its next pass, unless the file is still changing.`];
+            return [`${what} pending: the watcher applies the decision ${id}${where} on its next pass, unless the file is still changing. Requested at ${bind.at} by ${printable(bind.by)}.`];
         case 'rejected':
-            return [`Bind refused: the watcher rejected the decision ${id}${where}: ${printable(found.reason)}. Nothing changed. Bind another file, or settle it another way.`];
+            return [`${what} refused: the watcher rejected the decision ${id}${where}: ${printable(found.reason)}. Nothing changed. ${bind.action === 'bind' ? 'Bind another file' : 'Resolve it again'}, or settle it another way.`];
         default:
             return [];
     }
+}
+
+/** A5 (#17): a replacement's before and after, and what its review should look at. */
+function comparisonLines(event: CurationEvent): string[] {
+    const comparison = event.derivedFacts.comparison;
+    if (event.type !== 'replacement' || !comparison) return [];
+    const side = (label: string, facts: typeof comparison.before, which: string) => {
+        const parts = [
+            facts.width && facts.height ? `${facts.width}x${facts.height}` : 'size unknown',
+            facts.orientation ?? 'orientation unknown',
+            facts.aspectRatio === null ? 'aspect unknown' : `aspect ${facts.aspectRatio}`,
+            facts.capturedAt ? `captured ${facts.capturedAt}` : 'no capture date',
+            `${facts.bytes} bytes`,
+        ];
+        return `${label}: ${parts.join(', ')}: ${which}, ${facts.assetRevision}`;
+    };
+    const notes = comparison.notes.map((note) => (note === 'aspect-ratio' ? 'the aspect ratio changes by more than 1%' : 'the orientation flips'));
+    return [
+        side('Before', comparison.before, 'what the photo record pinned when this opened'),
+        side('After', comparison.after, 'these bytes'),
+        ...(notes.length > 0 ? [`Check it: ${notes.join(', and ')}. The crop, focal point, and description were set for the earlier bytes.`] : []),
+    ];
+}
+
+/** A5 (#17): who said a missing source is gone on purpose, and when. */
+function confirmedMissingLines(event: CurationEvent): string[] {
+    const confirmed = event.decisions.findLast((decision) => decision.action === 'confirm-missing');
+    return confirmed ? [`Confirmed missing by ${printable(confirmed.by)} at ${confirmed.at}: the file is gone on purpose. Bind or archive still settles it.`] : [];
 }
 
 /** For a new item whose photograph a pending bind merges: why approve refuses it. */
@@ -482,7 +544,7 @@ async function pendingMergeLines(root: string, event: CurationEvent): Promise<st
     if (event.type !== 'new' || event.photoId === null || (event.status !== 'open' && event.status !== 'deferred')) return [];
     const merge = await pendingMergeOf(root, event.photoId).catch(() => null);
     if (merge === null) return [];
-    return [`Bind pending: the decision ${merge.decisionId} merges this photograph into ${merge.into} on the watcher's next pass, so approve refuses it until then.`];
+    return [`${merge.kind === 'restore' ? 'Restore' : 'Bind'} pending: the decision ${merge.decisionId} merges this photograph into ${merge.into} on the watcher's next pass, so approve refuses it until then.`];
 }
 
 /**
@@ -503,7 +565,10 @@ async function missingLines(root: string, event: CurationEvent, registry: Regist
     lines.push(...await bindLines(root, event));
     const linked = registry === null ? [] : await linkedNewItems(root, event.photoId, registry).catch(() => []);
     for (const item of linked) {
-        lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} holds other bytes at its last path, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
+        const why = item.derivedFacts.samePathAs === event.photoId
+            ? 'holds other bytes at its last path'
+            : item.derivedFacts.suggestedBy === 'capture-time' ? 'was taken at the same moment, with other pixels' : 'has its file name, with other pixels';
+        lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} ${why}, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
     }
     lines.push(
         'To settle it:',
@@ -547,7 +612,10 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
         ...(unknown === null ? [] : [unknownPlacementLine(unknown)]),
         `Asset revision: ${event.assetRevision ?? 'none'}`,
         ...(await replacementLines(root, event, registry)),
+        ...comparisonLines(event),
         ...(await missingLines(root, event, registry)),
+        ...confirmedMissingLines(event),
+        ...(event.type === 'ambiguous' && (event.status === 'open' || event.status === 'deferred') ? await bindLines(root, event) : []),
         ...(await pendingMergeLines(root, event)),
         ...failedBuildLines(event),
         `Observed: ${event.observedAt}${event.lastObservedAt !== event.observedAt ? `, last ${event.lastObservedAt}` : ''}`,
@@ -569,6 +637,9 @@ async function show(root: string, command: Extract<CurationCommand, { command: '
                 ...(decision.identityDecisionId ? [`identity decision ${decision.identityDecisionId}`] : []),
                 ...(decision.fromRevision ? [decision.action === 'defer' ? `put back ${decision.fromRevision}` : `in place of ${decision.fromRevision}`] : []),
                 ...(decision.path ? [`path ${printable(decision.path)}`] : []),
+                ...(decision.resolveAs ? [`as ${decision.resolveAs}${decision.to ? ` ${decision.to}` : ''}`] : decision.to ? [`to ${decision.to}`] : []),
+                ...(decision.restores ? [`restores ${decision.restores}`] : []),
+                ...(decision.resolution ? [decision.resolution] : []),
             ];
             lines.push(`  ${decision.at} ${decision.action} by ${printable(decision.by)}${extra.length ? `: ${extra.join(', ')}` : ''}`);
         }
@@ -617,9 +688,14 @@ async function run(context: CurationContext, command: CurationCommand): Promise<
         case 'confirm':
             return report(await confirmReplacement(input));
         case 'bind':
+            if (command.to !== undefined) return report(await bindAmbiguous({ ...input, to: command.to, reason: command.reason }));
             return report(await bindReplacement({ ...input, path: command.path, reason: command.reason }));
         case 'archive':
             return report(await archiveMissing({ ...input, reason: command.reason }));
+        case 'resolve':
+            return report(await resolveItem({ ...input, as: command.as, ...(command.as === 'replacement-of' ? { photoId: command.photoId } : {}), reason: command.reason }));
+        case 'confirm-missing':
+            return report(await confirmMissing({ ...input, reason: command.reason }));
     }
 }
 

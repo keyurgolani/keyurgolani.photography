@@ -224,13 +224,19 @@
  *     puts back the revision the confirm replaced, while that confirm is
  *     still the inbox's latest change to the photo's revision. reopen and
  *     show say what defer will do.
- *   npx tsx scripts/photos.ts curation bind <eventId> --version <n> [--path <library path>]
+ *   npx tsx scripts/photos.ts curation bind <eventId> --version <n> [--path <library path> | --to <photoId>]
  *   npx tsx scripts/photos.ts curation archive <eventId> --version <n>
+ *   npx tsx scripts/photos.ts curation confirm-missing <eventId> --version <n>
  *     #17's settlements of a missing source: bind an intentional replacement
  *     (#10's bind decision), or archive after removing series references,
  *     which is the takedown once photos publish runs. archive needs --base
  *     once a revision is active. publish --dry-run lists what would leave
- *     the site under Removed.
+ *     the site under Removed. confirm-missing records that the file is gone
+ *     on purpose, and writes the item only.
+ *   npx tsx scripts/photos.ts curation resolve <eventId> --version <n> --as new | --as replacement-of <photoId>
+ *     #14's answer to an ambiguous item, as #10's new or bind decision, and
+ *     bind --to names which of the photographs it may be the file is. On a
+ *     replacement, --as new makes the file its own photograph.
  *     The curation inbox (lib/curation/commands.ts). New photographs wait
  *     here until approved into the draft; nothing here publishes. Item
  *     commands take the --version that list or show printed, and --base
@@ -433,6 +439,9 @@ function decisionInput(type: DecisionInput['type'], positionals: string[], value
             if (!all && positionals.length !== 1) throw new UsageError('identity reprofile needs a photo ID or --all.');
             return { ...base, type, ...(all ? {} : { photoId: photoIdArg(positionals[0]) }) };
         }
+        case 'restore':
+            // Not in DECISION_COMMANDS: the curator restores an archived photograph by approving its duplicate's item (A5).
+            throw new UsageError('photos identity has no restore. Approve the duplicate\'s item with curation approve, which writes the restore decision.');
     }
 }
 
