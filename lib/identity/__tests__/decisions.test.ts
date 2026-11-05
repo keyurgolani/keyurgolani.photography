@@ -66,7 +66,7 @@ describe('parseDecision', () => {
         ['a newer schema', { ...base, schemaVersion: 2, type: 'archive', photoId: PHOTO }, 'schemaVersion 2 comes from a newer build'],
         ['an old schema', { ...base, schemaVersion: 0, type: 'archive', photoId: PHOTO }, 'schemaVersion must be 1'],
         ['a bad decisionId', { ...base, decisionId: 'x', type: 'archive', photoId: PHOTO }, 'decisionId must be a lowercase UUID v4'],
-        ['an unknown type', { ...base, type: 'merge', photoId: PHOTO }, 'type must be one of bind, new, archive, retry, reprofile'],
+        ['an unknown type', { ...base, type: 'merge', photoId: PHOTO }, 'type must be one of bind, new, archive, retry, reprofile, restore'],
         ['an empty actor', { ...base, actor: '', type: 'archive', photoId: PHOTO }, 'actor must be a non-empty string'],
         ['a non-string reason', { ...base, reason: 3, type: 'archive', photoId: PHOTO }, 'reason must be a string'],
         ['a date without a time', { ...base, createdAt: '2026-06-01', type: 'archive', photoId: PHOTO }, 'createdAt must be an ISO timestamp'],
@@ -770,7 +770,8 @@ describe('reconcile: restore (#17, A5)', () => {
         expect(r.photo(x).sourceHealth).toBe('archived');
         r.library.put(at, inspection);
         r.pass();
-        const n = r.photoAt(at).photoId;
+        // Not r.photoAt(at): an archived photo keeps its last path, which may be this one.
+        const n = Object.values(r.registry.photos).find((photo) => photo.photoId !== x && photo.source.path === at)?.photoId as string;
         expect(r.photo(n)).toMatchObject({ duplicateOf: x, sourceHealth: 'present' });
         return { r, x, n };
     }
