@@ -23,15 +23,13 @@ import {
     standingFor,
     tombstoneFile,
     tombstonesDir,
-    holdsRecorded,
+    recordedFolders,
     PERMANENT_TEXT,
-    setAsideName,
     setAsideFolders,
     setAsideFrom,
     setAsideText,
     TOMBSTONE_ID_RE,
     TOMBSTONES_DIR,
-    type CollectedPath,
     type Tombstone,
     type TombstoneEntry,
     type TombstoneRead,
@@ -207,53 +205,6 @@ const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const NOTHING = ' Nothing was written.';
 
-
-/**
- * How a folder a GC run recorded is now. `aside`: set aside whole by that
- * run, at `aside`, whatever is in its place. `standing`: in its place, with
- * every file the run recorded present and no shorter. `reached`: gone, or a recorded
- * file is missing or cut short, so the delete reached it. Extra files and a
- * newer change don't count (#181's A10 review, item 13).
- */
-async function recordedState(root: string, recorded: CollectedPath, planDigest: string): Promise<{ state: 'standing' | 'reached' } | { state: 'aside'; aside: string }> {
-    // A whole folder the run set aside comes first (item 21): whatever is in its place, the owner renames it back, then revokes.
-    const [, photoId, assetRevision] = recorded.path.split('/');
-    const photoDir = path.join(root, 'assets', photoId);
-    const prefix = `${setAsideName(assetRevision, planDigest, '')}`;
-    let names: fs.Dirent[] = [];
-    try {
-        names = await fs.promises.readdir(photoDir, { withFileTypes: true });
-    } catch (error) {
-        if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw error;
-    }
-    for (const entry of names.filter((each) => each.isDirectory() && each.name.startsWith(prefix)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-        if (await holdsRecorded(path.join(photoDir, entry.name), recorded.files)) return { state: 'aside', aside: `assets/${photoId}/${entry.name}` };
-    }
-    const dir = path.join(root, ...recorded.path.split('/'));
-    let stat: fs.Stats | null = null;
-    try {
-        stat = await fs.promises.lstat(dir);
-    } catch (error) {
-        if (!hasErrorCode(error, 'ENOENT')) throw error;
-    }
-    return { state: stat !== null && stat.isDirectory() && !stat.isSymbolicLink() && (await holdsRecorded(dir, recorded.files)) ? 'standing' : 'reached' };
-}
-
-/** What every folder `markers` recorded is now: those a delete reached, and those set aside whole, sorted. */
-async function recordedFolders(root: string, markers: TombstoneEntry['collected']): Promise<{ reached: string[]; aside: { path: string; original: string }[] }> {
-    const reached = new Set<string>();
-    const aside = new Map<string, string>();
-    for (const marker of markers) {
-        for (const recorded of marker.paths) {
-            const now = await recordedState(root, recorded, marker.planDigest);
-            if (now.state === 'reached') reached.add(recorded.path);
-            if (now.state === 'aside') aside.set(recorded.path, now.aside);
-        }
-    }
-    // A folder some run set aside whole can come back, whatever another run's marker found where it was (item 21).
-    for (const folder of aside.keys()) reached.delete(folder);
-    return { reached: [...reached].sort(), aside: [...aside].sort().map(([original, at]) => ({ original, path: at })) };
-}
 
 const isAre = (n: number) => (n === 1 ? 'is' : 'are');
 

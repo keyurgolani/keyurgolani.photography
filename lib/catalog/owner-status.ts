@@ -12,6 +12,7 @@ import { usualProfile } from './compile';
 import { checkPublished, type PublishState } from './mode';
 import { lastCommitted, listActivations, readLastPublish, readRevisionFile, type LastPublishFile } from './repository';
 import { setAsideFolders } from './tombstones';
+import { sizeText, trashSummary, type TrashSummary } from './asset-folders';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { Activation, AuthoredPhoto, AuthoredSeries, WorkingLayer } from './types';
 import { readActivePointer, readWorkingLayer } from './working-layer';
@@ -100,6 +101,8 @@ export interface OwnerStatus {
      * or why the inbox can't be read. Null before the data root is ready.
      */
     inbox: InboxAlerts | { error: string } | null;
+    /** What `photos gc --set-aside` moved into the data root's `trash/`, when anything is there (#181's A10). Emptying it is the owner's step. */
+    trash?: TrashSummary | { error: string };
 }
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -223,6 +226,12 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     } catch (error) {
         status.inbox = { error: message(error) };
     }
+    try {
+        const trash = await trashSummary(root);
+        if (trash) status.trash = trash;
+    } catch (error) {
+        status.trash = { error: message(error) };
+    }
     return status;
 }
 
@@ -295,6 +304,11 @@ function formatStatus(status: OwnerStatus, now: number): string {
     }
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
+    if (status.trash) {
+        lines.push('error' in status.trash
+            ? `Trash: trash/ can't be read (${status.trash.error})`
+            : `Trash: ${count(status.trash.folders.length, 'folder')}, ${sizeText(status.trash.bytes)}, in trash/: ${status.trash.folders.map((each) => each.name).join(', ')}. Emptying trash/ is your own step.`);
+    }
     lines.push(heartbeatLine(identity.watcher, now));
     return `${lines.join('\n')}\n`;
 }

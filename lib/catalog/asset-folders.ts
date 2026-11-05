@@ -135,3 +135,32 @@ export async function manifestContent(dir: string, relative: string, photoId: st
     }
     return { listed: true, bytes, files };
 }
+
+/** What is in the data root's `trash/`, each folder with its bytes, or null when it is missing or empty. */
+export interface TrashSummary {
+    folders: { name: string; bytes: number }[];
+    bytes: number;
+}
+
+/**
+ * The data root's `trash/` (#181's A10 review, item 29a), for `photos
+ * status`: what `photos gc --set-aside` moved there, with sizes. It reads
+ * with lstat, follows no symlink, and changes nothing.
+ */
+export async function trashSummary(root: string): Promise<TrashSummary | null> {
+    const dir = path.join(/*turbopackIgnore: true*/ root, 'trash');
+    let entries: fs.Dirent[];
+    try {
+        if ((await fs.promises.lstat(dir)).isSymbolicLink()) return null;
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+        throw error;
+    }
+    const folders: TrashSummary['folders'] = [];
+    for (const entry of entries.sort(byName)) {
+        const inner = path.join(dir, entry.name);
+        folders.push({ name: entry.name, bytes: entry.isDirectory() ? (await folderFacts(inner)).bytes : (await fs.promises.lstat(inner)).size });
+    }
+    return folders.length === 0 ? null : { folders, bytes: folders.reduce((sum, each) => sum + each.bytes, 0) };
+}

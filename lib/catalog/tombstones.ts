@@ -419,6 +419,53 @@ export async function holdsRecorded(dir: string, files: readonly { name: string;
     return true;
 }
 
+/**
+ * How a folder a GC run recorded is now. `aside`: set aside whole by that
+ * run, at `aside`, whatever is in its place. `standing`: in its place, with
+ * every file the run recorded present and no shorter. `reached`: gone, or a recorded
+ * file is missing or cut short, so the delete reached it. Extra files and a
+ * newer change don't count (#181's A10 review, item 13).
+ */
+async function recordedState(root: string, recorded: CollectedPath, planDigest: string): Promise<{ state: 'standing' | 'reached' } | { state: 'aside'; aside: string }> {
+    // A whole folder the run set aside comes first (item 21): whatever is in its place, the owner renames it back, then revokes.
+    const [, photoId, assetRevision] = recorded.path.split('/');
+    const photoDir = path.join(root, 'assets', photoId);
+    const prefix = `${setAsideName(assetRevision, planDigest, '')}`;
+    let names: fs.Dirent[] = [];
+    try {
+        names = await fs.promises.readdir(photoDir, { withFileTypes: true });
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw error;
+    }
+    for (const entry of names.filter((each) => each.isDirectory() && each.name.startsWith(prefix)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        if (await holdsRecorded(path.join(photoDir, entry.name), recorded.files)) return { state: 'aside', aside: `assets/${photoId}/${entry.name}` };
+    }
+    const dir = path.join(root, ...recorded.path.split('/'));
+    let stat: fs.Stats | null = null;
+    try {
+        stat = await fs.promises.lstat(dir);
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT')) throw error;
+    }
+    return { state: stat !== null && stat.isDirectory() && !stat.isSymbolicLink() && (await holdsRecorded(dir, recorded.files)) ? 'standing' : 'reached' };
+}
+
+/** What every folder `markers` recorded is now: those a delete reached, and those set aside whole, sorted. */
+export async function recordedFolders(root: string, markers: TombstoneEntry['collected']): Promise<{ reached: string[]; aside: { path: string; original: string }[] }> {
+    const reached = new Set<string>();
+    const aside = new Map<string, string>();
+    for (const marker of markers) {
+        for (const recorded of marker.paths) {
+            const now = await recordedState(root, recorded, marker.planDigest);
+            if (now.state === 'reached') reached.add(recorded.path);
+            if (now.state === 'aside') aside.set(recorded.path, now.aside);
+        }
+    }
+    // A folder some run set aside whole can come back, whatever another run's marker found where it was (item 21).
+    for (const folder of aside.keys()) reached.delete(folder);
+    return { reached: [...reached].sort(), aside: [...aside].sort().map(([original, at]) => ({ original, path: at })) };
+}
+
 /** A folder a `photos gc --apply` run set aside and didn't finish with. */
 export interface SetAsideFolder {
     /** `assets/<photoId>/.gc-…`, relative to the data root. */
@@ -435,31 +482,47 @@ export interface SetAsideFolder {
     text: string;
 }
 
-/** The owner's way to move something out without deleting it. */
-const toTrash = (relative: string) => `(mv ${relative} ~/.Trash/ from the data root), never rm`;
+/** The data root's own trash folder: `photos gc --set-aside` renames into it, nothing reads or collects it, and emptying it is the owner's step. */
+export const TRASH_DIR = 'trash';
+
+/** The step that moves a path into the data root's `trash/`, never deleting it (#181's A10 review, item 29a). */
+export const setAsideStep = (relative: string) => `photos gc --set-aside ${relative}`;
+
+/** `then` for a whole folder: revoke, or rerun gc; only rerun gc once another folder of its tombstone was reached (item 30). */
+export const WHOLE_THEN = { revoke: 'then revoke, or rerun photos gc', gc: 'then rerun photos gc' } as const;
 
 /**
  * The one sentence for a folder set aside, wherever it's reported, with the
- * owner's real steps (#181's A10 review, item 25). A whole one: move what is
- * in its place out of the data root to the Trash, rename it back, then
- * revoke or rerun `photos gc` (`then` says which). A partial or unknown one:
- * move it out of `assets/` to the Trash, then rerun `photos gc`. "Permanent"
- * only when nothing in the folder's place holds what the run recorded.
+ * owner's real steps (items 25 and 29a). A whole one: set aside whatever is
+ * in its place with `photos gc --set-aside`, rename it back with the exact
+ * `mv`, then revoke or rerun `photos gc` (`then` says which). A partial or
+ * unknown one: set it aside with `photos gc --set-aside`, then rerun
+ * `photos gc`. "Permanent" only when nothing in the folder's place holds
+ * what the run recorded. Every command runs in image-watcher's container,
+ * like every other photos command.
  */
-export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state' | 'occupied' | 'originalHolds'>, then = 'then revoke, or rerun photos gc'): string {
-    const out = `move ${folder.path} out of assets/ to the Trash ${toTrash(folder.path)}, then rerun photos gc`;
+export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state' | 'occupied' | 'originalHolds'>, then: string = WHOLE_THEN.revoke): string {
+    const out = `set it aside with ${setAsideStep(folder.path)}, then rerun photos gc`;
     if (folder.state === 'whole') {
-        const back = `rename it back to ${folder.original}; ${then}`;
+        const back = `rename it back with mv ${folder.path} ${folder.original}, from the data root in image-watcher's container; ${then}`;
         return folder.occupied
-            ? `set aside whole at ${folder.path}, and something else is at ${folder.original}: move that out of the data root to the Trash ${toTrash(folder.original)}, then ${back}`
+            ? `set aside whole at ${folder.path}, and something else is at ${folder.original}: set that aside with ${setAsideStep(folder.original)}, then ${back}`
             : `set aside whole at ${folder.path}: ${back}`;
     }
     if (folder.state === 'partial') {
         return folder.originalHolds
             ? `${folder.path} is what is left of a partly deleted copy of ${folder.original}, and ${folder.original} holds everything recorded: ${out}`
-            : `${folder.path} is what is left of ${folder.original}, partly deleted by photos gc --apply: that takedown is permanent, and only a backup of the data root brings it back. M${out.slice(1)}`;
+            : `${folder.path} is what is left of ${folder.original}, partly deleted by photos gc --apply: that takedown is permanent, and only a backup of the data root brings it back. S${out.slice(1)}`;
     }
     return `${folder.path} was set aside by photos gc --apply, and no marker says what it held: ${out}`;
+}
+
+/** What follows a whole folder's rename back for the tombstones `ids`: rerun gc only once a folder one of them lists was reached (item 30). */
+export async function wholeThen(root: string, read: TombstoneRead, ids: readonly string[]): Promise<string> {
+    for (const entry of read.tombstones.filter((each) => ids.includes(each.tombstoneId))) {
+        if ((await recordedFolders(root, entry.collected)).reached.length > 0) return WHOLE_THEN.gc;
+    }
+    return WHOLE_THEN.revoke;
 }
 
 /** `.gc-<assetRevision>…`, as much of a set-aside name as says which asset revision it came from. */
@@ -513,7 +576,8 @@ export async function setAsideFolders(root: string, read?: TombstoneRead): Promi
                 }
             }
             const folder = { path: relative, original, state, occupied, originalHolds };
-            found.push({ ...folder, text: setAsideText(folder) });
+            const owners = match ? tombstones.tombstones.filter((each) => each.collected.some((marker) => digestPrefix(marker.planDigest) === match[2] && marker.paths.some((recordedPath) => recordedPath.path === original))).map((each) => each.tombstoneId) : [];
+            found.push({ ...folder, text: setAsideText(folder, state === 'whole' ? await wholeThen(root, tombstones, owners) : undefined) });
         }
     }
     return found.sort((a, b) => (a.path < b.path ? -1 : 1));

@@ -1,7 +1,7 @@
 import { count, parseFlags, PRINTED_ISSUES, UsageError } from './owner-cli';
 import { sizeText } from './asset-folders';
 import { PERMANENT_TEXT } from './tombstones';
-import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, type GcEntry, type GcKeptReason, type GcOptions, type GcPlan, type GcProtection, type GcResult } from './retention';
+import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, runSetAside, SET_ASIDE_EXIT_CODES, type GcEntry, type GcKeptReason, type GcOptions, type GcPlan, type GcProtection, type GcResult } from './retention';
 
 /**
  * `photos gc` and `photos gc --apply <planDigest>`, #15's 15-3: argv
@@ -12,11 +12,19 @@ import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, type GcEntry, type GcKeptReason, ty
 export interface GcArgs {
     /** The plan digest to apply. Absent for a dry run. */
     apply?: string;
+    /** `--set-aside <assets/p/r>`: move that folder into the data root's trash/, and nothing else. */
+    setAside?: string;
 }
 
-/** `photos gc [--apply <planDigest>]`. */
+/** `photos gc [--apply <planDigest>]` and `photos gc --set-aside <assets/p/r>`. */
 export function gcArgs(args: string[]): GcArgs {
-    const { values } = parseFlags({ args, options: { apply: { type: 'string' } } });
+    const { values } = parseFlags({ args, options: { apply: { type: 'string' }, 'set-aside': { type: 'string' } } });
+    const setAside = values['set-aside'];
+    if (setAside !== undefined) {
+        if (values.apply !== undefined) throw new UsageError('photos gc takes --apply <planDigest> or --set-aside <path>, not both.');
+        if (!/\S/.test(setAside)) throw new UsageError('--set-aside takes a path, such as assets/<photoId>/<assetRevision>.');
+        return { setAside };
+    }
     if (values.apply === undefined) return {};
     if (!GC_DIGEST_RE.test(values.apply)) throw new UsageError(`--apply takes the plan digest photos gc printed, gc_ plus 64 hex, not ${values.apply}.`);
     return { apply: values.apply };
@@ -112,6 +120,12 @@ export interface GcIo {
  * exit code.
  */
 export async function runGcCommand(dataRoot: string, args: GcArgs, io: GcIo, options: Partial<Omit<GcOptions, 'dataRoot' | 'apply'>> = {}): Promise<number> {
+    if (args.setAside !== undefined) {
+        const set = await runSetAside({ dataRoot, path: args.setAside, clock: options.clock, waitMs: options.waitMs, leaseMs: options.leaseMs, logger: options.logger });
+        const code = SET_ASIDE_EXIT_CODES[set.outcome];
+        (code === 0 ? io.out : io.err)(`[photos] ${set.outcome}: ${set.message}`);
+        return code;
+    }
     const result: GcResult = await runGc({ ...options, dataRoot, apply: args.apply, announce: (line) => io.out(line) });
     const exitCode = GC_EXIT_CODES[result.outcome];
     const print = exitCode === 0 ? io.out : io.err;
