@@ -176,6 +176,17 @@ expect_code() {
   [ "$code" = "$expected" ] || fail "GET $endpoint returned $code, expected $expected."
 }
 
+# Fails unless #6's Home records endpoint, for the featured photo, serves
+# revision <served>, naming it in X-Catalog-Revision, and answers 409
+# revision-changed for revision <gone>, so Home follows the live revision.
+expect_records_on() {
+  local served=$1 gone=$2
+  # shellcheck disable=SC2016 # $served and $featured are jq's
+  expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$served" 200 no-cache '.revisionId == $served and any(.photos[]; .id == $featured)' --arg served "$served" --arg featured "$featured"
+  [ "$(header x-catalog-revision)" = "$served" ] || fail "The #6 Home records endpoint sent X-Catalog-Revision '$(header x-catalog-revision)' for $served, expected $served."
+  expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$gone" 409 no-store '. == {reason: "revision-changed"}'
+}
+
 # What every server answers, published or not: no /api/photos, /gallery on to
 # /work, and each legacy WebP, which is on disk, closed: 404 with nothing
 # cached, and /_next/image's 400.
@@ -365,7 +376,10 @@ echo "photos verify passed $revision and recorded it, failed it with exit 1 for 
 
 # 10. #15's history and rollback in the image: revision 1 is one a rollback
 #     can return to, `photos rollback --to 1` takes the site back to it, and
-#     web follows without a restart and keeps it across one.
+#     web follows without a restart and keeps it across one. This depends on
+#     step 9's last, full photos verify passing both revisions: the record
+#     it leaves is what makes revision 1 eligible, after the flipped byte
+#     failed them both.
 history_code=0
 photos_published history --json --revisions >"$TMP/history-before.json" || history_code=$?
 [ "$history_code" = 0 ] || fail "photos history --json --revisions exited $history_code, expected 0: $(cat "$TMP/history-before.json")"
@@ -385,11 +399,13 @@ chmod -R a+rX "$PUBLISHED"
 # shellcheck disable=SC2016 # $first is jq's
 expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $first and .revisionNumber == 1' --arg first "$first"
 cp "$TMP/body.json" "$TMP/ready-rolled-back.json"
+expect_records_on "$first" "$revision"
 docker restart "$WEB" >/dev/null
 wait_for_web
 # shellcheck disable=SC2016 # $first is jq's
 expect_json /api/ready 200 no-store '.revisionId == $first and .revisionNumber == 1' --arg first "$first"
 diff -u "$TMP/ready-rolled-back.json" "$TMP/body.json" || fail "/api/ready changed when web restarted after the rollback."
+expect_records_on "$first" "$revision"
 expect_code "$active" 200
 [ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the rollback."
 history_code=0
@@ -399,5 +415,5 @@ photos_published history --json >"$TMP/history-after.json" || history_code=$?
 jq -e '.total == 3 and .pointer.revisionId == $first and (.rows[-1] | .kind == "rollback" and .revisionId == $first and .revisionNumber == 1 and .live and .state == "committed")' \
   --arg first "$first" "$TMP/history-after.json" >/dev/null ||
   fail "photos history --json doesn't list the rollback to $first as live: $(cat "$TMP/history-after.json")"
-echo "photos history listed revision 1 as one a rollback can return to, photos rollback --to 1 rolled back to $first, and /api/ready named revision 1 before and after a restart."
+echo "photos history listed revision 1 as one a rollback can return to, photos rollback --to 1 rolled back to $first, and /api/ready and the #6 Home records endpoint named revision 1 before and after a restart."
 echo "smoke-catalog passed."

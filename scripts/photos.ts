@@ -811,7 +811,11 @@ function ownerRoot(): string | number {
 async function statusCommand(args: string[]): Promise<number> {
     const { values } = parseFlags({ args, options: { json: { type: 'boolean' }, check: { type: 'boolean' } } });
     // status is the diagnostic command, so it reports even with no data root.
-    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check }));
+    const result = await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check });
+    if (!values.json) return printed(result);
+    // A11 review: JSON goes to stdout whatever the exit code, as history --json's does, so a monitor reads one stream.
+    process.stdout.write(result.output);
+    return result.exitCode;
 }
 
 async function listCommand(args: string[]): Promise<number> {

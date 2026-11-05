@@ -274,6 +274,7 @@ jobs:
       # inbox's new item, then a replacement and a deletion of landscape.jpg
       # against the sets, the pointer and photos status --check.
       - name: Smoke test ingestion in the image
+        timeout-minutes: 5
         run: ci/smoke-ingest.sh ci-smoke
 
       # ci/smoke-catalog.sh publishes its test catalog on the runner with

@@ -20,8 +20,8 @@
 #    set, opens a replacement item, and writes nothing under catalog/, so the
 #    pointer still names the launch revision. `photos status --check` passes:
 #    a replacement waiting for `curation confirm` isn't a problem.
-# 4. #17's missing source: landscape.jpg deleted from the temp library, as
-#    the owner deleting it would. --once marks the photo missing, keeps both
+# 4. #17's missing source: landscape.jpg moved out of the temp library, as
+#    the owner deleting it would leave it. --once marks the photo missing, keeps both
 #    its sets and every other, and writes nothing under catalog/.
 #    `photos status --check` exits 1 with `missing-open` alone, naming that
 #    photo, and `photos verify` passes the launch revision, whose sets are
@@ -32,7 +32,9 @@
 # ghcr.io/keyurgolani/keyurgolani.photography:<tag> must already exist
 # locally, since nothing pulls here. The checks need jq; the runner needs no
 # Node. Nothing publishes a port. The temp root goes under $RUNNER_TEMP, the
-# job's own temp folder in CI, or $TMPDIR elsewhere.
+# job's own temp folder in CI, or $TMPDIR elsewhere. Every container runs
+# with --network none, so the bundled CLI and watcher are shown to need no
+# network.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -66,7 +68,7 @@ cleanup() {
   set +e
   # The containers wrote the library, the extras and the data root as the
   # image's user. Remove them with the image under test, so cleanup never pulls.
-  docker run --rm --pull never --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library /t/extras /t/data /t/input
+  docker run --rm --pull never --network none --user 0 --entrypoint rm -v "$TMP:/t" "$IMAGE" -rf /t/library /t/extras /t/data /t/input
   rm -rf "$TMP"
   exit "$status"
 }
@@ -77,7 +79,7 @@ trap cleanup EXIT
 # docker-compose.prod.yml mounts them for image-watcher, and the owner's input
 # files read-only at /data/input.
 in_image() {
-  docker run --rm --pull never -e PHOTOGRAPHY_LIBRARY_DIR=/data/library -e PHOTOGRAPHY_DATA_DIR=/data/portfolio -e PHOTOS_ACTOR="$ACTOR" \
+  docker run --rm --pull never --network none -e PHOTOGRAPHY_LIBRARY_DIR=/data/library -e PHOTOGRAPHY_DATA_DIR=/data/portfolio -e PHOTOS_ACTOR="$ACTOR" \
     -v "$LIB:/data/library:ro" -v "$DATA:/data/portfolio" -v "$INPUT:/data/input:ro" "$IMAGE" "$@"
 }
 
@@ -89,11 +91,13 @@ photos() {
   cat "$TMP/photos.out"
 }
 
-# Runs photos.mjs in the image with <args>, leaving stdout and stderr in <file>, and prints its exit code.
+# Runs photos.mjs in the image with <args>, leaving stdout in <file> and
+# stderr in <file>.err, and prints its exit code. A --json command prints its
+# JSON on stdout whatever the exit code; a text one that fails prints on stderr.
 photos_code() {
   local file=$1 code=0
   shift
-  in_image node dist/scripts/photos.mjs "$@" >"$file" 2>&1 || code=$?
+  in_image node dist/scripts/photos.mjs "$@" >"$file" 2>"$file.err" || code=$?
   echo "$code"
 }
 
@@ -105,6 +109,9 @@ run_once() {
   }
 }
 
+# `photos identity status --json` counts the sets but doesn't list them, so
+# list_sets and source_of read the registry file themselves.
+#
 # Writes every ready set the registry lists to <file>, one line each, sorted:
 # its photo ID, asset revision, profile ID, and the SHA-256 of its
 # manifest.json, which must exist. A set that goes or changes changes the list.
@@ -171,9 +178,9 @@ inbox_all() {
 #    writable by the image's user, and the owner's input folder.
 mkdir "$LIB" "$EXTRAS" "$DATA" "$INPUT"
 chmod 777 "$LIB" "$EXTRAS" "$DATA"
-docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
+docker run --rm --pull never --network none -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
-docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$EXTRAS:/library" \
+docker run --rm --pull never --network none -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$EXTRAS:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library --extras || fail "Generating the fixture extras in $IMAGE failed."
 [ -s "$LIB/landscape.jpg" ] || fail "The fixture library has no landscape.jpg."
 [ -s "$EXTRAS/landscape-edited.jpg" ] || fail "The fixture extras have no landscape-edited.jpg."
@@ -221,9 +228,9 @@ photos series order "$SERIES" >/dev/null
 photos series featured "$SERIES" >/dev/null
 photos describe --import /data/input/descriptions.csv >/dev/null
 code=$(photos_code "$TMP/launch-unconfirmed.txt" publish --actor "$ACTOR")
-[ "$code" = 3 ] || fail "The first publish exited $code without --confirm-launch, expected 3: $(cat "$TMP/launch-unconfirmed.txt")"
-launch=$(sed -n 's/.*--confirm-launch --expect \(rev_[0-9a-f]\{64\}\)\..*/\1/p' "$TMP/launch-unconfirmed.txt" | head -1)
-[ -n "$launch" ] || fail "The first publish named no candidate to confirm: $(cat "$TMP/launch-unconfirmed.txt")"
+[ "$code" = 3 ] || fail "The first publish exited $code without --confirm-launch, expected 3: $(cat "$TMP/launch-unconfirmed.txt"{,.err})"
+launch=$(sed -n 's/.*--confirm-launch --expect \(rev_[0-9a-f]\{64\}\)\..*/\1/p' "$TMP/launch-unconfirmed.txt.err" | head -1)
+[ -n "$launch" ] || fail "The first publish named no candidate to confirm: $(cat "$TMP/launch-unconfirmed.txt"{,.err})"
 photos publish --actor "$ACTOR" --confirm-launch --expect "$launch" >"$TMP/launch.txt"
 grep -qF -- "[photos] PUBLISHED: Published $launch as revision 1." "$TMP/launch.txt" || fail "The launch publish didn't say it published $launch as revision 1: $(cat "$TMP/launch.txt")"
 photos status --json >"$TMP/status-launch.json"
@@ -277,7 +284,7 @@ list_catalog "$TMP/catalog-launch.txt"
 state=$(source_of landscape.jpg)
 read -r photo_a revision_a health_a <<<"$state"
 [ "$photo_a" = "$landscape" ] && [ "$health_a" = present ] || fail "Before the replacement, landscape.jpg is $photo_a, $health_a; expected $landscape, present."
-docker run --rm --pull never --entrypoint cp -v "$EXTRAS:/extras:ro" -v "$LIB:/library" "$IMAGE" /extras/landscape-edited.jpg /library/landscape.jpg ||
+docker run --rm --pull never --network none --entrypoint cp -v "$EXTRAS:/extras:ro" -v "$LIB:/library" "$IMAGE" /extras/landscape-edited.jpg /library/landscape.jpg ||
   fail "Could not copy other pixels over landscape.jpg."
 cmp -s "$LIB/landscape.jpg" "$EXTRAS/landscape-edited.jpg" || fail "landscape.jpg doesn't hold the new pixels."
 run_once "After replacing landscape.jpg"
@@ -304,9 +311,15 @@ jq -e '.check.ok == true and .check.problems == [] and .catalog.active.revisionI
   fail "After the replacement, photos status --check --json printed $(cat "$TMP/check-replaced.json")."
 echo "Replacing landscape.jpg built $revision_b's set beside $revision_a's, kept every set, opened a replacement item, left catalog/ and the pointer on $launch, and passed photos status --check."
 
-# 4. #17: landscape.jpg deleted from the temp library, as the owner would.
-rm -f "$LIB/landscape.jpg"
-[ ! -e "$LIB/landscape.jpg" ] || fail "Could not remove landscape.jpg from the fixture library."
+# 4. #17: landscape.jpg moved out of the temp library, as the owner deleting it
+#    would leave it, and kept beside it in the temp root, so the smoke removes
+#    nothing. The guard keeps the move inside this run's own temp root.
+case "$LIB" in
+  "$TMP"/library) ;;
+  *) fail "The library $LIB isn't this run's temp library, $TMP/library, so nothing moves." ;;
+esac
+mv "$LIB/landscape.jpg" "$TMP/removed-landscape.jpg"
+[ ! -e "$LIB/landscape.jpg" ] && [ -s "$TMP/removed-landscape.jpg" ] || fail "Could not move landscape.jpg out of the fixture library."
 run_once "After deleting landscape.jpg"
 state=$(source_of landscape.jpg)
 read -r photo_c revision_c health_c <<<"$state"
@@ -317,17 +330,17 @@ diff -u "$TMP/sets-replaced.txt" "$TMP/sets-deleted.txt" || fail "A set changed 
 list_catalog "$TMP/catalog-deleted.txt"
 diff -u "$TMP/catalog-launch.txt" "$TMP/catalog-deleted.txt" || fail "The watcher wrote under catalog/ after the deletion."
 code=$(photos_code "$TMP/check-deleted.json" status --check --json)
-[ "$code" = 1 ] || fail "photos status --check exited $code with landscape.jpg missing, expected 1: $(cat "$TMP/check-deleted.json")"
+[ "$code" = 1 ] || fail "photos status --check exited $code with landscape.jpg missing, expected 1: $(cat "$TMP/check-deleted.json"{,.err})"
 # shellcheck disable=SC2016 # $landscape and $launch are jq's
 jq -e '.check.ok == false and ([.check.problems[].code] == ["missing-open"]) and ([.inbox.missing[].photoId] == [$landscape]) and .catalog.active.revisionId == $launch' \
   --arg landscape "$landscape" --arg launch "$launch" "$TMP/check-deleted.json" >/dev/null ||
   fail "With landscape.jpg missing, photos status --check --json printed $(cat "$TMP/check-deleted.json")."
 code=$(photos_code "$TMP/check-deleted.txt" status --check)
-if [ "$code" != 1 ] || ! grep -q '^Check: failed\.$' "$TMP/check-deleted.txt" || ! grep -qF -- '1 missing source open' "$TMP/check-deleted.txt"; then
-  fail "photos status --check exited $code with landscape.jpg missing, expected 1 and the missing source: $(cat "$TMP/check-deleted.txt")"
+if [ "$code" != 1 ] || ! grep -q '^Check: failed\.$' "$TMP/check-deleted.txt.err" || ! grep -qF -- '1 missing source open' "$TMP/check-deleted.txt.err"; then
+  fail "photos status --check exited $code with landscape.jpg missing, expected 1 and the missing source: $(cat "$TMP/check-deleted.txt"{,.err})"
 fi
 code=$(photos_code "$TMP/verify.json" verify --json)
 [ "$code" = 0 ] || fail "photos verify --json exited $code with landscape.jpg missing, expected 0: $(cat "$TMP/verify.json")"
 jq -e '.outcome == "VERIFIED"' "$TMP/verify.json" >/dev/null || fail "photos verify --json printed $(cat "$TMP/verify.json")."
-echo "Deleting landscape.jpg marked $landscape missing, kept both its sets and every other, left catalog/ and the pointer on $launch, and failed photos status --check with missing-open alone; photos verify still passed $launch."
+echo "Moving landscape.jpg out of the library marked $landscape missing, kept both its sets and every other, left catalog/ and the pointer on $launch, and failed photos status --check with missing-open alone; photos verify still passed $launch."
 echo "smoke-ingest passed."

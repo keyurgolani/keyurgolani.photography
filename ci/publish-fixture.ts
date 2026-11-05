@@ -34,7 +34,7 @@ async function main(): Promise<number> {
         return 1;
     }
     // The second revision changes only a title, so every set the first holds, the second holds too, and no other.
-    const shownId = catalog.content.series[0]?.id;
+    const shownId = catalog.series.find((series) => series.visibility === 'published')?.id;
     const shown = shownId ? await readAuthoredRecord(catalog.root, 'series', shownId) : null;
     if (!shown) {
         console.error('The fixture has no published series to retitle.');
