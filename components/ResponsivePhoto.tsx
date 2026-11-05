@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { preload } from 'react-dom';
 import { VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '@/lib/identity/variants';
 import { stopFetching } from './stopFetching';
@@ -35,7 +35,14 @@ export interface ResponsivePhotoProps {
    */
   preload?: boolean;
   onLoad?: React.ReactEventHandler<HTMLImageElement>;
-  onError?: React.ReactEventHandler<HTMLImageElement>;
+  /**
+   * The photograph can't be shown. A failed AVIF file first retries once with
+   * the WebP source (#6), so this comes only after that fails too, or at once
+   * for a failed WebP file. It also comes for a file that failed before
+   * hydration, which fires no event: the mount check finds it, so callers
+   * don't check again.
+   */
+  onError?: () => void;
   className?: string;
   ref?: React.Ref<HTMLImageElement>;
 }
@@ -53,6 +60,22 @@ function srcSet(variants: PhotoAsset['variants'], format: VariantFormat): string
   return entries.join(', ');
 }
 
+/** A URL's path and query, which is what tells the set's files apart. */
+function pathOf(url: string): string | null {
+  try {
+    const parsed = new URL(url, document.baseURI);
+    return parsed.pathname + parsed.search;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the file the browser picked is one of the set's AVIF files. currentSrc is absolute; the set's URLs are paths. */
+function isAvif(variants: PhotoAsset['variants'], currentSrc: string): boolean {
+  const picked = currentSrc === '' ? null : pathOf(currentSrc);
+  return picked !== null && VARIANT_WIDTHS.some((variant) => pathOf(variants[variant].avif.url) === picked);
+}
+
 /**
  * One derivative set as a <picture>: AVIF and WebP sources the browser picks
  * from, and an <img> at w1200.webp with the photo's own dimensions, so the
@@ -63,6 +86,10 @@ function srcSet(variants: PhotoAsset['variants'], format: VariantFormat): string
  * skips it and finds the WebP source in the markup, and no browser fetches
  * both. Unmounted before it finished, the image stops fetching (#6),
  * except a lead the server preloaded, which its head link keeps going.
+ *
+ * A failed AVIF file retries once with WebP (#6): the AVIF source leaves the
+ * <picture>, which makes the same <img> pick again, from the WebP source.
+ * Only a WebP failure is the photograph's failure.
  */
 export default function ResponsivePhoto({
   asset,
@@ -77,6 +104,9 @@ export default function ResponsivePhoto({
   ref,
 }: ResponsivePhotoProps) {
   const element = useRef<HTMLImageElement | null>(null);
+  /** Set once an AVIF file failed: the <picture> then offers WebP alone. */
+  const [webpOnly, setWebpOnly] = useState(false);
+  const retried = useRef(false);
   const setRef = useCallback(
     (node: HTMLImageElement | null) => {
       element.current = node;
@@ -94,6 +124,30 @@ export default function ResponsivePhoto({
     };
   }, []);
 
+  // The latest props, for the mount check, which runs once.
+  const latest = useRef({ asset, onError, loading });
+  latest.current = { asset, onError, loading };
+  const failed = useCallback((image: HTMLImageElement) => {
+    const { asset: current, onError: report } = latest.current;
+    if (!retried.current && isAvif(current.variants, image.currentSrc)) {
+      retried.current = true;
+      setWebpOnly(true);
+      return;
+    }
+    report?.();
+  }, []);
+
+  // A server-rendered image can fail before hydration attaches onError. Complete with no pixels is a failed load,
+  // unless it's a lazy image that hasn't started (an empty currentSrc).
+  // Once per element: a Strict Mode rehearsal runs this twice, and the second run would take a retry for a failure.
+  const checked = useRef(false);
+  useEffect(() => {
+    const image = element.current;
+    if (checked.current) return;
+    checked.current = true;
+    if (image && image.complete && image.naturalWidth === 0 && (image.currentSrc !== '' || latest.current.loading === 'eager')) failed(image);
+  }, [failed]);
+
   const avif = srcSet(asset.variants, 'avif');
   if (preloadIt && typeof window === 'undefined') {
     preload(asset.variants.w1200.avif.url, { as: 'image', type: 'image/avif', imageSrcSet: avif, imageSizes: sizes, fetchPriority: fetchPriority ?? 'high' });
@@ -105,7 +159,8 @@ export default function ResponsivePhoto({
     : undefined;
   return (
     <picture>
-      <source type="image/avif" srcSet={avif} sizes={sizes} />
+      {/* Left out after an AVIF failure, in its slot, so the <img> stays the same element and picks again (#6). */}
+      {!webpOnly && <source type="image/avif" srcSet={avif} sizes={sizes} />}
       <source type="image/webp" srcSet={srcSet(asset.variants, 'webp')} sizes={sizes} />
       <img
         ref={setRef}
@@ -116,7 +171,7 @@ export default function ResponsivePhoto({
         loading={loading}
         fetchPriority={fetchPriority}
         onLoad={onLoad}
-        onError={onError}
+        onError={(event) => failed(event.currentTarget)}
         className={className}
         style={placeholder}
       />

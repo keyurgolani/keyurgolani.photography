@@ -247,14 +247,12 @@ function SlideImage({ id, image, crop, alt, priority, lead, onDecoded, onGone, o
     const element = ref.current;
     if (element) decodeThen(element, () => mounted.current && ref.current === element, () => onDecoded(id), () => onFailed(id));
   }, [id, onDecoded, onFailed]);
-  // A server-rendered image can settle before hydration attaches onLoad and onError, so check it once at mount.
+  // A server-rendered image can load before hydration attaches onLoad, so check it once at mount. A failure from then
+  // is ResponsivePhoto's to report, once a failed AVIF file's WebP retry fails too (#6).
   useEffect(() => {
     mounted.current = true;
     const element = ref.current;
-    if (element?.complete) {
-      if (element.naturalWidth > 0) settle();
-      else onFailed(id);
-    }
+    if (element?.complete && element.naturalWidth > 0) settle();
     return () => {
       mounted.current = false;
       onGone(id);

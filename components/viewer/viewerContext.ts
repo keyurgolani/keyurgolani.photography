@@ -54,6 +54,9 @@ export interface ViewerShellContext {
     /** The id of the header line, which names the modal dialog. */
     headingId: string;
     report(state: ViewerChromeState): void;
+    /** Whether the technical details are open: the shell keeps it, so the panel stays open across moves within a visit (#7, decided). */
+    technicalOpen: boolean;
+    setTechnicalOpen(open: boolean): void;
     /**
      * The neighbors that peek in, by peekKey(), once a visitor has touched the photograph or moved. Empty under reduced
      * motion, where nothing follows the finger, and until then, so a first load shows one photograph (#6).

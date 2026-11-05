@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback } from 'react';
+import React from 'react';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import ParallaxCard from './ParallaxCard';
 import ResponsivePhoto from './ResponsivePhoto';
@@ -18,7 +18,7 @@ interface ProfilePictureProps {
   portrait: AboutPortraitView;
   /** No tilt, as under reduced motion. */
   still?: boolean;
-  /** The image failed to load, so there's nothing to show. */
+  /** The image failed to load, its WebP retry included, so there's nothing to show. ResponsivePhoto catches a failure from before hydration too. */
   onUnusable?: () => void;
 }
 
@@ -31,13 +31,6 @@ interface ProfilePictureProps {
  */
 export default function ProfilePicture({ portrait, still = false, onUnusable }: ProfilePictureProps) {
   const { x, y } = portrait.focalPoint;
-  // The server-rendered image can fail before React attaches onError: complete with no pixels is a failed load.
-  const checkLoaded = useCallback(
-    (image: HTMLImageElement | null) => {
-      if (image && image.complete && image.naturalWidth === 0) onUnusable?.();
-    },
-    [onUnusable],
-  );
   return (
     <div className="w-64 h-64 md:w-80 md:h-80 relative" style={{ '--profile-focus': `${x}% ${y}%` } as React.CSSProperties}>
       <ParallaxCard cardOffset={50} still={still} className="w-full h-full">
@@ -52,7 +45,6 @@ export default function ProfilePicture({ portrait, still = false, onUnusable }: 
               preload
               className={styles.image}
               onError={onUnusable}
-              ref={checkLoaded}
             />
           </div>
         </div>
