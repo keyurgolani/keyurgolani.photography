@@ -441,13 +441,6 @@ async function seriesOptions(root: string): Promise<{ series: SeriesOption[]; pr
     return { series: options, problem: unreadable.length > 0 ? `Some series can't be read (${unreadable.join(', ')}), so they aren't offered.` : null };
 }
 
-/**
- * The inbox as the page shows it, with `selectedId`'s event in full. With no
- * selection, the first item that needs judgment is selected, and none when
- * nothing does, so the page shows its empty state (as it does once the last
- * decision opens no next item). A data root that isn't ready is
- * `not-ready`, and nothing else is read.
- */
 /** #14: the watcher's heartbeat as the Inbox's warning reads it. A reason names the data root, so it stays out. */
 async function watcherOf(root: string): Promise<InboxWatcher> {
     const heartbeat = await watcherHeartbeatAge(root);
@@ -455,6 +448,13 @@ async function watcherOf(root: string): Promise<InboxWatcher> {
     return heartbeatStale(heartbeat.ageMs) ? { state: 'stale', heartbeatAt: heartbeat.heartbeatAt, ageMs: heartbeat.ageMs } : { state: 'running' };
 }
 
+/**
+ * The inbox as the page shows it, with `selectedId`'s event in full. With no
+ * selection, the first item that needs judgment is selected, and none when
+ * nothing does, so the page shows its empty state (as it does once the last
+ * decision opens no next item). A data root that isn't ready is
+ * `not-ready`, and nothing else is read.
+ */
 export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     const status = dataRootStatus();
     if (status.state !== 'ready' || status.root === null) {

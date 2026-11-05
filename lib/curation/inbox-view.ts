@@ -605,12 +605,6 @@ export function humanDate(date: string): string | null {
 }
 
 /**
- * A stored timestamp the same way, in `timeZone` with its abbreviation:
- * `1 February 2026, 00:03 UTC` by default, as the server sends it, and the
- * browser's own zone once the page runs. Anything that isn't a timestamp, or
- * a zone the runtime doesn't know, shows as it is.
- */
-/**
  * How long ago, in the CLI's and the Inbox's short words: `under a minute`,
  * `N min` below an hour, `N h` below two days, then `N days`. Rounded down,
  * so a stale heartbeat never reads younger than it is.
@@ -624,6 +618,12 @@ export function ageText(ms: number): string {
     return `${Math.floor(hours / 24)} days`;
 }
 
+/**
+ * A stored timestamp the same way, in `timeZone` with its abbreviation:
+ * `1 February 2026, 00:03 UTC` by default, as the server sends it, and the
+ * browser's own zone once the page runs. Anything that isn't a timestamp, or
+ * a zone the runtime doesn't know, shows as it is.
+ */
 export function humanTime(iso: string, timeZone = 'UTC'): string {
     const at = new Date(iso);
     if (!/^\d{4}-\d{2}-\d{2}T/.test(iso) || Number.isNaN(at.getTime())) return iso;
