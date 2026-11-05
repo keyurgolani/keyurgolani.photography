@@ -5,6 +5,13 @@
  * 308. No imports and no `server-only`, so a client can build the same URL.
  */
 
+/**
+ * The longest Location a redirect keeps the query in. A query that would take
+ * it past this is dropped whole, never cut: half a query can mean something
+ * else, and some proxies and browsers refuse a long header.
+ */
+export const MAX_LOCATION_LENGTH = 2048;
+
 /** A page's `searchParams` as Next hands them over. */
 export type PageSearchParams = Record<string, string | string[] | undefined>;
 
@@ -33,6 +40,12 @@ function isCanonicalPath(path: string): boolean {
  * same-origin absolute path throws, so a bug can't send a visitor off the
  * site. Following the result never loops as long as the path is one the
  * route renders, which the projections check before they answer a redirect.
+ * Past MAX_LOCATION_LENGTH it's the path alone.
+ *
+ * Re-encoding is lossy where the request was: Next has already decoded the
+ * query, so invalid UTF-8 in it arrives as U+FFFD and goes out as `%EF%BF%BD`,
+ * and `%20` comes back as `+`. That's accepted: a valid query means the same
+ * after the 308, and an invalid one had no meaning to keep.
  */
 export function redirectLocation(canonicalPath: string, query?: PageSearchParams | URLSearchParams): string {
     if (!isCanonicalPath(canonicalPath)) throw new TypeError(`A redirect needs a same-origin path, got ${JSON.stringify(canonicalPath)}`);
@@ -45,5 +58,7 @@ export function redirectLocation(canonicalPath: string, query?: PageSearchParams
         }
     }
     const encoded = search.toString();
-    return encoded === '' ? canonicalPath : `${canonicalPath}?${encoded}`;
+    if (encoded === '') return canonicalPath;
+    const location = `${canonicalPath}?${encoded}`;
+    return location.length > MAX_LOCATION_LENGTH ? canonicalPath : location;
 }

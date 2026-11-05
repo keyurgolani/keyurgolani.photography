@@ -54,14 +54,18 @@ function titleOf(title: unknown): string | undefined {
  * unreviewed, or no alt, as `photos carry-over` names a photo: "Photograph N
  * of T". A title leads when there is one (#5): "<title>, <text>, photograph
  * N of T", or "<title>, photograph N of T", with its own trailing
- * punctuation dropped too. The position still keeps each name unique.
+ * punctuation dropped too, and when the description is the title. The
+ * position still keeps each name unique.
  */
 export function photoEntryName(input: Input): string {
     const position = counter(input);
     const text = description(input.alt);
     const named = text ? `${text.replace(TRAILING, '')}, photograph ${position}` : `Photograph ${position}`;
     const title = titleOf(input.title);
-    return title ? `${title}, ${text ? named : `photograph ${position}`}` : named;
+    if (!title) return named;
+    // A description that is the title, letter case and its trailing punctuation aside, is said once.
+    const same = text !== undefined && text.replace(TRAILING, '').toLowerCase() === title.toLowerCase();
+    return `${title}, ${text && !same ? named : `photograph ${position}`}`;
 }
 
 /**

@@ -105,7 +105,7 @@ function trap(): ViewerSource {
     const fail = () => {
         throw new Error('The catalog was read');
     };
-    return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, seriesOfPhoto: fail, photo: fail, photosOf: fail };
+    return { revisionId: REVISION_A, listSeries: fail, seriesBySlug: fail, photo: fail, photosOf: fail };
 }
 
 describe('viewerParams', () => {

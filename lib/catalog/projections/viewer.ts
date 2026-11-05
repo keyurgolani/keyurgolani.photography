@@ -126,8 +126,6 @@ export interface ViewerSource {
     revisionId: string;
     listSeries(): readonly SeriesRecord[];
     seriesBySlug(slugOrAlias: string): { series: SeriesRecord; canonical: boolean } | null;
-    /** The published series holding the photo, for a photo that moved. */
-    seriesOfPhoto(photoId: string): SeriesRecord | null;
     photo(photoId: string): Photo | null;
     photosOf(seriesId: string): readonly Photo[];
 }
@@ -223,11 +221,10 @@ function shareOf(photo: Photo): NonNullable<PublishedViewerPhoto['photo']['share
 
 /**
  * Resolve `/work/<slug>/photo/<photoId>` in one source, in this order:
- * malformed params (letter case aside), an unknown photo, and a slug that
- * names no published series are not-found. Then the series: the one the slug
- * names, when it opens and holds the photo; else the photo's own published
- * series, when the photo has moved out of the one named (#7, decided), so
- * long as that one opens and holds it. A photo neither holds, and one whose
+ * malformed params (letter case aside) and an unknown photo are not-found.
+ * Then the series: the one the slug names, when it opens and holds the
+ * photo; else, for any slug in shape, the photo's one published home (#7,
+ * decided: moved photos 308), so long as that one opens and holds it. A photo neither holds, and one whose
  * only series a guard refuses (a series ID that appears more than once, no
  * positive published count, no member that resolves), is not-found. A prior
  * slug, a letter-case variant, or a move redirects, and only to a canonical
@@ -250,16 +247,20 @@ export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unkn
     const record = source.photo(params.photoId);
     if (record === null) return NOT_FOUND;
     const hit = source.seriesBySlug(params.slug);
-    if (hit === null) return NOT_FOUND;
     let series: SeriesRecord;
     let canonical: boolean;
-    if (openableSeries(source, hit.series) && holds(source, hit.series, record.id)) {
+    if (hit !== null && openableSeries(source, hit.series) && holds(source, hit.series, record.id)) {
         series = hit.series;
         canonical = hit.canonical && params.exact;
     } else {
-        // Moved: refs.membership keeps a published photo in one published series, so its URL follows it there.
-        const home = source.seriesOfPhoto(record.id);
-        if (home === null || home === hit.series || !openableSeries(source, home) || !holds(source, home, record.id)) return NOT_FOUND;
+        // Moved, or shared from a series since hidden or removed: the URL follows the photo to its one published home,
+        // whatever slug it names. An unknown, draft, hidden, or removed slug gets the same answer, since none is in the
+        // content, so the answer says nothing about which slugs exist. refs.membership keeps a published photo in one
+        // published series; a hand-written revision with two has no one home, and moves to neither.
+        const homes = source.listSeries().filter((candidate) => Array.isArray(candidate.photoIds) && candidate.photoIds.includes(record.id));
+        if (homes.length !== 1) return NOT_FOUND;
+        const [home] = homes;
+        if (home === hit?.series || !openableSeries(source, home) || !holds(source, home, record.id)) return NOT_FOUND;
         series = home;
         canonical = false;
     }

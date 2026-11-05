@@ -182,8 +182,8 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             // v2.0.0 B4: the cover carries its photograph's title, and 'Pinned-Long' answers a 308, not a not-found.
             series: 'd62c56cbac32baac591a10975e989833e4d62394c7dd477c8b7eccc476f7f61a',
             continuation: '85b8afb6bc10a95477fff9b2cbb7c938de4b1a1ab793d2dc402754f4ddb237b0',
-            // v2.0.0 B4: a letter-case variant, and a photo under another published series, answer a 308, not a not-found.
-            viewer: '7a5b0bd70ea7de8d8a4a6a9f4f6c559fb15535a00e424c614250cc00846b748d',
+            // v2.0.0 B4: a letter-case variant, and a published photo under any other slug in shape, answer a 308 to its one home.
+            viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
         });
     });
 
@@ -197,7 +197,7 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             // v2.0.0 B4: as on the public routes.
             series: '68663b1aabc78c1b6679fd09c8d6e9f45796f7ead991f9b693189bf5b1c7281e',
             continuation: '6abcadfe8b9f3d40f2e35a6aa155a069cee65838c5447d499904cbc68bf09b6f',
-            viewer: '7a5b0bd70ea7de8d8a4a6a9f4f6c559fb15535a00e424c614250cc00846b748d',
+            viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
         });
     });
 
