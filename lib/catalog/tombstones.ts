@@ -492,9 +492,11 @@ export const setAsideStep = (relative: string) => `photos gc --set-aside ${relat
  * The rename back as a line the owner can run as it stands: in
  * docker-compose.prod.yml's image-watcher service, from the data root it
  * mounts at /data/portfolio (item 38). It checks the place is free first,
- * and busybox's `mv -n` never overwrites what got there since (item 42).
+ * busybox's `mv -n` never overwrites what got there since (item 42), and it
+ * says when it moved nothing (item 51's N5).
  */
-export const renameBack = (from: string, to: string) => `docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher sh -c '[ ! -e ${to} ] && mv -n ${from} ${to}'`;
+export const renameBack = (from: string, to: string) =>
+    `docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher sh -c '[ ! -e ${to} ] && mv -n ${from} ${to} || echo "Not moved: something is at ${to} already, or ${from} is not there."'`;
 
 /** The folder name in `trash/` for `photoId`'s `name` set aside at `ms`: `<p>-<r>-<date-time>`, the dots taken off a `.gc-` name. */
 export function trashName(photoId: string, name: string, ms: number): string {

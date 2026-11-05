@@ -8,6 +8,7 @@ import { openRegularFile } from '../media/manifest';
 import { servedFolderContaining } from '../storage/config';
 import { hasErrorCode } from '../storage/fsx';
 import { siteConfigDir } from './dir';
+import { globalSlot } from '../globalSlot';
 
 /**
  * About's portrait, read at run time from the site config folder
@@ -118,9 +119,7 @@ interface ReaderMemory {
 const MEMORY = Symbol.for('keyurgolani.photography.aboutPortrait.reader');
 
 function memory(): ReaderMemory {
-    const holder = globalThis as typeof globalThis & { [MEMORY]?: ReaderMemory };
-    holder[MEMORY] ??= { key: null, result: null, reading: null, logged: { portrait: null, json: null, staleJson: null } };
-    return holder[MEMORY];
+    return globalSlot<ReaderMemory>(MEMORY, () => ({ key: null, result: null, reading: null, logged: { portrait: null, json: null, staleJson: null } }));
 }
 
 /** Forget what was read and logged. For tests. */

@@ -1939,7 +1939,7 @@ describe('--set-aside, round 9: lock order and wait, the status of a blocked put
         // An Inbox item that can't be read: status counts it, and the holder scan can't get past it.
         damageInbox(built.root);
         const plain = await runStatusCommand({ dataRoot: built.root });
-        expect(plain.output).toMatch(/Trash: .*\n  holders unknown: /);
+        expect(plain.output).toMatch(/\nTrash: [^\n]*\n(?: {2}[^\n]*\n)* {2}holders unknown: what holds a folder in trash\/ can't be read \(Can't tell what curation\/events\/evt_0+9 references: [^)]*\), so status/);
         expect(plain.exitCode).toBe(1);
         const checked = await runStatusCommand({ dataRoot: built.root }, { check: true });
         expect(checked.output).toContain("Status couldn't read everything it reports, as above");

@@ -1,5 +1,6 @@
 import { randomInt } from 'node:crypto';
 import type { HomePick } from './projections/home';
+import { globalSlot } from '../globalSlot';
 
 /**
  * TEST ONLY. The e2e harness sets this on a test server it starts
@@ -23,9 +24,7 @@ const CURSORS = Symbol.for('keyurgolani.photography.testHomePick');
 type Cursors = Map<string, number>;
 
 function cursors(): Cursors {
-    const holder = globalThis as typeof globalThis & { [CURSORS]?: Cursors };
-    holder[CURSORS] ??= new Map();
-    return holder[CURSORS];
+    return globalSlot<Cursors>(CURSORS, () => new Map());
 }
 
 /**

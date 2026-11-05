@@ -140,10 +140,16 @@ export async function manifestContent(dir: string, relative: string, photoId: st
 export type TrashSummary =
     | {
           kind: 'folder';
-          /** Each entry; `held` when the always-protected set names the asset folder it was, which photos status says (item 40a). */
-          folders: { name: string; bytes: number; held?: { text: string; origin: string } }[];
+          /** Each entry with its bytes, up to TRASH_LISTED of them; none over that. */
+          folders: { name: string; bytes: number }[];
+          /** Every entry's name, whatever the count: read from the listing, never walked (item 49). */
+          names: string[];
           count: number;
           bytes: number | null;
+          /** The entries the always-protected set names again, as a put-back photos gc --set-aside couldn't make leaves one, with the holder in words (items 40a and 49). */
+          held?: { name: string; text: string; origin: string }[];
+          /** Why the holders couldn't be read, when they couldn't. */
+          holdersUnknown?: string;
       }
     | { kind: 'symlink' | 'file' };
 
@@ -170,11 +176,12 @@ export async function trashSummary(root: string): Promise<TrashSummary | null> {
         throw error;
     }
     if (entries.length === 0) return null;
-    if (entries.length > TRASH_LISTED) return { kind: 'folder', folders: [], count: entries.length, bytes: null };
+    const names = [...entries].sort(byName).map((entry) => entry.name);
+    if (entries.length > TRASH_LISTED) return { kind: 'folder', folders: [], names, count: entries.length, bytes: null };
     const folders: { name: string; bytes: number }[] = [];
     for (const entry of entries.sort(byName)) {
         const inner = path.join(dir, entry.name);
         folders.push({ name: entry.name, bytes: entry.isDirectory() ? (await folderFacts(inner)).bytes : (await fs.promises.lstat(inner)).size });
     }
-    return { kind: 'folder', folders, count: folders.length, bytes: folders.reduce((sum, each) => sum + each.bytes, 0) };
+    return { kind: 'folder', folders, names, count: folders.length, bytes: folders.reduce((sum, each) => sum + each.bytes, 0) };
 }

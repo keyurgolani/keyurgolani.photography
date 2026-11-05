@@ -1048,9 +1048,12 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
  * the persisted data-root volume, never a container's disk. It never deletes.
  * Nothing reads or collects `trash/`; emptying it is the owner's own step.
  *
- * It holds the catalog, authored and curation locks and the asset's own lock
- * (items 40 and 40a), so no publish, record write, Inbox item or build for
- * that asset lands between its checks and the rename. After the rename it
+ * It holds the asset's own lock and the catalog, curation and authored locks
+ * (items 40, 40a, 45 and 46), so no publish, record write, Inbox item or
+ * build for that asset lands between its checks and the rename. The asset's
+ * lock comes first and isn't waited for, so it never holds a global lock
+ * while a build runs; the global ones follow in the order publish and Inbox
+ * approve take them. After the rename it
  * asks the always-protected set again, as a second guard, and puts the folder
  * back if anything names it now.
  */
@@ -1098,6 +1101,8 @@ export interface SetAsideOptions {
         beforeRename?(): void | Promise<void>;
         /** Runs just after the rename, before the holders are asked again. A test makes a holder here. */
         afterRename?(): void | Promise<void>;
+        /** Runs as each lock is taken, with its name. A test checks the order here. */
+        afterLock?(name: string): void | Promise<void>;
     };
 }
 
@@ -1138,18 +1143,23 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
     if (status.state !== 'ready') return refuse('DATA_ROOT_NOT_READY', `The data root is ${status.state}.`);
     const leaseMs = options.leaseMs ?? CATALOG_LEASE_MS;
     const waitMs = options.waitMs ?? GC_WAIT_MS;
-    // The locks, outermost first: the catalog and authored ones as GC takes them, then the curation lock an Inbox writer takes, then the asset's, which a build takes.
-    const LOCKS: readonly { name: string; outcome: SetAsideOutcome; what: string }[] = [
-        { name: CATALOG_LOCK, outcome: 'CATALOG_LOCKED', what: 'the catalog lock' },
-        { name: AUTHORED_LOCK, outcome: 'AUTHORED_LOCKED', what: 'the authored lock' },
-        { name: CURATION_LOCK, outcome: 'CURATION_LOCKED', what: 'the curation lock' },
-        { name: assetLockName(photoId, assetRevision), outcome: 'ASSET_LOCKED', what: `the lock for ${photoId}'s ${assetRevision}, which a build of it holds` },
+    // The locks, outermost first. The asset's, which a build holds, without waiting, so --set-aside never sits on a global lock while a build
+    // runs (item 46). Then the catalog, curation and authored locks, in the order publish and Inbox approve take them, so neither can hold one
+    // this waits for while it waits for one this holds (item 45).
+    const LOCKS: readonly { name: string; outcome: SetAsideOutcome; what: string; waitMs: number }[] = [
+        { name: assetLockName(photoId, assetRevision), outcome: 'ASSET_LOCKED', what: `the lock for ${photoId}'s ${assetRevision}, which a build of it holds`, waitMs: 0 },
+        { name: CATALOG_LOCK, outcome: 'CATALOG_LOCKED', what: 'the catalog lock', waitMs },
+        { name: CURATION_LOCK, outcome: 'CURATION_LOCKED', what: 'the curation lock', waitMs },
+        { name: AUTHORED_LOCK, outcome: 'AUTHORED_LOCKED', what: 'the authored lock', waitMs },
     ];
     const under = async (at: number, locks: readonly LockContext[]): Promise<SetAsideResult> => {
         if (at === LOCKS.length) return held(locks);
         const lock = LOCKS[at];
         try {
-            return await withLock(lock.name, { root, leaseMs, waitMs }, (context) => under(at + 1, [...locks, context]));
+            return await withLock(lock.name, { root, leaseMs, waitMs: lock.waitMs }, async (context) => {
+                await hooks.afterLock?.(lock.name);
+                return under(at + 1, [...locks, context]);
+            });
         } catch (error) {
             if (error instanceof LockTimeoutError && error.lockName === lock.name) return refuse(lock.outcome, `Another command holds ${lock.what}: ${holderText(error.holder)}.`);
             throw error;
@@ -1218,7 +1228,7 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
         }
         await hooks.beforeRename?.();
         for (const lock of locks) {
-            if (lock.signal.aborted || !(await lock.isHeld().catch(() => false))) return refuse('LOCK_LOST', 'photos gc --set-aside lost one of its locks: the catalog, authored, curation or asset lock.');
+            if (lock.signal.aborted || !(await lock.isHeld().catch(() => false))) return refuse('LOCK_LOST', 'photos gc --set-aside lost one of its locks: the asset, catalog, curation or authored lock.');
         }
         // The last checks, in the same tick as the rename: the target is the folder checked, by inode, and so is every folder above it, and trash/ too when it was there.
         const sameAs = (file: string, was: fs.Stats) => {
@@ -1229,9 +1239,10 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
         assertSameFolders(realRoot, { target, chain: photoDir.chain, dev: stat.dev, ino: stat.ino });
         if (trash !== null && !sameAs(trashDir, trash)) return refuse('UNSAFE_PATH', `${TRASH_DIR}/ changed just before the move.`);
         // trash/ is made only once every check has passed, so a refusal leaves none behind (item 42).
+        // Synchronously, so nothing runs between these checks and the rename (item 51's N1).
         if (trash === null) {
             try {
-                await fs.promises.mkdir(trashDir, { mode: PRIVATE_DIR_MODE });
+                fs.mkdirSync(trashDir, { mode: PRIVATE_DIR_MODE });
             } catch (error) {
                 if (!hasErrorCode(error, 'EEXIST')) throw error;
             }
@@ -1265,9 +1276,11 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
                     : refuse('INTEGRITY_MISMATCH', `${why}, so it put it back.`, ' It is where it was, and nothing was deleted.');
             }
             logEvent(logger, 'catalog.gc.set-aside.put-back-blocked', { ...moved, reason: blocked });
+            // What status can say of it: its holder, or, while the holders can't be read, only that it is there (item 49).
+            const status = holder !== null ? 'photos status names it with its holder' : 'photos status lists it, and its holders once they read again';
             return {
                 outcome: 'PUT_BACK_BLOCKED',
-                message: `${why}, and photos gc --set-aside couldn't put it back: ${blocked}. It is in ${moved.to}, in the data root, whole, and nothing was deleted; photos status names it with its holder. Once ${options.path} is free, put it back with ${renameBack(moved.to, options.path)}.`,
+                message: `${why}, and photos gc --set-aside couldn't put it back: ${blocked}. It is in ${moved.to}, in the data root, whole, and nothing was deleted; ${status}. Once ${options.path} is free, put it back with ${renameBack(moved.to, options.path)}.`,
                 moved,
             };
         }

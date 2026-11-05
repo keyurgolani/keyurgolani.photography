@@ -1,5 +1,6 @@
 import { verifyPassphrase, type PassphraseHash } from './passphrase';
 import { createSession } from './sessions';
+import { globalSlot } from '../../globalSlot';
 
 /**
  * Curator login (#14's 14-2): the passphrase check and the lockout.
@@ -37,9 +38,7 @@ interface LockState {
 const LOCK_KEY = Symbol.for('keyurgolani.photography.curatorLogin');
 
 function state(): LockState {
-    const holder = globalThis as unknown as Record<symbol, LockState | undefined>;
-    holder[LOCK_KEY] ??= { failures: [], lockedUntil: 0, queue: Promise.resolve() };
-    return holder[LOCK_KEY];
+    return globalSlot<LockState>(LOCK_KEY, () => ({ failures: [], lockedUntil: 0, queue: Promise.resolve() }));
 }
 
 /** Whether login is locked at `now`. */

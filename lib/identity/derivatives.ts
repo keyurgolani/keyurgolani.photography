@@ -111,6 +111,14 @@ export function assetLockName(photoId: string, assetRevision: string): string {
     return `asset-${createHash('sha256').update(`${photoId}\n${assetRevision}`).digest('hex').slice(0, 32)}`;
 }
 
+/** A build that lost its asset's lock before the publish: it removes its staging folder and leaves the entry pending. */
+class AssetLockLostError extends Error {
+    constructor() {
+        super("The build lost its asset's lock before the publish.");
+        this.name = 'AssetLockLostError';
+    }
+}
+
 /** A name a build's staging folder can have: one that makes a valid lock name. #15's GC considers only these too. */
 export const STAGING_ID = /^[a-z0-9-]+$/;
 
@@ -372,32 +380,35 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         // Read without the lock, so a pass may have brought the revision back since, as a revert does. Checked again under it.
         return recordFailed('source-superseded', undefined, (current) => current.photos[job.photoId]?.source.observedRevision !== job.assetRevision);
     }
-    let source: Buffer;
-    try {
-        source = await fs.promises.readFile(path.join(library, photo.source.path));
-    } catch (error) {
-        // A6 review: an outage, not this file. Record nothing, so no set fails for a share that dropped out.
-        if (!await libraryReadable(library)) return { status: 'pending', reason: 'library-unavailable' };
-        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
-        return recordFailed(`source unreadable: ${errorText(error)}`, error);
-    }
-    if (assetRevisionOf(source, hasher) !== job.assetRevision) return { status: 'pending', reason: 'digest-mismatch' };
-    if (revision.width === null || revision.height === null) return recordFailed('undecodable');
-    const { width: orientedWidth, height: orientedHeight } = revision;
-    // A6: the pixel cap, from #10's recorded size before anything is decoded, and Sharp's own as it decodes.
-    const maxPixels = options.maxSourcePixels ?? MAX_SOURCE_PIXELS;
-    if (orientedWidth * orientedHeight > maxPixels) return recordFailed(`too-large: ${orientedWidth}x${orientedHeight} is over the ${maxPixels}-pixel cap`);
-
-    const id = idGen();
-    const staging = path.join(stagingRoot(root), id);
     const writeFile = faults.writeFile ?? ((file: string, data: Uint8Array) => fs.promises.writeFile(file, data, { mode: PRIVATE_FILE_MODE, flag: 'wx' }));
-    // The asset's lock, then the folder's: --set-aside can't move this asset while the build stages or publishes it.
+
+    // The asset's lock, taken without waiting before the source is read (item 51's N3) and held through the publish, then the folder's:
+    // --set-aside can't move this asset while the build reads, stages or publishes it, and a build never waits on it.
     let assetLocked = false;
+    let outcome: BuildOutcome | null;
     try {
-        await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async (assetLock) => {
+        outcome = await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async (assetLock): Promise<BuildOutcome | null> => {
             assetLocked = true;
+            let source: Buffer;
+            try {
+                source = await fs.promises.readFile(path.join(library, photo.source.path));
+            } catch (error) {
+                // A6 review: an outage, not this file. Record nothing, so no set fails for a share that dropped out.
+                if (!await libraryReadable(library)) return { status: 'pending', reason: 'library-unavailable' };
+                if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
+                return recordFailed(`source unreadable: ${errorText(error)}`, error);
+            }
+            if (assetRevisionOf(source, hasher) !== job.assetRevision) return { status: 'pending', reason: 'digest-mismatch' };
+            if (revision.width === null || revision.height === null) return recordFailed('undecodable');
+            const { width: orientedWidth, height: orientedHeight } = revision;
+            // A6: the pixel cap, from #10's recorded size before anything is decoded, and Sharp's own as it decodes.
+            const maxPixels = options.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+            if (orientedWidth * orientedHeight > maxPixels) return recordFailed(`too-large: ${orientedWidth}x${orientedHeight} is over the ${maxPixels}-pixel cap`);
+
+            const id = idGen();
+            const staging = path.join(stagingRoot(root), id);
             // Taken before the folder exists and let go only once it is published or removed.
-            await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
+            return withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }): Promise<BuildOutcome | null> => {
                 try {
                     await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
                     const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
@@ -425,10 +436,12 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
                     await faults.beforeManifest?.();
                     await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
                     await faults.beforePublish?.();
-                    // A build that stalled past its lease may have lost the folder to a starting worker, or the asset to --set-aside.
+                    // A build that stalled past its lease may have lost the folder to a starting worker.
                     signal.throwIfAborted();
-                    assetLock.signal.throwIfAborted();
+                    // Or the asset to --set-aside: then it publishes nothing and the entry stays pending for the next pass (item 51's N2).
+                    if (assetLock.signal.aborted || !(await assetLock.isHeld().catch(() => false))) throw new AssetLockLostError();
                     await publishDirectory(staging, finalDir);
+                    return null;
                 } catch (error) {
                     await fs.promises.rm(staging, { recursive: true, force: true });
                     throw error;
@@ -437,8 +450,8 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         });
     } catch (error) {
         // Another command holds the asset: --set-aside, most likely. The entry stays pending for the next pass.
-        if (!assetLocked && error instanceof LockTimeoutError) return { status: 'pending', reason: 'locked' };
+        if ((!assetLocked && error instanceof LockTimeoutError) || error instanceof AssetLockLostError) return { status: 'pending', reason: 'locked' };
         return recordFailed(buildFailureText(error, finalDir), error);
     }
-    return recordReady(false);
+    return outcome ?? recordReady(false);
 }

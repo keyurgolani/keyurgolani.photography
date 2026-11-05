@@ -349,7 +349,7 @@ interface Outside {
     /** The photographs withdrawnChanges() may judge: those the scan looked at. */
     checked: Set<string>;
     owned: Set<string>;
-    binding: Set<string>;
+    bound: Set<string>;
     restores: Map<string, DecisionState>;
 }
 
@@ -367,7 +367,7 @@ function restoreOf(event: CurationEvent, registry: Registry): CurationDecision |
 }
 
 async function readOutside(root: string, events: readonly CurationEvent[], registry: Registry, skip: ReadonlySet<string>): Promise<Outside> {
-    const outside: Outside = { listed: null, checked: new Set(), owned: new Set(), binding: new Set(), restores: new Map() };
+    const outside: Outside = { listed: null, checked: new Set(), owned: new Set(), bound: new Set(), restores: new Map() };
     const looked = withdrawable(events, registry, skip);
     if (looked.length > 0) {
         try {
@@ -381,7 +381,7 @@ async function readOutside(root: string, events: readonly CurationEvent[], regis
             if (record === undefined || (record !== null && ownerCopyOf(record).length > 0)) outside.owned.add(photoId);
             if (looked.some((event) => event.type === 'missing' && event.photoId === photoId)) {
                 const bind = await pendingBindOf(root, photoId).catch(() => ({ decisionId: 'unreadable', path: '' }));
-                if (bind !== null) outside.binding.add(photoId);
+                if (bind !== null) outside.bound.add(photoId);
             }
             outside.checked.add(photoId);
         }
@@ -411,7 +411,7 @@ function withdrawnChanges(events: readonly CurationEvent[], registry: Registry, 
         if (!outside.checked.has(photoId)) continue;
         const listed = outside.listed.has(photoId) || outside.owned.has(photoId);
         const failing = events.some((other) => other.type === 'processing-failure' && other.photoId === photoId && (other.status === 'open' || other.status === 'failed'));
-        const waiting = event.type === 'missing' && outside.binding.has(photoId);
+        const waiting = event.type === 'missing' && outside.bound.has(photoId);
         if (isOpen(event) && !listed && !failing && !waiting) {
             changes.push(withDecision(event, { ...watcherDecision('close', at, CLOSE_REASONS.withdrawn), resolution: 'withdrawn' }, { status: 'resolved' }));
         } else if (isWithdrawn(event) && listed) {
