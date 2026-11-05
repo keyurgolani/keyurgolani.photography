@@ -66,6 +66,7 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
                         key={view.readAt}
                         watcher={view.watcher}
                         needsJudgment={view.needsJudgment}
+                        cursor={view.cursor}
                         item={view.selected ? { id: view.selected.id, version: view.selected.version } : null}
                     />
                     {/* A phone shows one side at a time (owner, 2026-10-25): the list, or the item the URL names. A wide screen shows both. */}

@@ -157,9 +157,9 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
                     Library unavailable
                 </h3>
                 <p>
-                    While the watcher can&apos;t see the library, it changes nothing, and the missing items it found since the outage began wait here
-                    instead of counting as missing. A pass that finds the library again closes this item and releases them. To release one that&apos;s
-                    really gone, run <code>curation confirm-missing</code> on it.
+                    While the watcher can&apos;t see the library, or can&apos;t read its files, it changes nothing, and the missing items it found since the
+                    outage began wait here instead of counting as missing. A pass that reads the library again closes this item and releases them. To
+                    release one that&apos;s really gone, run <code>curation confirm-missing</code> on it.
                 </p>
             </section>
         );
