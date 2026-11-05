@@ -304,7 +304,8 @@ describe('signed in', () => {
         expect(text).toContain(`"${base}/api/catalog/series/${LONG}/pages/`);
         expect(text).not.toMatch(/"\/(media|work|api)\//);
         expect(text).not.toContain(activeId);
-        expect(viewer.props).toMatchObject({ closeHref: `${base}/work/${LONG}`, previousHref: null, nextHref: expect.stringMatching(new RegExp(`^${base}/work/${LONG}/photo/`)) });
+        // Close names the photograph shown, under the preview too (B5).
+        expect(viewer.props).toMatchObject({ closeHref: expect.stringMatching(new RegExp(`^${base}/work/${LONG}\\?photo=ph_[0-9a-f-]{36}$`)), previousHref: null, nextHref: expect.stringMatching(new RegExp(`^${base}/work/${LONG}/photo/`)) });
     });
 
     it('keeps the query on its case and moved redirects, each a 307 under the preview and never a public path', async () => {

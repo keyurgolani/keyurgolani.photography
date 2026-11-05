@@ -291,7 +291,8 @@ test.describe('an entry past the first page', () => {
 
     /** On the series, with both pages, focus on LATE, at `offset` within a pixel, and LATE in view. */
     async function expectBackOnLate(page: Page, offset: number): Promise<void> {
-        await expect(page).toHaveURL(`${pagedOrigin()}${PAGED}`);
+        // With the ?photo= the activation wrote (B5).
+        await expect(page).toHaveURL(`${pagedOrigin()}${PAGED}?photo=${LATE}`);
         await expect(listed(page)).toHaveCount(PAGED_COUNT);
         await expect(entry(page, LATE)).toBeFocused();
         await expect.poll(async () => Math.abs((await scrollY(page)) - offset), { message: `scroll offset near ${offset}` }).toBeLessThanOrEqual(1);

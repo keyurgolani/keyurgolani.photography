@@ -7,15 +7,19 @@ import { REVISION_ID_RE, SERIES_ID_RE } from './schema';
  * and unsigned: it names a position, not a permission. A changed cursor can
  * only name the active revision (else the route answers 409), the series in
  * the path (else 400), and a page offset in range (else 400), so the page it
- * gets is one Show more reaches anyway, from records the revision already
- * publishes. `.` appears in no revision ID, series ID, or offset, so the
+ * gets is one Show more or Show earlier reaches anyway, from records the
+ * revision already publishes. `.` appears in no revision ID, series ID, or offset, so the
  * split is unambiguous.
  */
 
 export interface SeriesCursor {
     revisionId: string;
     seriesId: string;
-    /** 0-based index of the page's first entry among the series' resolved members. Always positive: page 1 is server-rendered. */
+    /**
+     * 0-based index of the page's first entry among the series' resolved
+     * members. 0 is the first page, which the server renders on a plain
+     * load, and Show earlier asks for after a deep entry (`?photo=`, B5).
+     */
     offset: number;
 }
 
@@ -24,12 +28,12 @@ const VERSION = '1';
 export const MAX_CURSOR_LENGTH = 256;
 const MAX_OFFSET = 9_999_999;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
-const DECODED_RE = /^1\.(rev_[0-9a-f]{64})\.(ser_[a-z0-9][a-z0-9_-]{1,62})\.([1-9][0-9]{0,6})$/;
+const DECODED_RE = /^1\.(rev_[0-9a-f]{64})\.(ser_[a-z0-9][a-z0-9_-]{1,62})\.(0|[1-9][0-9]{0,6})$/;
 
 export function encodeSeriesCursor({ revisionId, seriesId, offset }: SeriesCursor): string {
     if (!REVISION_ID_RE.test(revisionId)) throw new TypeError('A cursor needs a revision ID, rev_ plus 64 hex.');
     if (!SERIES_ID_RE.test(seriesId)) throw new TypeError('A cursor needs a series ID.');
-    if (!Number.isInteger(offset) || offset < 1 || offset > MAX_OFFSET) throw new RangeError(`A cursor offset is an integer from 1 to ${MAX_OFFSET}.`);
+    if (!Number.isInteger(offset) || offset < 0 || offset > MAX_OFFSET) throw new RangeError(`A cursor offset is an integer from 0 to ${MAX_OFFSET}.`);
     return Buffer.from(`${VERSION}.${revisionId}.${seriesId}.${offset}`, 'ascii').toString('base64url');
 }
 

@@ -20,7 +20,7 @@ const B = 'ph_00000000-0000-4000-8000-000000000002';
 const NEXT_KEYS = { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: ['', {}], renderedSearch: '' } };
 /** Past the first page, so it isn't on the page until #6 loads it again. */
 const LATE = 'ph_00000000-0000-4000-8000-000000000003';
-const PROPS = { path: '/work/harbor', slug: 'harbor', revisionId: 'rev_a', total: 3, focusPhotoId: null as string | null };
+const PROPS = { path: '/work/harbor', slug: 'harbor', revisionId: 'rev_a', total: 3, firstPosition: 1, focusPhotoId: null as string | null };
 
 const PAGE = `
     <main>
@@ -387,6 +387,18 @@ describe('?photo= (#5, #6 deep entry, B5)', () => {
         expect(scrollTo).toHaveBeenCalledWith({ top: 640, left: 0, behavior: 'instant' });
         expect(document.activeElement).toBe(byId(COVER_ID));
         expect(returnState()).toBeUndefined();
+    });
+
+    it('passes the server page\'s first position on, so a restore waits for #6 to load the pages before it', () => {
+        at(`?photo=${B}`, stored({ photoId: B, opener: 'entry', scrollY: 640 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 1, loaded: 3 } }));
+        navigationType = 'back_forward';
+        hydrate({ focusPhotoId: B, firstPosition: 2 });
+        expect(scrollTo).not.toHaveBeenCalled();
+        act(() => {
+            document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+        });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 640, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(byId(`photo-${B}`));
     });
 
     it('goes to the series heading when the photograph that opened the Viewer left the revision', () => {

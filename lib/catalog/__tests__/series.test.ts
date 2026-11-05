@@ -187,7 +187,9 @@ describe('seriesPageOf on a revision', () => {
                 },
                 total: 6,
                 // One page holds the whole sequence, so there's nothing to continue.
+                prevHref: null,
                 nextHref: null,
+                focusPhotoId: null,
                 entries: ORDER_A.map((photoId, index) => ({
                     photoId,
                     position: index + 1,
@@ -716,7 +718,7 @@ describe('the authored copy and metadata inputs', () => {
 describe('the allowlist', () => {
     it('returns only the approved fields: no accent, aliases, caption, credit, per-photo date, camera facts, profile, or source', () => {
         const result = page(readerOf(revisionContent()).getSeriesPage('fixture-a'));
-        expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'href', 'id', 'metadata', 'nextHref', 'slug', 'total', 'workHref']);
+        expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'focusPhotoId', 'href', 'id', 'metadata', 'nextHref', 'prevHref', 'slug', 'total', 'workHref']);
         expect(Object.keys(result.entries[0]).sort()).toEqual(['description', 'href', 'image', 'photoId', 'position', 'title']);
         expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'description', 'focalPoint', 'href', 'image', 'photoId', 'position', 'title']);
         expect(Object.keys(result.metadata).sort()).toEqual(['canonicalPath', 'description', 'shareImage', 'title']);

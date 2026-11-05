@@ -278,6 +278,24 @@ describe('restoreReturn and scheduleRestore', () => {
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
+    it('waits for #6, with the opener on the page, when the extent starts before the server\'s page (a deep entry, B5), so the offset is put back on the whole layout', () => {
+        window.history.replaceState({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 1, loaded: 200 }, [RETURN_KEY]: record(PHOTO) }, '');
+        inView(document.getElementById(`photo-${PHOTO}`), 100);
+        scheduleRestore(record(PHOTO, 'entry', 4800), { ...SERIES, first: 101 });
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
+        restored();
+        expect(scrollTo).toHaveBeenCalledWith({ top: 4800, left: 0, behavior: 'instant' });
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
+    it('restores at once when the extent starts where the server\'s page does', () => {
+        window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 101, loaded: 200 } }, '');
+        inView(document.getElementById(`photo-${PHOTO}`), 100);
+        scheduleRestore(record(PHOTO), { ...SERIES, first: 101 });
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
     it('does not wait for a busy section alone, which #6 can\'t have marked by the time the page mounts', () => {
         document.querySelector('section')?.setAttribute('aria-busy', 'true');
         scheduleRestore(record(LATE, 'entry', 0), SERIES);

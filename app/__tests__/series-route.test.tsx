@@ -795,9 +795,9 @@ describe('no discovery through the page', () => {
         for (const sentinel of SENTINELS) expect(text, sentinel).not.toContain(sentinel);
     });
 
-    it('hands the return position only the series path, the canonical slug, the served revision, and the total', async () => {
+    it('hands the return position only the series path, the canonical slug, the served revision, the total, the page\'s first position, and the photograph ?photo= resolved to', async () => {
         await html();
-        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION, total: ORDER_A.length, focusPhotoId: null }]);
+        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION, total: ORDER_A.length, firstPosition: 1, focusPhotoId: null }]);
     });
 });
 

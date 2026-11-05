@@ -30,12 +30,27 @@ export const coverSizes = (image: { width: number; height: number } | null) =>
 export const ENTRY_SIZES = '(min-width: 64rem) 20vw, (min-width: 40rem) 33vw, 50vw';
 export const SEQUENCE_HEADING = 'Sequence';
 
-/** #6's continuation copy. Provisional: the exact state strings are deferred. */
+/**
+ * #6's continuation copy, final (B5). The buttons keep short names, apart
+ * from Try again, which names the range it asks for again. Every state goes
+ * through the one polite status line under the sequence, with the range it
+ * added and whether it reached an end.
+ */
 export const SHOW_MORE = 'Show more photographs';
-export const TRY_AGAIN = 'Try again';
-export const LOADING_MORE = 'Loading photographs';
-export const MORE_FAILED = 'More photographs couldn’t load.';
+export const SHOW_EARLIER = 'Show earlier photographs';
 export const SERIES_UPDATED = 'This series was updated.';
-export const RELOAD_SERIES = 'Load the current series';
-export const showingLabel = (shown: number, total: number) => `Showing ${shown} of ${total} photographs.`;
-export const allShownLabel = (total: number) => `All ${total} photographs shown.`;
+export const RELOAD_SERIES = 'Show the updated series';
+export const OFFLINE = 'You appear to be offline.';
+
+/** Counts as the site writes them, with a comma past a thousand, the same on the server and in every browser. */
+const count = new Intl.NumberFormat('en-US');
+const span = (from: number, to: number) => `photographs ${count.format(from)} to ${count.format(to)}`;
+
+export const showingLabel = (from: number, to: number, total: number) => `Showing ${span(from, to)} of ${count.format(total)}.`;
+export const addedLabel = (from: number, to: number, total: number) => `Added ${span(from, to)} of ${count.format(total)}.`;
+export const START_OF_SERIES = 'Start of series.';
+export const END_OF_SERIES = 'End of series.';
+/** LoadingState's label while a page is on its way. */
+export const loadingLabel = (from: number, to: number) => `Loading ${span(from, to)}`;
+export const failedLabel = (from: number, to: number) => `Couldn’t load ${span(from, to)}.`;
+export const tryAgainLabel = (from: number, to: number) => `Try again: ${span(from, to)}`;

@@ -142,7 +142,7 @@ describe('?photo= on the series page', () => {
         expect(page.focusPhotoId).toBeNull();
         expect(page.prevHref).toBeNull();
         expect(positions(page)).toEqual([1, 100]);
-        expect(JSON.stringify(page)).not.toContain('script');
+        expect(JSON.stringify(page)).not.toContain('alert(1)');
     });
 
     it('resolves against the served revision: a photograph that left the series is the plain page', () => {

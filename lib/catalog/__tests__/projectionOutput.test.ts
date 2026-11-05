@@ -180,8 +180,10 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
             // v2.0.0 B4: the cover carries its photograph's title, and 'Pinned-Long' answers a 308, not a not-found.
-            series: 'd62c56cbac32baac591a10975e989833e4d62394c7dd477c8b7eccc476f7f61a',
-            continuation: '85b8afb6bc10a95477fff9b2cbb7c938de4b1a1ab793d2dc402754f4ddb237b0',
+            // v2.0.0 B5: each page carries prevHref (null on the first) and focusPhotoId (null without ?photo=), and nothing else moved.
+            series: '8395b8e07e54c1647b149d4d5494ded1d221ef5b9fcabc381e605577ffa90836',
+            // v2.0.0 B5: each continuation page carries prevHref for Show earlier, and nothing else moved.
+            continuation: '58c7b965d950a4b78519c04182cfc4c52261561882faa4b4c8690149b08afced',
             // v2.0.0 B4: a letter-case variant, and a published photo under any other slug in shape, answer a 308 to its one home.
             viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
         });
@@ -195,8 +197,9 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
             // v2.0.0 B4: as on the public routes.
-            series: '68663b1aabc78c1b6679fd09c8d6e9f45796f7ead991f9b693189bf5b1c7281e',
-            continuation: '6abcadfe8b9f3d40f2e35a6aa155a069cee65838c5447d499904cbc68bf09b6f',
+            // v2.0.0 B5: as on the public routes.
+            series: '31110d262cf29d3549339b1a0e7a84739999812aa73dd0c10890a01928c827ec',
+            continuation: '9930395bc31baf3cf3d345373e74533514ef8b34fab3aaf907c75d6dd380ec20',
             viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
         });
     });
