@@ -82,6 +82,8 @@ function covers(change: CatalogChange, kind: 'site' | 'series' | 'photo', id: st
     const own = change.field === field;
     switch (fieldClass(kind, field)) {
         case 'authored':
+            // A9: a series' chapters give a row per chapter, `chapters[<id>]`, of the kind the chapter's change is.
+            if (kind === 'series' && field === 'chapters' && change.field.startsWith('chapters[')) return true;
             return own && change.category === 'authored';
         case 'route':
             return own && change.category === 'route';

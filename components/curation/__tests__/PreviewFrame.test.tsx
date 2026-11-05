@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import PreviewFrame from '../PreviewFrame';
 
@@ -40,5 +40,32 @@ describe('PreviewFrame', () => {
     it('stays in the Tab order by default', () => {
         render(<PreviewFrame src={SRC} />);
         expect(screen.getByTitle('Visitor preview of the draft catalog')).not.toHaveAttribute('inert');
+    });
+
+    // A9 (#182): the full preview's toolbar.
+    it('has Fit, Desktop and Mobile presets as native radios, the short hash, and Back to Publish', () => {
+        render(<PreviewFrame src={SRC} draftHash="1a2b3c4d" presets backHref="/curation/publish" />);
+        const group = screen.getByRole('radiogroup', { name: 'Frame size' });
+        const fit = screen.getByRole('radio', { name: 'Fit the window' });
+        const desktop = screen.getByRole('radio', { name: 'Desktop, 1440 by 900' });
+        const mobile = screen.getByRole('radio', { name: 'Mobile, 390 by 844' });
+        expect(group).toContainElement(fit);
+        expect(fit).toBeChecked();
+        expect(screen.getByText('Draft 1a2b3c4d')).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'Back to Publish' })).toHaveAttribute('href', '/curation/publish');
+        const frame = screen.getByTitle('Visitor preview of the draft catalog');
+        fireEvent.click(desktop);
+        expect(desktop).toBeChecked();
+        expect(frame).toHaveStyle({ width: '1440px', height: '900px' });
+        fireEvent.click(mobile);
+        expect(frame).toHaveStyle({ width: '390px', height: '844px' });
+        fireEvent.click(fit);
+        expect(frame.style.width).toBe('');
+    });
+
+    it('keeps the embedded panel to its marker, with no presets', () => {
+        render(<PreviewFrame src={SRC} embedded focusable={false} />);
+        expect(screen.queryByRole('radiogroup')).toBeNull();
+        expect(screen.queryByRole('link', { name: 'Back to Publish' })).toBeNull();
     });
 });
