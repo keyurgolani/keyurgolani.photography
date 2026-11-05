@@ -517,6 +517,54 @@
   }
 }
 
+/* A move asked for offline (#178), by the controls: at the stage's foot, between Previous and Next on a wide screen and
+   just above them on a phone. It sits over the photograph's foot on the Viewer's own chrome ground, so it changes no
+   row's height, and only shows after such a press. */
+.offline {
+  grid-area: viewport;
+  align-self: end;
+  justify-self: center;
+  position: relative;
+  z-index: 2;
+  max-width: min(100% - 2 * var(--site-gutter), 40ch);
+  margin: 0 0 var(--viewer-stage-pad);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--cc-rule-strong);
+  border-radius: var(--gah-radius);
+  background: var(--cc-chrome);
+  color: var(--cc-ink);
+  font-size: var(--gah-type-ui);
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* A photograph unpublished or moved mid-visit (#178): it takes the whole Viewer, the controls for a photograph that
+   isn't there gone, on the same ground. */
+.unavailable {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  align-self: center;
+  justify-self: center;
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  max-width: min(100% - 2 * var(--site-gutter), 40rem);
+  padding: var(--viewer-reading-pad) 0;
+}
+
+.unavailableHeading {
+  margin: 0;
+  font-size: var(--viewer-title-size);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.unavailableText {
+  margin: 0;
+  color: var(--cc-ink-soft);
+  line-height: 1.5;
+}
+
 /* The reading area: authored copy first, in the serif, then the derived facts behind their toggle. It never covers the photograph. */
 .reading {
   grid-area: reading;

@@ -318,7 +318,8 @@ describe('bug 4 and the swipe\'s rules: touch and pen only, the edges, the reset
         expect(root()).toHaveAttribute('data-gesture', 'pressed');
         pointer(stage(), 'pointermove', { x: 170 });
         expect(root()).toHaveAttribute('data-gesture', 'swiping');
-        pointer(stage(), 'pointerup', { x: 100 });
+        // Short of a swipe, so nothing is on its way and the next finger can start one.
+        pointer(stage(), 'pointerup', { x: 185 });
         expect(root()).toHaveAttribute('data-gesture', 'idle');
         pointer(stage(), 'pointerdown');
         pointer(stage(), 'pointermove', { x: 200, y: 340 });
@@ -376,7 +377,9 @@ describe('Escape while zoomed (#178)', () => {
     it('in the modal, a cancel alone while zoomed resets the zoom and never closes', () => {
         renderShell('modal', 2, { withImage: true });
         fireEvent.click(zoom());
-        root().dispatchEvent(new Event('cancel', { cancelable: true }));
+        act(() => {
+            root().dispatchEvent(new Event('cancel', { cancelable: true }));
+        });
         expect(router.back).not.toHaveBeenCalled();
         expect(stage()).not.toHaveAttribute('data-zoomed');
     });
@@ -486,7 +489,11 @@ describe('bug 5: the revision check, for every visitor', () => {
         window.history.replaceState(null, '', photoHref(2));
     });
     const checks = () => fetchMock.mock.calls.map(([url]) => String(url));
-    const revised409 = () => fetchMock.mockImplementation(async () => new Response('{}', { status: 409 }));
+    // The served revision is REVISED: a check in the one before gets the 409, one in REVISED a 200.
+    const revised409 = () =>
+        fetchMock.mockImplementation(async (url: string) =>
+            String(url).includes(REVISION) ? new Response('{}', { status: 409 }) : new Response(JSON.stringify({ revisionId: REVISED, photoId: '', image: null, accent: null }), { status: 200 }),
+        );
     const setHidden = (value: boolean) =>
         act(() => {
             hidden = value;

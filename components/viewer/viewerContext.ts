@@ -33,6 +33,9 @@ export interface ViewerChromeState {
     nextPhotoId: string | null;
     /** This photograph's own set, so it can peek back in once the Viewer has moved on from it. */
     image: ViewerImage | null;
+    /** The authored title and the description, for the move's announcement (#178). */
+    title: string | null;
+    description: string | null;
 }
 
 /** A photograph as it peeks in beside the one under the finger (9a): its set (null for the missing-image box) and accent. */
@@ -62,6 +65,12 @@ export interface ViewerShellContext {
      * motion, where nothing follows the finger, and until then, so a first load shows one photograph (#6).
      */
     peeks: ReadonlyMap<string, ViewerPeek>;
+    /** True from a move's press to its photograph's arrival, so the stage says it's busy (#178). */
+    busy: boolean;
+    /** ViewerUnavailable says it's showing (true) and gone (false), so the shell drops the controls for a photograph that isn't there (#178). */
+    reportUnavailable(showing: boolean): void;
+    /** The modal's one close (one Back), which ViewerUnavailable's way back to the series uses. */
+    close(): void;
 }
 
 /** Null outside a shell, where StoryViewer renders the whole Viewer on its own. */

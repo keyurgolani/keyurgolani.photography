@@ -2,16 +2,18 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useDocumentVisible } from '@/components/motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
+import { useOnline } from '@/components/site/onlineStatus';
 import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 import { StageMotion } from './stageMotion';
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
 import { ViewerContext, peekKey, type ViewerChromeState, type ViewerMode, type ViewerPeek, type ViewerShellContext } from './viewerContext';
 import { stepForKey, type ViewerStep } from './viewerKeys';
 import { useDoubleTap } from './useDoubleTap';
-import { useSwipe, type SwipeShell } from './useSwipe';
+import { STAGE_SELECTOR, useSwipe, type SwipeShell } from './useSwipe';
 import { whenIdle } from './whenIdle';
-import { accentValue, boundaryText, positionText } from './viewerLabels';
+import { UNAVAILABLE_ANNOUNCEMENT, accentValue, boundaryText, moveText, offlineText } from './viewerLabels';
 import styles from './StoryViewer.module.css';
 
 function sameChrome(a: ViewerChromeState | null, b: ViewerChromeState): boolean {
@@ -30,6 +32,28 @@ const FULL_PREFETCH = { kind: 'full' } as unknown as PrefetchOptions;
 
 /** The endpoint's answer when the revision asked for isn't the one it serves any more. */
 const REVISED = 'revised';
+
+/**
+ * How often an open Viewer asks whether the revision it shows is still the one served (bug 5, #178), while its tab is
+ * visible. Not 0: in Next 16.4.2 `staleTimes` is site-wide with a 30 s floor, and a non-full prefetch is the same as
+ * none, so the bound is this check's (coordinator bug review, 11-04). One conditional GET per visible Viewer, mostly a 304.
+ */
+export const REVISION_CHECK_MS = 30_000;
+/** A move's announcement waits this long after its photograph arrives, so rapid presses give one message (#178). */
+export const ANNOUNCE_SETTLE_MS = 250;
+/** A repeated message clears the region and lands again this long after, so a screen reader hears it again (bug 3). */
+export const REPEAT_GAP_MS = 100;
+
+/** Whether the visitor asked the browser to save data (`navigator.connection.saveData`, #174): then nothing is fetched ahead. */
+function savesData(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    return (navigator as Navigator & { connection?: { saveData?: unknown } }).connection?.saveData === true;
+}
+
+/** Whether the browser says it's offline at the press. Unknown counts as online. */
+function offlineNow(): boolean {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
 
 /**
  * A neighbor's peek from 9a's endpoint, in the revision this photograph came from, or null when it can't be had (an
@@ -76,7 +100,14 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  * Zoom, as the Zoom button does (see useDoubleTap). Previous and
  * Next replace the history entry without scrolling, an end announces itself
  * and doesn't move, and each move is announced in a polite live region
- * that's empty at mount.
+ * that's empty at mount (#178): 250 ms after its photograph arrives, so rapid
+ * presses give one message, with the position, the title and the
+ * description. An end is announced at once, and a repeat of the same
+ * message clears the region first, so every press at an end is heard (bug 3).
+ * Keys ignore auto-repeat, composition and a key already taken; Escape while
+ * zoomed only resets the zoom, and focus that was in the zoomed region goes
+ * to Zoom. Offline, a move says so by the controls and doesn't navigate. One
+ * move runs at a time in every mode, the stage `aria-busy` until it lands.
  * Zoom resets on every move. The technical details stay as the visitor left
  * them, open or closed, for the whole visit.
  *
@@ -91,11 +122,18 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  * a 200 ms fade, so the reading area is never empty. Once the Viewer is idle
  * it prefetches the neighbors' pages, so a move's page usually arrives
  * inside its settle, and once it learns of a publish it drops those pages
- * (dropStalePages). While a move is on its way, no swipe can start, and the
+ * (dropStalePages). Every visitor's Viewer asks every 30 s while its tab is
+ * visible, and at once when it's visible again, whether its revision is
+ * still served (bug 5), never at load. The idle prefetch skips when the
+ * visitor saves data (#174). While a move is on its way, no swipe can start, and the
  * latest press of a control or a key is remembered and runs once the
- * photograph arrives. Under reduced motion nothing slides or fades: the next
- * photograph replaces this one in place when it arrives, and the header and
- * the region give the new position at once, as before 9a.
+ * photograph arrives, under reduced motion too. Under reduced motion nothing
+ * slides or fades: the next photograph replaces this one in place when it
+ * arrives, and the counter changes then, as before 9a.
+ *
+ * A photograph unpublished or moved mid-visit renders ViewerUnavailable (the
+ * intercepted route's not-found), which takes the controls' place: the shell
+ * announces it and puts focus on its heading.
  */
 export default function ViewerShell({ mode, children }: { mode: ViewerMode; children: ReactNode }) {
     const router = useRouter();
@@ -105,6 +143,18 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     /** The technical details, open or not, for the whole visit: a move keeps them as they are (#7, decided). */
     const [technicalOpen, setTechnicalOpen] = useState(false);
     const [message, setMessage] = useState('');
+    /** The direction a move was asked for offline, which the notice by the controls names, or null (#178). */
+    const [offline, setOffline] = useState<ViewerStep | null>(null);
+    /** Whether ViewerUnavailable is the child: the photograph isn't there, so neither are its controls (#178). */
+    const [unavailable, setUnavailable] = useState(false);
+    const unavailableRef = useRef(false);
+    /** The last message asked for, so a repeat clears the region before it lands again (bug 3). */
+    const lastMessage = useRef('');
+    const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    /** Whether any move has navigated, so a page still shows the route it loaded with (see revised). */
+    const movedOnce = useRef(false);
+    /** The revision a page asked to be shown again for, once per publish. */
+    const revisitedFrom = useRef<string | null>(null);
     const headingId = useId();
     const rootRef = useRef<HTMLElement | null>(null);
     const closing = useRef(false);
@@ -133,6 +183,40 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setChrome((current) => (sameChrome(current, state) ? current : state));
     }, []);
 
+    const clearAnnouncement = useCallback(() => {
+        if (announceTimer.current !== null) clearTimeout(announceTimer.current);
+        announceTimer.current = null;
+    }, []);
+    /** The region's text, now: a new message at once, a repeat cleared first and set REPEAT_GAP_MS later (bug 3). */
+    const land = useCallback((text: string) => {
+        if (text !== lastMessage.current) {
+            lastMessage.current = text;
+            setMessage(text);
+            return;
+        }
+        setMessage('');
+        announceTimer.current = setTimeout(() => {
+            announceTimer.current = null;
+            setMessage(text);
+        }, REPEAT_GAP_MS);
+    }, []);
+    /**
+     * The one way the live region speaks. Whatever was waiting to land is dropped, so the latest message is the one
+     * heard. `settle` waits ANNOUNCE_SETTLE_MS first, for a move's arrival.
+     */
+    const announce = useCallback(
+        (text: string, { settle = false }: { settle?: boolean } = {}) => {
+            clearAnnouncement();
+            if (!settle) return land(text);
+            announceTimer.current = setTimeout(() => {
+                announceTimer.current = null;
+                land(text);
+            }, ANNOUNCE_SETTLE_MS);
+        },
+        [clearAnnouncement, land],
+    );
+    useEffect(() => clearAnnouncement, [clearAnnouncement]);
+
     const close = useCallback(() => {
         // One close, one Back: a quick second Escape fires close as well as cancel, and two Backs would leave the site.
         if (closing.current) return;
@@ -140,25 +224,35 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         router.back();
     }, [router]);
 
-    const swipeShell = useRef<SwipeShell>({ zoomed, motion: false, previous: false, next: false, pending: () => false, step: () => undefined, engage: () => undefined });
+    const swipeShell = useRef<SwipeShell>({ zoomed, motion: false, previous: false, next: false, online: () => true, pending: () => false, step: () => undefined, engage: () => undefined });
     const { pinched, drop: dropGesture } = useSwipe(rootRef, { zoomed, shellRef: swipeShell, motionRef, photoId: chrome?.photoId ?? null });
 
     const step = useCallback(
         (direction: ViewerStep, settling = false) => {
-            if (chrome === null) return;
+            if (chrome === null || unavailableRef.current) return;
             const motion = reduced ? null : motionRef.current;
-            // A move already on its way is the one the visitor sees settling. A press or a key now is remembered, the
-            // latest one, and runs once that photograph arrives (the arrival effect below).
-            if (motion !== null && pendingRef.current !== null) {
+            // A move already on its way is the one the visitor sees settling, or, under reduced motion, the one whose
+            // photograph is coming. A press or a key now is remembered, the latest one, and runs once that photograph
+            // arrives (the arrival effect below), so one move runs at a time in every mode (#178).
+            if (pendingRef.current !== null) {
                 if (!settling) queued.current = direction;
                 return;
             }
             const href = direction === 'previous' ? chrome.previousHref : chrome.nextHref;
             if (href === null) {
-                setMessage(boundaryText(direction, chrome.seriesTitle));
+                announce(boundaryText(direction, chrome.seriesTitle));
                 return;
             }
+            // Offline, the next page can't come (#178): say so by the controls and in the region, and stay.
+            if (offlineNow()) {
+                setOffline(direction);
+                announce(offlineText(direction));
+                return;
+            }
+            clearAnnouncement();
+            setOffline(null);
             setZoomed(false);
+            movedOnce.current = true;
             movedWith.current = { direction, held: document.activeElement };
             if (motion !== null) {
                 if (!settling) {
@@ -168,13 +262,13 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                     if (motion.heldOffset() !== 0) motion.release(null, 0);
                 }
                 motion.holdWords();
-                const next = { from: chrome.photoId, direction };
-                pendingRef.current = next;
-                setPending(next);
             }
+            const next = { from: chrome.photoId, direction };
+            pendingRef.current = next;
+            setPending(next);
             router.replace(href, { scroll: false });
         },
-        [chrome, router, reduced, dropGesture],
+        [chrome, router, reduced, dropGesture, announce, clearAnnouncement],
     );
 
     /**
@@ -225,7 +319,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, { image, accent })));
         if (first) return;
         setZoomed(false);
-        setMessage(positionText(chrome.position, chrome.total));
+        setOffline(null);
+        announce(moveText(chrome.position, chrome.total, chrome.title, chrome.description), { settle: true });
         const root = rootRef.current;
         const moved = movedWith.current;
         movedWith.current = null;
@@ -242,7 +337,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         if (root && lost && (active === null || active === document.body)) {
             root.querySelector<HTMLElement>(`[data-viewer-step="${moved.direction}"]`)?.focus();
         }
-    }, [chrome, reduced]);
+    }, [chrome, reduced, announce]);
 
     // Once engaged, each photograph shown asks for its neighbors, so the next swipe has them peeking in.
     useEffect(() => {
@@ -251,14 +346,17 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
 
     // Once the Viewer is idle, the neighbors' pages (their RSC payloads, no image), so a move's page is usually there
     // by the time its settle lands, and the words change with it. Next keeps one request per page however often it's asked.
+    // Keyed on the revision too, so after a publish's refresh lands the neighbors are prefetched again from the revision
+    // served (bug 5). Nothing ahead when the visitor saves data (#174), or while the photograph isn't there.
     const previousHref = chrome?.previousHref ?? null;
     const nextHref = chrome?.nextHref ?? null;
+    const revisionId = chrome?.revisionId ?? null;
     useEffect(() => {
-        if (previousHref === null && nextHref === null) return;
+        if (unavailable || (previousHref === null && nextHref === null) || savesData()) return;
         return whenIdle(() => {
             for (const href of [nextHref, previousHref]) if (href !== null) router.prefetch(href, FULL_PREFETCH);
         });
-    }, [previousHref, nextHref, router]);
+    }, [previousHref, nextHref, revisionId, unavailable, router]);
 
     // The stage's motion, on the root, which outlives every move. Reduced motion drops any slide in flight.
     useLayoutEffect(() => {
@@ -275,13 +373,26 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         if (reduced) motionRef.current?.reset();
     }, [reduced]);
 
-    // The modal: open it once the shell holds the controls, so showModal() moves focus onto Close, which stays.
-    const ready = chrome !== null;
+    // Escape while zoomed only resets the zoom (#178). The key comes before the dialog's cancel, which it then swallows.
+    const zoomedRef = useRef(zoomed);
+    const escapeTook = useRef(false);
+    const unzoom = useCallback(() => {
+        zoomedRef.current = false;
+        setZoomed(false);
+    }, []);
+
+    // The modal: open it once the shell holds the controls (or the unavailable state), so showModal() moves focus inside.
+    const ready = chrome !== null || unavailable;
     useLayoutEffect(() => {
         const dialog = rootRef.current;
         if (mode !== 'modal' || !ready || !(dialog instanceof HTMLDialogElement)) return;
         const onCancel = (event: Event) => {
             event.preventDefault();
+            if (escapeTook.current || zoomedRef.current) {
+                escapeTook.current = false;
+                if (zoomedRef.current) unzoom();
+                return;
+            }
             close();
         };
         dialog.addEventListener('cancel', onCancel);
@@ -292,9 +403,20 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             dialog.removeEventListener('close', close);
             if (dialog.open) dialog.close();
         };
-    }, [mode, ready, close]);
+    }, [mode, ready, close, unzoom]);
 
-    const zoomedRef = useRef(zoomed);
+    // When the zoomed region resets with focus in it, its tabIndex goes and focus would drop to the body: put it on Zoom.
+    const wasZoomed = useRef(false);
+    useLayoutEffect(() => {
+        const was = wasZoomed.current;
+        wasZoomed.current = zoomed;
+        const root = rootRef.current;
+        if (!was || zoomed || root === null) return;
+        const stage = root.querySelector(STAGE_SELECTOR);
+        const active = document.activeElement;
+        if (stage !== null && active !== null && stage.contains(active)) root.querySelector<HTMLElement>('[data-viewer-zoom]')?.focus({ preventScroll: true });
+    }, [zoomed]);
+
     const stepRef = useRef(step);
     const engage = useCallback(() => {
         if (reduced) return;
@@ -309,6 +431,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             motion: !reduced,
             previous: chrome?.previousHref != null,
             next: chrome?.nextHref != null,
+            online: () => !offlineNow(),
             pending: () => pendingRef.current !== null,
             step,
             engage,
@@ -334,6 +457,89 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         stepRef.current(direction);
     }, [chrome]);
 
+    /**
+     * The 30 s check said another revision is served (bug 5). Once no move is on its way, the pages prefetched before it
+     * go (dropStalePages), and this photograph renders again in the revision served: through a refresh, or, on a page
+     * no move has left yet, through a replace to the same URL. A refresh there would re-render the directly loaded
+     * route, where a photograph the publish dropped lands on the site's not-found page outside the Viewer; the replace
+     * comes back through the intercepted route, as a move does, where it lands on ViewerUnavailable. The arrival in
+     * the new revision then drops the prefetched pages as any move into a new revision does.
+     */
+    const revised = useCallback(
+        (revision: string) => {
+            if (mode === 'page' && !movedOnce.current && pendingRef.current === null) {
+                if (revisitedFrom.current === revision) return;
+                revisitedFrom.current = revision;
+                movedOnce.current = true;
+                router.replace(`${window.location.pathname}${window.location.search}`, { scroll: false });
+                return;
+            }
+            outdated.current = revision;
+            dropStalePages();
+        },
+        [mode, router, dropStalePages],
+    );
+
+    // Every visitor's Viewer asks whether its revision is still served (bug 5): every REVISION_CHECK_MS while the tab is
+    // visible, and at once when it's visible again, but never at load (#6). No gates: a keyboard or mouse visitor, who
+    // never touches the photograph, fetches no peeks, so this is the only way they learn of a publish. The interval
+    // outlives moves and reads the photograph shown when it fires. A 200 says only yes, and is never kept as a peek.
+    const visible = useDocumentVisible();
+    const chromeRef = useRef(chrome);
+    const revisedRef = useRef(revised);
+    useEffect(() => {
+        chromeRef.current = chrome;
+        revisedRef.current = revised;
+    }, [chrome, revised]);
+    const wasHidden = useRef(false);
+    useEffect(() => {
+        if (!visible) {
+            wasHidden.current = true;
+            return;
+        }
+        if (unavailable) return;
+        let live = true;
+        const check = () => {
+            const state = chromeRef.current;
+            if (state === null || unavailableRef.current) return;
+            void fetchPeek(catalogApiHref, state.seriesSlug, state.photoId, state.revisionId).then((answer) => {
+                if (live && answer === REVISED) revisedRef.current(state.revisionId);
+            });
+        };
+        if (wasHidden.current) check();
+        wasHidden.current = false;
+        const timer = setInterval(check, REVISION_CHECK_MS);
+        return () => {
+            live = false;
+            clearInterval(timer);
+        };
+    }, [visible, unavailable, catalogApiHref]);
+
+    // Offline notices go once the browser is back online: the next press moves.
+    const online = useOnline();
+    useEffect(() => {
+        if (online) setOffline(null);
+    }, [online]);
+
+    // ViewerUnavailable in place of a photograph (#178): nothing is on its way any more, the controls for a photograph
+    // that isn't there go, focus moves to its heading (after showModal() in the modal), and the region says what happened.
+    const reportUnavailable = useCallback((showing: boolean) => {
+        unavailableRef.current = showing;
+        setUnavailable(showing);
+    }, []);
+    useEffect(() => {
+        if (!unavailable) return;
+        pendingRef.current = null;
+        setPending(null);
+        queued.current = null;
+        movedWith.current = null;
+        motionRef.current?.reset();
+        unzoom();
+        setOffline(null);
+        rootRef.current?.querySelector<HTMLElement>('[data-viewer-unavailable-heading]')?.focus({ preventScroll: true });
+        announce(UNAVAILABLE_ANNOUNCEMENT, { settle: true });
+    }, [unavailable, announce, unzoom]);
+
     // Keys come from the document in both modes, so they still work when focus falls to the body under the open
     // modal (Tab past the end, or a tap on the photograph in WebKit). In the modal, a key aimed anywhere but the
     // body or the dialog is someone else's; the inert page behind it can't hold focus anyway.
@@ -345,6 +551,15 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
                 const inside = root !== null && target instanceof Node && root.contains(target);
                 if (!inside && target !== document.body) return;
             }
+            if (event.key === 'Escape') {
+                // A fresh Escape: whatever the last one took, this one decides afresh.
+                escapeTook.current = false;
+                if (!zoomedRef.current || event.isComposing || event.defaultPrevented) return;
+                event.preventDefault();
+                escapeTook.current = true;
+                unzoom();
+                return;
+            }
             const direction = stepForKey(event, zoomedRef.current);
             if (direction === null) return;
             event.preventDefault();
@@ -352,7 +567,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         };
         document.addEventListener('keydown', onKey);
         return () => document.removeEventListener('keydown', onKey);
-    }, [mode]);
+    }, [mode, unzoom]);
 
     // A double-tap on the photograph is Zoom, and does nothing where Zoom does nothing (no usable set), so it can't leave
     // the shell zoomed with nothing on screen to show it, which would stop the swipe.
@@ -365,13 +580,27 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     useDoubleTap(rootRef, { toggleRef: doubleTapRef, photoId: chrome?.photoId ?? null });
 
     const actions = useMemo<ViewerChromeActions>(() => ({ step: (direction) => step(direction), close }), [step, close]);
+    const busy = pending !== null;
     const context = useMemo<ViewerShellContext>(
-        () => ({ mode, claimed: chrome !== null, zoomed, headingId, report, technicalOpen, setTechnicalOpen, peeks: reduced ? NO_PEEKS : peeks }),
-        [mode, chrome, zoomed, headingId, report, technicalOpen, reduced, peeks],
+        () => ({
+            mode,
+            claimed: chrome !== null,
+            zoomed,
+            headingId,
+            report,
+            technicalOpen,
+            setTechnicalOpen,
+            peeks: reduced ? NO_PEEKS : peeks,
+            busy,
+            reportUnavailable,
+            close,
+        }),
+        [mode, chrome, zoomed, headingId, report, technicalOpen, reduced, peeks, busy, reportUnavailable, close],
     );
-    // The counter, the accents and the arrows' ends show a move once it's decided, before its photograph arrives.
+    // The counter, the accents and the arrows' ends show a move once it's decided, before its photograph arrives. Under
+    // reduced motion nothing slides, so they change when it arrives, as before 9a.
     const shown = useMemo<ViewerChromeState | null>(() => {
-        if (chrome === null || pending === null || pending.from !== chrome.photoId) return chrome;
+        if (chrome === null || pending === null || reduced || pending.from !== chrome.photoId) return chrome;
         const to = pending.direction === 'next' ? chrome.nextPhotoId : chrome.previousPhotoId;
         const peek = to === null ? undefined : peeks.get(peekKey(chrome.revisionId, to));
         const position = chrome.position + (pending.direction === 'next' ? 1 : -1);
@@ -385,15 +614,21 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             previousHref: position > 1 ? toward : null,
             nextHref: position < chrome.total ? toward : null,
         };
-    }, [chrome, pending, peeks]);
+    }, [chrome, pending, peeks, reduced]);
     const surface = (shown?.accent ? { '--cc-accent': shown.accent } : undefined) as CSSProperties | undefined;
 
     const body = (
         <ViewerContext.Provider value={context}>
-            {shown !== null && (
+            {shown !== null && !unavailable && (
                 <ViewerChrome state={shown} mode={mode} headingId={headingId} zoomed={zoomed} onZoom={toggleZoom} actions={actions} />
             )}
             {children}
+            {/* By the controls (#178): the stage's foot, between Previous and Next. Named in the region too. */}
+            {offline !== null && !unavailable && (
+                <p className={styles.offline} data-viewer-offline="">
+                    {offlineText(offline)}
+                </p>
+            )}
             {/* The leaving photograph's words, over the new ones for the 70 ms of their fade out (StageMotion.wordsIn). Empty otherwise. */}
             <div className={styles.leaving} data-viewer-leaving="" aria-hidden="true" />
             <p className="sr-only" role="status" aria-live="polite" data-viewer-announcer="">

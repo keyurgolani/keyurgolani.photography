@@ -252,6 +252,32 @@ export interface SwipeState {
 
 export const SWIPE_IDLE: SwipeState = { down: [], start: null };
 
+/** A swipe never starts this close to either edge of the window, in CSS px, where the browser's own back and forward gestures live (#178). */
+export const EDGE_EXCLUSION = 24;
+
+/** Whether a pointer can swipe: a touch or a pen. A mouse drag on the stage never moves the Viewer (#178, bug 4). */
+export function swipesWith(pointerType: string): boolean {
+    return pointerType === 'touch' || pointerType === 'pen';
+}
+
+/** Whether a swipe can start at `x` in a window `width` CSS px wide: not within EDGE_EXCLUSION of either edge. */
+export function clearOfEdges(x: number, width: number): boolean {
+    return x >= EDGE_EXCLUSION && x <= width - EDGE_EXCLUSION;
+}
+
+export type GesturePhase = 'idle' | 'pressed' | 'swiping' | 'scrolling';
+
+/**
+ * What the recognizer holds, for the root's `data-gesture` (#178): nothing; a finger down whose axis isn't settled; a
+ * touch claimed sideways, which the photograph follows; or one that settled down the page, left to the browser.
+ */
+export function gesturePhase(state: SwipeState): GesturePhase {
+    const { start } = state;
+    if (start === null) return 'idle';
+    if (start.claimedAt !== null) return 'swiping';
+    return start.vertical ? 'scrolling' : 'pressed';
+}
+
 /** What a lift tells the photograph: the move it asks for (or null), its net travel, and the finger's speed across. */
 export interface SwipeRelease {
     readonly step: ViewerStep | null;

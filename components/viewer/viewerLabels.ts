@@ -100,6 +100,35 @@ export function viewerTitle(photoTitle: string | null, seriesTitle: string, posi
     return photoTitle === null ? `${seriesTitle}, photograph ${position} of ${total}` : `${photoTitle}, ${seriesTitle}`;
 }
 
+/** One sentence, ended: authored copy may end itself, and anything else gets a full stop. */
+function sentence(text: string): string {
+    const trimmed = text.trim();
+    return /[.!?…]["'’”)]?$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/**
+ * What the live region says once a move settles (#178): the position, then the photograph's title and description
+ * when it has them, so a visitor who moves by a key or a control hears what arrived. With neither, the position alone,
+ * as before.
+ */
+export function moveText(position: number, total: number, title: string | null, description: string | null): string {
+    const parts = [title, description].filter((part): part is string => part !== null && part.trim() !== '');
+    if (parts.length === 0) return positionText(position, total);
+    return [positionText(position, total), ...parts].map(sentence).join(' ');
+}
+
+/** A move asked for offline, by the controls and in the live region (#178). It doesn't navigate. */
+export function offlineText(step: 'previous' | 'next'): string {
+    return `You're offline. The ${step} photograph couldn't load.`;
+}
+
+/** A photograph unpublished, or moved to another series, while the Viewer had it open or was moving to it (#178). */
+export const UNAVAILABLE_HEADING = 'This photograph is no longer here';
+export const UNAVAILABLE_TEXT = 'It was unpublished or moved after this page loaded.';
+export const UNAVAILABLE_BACK = 'Back to the series';
+/** What the live region says for it: the heading and the sentence, since focus lands on the heading only. */
+export const UNAVAILABLE_ANNOUNCEMENT = `${UNAVAILABLE_HEADING}. ${UNAVAILABLE_TEXT}`;
+
 /** What the live region says when a move is asked for past an end. The Viewer doesn't wrap. */
 export function boundaryText(step: 'previous' | 'next', seriesTitle: string): string {
     return step === 'previous' ? `First photograph in ${seriesTitle}.` : `Last photograph in ${seriesTitle}.`;

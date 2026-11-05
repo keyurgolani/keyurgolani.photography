@@ -337,7 +337,7 @@ describe('ViewerShell, as the modal', () => {
         expect(router.back).toHaveBeenCalledOnce();
     });
 
-    it('takes arrows only inside the dialog, and moves keep focus on the same control', () => {
+    it('takes arrows only inside the dialog, and moves keep focus on the same control', async () => {
         const { move } = renderShell('modal', 1);
         const outside = document.createElement('button');
         document.body.append(outside);
@@ -350,6 +350,7 @@ describe('ViewerShell, as the modal', () => {
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
         move(2);
         expect(document.activeElement).toBe(next);
+        await announced();
         expect(within(dialog() as HTMLElement).getByRole('status')).toHaveTextContent('Photograph 2 of 3');
         // The moves never open a second dialog or show it again.
         expect(showModal).toHaveBeenCalledOnce();

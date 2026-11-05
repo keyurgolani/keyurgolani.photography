@@ -2,6 +2,7 @@
 
 import { usePathname, useSelectedLayoutSegments } from 'next/navigation';
 import { use, useEffect, useRef, type ReactNode } from 'react';
+import { focusHeading } from '@/components/series/returnPosition';
 import type { ViewerMode } from './viewerContext';
 import { cancelViewerShellLoad, loadViewerShell, preloadViewerShell, viewerShellLoaded } from './viewerShellLoader';
 import { isViewerPath } from './viewerKeys';
@@ -64,7 +65,8 @@ function photoIdOf(pathname: string): string {
  * Safari doesn't focus a link on click, and puts focus back on it when the
  * modal closes, however many moves came between. If that link is no longer
  * in the document, focus goes to the series entry of the photograph that
- * opened the modal, `photo-<photoId>`.
+ * opened the modal, `photo-<photoId>`, and if that's gone too (a publish
+ * dropped it), to the series heading, `#series-title` (#178).
  */
 export default function ViewerHost({ children, modal }: { children: ReactNode; modal: ReactNode }) {
     const pathname = usePathname();
@@ -129,8 +131,12 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
             opener.current = null;
             // The series page stays mounted under the modal, so the opener is normally the same node. If the series re-rendered its
             // entries (Show more, #6), the old node is gone: focus the entry for the photograph that opened the modal, not the one shown last.
-            const target = recorded?.element.isConnected ? recorded.element : recorded?.photoId ? document.getElementById(`photo-${recorded.photoId}`) : null;
-            target?.focus();
+            // Neither there (a publish dropped the photograph, #178): the series heading, as #5's return does.
+            if (recorded !== null) {
+                const entry = recorded.element.isConnected ? recorded.element : document.getElementById(`photo-${recorded.photoId}`);
+                if (entry !== null) entry.focus();
+                else focusHeading();
+            }
         }
         wasOpen.current = modalOpen;
     }, [modalOpen]);
