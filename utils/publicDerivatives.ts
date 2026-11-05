@@ -45,8 +45,11 @@ export function resolvedPathname(pathname: string): string {
  * serves /Assets/Photos/x.jpg from public/assets/photos/x.jpg. Its first two
  * segments are folded as foldName() folds them, and then only their letters
  * and digits count, which also blocks a few paths no file has, the safe side.
+ * Any second segment that starts with `photos` counts too, so a folder
+ * beside the library, such as the `photos.legacy-derivatives-<date>/` that
+ * scripts/host/legacy-move-aside.sh makes on a checkout, never serves.
  */
 export function isUnderPhotos(pathname: string): boolean {
     const [first, second] = resolvedPathname(pathname).split('/').slice(1).map((segment) => foldName(segment).replace(/[^a-z0-9]/g, ''));
-    return first === 'assets' && second === 'photos';
+    return first === 'assets' && second !== undefined && second.startsWith('photos');
 }
