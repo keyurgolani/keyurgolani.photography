@@ -318,7 +318,7 @@ function heartbeatProblem(heartbeat: HeartbeatAge): StatusCheck['problems'][numb
 /** `--check`'s verdict on what status read, and on the heartbeat. `complete` is whether status itself read everything. */
 async function statusCheck(status: OwnerStatus, dataRoot: string | null, complete: boolean, clock: () => number): Promise<StatusCheck> {
     const problems: StatusCheck['problems'] = [];
-    if (!complete) problems.push({ code: 'status-incomplete', message: "Status couldn't read everything it reports, as above, so nothing shows the photographs are safe" });
+    if (!complete) problems.push({ code: 'status-incomplete', message: "Status couldn't read everything it reports, as above" });
     if (status.inbox && !('error' in status.inbox)) {
         const { missing, failed, ambiguous } = status.inbox;
         if (missing.length > 0) {
