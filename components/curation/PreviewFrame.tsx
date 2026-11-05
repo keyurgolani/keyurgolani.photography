@@ -37,7 +37,7 @@ export interface PreviewFrameProps {
     scrollToId?: string;
     /**
      * A9 (#182): the full preview's toolbar. `presets` adds Fit the window,
-     * Desktop (1440 by 900) and Mobile (390 by 844), which change the frame's
+     * Desktop (1440 × 900) and Mobile (390 × 844), which change the frame's
      * size only, scaled down to fit; `draftHash` shows the draft's short hash;
      * `backHref` is "Back to Publish". The Publish screen's panel has none.
      */
@@ -47,9 +47,9 @@ export interface PreviewFrameProps {
 }
 
 type Preset = 'fit' | 'desktop' | 'mobile';
-const SIZES: Record<Exclude<Preset, 'fit'>, { width: number; height: number; label: string; spoken: string }> = {
-    desktop: { width: 1440, height: 900, label: 'Desktop', spoken: '1440 by 900' },
-    mobile: { width: 390, height: 844, label: 'Mobile', spoken: '390 by 844' },
+const SIZES: Record<Exclude<Preset, 'fit'>, { width: number; height: number; label: string }> = {
+    desktop: { width: 1440, height: 900, label: 'Desktop' },
+    mobile: { width: 390, height: 844, label: 'Mobile' },
 };
 
 /** How far a preset's frame scales down to fit `box`, never up. */
@@ -143,33 +143,35 @@ export default function PreviewFrame({ src, height, focusable = true, marker = '
     );
     return (
         <Frame className={styles.frame} aria-label={embedded ? undefined : 'Visitor preview'} data-embedded={embedded ? 'true' : undefined} style={height ? { height } : undefined}>
-            <div className={styles.toolbar}>
+            {/* A <p>, as before A9, holding phrasing content only, so the Publish panel's markup is what it was (Dark parity). */}
+            <p className={styles.toolbar}>
                 <span className={styles.marker}>{marker}</span>
                 {draftHash ? <span className={styles.hash}>Draft {draftHash}</span> : null}
                 {presets ? (
                     // Contract rule 1: an in-page choice is a button with aria-pressed, each a 44 px target with the focus token.
-                    <div className={styles.presets} role="group" aria-label="Frame size">
+                    <span className={styles.presets} role="group" aria-label="Frame size">
                         <button type="button" className={styles.preset} aria-pressed={preset === 'fit'} onClick={() => setPreset('fit')}>
                             Fit the window
                         </button>
                         {(Object.keys(SIZES) as (keyof typeof SIZES)[]).map((key) => (
-                            // The name is set whole, starting with the visible label (WCAG 2.5.3): a visually hidden part is a block in a
-                            // browser, and a block joins a name with spaces around it ("Desktop , 1440 by 900"; A9 CI fix).
-                            <button key={key} type="button" className={styles.preset} aria-pressed={preset === key} aria-label={`${SIZES[key].label}, ${SIZES[key].spoken}`} onClick={() => setPreset(key)}>
-                                {SIZES[key].label}
-                                <span className={styles.size} aria-hidden="true">
+                            // The name is the visible text, whole (WCAG 2.5.3): "Desktop 1440 × 900". A real space between the label and
+                            // the size keeps the words apart however the name is joined (each part of the inline-flex button is a flex
+                            // item), and nothing is hidden or absolutely placed, which once read "Desktop , 1440 by 900" (A9 CI fix).
+                            <button key={key} type="button" className={styles.preset} aria-pressed={preset === key} onClick={() => setPreset(key)}>
+                                {SIZES[key].label}{' '}
+                                <span className={styles.size}>
                                     {SIZES[key].width} × {SIZES[key].height}
                                 </span>
                             </button>
                         ))}
-                    </div>
+                    </span>
                 ) : null}
                 {backHref ? (
                     <a className={styles.back} href={backHref}>
                         Back to Publish
                     </a>
                 ) : null}
-            </div>
+            </p>
             {/* inert takes the iframe and its title out of the accessibility tree, so the picture is named here instead. */}
             {focusable ? (
                 site

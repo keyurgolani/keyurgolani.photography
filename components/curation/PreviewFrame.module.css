@@ -9,9 +9,7 @@
 .toolbar {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
   align-items: center;
-  column-gap: 1rem;
   min-height: 44px;
   margin: 0;
   padding: 0 var(--site-gutter);
@@ -55,7 +53,13 @@
   border-bottom: 1px solid var(--gah-rule-strong);
 }
 
-/* A9: the full preview's toolbar: the short hash, the size presets and the way back. */
+/* A9: the full preview's toolbar: the short hash, the size presets and the way back. It wraps on a phone; the Publish
+   panel's toolbar, the marker alone, keeps the styles it had (Dark parity). */
+.frame:not([data-embedded='true']) .toolbar {
+  flex-wrap: wrap;
+  column-gap: 1rem;
+}
+
 .hash {
   color: var(--gah-ink-soft);
   font-family: var(--gah-font-mono, ui-monospace, monospace);

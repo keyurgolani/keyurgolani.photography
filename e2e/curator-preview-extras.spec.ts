@@ -12,9 +12,10 @@ import { expect, test } from './support/test';
 // A9 (#182) on the draft preview, as the curator with a test passphrase: a
 // former address redirects inside the preview, never to the public site and
 // never permanently, for a series page and a photograph's page, and the full
-// preview's toolbar has Fit the window, Desktop (1440 by 900) and Mobile
-// (390 by 844) as pressed buttons, the draft's short hash and Back to Publish, which pass #1's
-// checks at both widths. Test values only.
+// preview's toolbar has Fit the window, Desktop 1440 × 900 and Mobile
+// 390 × 844 as pressed buttons named by their visible text, the draft's
+// short hash and Back to Publish, which pass #1's checks at both widths.
+// Test values only.
 
 test.describe.configure({ mode: 'serial' });
 
@@ -111,8 +112,8 @@ test('sizes the frame with the presets and changes nothing else, with the short 
     await expect(page.getByRole('link', { name: 'Back to Publish' })).toHaveAttribute('href', '/curation/publish');
     await expect(page.getByRole('button', { name: 'Fit the window' })).toHaveAttribute('aria-pressed', 'true');
     for (const [name, width, height] of [
-        ['Desktop, 1440 by 900', 1440, 900],
-        ['Mobile, 390 by 844', 390, 844],
+        ['Desktop 1440 × 900', 1440, 900],
+        ['Mobile 390 × 844', 390, 844],
     ] as const) {
         await page.getByRole('button', { name }).click();
         await expect(page.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
