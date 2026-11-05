@@ -14,25 +14,29 @@
 # names that copy. It refuses, exits 1 and moves nothing unless the manifest's
 # digest is intact, it's under 24 hours old, it hasn't been used for an
 # --apply (by its digest, in ${XDG_STATE_HOME:-~/.local/state}/photos), it
-# names this library by device and inode, and each folder it would move
-# lists, right now and case-sensitively, exactly the files the manifest holds,
-# with the same sizes and mtimes. A folder the manifest says stays, stays.
+# names this library by device and inode, every file it vouches for has the
+# name and extension the v1.x pipeline gave it for an original at the root,
+# and each folder it would move lists, right now and case-sensitively,
+# exactly the files the manifest holds, with the same sizes and mtimes. A
+# folder the manifest says stays, stays.
 #
 # A dry run by default: what moves and what stays, and why, each move as an
-# `mv` line with its size, the total, and the move-back.sh it would write. It
-# changes nothing. --apply prints the same, then writes move-back.sh in the
-# aside folder and records the manifest as used, and only then moves. Each
-# move is one rename(2) by a perl helper that first re-reads the library's
-# listing and checks the folder's device and inode, so a folder swapped since
-# the check stays where it is. rename(2) never copies, and fails rather than
-# nest a folder or cross a filesystem. It deletes nothing.
+# `mv` line with its size, the total, what runs as root, and how move-back.sh
+# moves them back. It changes nothing. --apply prints the same, records the
+# manifest as used, writes move-back.sh in the aside folder, and only then
+# moves. Each move is the forward helper, a perl program that re-reads the
+# manifest and the library itself, and renames one folder with rename(2)
+# only once the folder, its exact name and the aside folder all check out.
+# rename(2) never copies, and fails rather than nest a folder or cross a
+# filesystem. It deletes nothing.
 #
 # The renames run as you. On Linux, moving a folder to a new parent needs
-# write permission on the folder itself, for its `..` entry, and the v1.x
-# watcher wrote these as uid 1001. When a rename is refused that way, it
-# stops and says so. --rename-as-root then runs only that helper through
-# sudo. The helper works out both paths itself, by device and inode, and
-# trusts none of its arguments. Everything else still runs as you.
+# write permission on the folder itself, for its `..` entry, as well as on
+# the library's top folder, and the v1.x watcher wrote these as uid 1001. The
+# dry run says when that's so, and --apply refuses before writing anything.
+# --rename-as-root then runs only the forward helper through sudo, by
+# absolute path in a clean environment. The helper trusts none of its
+# arguments. Everything else still runs as you.
 #
 # The destination defaults to <library's parent>/<library name>.legacy-
 # derivatives-<YYYY-MM-DD>. It refuses one that:
@@ -40,6 +44,8 @@
 #   ancestors, so case, symlinks, firmlinks and bind mounts can't hide it;
 # - is inside a checkout of this repository (a folder above it holds
 #   package.json or next.config.*), which a build copies into the image;
+# - is inside a data root (a folder above it holds data-root.json);
+# - another user can write, here or above, without the sticky bit;
 # - already holds any of the eight names, a move-back.sh or a used record;
 # - sits on another device or mount than the library;
 # - or whose path, or the library's or the manifest's, holds a newline.
@@ -160,6 +166,7 @@ done
 command -v perl >/dev/null 2>&1 || refuse "This needs perl, to read the manifest and so that each move is a checked rename and never a copy."
 if [ "$as_root" -eq 1 ]; then
   command -v sudo >/dev/null 2>&1 || refuse "--rename-as-root needs sudo, which isn't on PATH."
+  [ -x /usr/bin/perl ] || refuse "--rename-as-root runs the helper as /usr/bin/perl, which this host doesn't have."
 fi
 
 if has_newline "$library" || has_newline "$dest" || has_newline "$manifest"; then
@@ -205,8 +212,8 @@ case $lib_id in
 esac
 refuse_inside_library "$anchor" "$inside"
 
-# Inside a checkout of this repository, which the image build copies and Next
-# serves from. On the resolved path, so a symlink can't hide it.
+# Inside a checkout, which the image build copies, or a data root, which the
+# stack owns. On the resolved path, so a symlink can't hide either.
 folder=$to
 while :; do
   checkout=0
@@ -220,9 +227,25 @@ while :; do
     fi
     refuse "The destination $to is inside the checkout in $folder, which a build copies into the image. Pick one outside the checkout, on the library's filesystem."
   fi
+  if [ -e "$folder/data-root.json" ]; then
+    refuse "The destination $to is inside the data root in $folder, which belongs to the stack. Pick one outside it, on the library's filesystem."
+  fi
   [ "$folder" != / ] || break
   folder=$(dirname -- "$folder")
 done
+
+# A folder another user can write, here or above, could swap the aside
+# folder or its files between the checks and the renames. The sticky bit
+# stops that, so /tmp-like folders pass.
+open_to=$(perl -e '
+  my $dir = shift;
+  while (1) {
+    my @s = lstat $dir;
+    if (@s && !-l _) { my $mode = $s[2] & 07777; print("$dir\n"), exit 0 if ($mode & 022) && !($mode & 01000) }
+    last if $dir eq "/";
+    $dir =~ s{/[^/]+/?\z}{}; $dir = "/" if $dir eq "";
+  }' -- "$anchor") || refuse "Can't read the modes of $anchor and the folders above it."
+[ -z "$open_to" ] || refuse "The destination $to is under $open_to, which is writable by another user without the sticky bit, so the aside folder could be swapped under it. Pick one only you can write."
 
 lib_device=$(stat_of %d "$lib") || lib_device=''
 anchor_device=$(stat_of %d "$anchor") || anchor_device=''
@@ -275,69 +298,116 @@ for name in $present; do
   fi
 done
 
-# The manifest's checks, in perl: digest, age, use, library, and each folder's
-# real listing against it. It prints `move`, `stay`, `written` and `digest`
-# lines, or refuses on stderr with exit 1.
-read -r -d '' VERIFY <<'PERL' || true
+# The checks the host and the forward helper share: the manifest, its age and
+# use, the library, the rules for what the v1.x pipeline wrote, and a folder's
+# live listing against the manifest. A refusal prints to stderr and exits
+# $REFUSED.
+read -r -d '' COMMON <<'COMMON' || true
 use strict;
 use warnings;
+use Cwd qw(abs_path);
 use Digest::SHA qw(sha256_hex);
-use Encode qw(encode_utf8);
+use Encode qw(decode encode_utf8);
 use Fcntl qw(O_RDONLY O_NOFOLLOW);
 use JSON::PP ();
 use Time::Local qw(timegm);
 
-my ($file, $used, $aside_used, $lib, $now, @names) = @ARGV;
-my $again = 'Run photos legacy-derivatives --stdout in the watcher\'s container again, and save its output.';
-sub clean { my $text = shift; $text =~ s/[\x00-\x1f\x7f]/?/g; return $text }
-sub refuse { print STDERR clean($_[0]), "\n"; exit 1 }
+our @EIGHT = qw(thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache);
+our %EXTENSION = (thumbnails => '.webp', medium => '.webp', optimized => '.webp', 'thumbnails-avif' => '.avif', 'medium-avif' => '.avif', 'optimized-avif' => '.avif', lqip => '.txt');
+our %SOURCE = map { $_ => 1 } qw(.jpg .jpeg .png .webp);
+our $AGAIN = 'Run photos legacy-derivatives --stdout in the watcher\'s container again, and save its output.';
+our $REFUSED = 1;
+our $TAIL = '';
 
-open(my $fh, '<:raw', $file) or refuse("Can't read the manifest $file ($!). Save it with photos legacy-derivatives --stdout in the watcher's container first, and give this script that file.");
-my $raw = do { local $/; <$fh> };
-close $fh;
-my $outer = eval { JSON::PP->new->utf8->decode($raw) };
-refuse("The manifest $file isn't one photos legacy-derivatives wrote. $again") unless ref $outer eq 'HASH' && defined $outer->{manifest} && !ref $outer->{manifest};
-refuse("The manifest $file has a schema this script doesn't know. $again") unless ($outer->{schemaVersion} // '') eq '1';
-my $digest = 'sha256:' . sha256_hex(encode_utf8($outer->{manifest}));
-refuse("The manifest's digest doesn't match its content, so it changed after photos legacy-derivatives wrote it. $again") unless ($outer->{digest} // '') eq $digest;
-my $m = eval { JSON::PP->new->decode($outer->{manifest}) };
-refuse("The manifest $file can't be read. $again") unless ref $m eq 'HASH' && ref $m->{folders} eq 'ARRAY' && ref $m->{library} eq 'HASH';
-refuse("The manifest $file has a schema this script doesn't know. $again") unless ($m->{schemaVersion} // '') eq '1';
+# Bytes as UTF-8, with every C0 and C1 control as `?`, back to bytes for the terminal.
+sub clean {
+  my $text = shift;
+  $text = decode('UTF-8', $text) unless utf8::is_utf8($text);
+  $text =~ s/[\x00-\x1f\x7f-\x9f]/?/g;
+  return encode_utf8($text);
+}
+sub refuse { print STDERR clean($_[0] . $TAIL), "\n"; exit($_[1] // $REFUSED) }
 
-my ($y, $mo, $d, $h, $mi, $s) = ($m->{writtenAt} // '') =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z$/
-  or refuse("The manifest has no time it was written. $again");
-my $age = $now - timegm($s, $mi, $h, $d, $mo - 1, $y);
-refuse("The manifest is more than 24 hours old, and the library may have changed since. $again") if $age > 24 * 60 * 60;
-refuse("The manifest says it was written in the future. Check the host's clock, then run photos legacy-derivatives again.") if $age < -300;
-
-# Never follow a link to a used record: a link there could point anywhere.
-for my $record ($used, $aside_used) {
-  if (!sysopen(my $u, $record, O_RDONLY | O_NOFOLLOW)) {
-    next if $!{ENOENT};
-    refuse("Can't read $record, which records the manifests already used ($!). If it's a symlink, put a plain file there.");
-  } else {
-    my @st = stat $u;
-    refuse("$record isn't a plain file.") unless -f _ && $st[3] == 1;
-    while (my $line = <$u>) {
-      chomp $line;
-      refuse("This manifest was used for an earlier --apply, and a manifest is good for one, wherever its copy is. $again") if $line eq $digest;
-    }
-    close $u;
+sub read_manifest {
+  my ($file) = @_;
+  open(my $fh, '<:raw', $file) or refuse("Can't read the manifest $file ($!). Save it with photos legacy-derivatives --stdout in the watcher's container first, and give this script that file.");
+  my $raw = do { local $/; <$fh> };
+  close $fh;
+  my $outer = eval { JSON::PP->new->utf8->decode($raw) };
+  refuse("The manifest $file isn't one photos legacy-derivatives wrote. $AGAIN") unless ref $outer eq 'HASH' && defined $outer->{manifest} && !ref $outer->{manifest};
+  refuse("The manifest $file has a schema this script doesn't know. $AGAIN") unless ($outer->{schemaVersion} // '') eq '1';
+  my $digest = 'sha256:' . sha256_hex(encode_utf8($outer->{manifest}));
+  refuse("The manifest's digest doesn't match its content, so it changed after photos legacy-derivatives wrote it. $AGAIN") unless ($outer->{digest} // '') eq $digest;
+  my $m = eval { JSON::PP->new->decode($outer->{manifest}) };
+  refuse("The manifest $file can't be read. $AGAIN") unless ref $m eq 'HASH' && ref $m->{folders} eq 'ARRAY' && ref $m->{library} eq 'HASH';
+  refuse("The manifest $file has a schema this script doesn't know. $AGAIN") unless ($m->{schemaVersion} // '') eq '1';
+  my %folders;
+  for my $f (@{ $m->{folders} }) {
+    refuse("The manifest names a folder that isn't one of the eight. $AGAIN") unless ref $f eq 'HASH' && defined $f->{name} && grep { $_ eq $f->{name} } @EIGHT;
+    $folders{ $f->{name} } = $f;
   }
+  return ($m, $digest, \%folders);
 }
 
-my @root = stat $lib or refuse("Can't read $lib.");
-refuse("The manifest is from another library: it names device and inode $m->{library}{dev}:$m->{library}{ino}, and $lib is $root[0]:$root[1]. Under Docker Desktop, file sharing gives the container a different device; this step needs a Linux host with a bind mount. Otherwise, $again")
-  unless "$root[0]:$root[1]" eq ($m->{library}{dev} // '') . ':' . ($m->{library}{ino} // '');
+sub check_age {
+  my ($m, $now) = @_;
+  my ($y, $mo, $d, $h, $mi, $s) = ($m->{writtenAt} // '') =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z$/
+    or refuse("The manifest has no time it was written. $AGAIN");
+  my $age = $now - timegm($s, $mi, $h, $d, $mo - 1, $y);
+  refuse("The manifest is more than 24 hours old, and the library may have changed since. $AGAIN") if $age > 24 * 60 * 60;
+  refuse("The manifest says it was written in the future. Check the host's clock, then run photos legacy-derivatives again.") if $age < -300;
+}
 
-opendir(my $dh, $lib) or refuse("Can't list $lib.");
-my %root = map { $_ => 1 } readdir $dh;
-closedir $dh;
-my %known = map { $_ => 1 } @names;
-my %folders;
-for my $f (@{ $m->{folders} }) {
-  refuse("The manifest names a folder that isn't one of the eight. $again") unless ref $f eq 'HASH' && defined $f->{name} && $known{ $f->{name} };
-  $folders{ $f->{name} } = $f;
+# Whether the used record at $file, never followed as a link, holds $digest.
+sub used_holds {
+  my ($file, $digest) = @_;
+  if (!sysopen(my $u, $file, O_RDONLY | O_NOFOLLOW)) {
+    return 0 if $!{ENOENT};
+    refuse("Can't read $file, which records the manifests already used ($!). If it's a symlink, put a plain file there.");
+  } else {
+    my @st = stat $u;
+    refuse("$file isn't a plain file with one link.") unless -f _ && $st[3] == 1;
+    while (my $line = <$u>) {
+      chomp $line;
+      return 1 if $line eq $digest;
+    }
+  }
+  return 0;
+}
+
+sub manifest_library { my ($m) = @_; return ($m->{library}{dev} // '') . ':' . ($m->{library}{ino} // '') }
+
+# The library's root: every name in it, and the base name of each original
+# the scan reads there, a plain file with a source extension, not a dot-file.
+sub root_listing {
+  my ($lib) = @_;
+  opendir(my $dh, $lib) or refuse("Can't list $lib.");
+  my (%names, %bases);
+  for my $entry (readdir $dh) {
+    next if $entry eq '.' || $entry eq '..';
+    $names{$entry} = 1;
+    next if $entry =~ /^\./;
+    my @st = lstat "$lib/$entry" or next;
+    next unless -f _;
+    $bases{$1} = 1 if $entry =~ /^(.+)(\.[^.]+)\z/ && $SOURCE{ lc $2 };
+  }
+  closedir $dh;
+  return (\%names, \%bases);
+}
+
+# Whether $path, inside folder $name, has the name the v1.x pipeline gave a
+# file there for one of the root originals in $bases.
+sub pipeline_name {
+  my ($name, $path, $bases) = @_;
+  if ($name eq 'cache') {
+    return 1 if $path eq 'upright-rebuild.json';
+    return $bases->{$1} ? 1 : 0 if $path =~ m{\Adynamic/([^/]+)-(?:400|800|1200|1920)-\d+\.(?:webp|avif)\z};
+    return $bases->{$1} ? 1 : 0 if $path =~ m{\Aset-sources/([^/.][^/]*)\.json\z};
+    return 0;
+  }
+  my $extension = $EXTENSION{$name};
+  return 0 if $path =~ m{/} || length($path) <= length($extension) || substr($path, -length($extension)) ne $extension;
+  return $bases->{ substr($path, 0, -length($extension)) } ? 1 : 0;
 }
 
 # Every file and folder under $top, with lstat: never a followed symlink.
@@ -367,109 +437,184 @@ sub listing {
   return (\%files, \%dirs, undef);
 }
 
-for my $name (@names) {
-  my $f = $folders{$name};
-  if (!$root{$name}) {
-    refuse("The manifest moves $name, but the library has no entry named exactly $name now. $again") if $f && $f->{moves};
-    next;
-  }
-  if (!$f) { print "stay\t$name\tit isn't in the manifest, which is older than it. $again\n"; next }
-  if (!$f->{moves}) { print "stay\t$name\t", clean($f->{reason} // 'the manifest says it stays'), "\n"; next }
-  refuse("The manifest's entry for $name can't be read. $again") unless ref $f->{files} eq 'ARRAY' && ref $f->{dirs} eq 'ARRAY';
-  my ($files, $dirs, $problem) = listing("$lib/$name", $name);
-  my $changed = "$name changed since photos legacy-derivatives looked at it";
-  refuse("$changed: " . clean($problem) . ". $again") if $problem;
+# Folder $name against its manifest entry $f: every file vouched for has a
+# pipeline name, and the live listing is exactly the manifest's. Returns the
+# folder's dev:inode and its files, sorted.
+sub check_folder {
+  my ($lib, $name, $f, $bases) = @_;
+  refuse("The manifest's entry for $name can't be read. $AGAIN") unless ref $f->{files} eq 'ARRAY' && ref $f->{dirs} eq 'ARRAY';
   my %want;
   for my $entry (@{ $f->{files} }) {
-    refuse("The manifest's entry for $name can't be read. $again") unless ref $entry eq 'HASH' && defined $entry->{path};
-    $want{ encode_utf8($entry->{path}) } = $entry;
+    refuse("The manifest's entry for $name can't be read. $AGAIN") unless ref $entry eq 'HASH' && defined $entry->{path} && !ref $entry->{path};
+    my $path = encode_utf8($entry->{path});
+    refuse("The manifest vouches for $name/$path, which isn't a file the v1.x pipeline wrote there. $AGAIN") unless pipeline_name($name, $path, $bases);
+    $want{$path} = $entry;
   }
+  my %want_dirs;
+  for my $dir (@{ $f->{dirs} }) {
+    my $path = encode_utf8($dir // '');
+    refuse("The manifest vouches for $name/$path/, which isn't a folder the v1.x pipeline wrote there. $AGAIN") unless $name eq 'cache' && ($path eq 'dynamic' || $path eq 'set-sources');
+    $want_dirs{$path} = 1;
+  }
+  my ($files, $dirs, $problem) = listing("$lib/$name", $name);
+  my $changed = "$name changed since photos legacy-derivatives looked at it";
+  refuse("$changed: $problem. $AGAIN") if $problem;
   for my $path (sort keys %$files) {
-    my $entry = $want{$path} or refuse("$changed: $name/" . clean($path) . " is new. $again");
+    my $entry = $want{$path} or refuse("$changed: $name/$path is new. $AGAIN");
     my ($size, $mtime) = @{ $files->{$path} };
-    refuse("$changed: $name/" . clean($path) . " has another size or time. $again") unless $size == ($entry->{size} // -1) && $mtime == ($entry->{mtime} // -1);
+    refuse("$changed: $name/$path has another size or time. $AGAIN") unless $size == ($entry->{size} // -1) && $mtime == ($entry->{mtime} // -1);
   }
-  for my $path (sort keys %want) {
-    refuse("$changed: $name/" . clean($path) . " is gone. $again") unless exists $files->{$path};
+  for my $path (sort keys %want) { refuse("$changed: $name/$path is gone. $AGAIN") unless exists $files->{$path} }
+  for my $path (sort keys %$dirs) { refuse("$changed: $name/$path/ is new. $AGAIN") unless $want_dirs{$path} }
+  for my $path (sort keys %want_dirs) { refuse("$changed: $name/$path/ is gone. $AGAIN") unless $dirs->{$path} }
+  my @st = lstat "$lib/$name" or refuse("$changed: it can't be read. $AGAIN");
+  return ("$st[0]:$st[1]", [sort keys %$files]);
+}
+COMMON
+
+# The host's check: everything in COMMON, for every folder. It prints `move`,
+# `stay`, `written` and `digest` lines, or refuses on stderr with exit 1.
+read -r -d '' VERIFY <<'VERIFY' || true
+my ($file, $used, $lib, $now) = @ARGV;
+my ($m, $digest, $folders) = read_manifest($file);
+check_age($m, $now);
+refuse("This manifest was used for an earlier --apply, and a manifest is good for one, wherever its copy is. $AGAIN") if used_holds($used, $digest);
+my @root = stat $lib or refuse("Can't read $lib.");
+refuse("The manifest is from another library: it names device and inode " . manifest_library($m) . ", and $lib is $root[0]:$root[1]. Under Docker Desktop, file sharing gives the container a different device; this step needs a Linux host with a bind mount. Otherwise, $AGAIN")
+  unless "$root[0]:$root[1]" eq manifest_library($m);
+my ($names, $bases) = root_listing($lib);
+for my $name (@EIGHT) {
+  my $f = $folders->{$name};
+  if (!$names->{$name}) {
+    refuse("The manifest moves $name, but the library has no entry named exactly $name now. $AGAIN") if $f && $f->{moves};
+    next;
   }
-  my %want_dirs = map { encode_utf8($_) => 1 } @{ $f->{dirs} };
-  for my $path (sort keys %$dirs) { refuse("$changed: $name/" . clean($path) . "/ is new. $again") unless $want_dirs{$path} }
-  for my $path (sort keys %want_dirs) { refuse("$changed: $name/" . clean($path) . "/ is gone. $again") unless $dirs->{$path} }
-  my @st = lstat "$lib/$name" or refuse("$changed: it can't be read. $again");
-  my @sorted = sort keys %$files;
-  my $count = scalar @sorted;
-  my $shown = join(', ', map { clean($_) } @sorted[0 .. ($count > 3 ? 2 : $count - 1)]);
+  if (!$f) { print "stay\t$name\tit isn't in the manifest, which is older than it. $AGAIN\n"; next }
+  if (!$f->{moves}) { print "stay\t$name\t", clean(encode_utf8($f->{reason} // 'the manifest says it stays')), "\n"; next }
+  my ($id, $sorted) = check_folder($lib, $name, $f, $bases);
+  my $count = scalar @$sorted;
+  my $shown = join(', ', map { clean($_) } @$sorted[0 .. ($count > 3 ? 2 : $count - 1)]);
   $shown .= ', ...' if $count > 3;
-  print "move\t$name\t$st[0]:$st[1]\t$count\t$shown\n";
+  print "move\t$name\t$id\t$count\t$shown\n";
 }
 print "written\t", clean($m->{writtenAt}), "\n";
 print "digest\t$digest\n";
-PERL
+VERIFY
 
-# The one step that may run through sudo: a single rename, after checking by
-# device and inode, from a fresh listing, that the source is the checked
-# folder by its exact name in the checked parent, and the destination is the
-# checked parent plus that name and doesn't exist. It trusts none of its
-# arguments, and writes nothing else. It holds no single quote, so
-# move-back.sh can carry it. Exits 0 when moved (or, going back, when there
-# was nothing to move), 3 when a check refuses, 4 on permission denied, 5 on
-# another failure.
-read -r -d '' HELPER <<'HELPER' || true
+# The forward helper, the one program --rename-as-root sends through sudo.
+# Given only the manifest, the library, the aside folder and a name, it
+# works out and checks everything itself, as root or not: the manifest's
+# digest, age and library; that the name moves in it; the pipeline names and
+# the live listing; the exact name from a fresh listing; and the aside
+# folder: outside the library, on its device, owned by SUDO_UID (or the real
+# uid) and not writable by group or others, holding the move-back.sh and the
+# used record with this digest that this run wrote. Then one rename(2), and
+# a check of what moved, renamed straight back if it isn't the checked
+# folder. It writes nothing else. Exits 0 when moved, 2 on usage, 3 when a
+# check refuses, 4 on permission denied, 5 on another failure.
+read -r -d '' FORWARD <<'FORWARD' || true
 # LEGACY_RENAME_HELPER
+$REFUSED = 3;
+$TAIL = ' Nothing further was moved.';
+refuse("Usage: forward <manifest> <library> <aside folder> <name>.", 2) unless @ARGV == 5 && $ARGV[0] eq 'forward';
+my (undef, $file, $lib, $aside, $name) = @ARGV;
+my $uid = defined $ENV{SUDO_UID} && length $ENV{SUDO_UID} ? $ENV{SUDO_UID} : $<;
+refuse("SUDO_UID isn't a user's uid.") unless $uid =~ /\A\d+\z/ && $uid != 0;
+refuse("$name is not one of the eight legacy folder names, exactly.") unless grep { $_ eq $name } @EIGHT;
+my ($m, $digest, $folders) = read_manifest($file);
+check_age($m, time);
+my @l = lstat $lib or refuse("Can't read $lib.");
+refuse("$lib is not the library the manifest names.") unless -d _ && !-l _ && "$l[0]:$l[1]" eq manifest_library($m);
+my $f = $folders->{$name};
+refuse("The manifest doesn't move $name, so nothing vouches for it.") unless $f && $f->{moves};
+my ($names, $bases) = root_listing($lib);
+refuse("$lib has no entry named exactly $name now, so it changed since the check.") unless $names->{$name};
+my ($folder_id) = check_folder($lib, $name, $f, $bases);
+
+my @a = lstat $aside or refuse("Can't read the aside folder $aside.");
+refuse("The aside folder $aside is a symlink, or not a folder.") if -l _ || !-d _;
+refuse("The aside folder $aside isn't yours: it belongs to uid $a[4], not $uid.") unless $a[4] == $uid;
+refuse("The aside folder $aside is writable by group or others.") if $a[2] & 022;
+refuse("The aside folder $aside isn't on the library's device.") unless $a[0] == $l[0];
+my $real = abs_path($aside);
+refuse("Can't resolve the aside folder $aside.") unless defined $real;
+for (my $dir = $real; ; ) {
+  my @s = stat $dir or refuse("Can't read $dir.");
+  refuse("The aside folder $aside is inside the library, or is the library.") if "$s[0]:$s[1]" eq manifest_library($m);
+  last if $dir eq '/';
+  $dir =~ s{/[^/]+/?\z}{};
+  $dir = '/' if $dir eq '';
+}
+for my $own ('move-back.sh', 'legacy-derivatives.used') {
+  my @s = lstat "$aside/$own" or refuse("The aside folder $aside holds no $own, so it isn't one this run made.");
+  refuse("$aside/$own isn't a plain file of yours with one link.") unless -f _ && !-l _ && $s[3] == 1 && $s[4] == $uid;
+}
+refuse("$aside/legacy-derivatives.used doesn't hold this manifest's digest, so the aside folder isn't this run's.") unless used_holds("$aside/legacy-derivatives.used", $digest);
+refuse("$aside/$name exists. Compare it with $lib/$name first.") if lstat "$aside/$name";
+
+# Last, immediately before the rename: the exact name and the folder's identity once more.
+opendir(my $dh, $lib) or refuse("Can't list $lib.");
+my $listed = grep { $_ eq $name } readdir $dh;
+closedir $dh;
+refuse("$lib has no entry named exactly $name now, so it changed since the check.") unless $listed;
+my @s = lstat "$lib/$name" or refuse("Can't read $lib/$name.");
+refuse("$lib/$name is not the folder that was checked: its device and inode changed.") unless -d _ && !-l _ && "$s[0]:$s[1]" eq $folder_id;
+if (!rename("$lib/$name", "$aside/$name")) {
+  if ($!{EACCES} || $!{EPERM}) {
+    my $cause = !-w $lib ? "the library's top folder $lib isn't writable" : !-w "$lib/$name" ? "$lib/$name isn't writable, and moving a folder to a new parent rewrites its .. entry" : "the system refused it ($!)";
+    print STDERR clean("Permission denied renaming $lib/$name: $cause. Nothing further was moved."), "\n";
+    exit 4;
+  }
+  refuse("Renaming $lib/$name failed: $!.", 5);
+}
+my @after = lstat "$aside/$name";
+if (!(@after && -d _ && "$after[0]:$after[1]" eq $folder_id)) {
+  rename("$aside/$name", "$lib/$name") or refuse("$aside/$name isn't the folder that was checked, and moving it straight back failed ($!). Look before going on.", 5);
+  refuse("What arrived at $aside/$name wasn't the folder that was checked, so it was moved straight back.", 5);
+}
+exit 0;
+FORWARD
+FWD="$COMMON"$'\n'"$FORWARD"
+
+# move-back.sh's helper: the same checks the other way, by the dev:inodes the
+# owner's run recorded. It holds no single quote, so move-back.sh can carry
+# it. Exits 0 when moved, or when there was nothing to move back, 3 when a
+# check refuses, 4 on permission denied, 5 on another failure.
+read -r -d '' BACK <<'BACK' || true
 use strict;
 use warnings;
 my @eight = qw(thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache);
-my ($mode, @a) = @ARGV;
-sub stop { my ($code, $text) = @_; $text =~ s/[\x00-\x1f\x7f]/?/g; print STDERR "$text\n"; exit $code }
+my ($mode, $from, $from_id, $to, $to_id, $name, $folder_id) = @ARGV;
+sub stop { my ($code, $text) = @_; require Encode; $text = Encode::decode("UTF-8", $text); $text =~ s/[\x00-\x1f\x7f-\x9f]/?/g; print STDERR Encode::encode_utf8($text), "\n"; exit $code }
 sub id_of { my @s = lstat $_[0] or return ""; return "" if -l _ || !-d _; return "$s[0]:$s[1]" }
-my ($from, $from_id, $to, $to_id, $name, $folder_id);
-if (defined $mode && $mode eq "forward" && @a == 7) {
-  my $manifest;
-  ($manifest, $from, $from_id, $to, $to_id, $name, $folder_id) = @a;
-  require JSON::PP;
-  require Digest::SHA;
-  require Encode;
-  open(my $fh, "<:raw", $manifest) or stop(3, "Cannot read the manifest $manifest. Nothing further was moved.");
-  my $raw = do { local $/; <$fh> };
-  close $fh;
-  my $outer = eval { JSON::PP->new->utf8->decode($raw) };
-  stop(3, "The manifest $manifest is not one photos legacy-derivatives wrote. Nothing further was moved.") unless ref $outer eq "HASH" && defined $outer->{manifest} && !ref $outer->{manifest};
-  stop(3, "The manifest $manifest changed since it was checked. Nothing further was moved.") unless ($outer->{digest} // "") eq "sha256:" . Digest::SHA::sha256_hex(Encode::encode_utf8($outer->{manifest}));
-  my $m = eval { JSON::PP->new->decode($outer->{manifest}) };
-  stop(3, "The manifest $manifest can not be read. Nothing further was moved.") unless ref $m eq "HASH" && ref $m->{library} eq "HASH";
-  stop(3, "$from is not the library the manifest names. Nothing further was moved.") unless $from_id eq ($m->{library}{dev} // "") . ":" . ($m->{library}{ino} // "");
-} elsif (defined $mode && $mode eq "back" && @a == 6) {
-  ($from, $from_id, $to, $to_id, $name, $folder_id) = @a;
-} else {
-  stop(2, "Usage: forward <manifest> <library> <dev:ino> <aside> <dev:ino> <name> <dev:ino>, or back <aside> <dev:ino> <library> <dev:ino> <name> <dev:ino>.");
-}
-stop(3, "$name is not one of the eight legacy folder names, exactly. Nothing further was moved.") unless grep { $_ eq $name } @eight;
-stop(3, "$from is not the folder that was checked: its device and inode differ, or it is a symlink. Nothing further was moved.") unless $from_id ne "" && id_of($from) eq $from_id;
-stop(3, "$to is not the folder that was checked: its device and inode differ, or it is a symlink. Nothing further was moved.") unless $to_id ne "" && id_of($to) eq $to_id;
-opendir(my $d, $from) or stop(3, "Cannot list $from. Nothing further was moved.");
+stop(2, "Usage: back <aside> <dev:ino> <library> <dev:ino> <name> <dev:ino>.") unless @ARGV == 7 && $mode eq "back";
+stop(3, "$name is not one of the eight legacy folder names, exactly.") unless grep { $_ eq $name } @eight;
+stop(3, "$from is not the aside folder that was recorded: its device and inode differ, or it is a symlink.") unless $from_id ne "" && id_of($from) eq $from_id;
+stop(3, "$to is not the library that was recorded: its device and inode differ, or it is a symlink.") unless $to_id ne "" && id_of($to) eq $to_id;
+opendir(my $d, $from) or stop(3, "Cannot list $from.");
 my $listed = grep { $_ eq $name } readdir $d;
 closedir $d;
-if (!$listed) {
-  if ($mode eq "back") { print "$from/$name is not there: nothing to move back.\n"; exit 0 }
-  stop(3, "$from has no entry named exactly $name now, so it changed since the check. Nothing further was moved.");
-}
-my @s = lstat "$from/$name" or stop(3, "Cannot read $from/$name. Nothing further was moved.");
-stop(3, "$from/$name is a symlink now. Nothing further was moved.") if -l _;
-stop(3, "$from/$name is not the folder that was checked: its device and inode changed. Nothing further was moved.") unless -d _ && "$s[0]:$s[1]" eq $folder_id;
-if (lstat "$to/$name") { stop(3, "$to/$name exists. Compare it with $from/$name first. Nothing further was moved.") }
+if (!$listed) { print "$from/$name is not there: nothing to move back.\n"; exit 0 }
+my @s = lstat "$from/$name" or stop(3, "Cannot read $from/$name.");
+stop(3, "$from/$name is a symlink now.") if -l _;
+stop(3, "$from/$name is not the folder that was moved: its device and inode changed.") unless -d _ && "$s[0]:$s[1]" eq $folder_id;
+if (lstat "$to/$name") { stop(3, "$to/$name exists. Compare it with $from/$name first.") }
 if (!rename("$from/$name", "$to/$name")) {
-  stop(4, "Permission denied renaming $from/$name: $!") if $!{EACCES} || $!{EPERM};
-  stop(5, "Renaming $from/$name failed: $!. Nothing further was moved.");
+  stop(4, "Permission denied moving $from/$name back: $!. Run move-back.sh with --rename-as-root.") if $!{EACCES} || $!{EPERM};
+  stop(5, "Moving $from/$name back failed: $!.");
 }
 my @after = lstat "$to/$name";
-stop(5, "$to/$name is not the folder that was moved. Look before going on.") unless @after && "$after[0]:$after[1]" eq $folder_id;
+if (!(@after && "$after[0]:$after[1]" eq $folder_id)) {
+  rename("$to/$name", "$from/$name") or stop(5, "$to/$name is not the folder that was moved, and moving it straight back failed: $!. Look before going on.");
+  stop(5, "What arrived at $to/$name was not the folder that was moved, so it went straight back.");
+}
 exit 0;
-HELPER
-case $HELPER in
-  *"'"*) refuse "The rename helper holds a single quote, so move-back.sh couldn't carry it." ;;
+BACK
+case $BACK in
+  *"'"*) refuse "The way-back helper holds a single quote, so move-back.sh couldn't carry it." ;;
 esac
 
-plan=$(perl -e "$VERIFY" -- "$manifest_file" "$used_file" "$to/legacy-derivatives.used" "$lib" "$(date +%s)" "${NAMES[@]}" 2>&1) ||
+plan=$(perl -e "$COMMON"$'\n'"$VERIFY" -- "$manifest_file" "$used_file" "$lib" "$(date +%s)" 2>&1) ||
   refuse "$plan"
 
 moves=()
@@ -523,6 +668,17 @@ for name in move-back.sh legacy-derivatives.used; do
   fi
 done
 
+# Whether the renames need root, said before anything is written: the
+# library's top folder, and each folder itself, for its .. entry.
+read -r -d '' NEED <<'NEED' || true
+my ($lib, @names) = @ARGV;
+my @why;
+push @why, "the library's top folder $lib isn't writable by you" unless -w $lib;
+for my $name (@names) { push @why, "$lib/$name isn't writable by you, and moving a folder to a new parent rewrites its .. entry" unless -w "$lib/$name" }
+print join('; ', @why);
+NEED
+need=$(perl -e "$NEED" -- "$lib" "${moves[@]}") || refuse "Can't tell whether the renames need root."
+
 total=0
 unknown=0
 for name in "${moves[@]}"; do
@@ -545,19 +701,28 @@ summary="Total: $count $unit, $(human "$total") on disk"
 [ "$unknown" -eq 0 ] || summary="$summary, not counting $unknown whose size is unknown"
 echo "$summary. It frees no space: the folders stay on the same filesystem."
 echo
+if [ "$as_root" -eq 1 ]; then
+  echo "Only the rename helper runs as root, through sudo, once a folder. It checks everything again itself before each rename."
+else
+  echo "Nothing runs as root."
+fi
+if [ -n "$need" ] && [ "$as_root" -eq 0 ]; then
+  echo "This needs --rename-as-root, because $need."
+fi
+echo
 
-# move-back.sh: the helper going the other way, folder by folder, each checked
-# by device and inode. $1 is the aside folder's device and inode.
+# move-back.sh: the way-back helper, folder by folder, each checked by
+# device and inode. $1 is the aside folder's device and inode.
 move_back_text() {
   local aside_id=$1 i=0
   echo '#!/bin/sh'
   echo "# Moves the legacy folders scripts/host/legacy-move-aside.sh moved out of"
   echo "# $lib back into it. Safe to run after a partial move, or twice. Add"
   echo "# --rename-as-root if the moves needed it: then only each rename runs through sudo."
-  echo "helper='$HELPER'"
+  echo "helper='$BACK'"
   echo 'run=perl'
   # shellcheck disable=SC2016 # move-back.sh's own shell expands these
-  echo '[ "${1:-}" != --rename-as-root ] || run="sudo perl"'
+  echo '[ "${1:-}" != --rename-as-root ] || run="sudo env -i PATH=/usr/bin:/bin /usr/bin/perl"'
   echo 'status=0'
   for name in "${moves[@]}"; do
     echo "# mv $(quote "$to/$name") $(quote "$lib/$name")"
@@ -569,35 +734,37 @@ move_back_text() {
 }
 
 way_back() {
-  echo "To move them back, before restoring a data-root backup made before the catalog launch with web on v1.5.x or older, rolling back to v1.6.x, or rerunning photos carry-over, run $move_back with sh. It moves each folder back only while the library doesn't hold that name again. It holds:"
-  echo "--- move-back.sh ---"
-  move_back_text "$1"
-  echo "--- end of move-back.sh ---"
+  echo "To move them back, before restoring a data-root backup made before the catalog launch with web on v1.5.x or older, rolling back to v1.6.x, or rerunning photos carry-over, move-back.sh in the aside folder checks each folder by device and inode and moves it back only while the library doesn't hold that name again:"
+  for name in "${moves[@]}"; do
+    echo "  mv $(quote "$to/$name") $(quote "$lib/$name")"
+  done
+  if [ "$as_root" -eq 1 ]; then
+    echo "Run it with: sh $(quote "$move_back") --rename-as-root"
+  else
+    echo "Run it with: sh $(quote "$move_back")"
+  fi
 }
 
 if [ "$apply" -eq 0 ]; then
   echo "Dry run: nothing was moved. Run it again with --apply to make exactly these moves."
   echo
-  way_back '<the aside folder>'
+  way_back
   exit 0
 fi
 
-if [ "$dest_exists" -eq 0 ]; then
-  mkdir -- "$to" || refuse "Can't make $to."
+if [ -n "$need" ] && [ "$as_root" -eq 0 ]; then
+  refuse "This needs --rename-as-root, because $need. Nothing was written, and the manifest is still unused: run it again with --rename-as-root."
 fi
-aside_id=$(stat_of %d:%i "$to") || aside_id=''
-[ -n "$aside_id" ] || refuse "Can't read the device and inode of $to."
 
 # A new file, never through a link, never over one: $1 the path, $2 its mode, stdin its text.
 write_new() {
   perl -e 'use Fcntl qw(O_WRONLY O_CREAT O_EXCL O_NOFOLLOW); sysopen(my $f, $ARGV[0], O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, oct $ARGV[1]) or die "$!\n"; local $/; my $text = <STDIN>; print {$f} $text or die "$!\n"; close $f or die "$!\n"' -- "$1" "$2"
 }
 
-# The way back, and the manifest marked used, go to disk before the first
-# move, so they're there whatever happens next. None is in the library, and
-# none is written through a link.
-move_back_text "$aside_id" | write_new "$move_back" 0644 || refuse "Can't write $move_back."
-echo "$digest" | write_new "$aside_used" 0600 || refuse "Can't write $aside_used."
+# The single-use record first, in the owner's state folder, so a failure
+# after it leaves the manifest spent rather than reusable. Then the aside
+# folder, its move-back.sh and its own record, before the first move. None
+# is in the library, and none is written through a link.
 mkdir -p -- "$state_dir" || refuse "Can't make the state folder $state_dir."
 printf '%s\n' "$digest" | perl -e '
   use Fcntl qw(O_WRONLY O_APPEND O_CREAT O_NOFOLLOW);
@@ -611,22 +778,28 @@ printf '%s\n' "$digest" | perl -e '
   print {$f} $line or die "$file: $!\n";
   close $f or die "$file: $!\n";
 ' -- "$used_file" "$state_dir" || refuse "Can't record the manifest as used in $used_file."
+if [ "$dest_exists" -eq 0 ]; then
+  mkdir -- "$to" || refuse "Can't make $to. The manifest is used up: run photos legacy-derivatives --stdout again."
+fi
+aside_id=$(stat_of %d:%i "$to") || aside_id=''
+[ -n "$aside_id" ] || refuse "Can't read the device and inode of $to."
+move_back_text "$aside_id" | write_new "$move_back" 0644 || refuse "Can't write $move_back. The manifest is used up: run photos legacy-derivatives --stdout again."
+echo "$digest" | write_new "$aside_used" 0600 || refuse "Can't write $aside_used. The manifest is used up: run photos legacy-derivatives --stdout again."
 
 done_moves=()
-i=0
 for name in "${moves[@]}"; do
   set +e
   if [ "$as_root" -eq 1 ]; then
-    sudo perl -e "$HELPER" -- forward "$manifest_file" "$lib" "$lib_id" "$to" "$aside_id" "$name" "${ids[$i]}"
+    sudo env -i PATH=/usr/bin:/bin "SUDO_UID=$(id -u)" /usr/bin/perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
   else
-    perl -e "$HELPER" -- forward "$manifest_file" "$lib" "$lib_id" "$to" "$aside_id" "$name" "${ids[$i]}"
+    SUDO_UID='' perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
   fi
   code=$?
   set -e
   if [ "$code" -ne 0 ]; then
     echo "Stopped: $lib/$name wasn't moved." >&2
     if [ "$code" -eq 4 ]; then
-      echo "On Linux, moving a folder to a new parent needs write permission on the folder itself, to update its .. entry, and the v1.x watcher wrote these folders as uid 1001. Run the same command again with --rename-as-root after running photos legacy-derivatives --stdout again: only each checked rename then runs through sudo." >&2
+      echo "After photos legacy-derivatives --stdout again, run it again with --rename-as-root: only the forward helper then runs through sudo, and it checks everything again itself." >&2
     fi
     if [ ${#done_moves[@]} -gt 0 ]; then
       echo "Moved before it stopped: ${done_moves[*]}. $move_back moves them back." >&2
@@ -639,8 +812,7 @@ for name in "${moves[@]}"; do
     exit 1
   fi
   done_moves+=("$name")
-  i=$((i + 1))
 done
 echo "Moved $count $unit to $to."
 echo
-way_back "$aside_id"
+way_back
