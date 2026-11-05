@@ -22,6 +22,8 @@ export interface IdentityStatus {
     failedProfiles: FailedProfile[];
     /** Derivative builds waiting for the worker. */
     pendingJobs: number;
+    /** A6: of those, the ones waiting for a retry of a transient failure (lib/identity/failures.ts). */
+    retryingJobs: number;
     /** Facts committed but not yet delivered to every sink. */
     pendingFacts: number;
     /** From `status/watcher.json`, which the watcher writes. Null until it has run. */
@@ -38,6 +40,7 @@ export async function identityStatus({ clock = Date.now, root }: { clock?: () =>
         holds: [],
         failedProfiles: [],
         pendingJobs: 0,
+        retryingJobs: 0,
         pendingFacts: 0,
         watcher: null,
     };
@@ -57,6 +60,7 @@ export async function identityStatus({ clock = Date.now, root }: { clock?: () =>
                 if (revision.reassignedTo) continue;
                 for (const [profileId, profile] of Object.entries(revision.profiles)) {
                     if (profile.state === 'pending') status.pendingJobs++;
+                    if (profile.state === 'pending' && profile.retryAt !== undefined) status.retryingJobs++;
                     if (profile.state === 'failed') {
                         status.failedProfiles.push({ photoId: photo.photoId, assetRevision: revision.assetRevision, profileId, ...(profile.error ? { error: withoutAbsolutePaths(profile.error, roots) } : {}) });
                     }
@@ -84,7 +88,7 @@ export function formatStatus(status: IdentityStatus): string {
         ...status.holds.map((held) => `  ${held.path} since ${held.since}, candidates: ${held.candidates.join(', ') || 'none'}`),
         `Failed profiles: ${status.failedProfiles.length}`,
         ...status.failedProfiles.map((failed) => `  ${failed.photoId} ${failed.assetRevision} ${failed.profileId}${failed.error ? `: ${failed.error}` : ''}`),
-        `Pending jobs: ${status.pendingJobs}`,
+        `Pending jobs: ${status.pendingJobs}${status.retryingJobs > 0 ? `, ${status.retryingJobs} waiting for a retry` : ''}`,
         `Pending facts: ${status.pendingFacts}`,
         `Watcher heartbeat: ${status.watcher ? `${status.watcher.ageSeconds} s ago (${status.watcher.heartbeatAt})` : 'none yet'}`,
     ];

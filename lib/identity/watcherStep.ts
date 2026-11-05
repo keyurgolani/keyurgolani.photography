@@ -5,7 +5,7 @@ import { writeWatcherHeartbeat, type PassResult } from './heartbeat';
 import { jsonLogSink, runReconcilePass, type FactSink, type PassOptions } from './pass';
 import { currentProfileId } from './profile';
 import { readRegistry } from './registry';
-import { createWorker, onceExitCode, pendingJobs, summarizeResults, WorkerStartError, type DerivativeWorker, type WorkerOptions } from './worker';
+import { createWorker, onceExitCode, pendingJobs, retryingResults, summarizeResults, WorkerStartError, type DerivativeWorker, type WorkerOptions } from './worker';
 
 /**
  * The watcher's identity step, the only one it has. When the data root is
@@ -450,6 +450,9 @@ export async function runIdentityOnce(options: IdentityOnceOptions = {}): Promis
         }
         const superseded = summary.superseded > 0 ? `, ${summary.superseded} superseded` : '';
         logger.log(`[identity] Done: ${summary.built} built, ${summary.kept} kept, ${summary.failed.length} failed${superseded}.`);
+        // A6: a transient failure waits for its retry, which a later run makes once it is due.
+        const retrying = retryingResults(results).flatMap(({ outcome }) => (outcome.status === 'pending' && outcome.reason === 'retrying' ? [outcome.retryAt] : [])).sort();
+        if (retrying.length > 0) logger.log(`[identity] ${retrying.length} ${retrying.length === 1 ? 'build' : 'builds'} failed and ${retrying.length === 1 ? 'retries' : 'retry'} from ${retrying[0]}. Run it again after that, or leave it to the watcher.`);
         if (step.workerError !== null) return 1;
         if (step.startError !== null) {
             logger.error('[identity] The worker never started, so no set was built. Run it again.');

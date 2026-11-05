@@ -26,6 +26,16 @@ export const PROFILE_1 = {
     lqip: { size: 20, fit: 'inside', webp: { quality: 20 } },
 } as const;
 
+/**
+ * A6 (#17): the most pixels, width times height, a source may have before a
+ * build decodes it. Larger ones fail as `too-large` (lib/identity/failures.ts),
+ * checked against #10's recorded size and passed to Sharp as
+ * `limitInputPixels`, which enforces it as it decodes. A 150 MP medium-format
+ * frame fits; a bigger stitched panorama needs exporting smaller. It isn't in
+ * PROFILE_1, since it changes no output, so it makes no new profileId.
+ */
+export const MAX_SOURCE_PIXELS = 200_000_000;
+
 /** The profile new revisions get, for the installed Sharp and libvips. */
 export function currentProfileId(versions: { sharp: string; vips: string } = { sharp: sharp.versions.sharp, vips: sharp.versions.vips }): string {
     return profileIdOf(PROFILE_1, versions);

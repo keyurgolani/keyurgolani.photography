@@ -1,13 +1,14 @@
 import type { AuthoredPhoto } from '../catalog/types';
 import { readActivePointer, readAuthoredRecord } from '../catalog/working-layer';
 import type { BuildOptions, BuildOutcome } from '../identity/derivatives';
+import { failureCodeOf } from '../identity/failures';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
 import type { FactSink } from '../identity/pass';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { DerivativeJob, IdentityFact, ProfileEntry, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
-import { CLOSE_REASONS, eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationDecision, type CurationEvent } from './events';
+import { CANDIDATE_FAILURES, CLOSE_REASONS, eventIdOf, eventKey, type Candidate, type CandidateFailure, type CurationDecision, type CurationEvent } from './events';
 import { EventMovedError, EventUnusableError, InvalidEventError, listEvents, readEvent, withCurationLock, writeEvent } from './repository';
 import { SINK_WAIT_MS } from './sink';
 
@@ -60,6 +61,9 @@ export function failureOf(error: string | undefined): CandidateFailure {
     if (error === 'source-superseded') return 'superseded';
     if (error === 'undecodable') return 'undecodable';
     if (error?.startsWith('integrity:')) return 'integrity';
+    // A6: the build failure codes, read from the writer's text (lib/identity/failures.ts).
+    const code = failureCodeOf(error);
+    if (code !== null && (CANDIDATE_FAILURES as readonly string[]).includes(code)) return code as CandidateFailure;
     return 'build';
 }
 

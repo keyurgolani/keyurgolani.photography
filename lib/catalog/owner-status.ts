@@ -156,6 +156,7 @@ function unsetIdentity(): IdentityStatus {
         holds: [],
         failedProfiles: [],
         pendingJobs: 0,
+        retryingJobs: 0,
         pendingFacts: 0,
         watcher: null,
     };
