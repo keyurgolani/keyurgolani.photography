@@ -162,7 +162,13 @@ interface Bindings {
     processObjects: Set<string>;
     fsObjects: Set<string>;
     requireNames: Set<string>;
+    /** node:vm's module objects, and the classes bound from it by name. */
+    vmObjects: Set<string>;
+    vmClasses: Set<string>;
 }
+
+const VM_MODULES = new Set(['vm', 'node:vm']);
+const VM_CLASSES = new Set(['Script', 'SourceTextModule', 'SyntheticModule']);
 
 /** A member's name, by `.name` or a literal key: `getBuiltinModule` for `process.getBuiltinModule` and `process['getBuiltinModule']`. */
 function memberName(node: ts.Expression): { owner: ts.Expression; name: string } | null {
@@ -188,7 +194,7 @@ function loader(node: ts.Node, known: Bindings): { kind: 'require' | 'import()';
     if (ts.isCallExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'createRequire') return { kind: 'require', specifier: node.arguments[0] };
     const member = memberName(callee);
     if (member) {
-        const owner = member.owner.getText().replace(/\?\./g, '.');
+        const owner = bare(member.owner).getText().replace(/\?\./g, '.');
         if ((member.name === 'getBuiltinModule' && PROCESS_OWNER.test(owner)) || (member.name === 'require' && MODULE_OWNER.test(owner))) return { kind: 'require', specifier: node.arguments[0] };
     }
     return null;
@@ -247,8 +253,8 @@ function bindingKey(element: ts.BindingElement, source: ts.SourceFile): string |
  * also an escape the rail fails on.
  */
 function bindings(source: ts.SourceFile): Bindings {
-    const known: Bindings = { processNames: new Map(), processObjects: new Set(), fsObjects: new Set(), requireNames: new Set() };
-    const size = () => known.processNames.size + known.processObjects.size + known.fsObjects.size + known.requireNames.size;
+    const known: Bindings = { processNames: new Map(), processObjects: new Set(), fsObjects: new Set(), requireNames: new Set(), vmObjects: new Set(), vmClasses: new Set() };
+    const size = () => known.processNames.size + known.processObjects.size + known.fsObjects.size + known.requireNames.size + known.vmObjects.size + known.vmClasses.size;
     const bindObject = (objects: Set<string>, named: { local: string; imported: string }[], isProcess: boolean) => {
         for (const { local, imported } of named) {
             if (imported === 'default') objects.add(local);
@@ -257,6 +263,12 @@ function bindings(source: ts.SourceFile): Bindings {
         }
     };
     const bindModule = (module: string, name: ts.BindingName | undefined, named: { local: string; imported: string }[], namespace?: string) => {
+        if (VM_MODULES.has(module)) {
+            if (name && ts.isIdentifier(name)) known.vmObjects.add(name.text);
+            if (namespace) known.vmObjects.add(namespace);
+            for (const { local, imported } of named) if (VM_CLASSES.has(imported)) known.vmClasses.add(local);
+            return;
+        }
         const isProcess = PROCESS_MODULES.has(module);
         const objects = isProcess ? known.processObjects : FS_MODULES.has(module) ? known.fsObjects : null;
         if (objects === null) return;
@@ -459,7 +471,11 @@ function unwrap(command: string, words: readonly Word[]): { runs: string; rest: 
             const each = rest[at];
             if (each === null) return { stop: `runs ${wrapper} with a command that isn't a literal` };
             if (each.startsWith('-')) {
-                if (WRAPPER_SCRIPTS[wrapper]?.includes(each)) return { stop: `runs ${wrapper} ${each}, which the rail can't read` };
+                const scripts = WRAPPER_SCRIPTS[wrapper] ?? [];
+                // `--split-string=…` by its name, and combined short flags such as `-si` by each letter.
+                const flag = each.startsWith('--') ? each.split('=')[0] : each;
+                if (scripts.includes(flag)) return { stop: `runs ${wrapper} ${flag}, which the rail can't read` };
+                if (!each.startsWith('--') && each.length > 2 && [...each.slice(1)].some((letter) => scripts.includes(`-${letter}`))) return { stop: `runs ${wrapper} ${each}, which the rail can't read` };
                 if (valued.includes(each)) at += 1;
                 continue;
             }
@@ -517,6 +533,10 @@ function wordsReason(command: string, words: readonly Word[], listLiteral: boole
     if (family) {
         const flag = rest.findIndex((each) => each !== null && SCRIPT_FLAGS[family].includes(each));
         const script = flag >= 0 ? rest[flag + 1] : undefined;
+        const isNode = family === 'node' || family === 'nodejs';
+        // node with only literal arguments and no script, such as `node --version`, runs a file the rail scans, or nothing.
+        if (flag < 0 && isNode && rest.every((each) => each !== null)) return stringsReason(strings);
+        if (flag < 0 && isNode) return `runs ${runs} with arguments that aren't literals`;
         if (flag < 0) return `runs ${runs} with no literal script, so it may read one from stdin or a file`;
         if (script === null || script === undefined) return `runs a ${runs} script that isn't a literal`;
         if (family !== 'node' && family !== 'nodejs') return `runs a ${runs} script, which the rail can't read`;
@@ -527,7 +547,13 @@ function wordsReason(command: string, words: readonly Word[], listLiteral: boole
     if (SHELLS.has(runs)) {
         const flag = rest.findIndex((each) => each !== null && /^-\w*c\w*$/.test(each));
         if (flag < 0) return `runs ${runs} with no literal script, so it may read one from stdin or a file`;
-        if (rest[flag + 1] === null || rest[flag + 1] === undefined) return "runs a shell script that isn't a literal";
+        const script = rest[flag + 1];
+        if (script === null || script === undefined) return "runs a shell script that isn't a literal";
+        // The script is read as a command line, so what it runs is judged as a list would be: a nested node -e, python -c or sh -s included.
+        for (const words of shellCommands(script)) {
+            const nested = wordsReason(words[0], words.slice(1), true, words);
+            if (nested) return nested;
+        }
     }
     const said = stringsReason(strings);
     if (said) return said;
@@ -545,7 +571,9 @@ function processReason(node: ts.CallExpression, fn: string): string | null {
     const shellString = SHELL_STRING.has(fn);
     const options = optionsOf(node, shellString);
     const args = node.arguments.filter((each) => each !== options && !ts.isArrowFunction(each) && !ts.isFunctionExpression(each));
-    const strings = allStrings(args);
+    // What the options feed the command on stdin counts as its text too.
+    const input = options && ts.isObjectLiteralExpression(options) ? options.properties.filter((each) => ts.isPropertyAssignment(each) && keyText(each.name) === 'input').map((each) => (each as ts.PropertyAssignment).initializer) : [];
+    const strings = [...allStrings(args), ...allStrings(input)];
     const [command, list] = args;
     const listLiteral = shellString || list === undefined || ts.isArrayLiteralExpression(list);
     const elements: readonly ts.Expression[] = !shellString && list && ts.isArrayLiteralExpression(list) ? list.elements : [];
@@ -606,20 +634,29 @@ export function scanSource(file: string, text: string): DeleteCall[] {
             if (ts.isPropertyAccessExpression(callee) && callee.getText(source) === 'Reflect.get' && node.arguments[0] && (isFsObject(node.arguments[0], known) || isProcessObject(node.arguments[0], known))) {
                 add(node, `${callee.getText(source)}(${node.arguments[0].getText(source)}, …)`);
             }
+            // Reflect.get on the global object reaches eval and everything else on it.
+            const first = node.arguments[0] ? bare(node.arguments[0]) : undefined;
+            if (ts.isPropertyAccessExpression(callee) && callee.getText(source) === 'Reflect.get' && first && ts.isIdentifier(first) && GLOBALS.has(first.text)) {
+                add(node, `${callee.getText(source)}(${first.text}, …), which the rail can't read`);
+            }
             if (ts.isIdentifier(callee) && callee.text === 'Function') add(node, "Function, which the rail can't read");
         } else if (ts.isNewExpression(node)) {
-            const named = ts.isIdentifier(node.expression) ? node.expression.text : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : null;
+            const created = bare(node.expression);
+            const named = ts.isIdentifier(created) ? created.text : ts.isPropertyAccessExpression(created) ? created.name.text : null;
             if (named === 'Function') add(node, `new ${node.expression.getText(source)}, which the rail can't read`);
-            if (named === 'Script' || named === 'SourceTextModule') add(node, `new ${node.expression.getText(source)}, which the rail can't read`);
-            const workerOptions = node.arguments?.[1];
-            if (named === 'Worker' && workerOptions !== undefined) {
-                const evaluated = !ts.isObjectLiteralExpression(workerOptions) || workerOptions.properties.some((each) => ts.isSpreadAssignment(each) || keyText(each.name) === null || (keyText(each.name) === 'eval' && !(ts.isPropertyAssignment(each) && each.initializer.kind === ts.SyntaxKind.FalseKeyword)));
-                if (evaluated) add(node, `new ${node.expression.getText(source)} with eval, which the rail can't read`);
-            }
+            // node:vm's Script and modules, only when node:vm's: a class of one's own named Script is nothing.
+            const fromVm = (ts.isIdentifier(created) && known.vmClasses.has(created.text)) || (ts.isPropertyAccessExpression(created) && VM_CLASSES.has(created.name.text) && ts.isIdentifier(created.expression) && known.vmObjects.has(created.expression.text));
+            if (fromVm) add(node, `new ${node.expression.getText(source)}, which the rail can't read`);
+            // Anything made with eval in its options, a Worker however it's reached or aliased; and a Worker whose options the rail can't read.
+            const options = node.arguments?.[1];
+            const evaluated = options !== undefined && ts.isObjectLiteralExpression(options) && options.properties.some((each) => (named === 'Worker' && (ts.isSpreadAssignment(each) || keyText(each.name) === null)) || (!ts.isSpreadAssignment(each) && keyText(each.name) === 'eval' && !(ts.isPropertyAssignment(each) && each.initializer.kind === ts.SyntaxKind.FalseKeyword)));
+            if (evaluated || (named === 'Worker' && options !== undefined && !ts.isObjectLiteralExpression(options))) add(node, `new ${node.expression.getText(source)} with eval, which the rail can't read`);
         } else if (ts.isPropertyAccessExpression(node) && DELETE_NAMES.has(node.name.text)) {
             // Passed on as a value, such as `.then(fs.promises.rm)`, rather than called here.
             if (!isCallee(node)) add(node, node.getText(source));
         } else if (ts.isPropertyAccessExpression(node) && node.name.text === 'eval' && ts.isIdentifier(node.expression) && GLOBALS.has(node.expression.text)) {
+            add(node, `${node.getText(source)}, which the rail can't read`);
+        } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && GLOBALS.has(node.expression.text) && isLiteral(node.argumentExpression) && node.argumentExpression.text === 'eval') {
             add(node, `${node.getText(source)}, which the rail can't read`);
         } else if (ts.isElementAccessExpression(node)) {
             const key = node.argumentExpression;

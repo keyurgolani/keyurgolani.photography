@@ -305,9 +305,13 @@ function formatStatus(status: OwnerStatus, now: number): string {
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
     if (status.trash) {
-        lines.push('error' in status.trash
-            ? `Trash: trash/ can't be read (${status.trash.error})`
-            : `Trash: ${count(status.trash.folders.length, 'folder')}, ${sizeText(status.trash.bytes)}, in trash/: ${status.trash.folders.map((each) => each.name).join(', ')}. Emptying trash/ is your own step.`);
+        const trash = status.trash;
+        if ('error' in trash) lines.push(`Trash: trash/ can't be read (${trash.error})`);
+        else if (trash.kind !== 'folder') lines.push(`Trash: trash/ in the data root is a ${trash.kind}, which nothing reads or empties.`);
+        else {
+            lines.push(`Trash: ${count(trash.count, 'folder')} in trash/, ${trash.bytes === null ? 'size unknown' : sizeText(trash.bytes)}. Emptying trash/ is your own step.`);
+            for (const entry of trash.folders) lines.push(`  ${entry.name}, ${sizeText(entry.bytes)}`);
+        }
     }
     lines.push(heartbeatLine(identity.watcher, now));
     return `${lines.join('\n')}\n`;

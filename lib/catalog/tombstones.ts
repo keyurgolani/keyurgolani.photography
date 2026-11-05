@@ -488,6 +488,13 @@ export const TRASH_DIR = 'trash';
 /** The step that moves a path into the data root's `trash/`, never deleting it (#181's A10 review, item 29a). */
 export const setAsideStep = (relative: string) => `photos gc --set-aside ${relative}`;
 
+/**
+ * The rename back as a line the owner can run as it stands: in
+ * docker-compose.prod.yml's image-watcher service, from the data root it
+ * mounts at /data/portfolio (item 38).
+ */
+export const renameBack = (from: string, to: string) => `docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher mv ${from} ${to}`;
+
 /** `then` for a whole folder: revoke, or rerun gc; only rerun gc once another folder of its tombstone was reached (item 30). */
 export const WHOLE_THEN = { revoke: 'then revoke, or rerun photos gc', gc: 'then rerun photos gc' } as const;
 
@@ -504,7 +511,7 @@ export const WHOLE_THEN = { revoke: 'then revoke, or rerun photos gc', gc: 'then
 export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state' | 'occupied' | 'originalHolds'>, then: string = WHOLE_THEN.revoke): string {
     const out = `set it aside with ${setAsideStep(folder.path)}, then rerun photos gc`;
     if (folder.state === 'whole') {
-        const back = `rename it back with mv ${folder.path} ${folder.original}, from the data root in image-watcher's container; ${then}`;
+        const back = `rename it back with ${renameBack(folder.path, folder.original)}; ${then}`;
         return folder.occupied
             ? `set aside whole at ${folder.path}, and something else is at ${folder.original}: set that aside with ${setAsideStep(folder.original)}, then ${back}`
             : `set aside whole at ${folder.path}: ${back}`;

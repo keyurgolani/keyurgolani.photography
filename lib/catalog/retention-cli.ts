@@ -1,7 +1,7 @@
 import { count, parseFlags, PRINTED_ISSUES, UsageError } from './owner-cli';
 import { sizeText } from './asset-folders';
 import { PERMANENT_TEXT } from './tombstones';
-import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, runSetAside, SET_ASIDE_EXIT_CODES, type GcEntry, type GcKeptReason, type GcOptions, type GcPlan, type GcProtection, type GcResult } from './retention';
+import { GC_DIGEST_RE, GC_EXIT_CODES, runGc, runSetAside, SET_ASIDE_EXIT_CODES, type SetAsideOptions, type GcEntry, type GcKeptReason, type GcOptions, type GcPlan, type GcProtection, type GcResult } from './retention';
 
 /**
  * `photos gc` and `photos gc --apply <planDigest>`, #15's 15-3: argv
@@ -119,14 +119,15 @@ export interface GcIo {
  * delete, apply prints one plain line saying what it deletes. Returns the
  * exit code.
  */
-export async function runGcCommand(dataRoot: string, args: GcArgs, io: GcIo, options: Partial<Omit<GcOptions, 'dataRoot' | 'apply'>> = {}): Promise<number> {
+export async function runGcCommand(dataRoot: string, args: GcArgs, io: GcIo, options: Partial<Omit<GcOptions, 'dataRoot' | 'apply'>> & { setAsideHooks?: SetAsideOptions['hooks'] } = {}): Promise<number> {
+    const { setAsideHooks, ...gcOptions } = options;
     if (args.setAside !== undefined) {
-        const set = await runSetAside({ dataRoot, path: args.setAside, clock: options.clock, waitMs: options.waitMs, leaseMs: options.leaseMs, logger: options.logger });
+        const set = await runSetAside({ dataRoot, path: args.setAside, clock: options.clock, waitMs: options.waitMs, leaseMs: options.leaseMs, logger: options.logger, hooks: setAsideHooks });
         const code = SET_ASIDE_EXIT_CODES[set.outcome];
         (code === 0 ? io.out : io.err)(`[photos] ${set.outcome}: ${set.message}`);
         return code;
     }
-    const result: GcResult = await runGc({ ...options, dataRoot, apply: args.apply, announce: (line) => io.out(line) });
+    const result: GcResult = await runGc({ ...gcOptions, dataRoot, apply: args.apply, announce: (line) => io.out(line) });
     const exitCode = GC_EXIT_CODES[result.outcome];
     const print = exitCode === 0 ? io.out : io.err;
     print(`[photos] ${result.outcome}: ${result.message}`);

@@ -1136,7 +1136,8 @@ describe("the owner's way out, followed step by step (item 25)", { timeout: 120_
         const { out } = await command(built.root, [], PAST_GRACE);
         expect(out.find((line) => line.startsWith('Kept '))).toContain(whole);
         expect(out.find((line) => line.startsWith('Left by '))).toContain(whole);
-        expect(out.join('\n')).not.toMatch(/\brm -|rm -rf|~\/\.Trash/);
+        // docker compose's own --rm, which drops the one-off container, is no rm of the owner's data.
+        expect(out.join('\n')).not.toMatch(/(?<!-)\brm -|rm -rf|~\/\.Trash/);
     });
 
     /** The steps, as the messages give them: photos gc --set-aside what is in its place, then the rename back. */

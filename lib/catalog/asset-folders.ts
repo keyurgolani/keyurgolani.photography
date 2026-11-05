@@ -136,31 +136,39 @@ export async function manifestContent(dir: string, relative: string, photoId: st
     return { listed: true, bytes, files };
 }
 
-/** What is in the data root's `trash/`, each folder with its bytes, or null when it is missing or empty. */
-export interface TrashSummary {
-    folders: { name: string; bytes: number }[];
-    bytes: number;
-}
+/** What is in the data root's `trash/`: its entries with their bytes, or, over TRASH_LISTED of them, only how many. Or that it is a symlink or a file. */
+export type TrashSummary =
+    | { kind: 'folder'; folders: { name: string; bytes: number }[]; count: number; bytes: number | null }
+    | { kind: 'symlink' | 'file' };
+
+/** How many `trash/` entries status lists one by one. Over this, it gives the count and walks nothing. */
+export const TRASH_LISTED = 20;
 
 /**
- * The data root's `trash/` (#181's A10 review, item 29a), for `photos
- * status`: what `photos gc --set-aside` moved there, with sizes. It reads
- * with lstat, follows no symlink, and changes nothing.
+ * The data root's `trash/` (#181's A10 review, items 29a and 38), for
+ * `photos status`: what `photos gc --set-aside` moved there, with sizes from
+ * one walk of each entry, or only how many when there are more than
+ * TRASH_LISTED. Null when it is missing or empty. It reads with lstat,
+ * follows no symlink, and changes nothing.
  */
 export async function trashSummary(root: string): Promise<TrashSummary | null> {
     const dir = path.join(/*turbopackIgnore: true*/ root, 'trash');
     let entries: fs.Dirent[];
     try {
-        if ((await fs.promises.lstat(dir)).isSymbolicLink()) return null;
+        const stat = await fs.promises.lstat(dir);
+        if (stat.isSymbolicLink()) return { kind: 'symlink' };
+        if (!stat.isDirectory()) return { kind: 'file' };
         entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (error) {
-        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return null;
+        if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
     }
-    const folders: TrashSummary['folders'] = [];
+    if (entries.length === 0) return null;
+    if (entries.length > TRASH_LISTED) return { kind: 'folder', folders: [], count: entries.length, bytes: null };
+    const folders: { name: string; bytes: number }[] = [];
     for (const entry of entries.sort(byName)) {
         const inner = path.join(dir, entry.name);
         folders.push({ name: entry.name, bytes: entry.isDirectory() ? (await folderFacts(inner)).bytes : (await fs.promises.lstat(inner)).size });
     }
-    return folders.length === 0 ? null : { folders, bytes: folders.reduce((sum, each) => sum + each.bytes, 0) };
+    return { kind: 'folder', folders, count: folders.length, bytes: folders.reduce((sum, each) => sum + each.bytes, 0) };
 }

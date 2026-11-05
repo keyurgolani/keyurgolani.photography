@@ -125,7 +125,7 @@ describe('the delete-call rail', () => {
         const commands = SCANNED.filter((file) => !file.endsWith('.sh')).flatMap((file) => callSites(file, 'runGcCommand').map((site) => ({ file, args: site.node.arguments.length })));
         expect(commands).toEqual([{ file: 'scripts/photos.ts', args: 3 }]);
         const direct = SCANNED.filter((file) => !file.endsWith('.sh')).flatMap((file) => callSites(file, 'runGc').map((site) => `${file} ${site.fn} ${site.node.arguments.map((arg) => arg.getText()).join(', ')}`));
-        expect(direct).toEqual(["lib/catalog/retention-cli.ts runGcCommand { ...options, dataRoot, apply: args.apply, announce: (line) => io.out(line) }"]);
+        expect(direct).toEqual(["lib/catalog/retention-cli.ts runGcCommand { ...gcOptions, dataRoot, apply: args.apply, announce: (line) => io.out(line) }"]);
     });
 
     it('catches a stray delete in every form, the positive control', () => {
