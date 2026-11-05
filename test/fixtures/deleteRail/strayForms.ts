@@ -303,3 +303,7 @@ export function notFindings(): void {
     cp.execSync('node --version');
     spawnSync('node', ['--version']);
 }
+
+export function viaComputedGlobal(name: string): unknown {
+    return [globalThis[name as keyof typeof globalThis], (globalThis as unknown as Record<string, unknown>)[name]];
+}

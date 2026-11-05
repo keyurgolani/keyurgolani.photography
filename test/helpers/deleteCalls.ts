@@ -656,7 +656,8 @@ export function scanSource(file: string, text: string): DeleteCall[] {
             if (!isCallee(node)) add(node, node.getText(source));
         } else if (ts.isPropertyAccessExpression(node) && node.name.text === 'eval' && ts.isIdentifier(node.expression) && GLOBALS.has(node.expression.text)) {
             add(node, `${node.getText(source)}, which the rail can't read`);
-        } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && GLOBALS.has(node.expression.text) && isLiteral(node.argumentExpression) && node.argumentExpression.text === 'eval') {
+        } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(bare(node.expression)) && GLOBALS.has((bare(node.expression) as ts.Identifier).text) && (!isLiteral(node.argumentExpression) || node.argumentExpression.text === 'eval')) {
+            // A computed key on the global object can reach eval or anything else, so it fails closed; only the allowlist gets one past.
             add(node, `${node.getText(source)}, which the rail can't read`);
         } else if (ts.isElementAccessExpression(node)) {
             const key = node.argumentExpression;

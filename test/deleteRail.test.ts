@@ -57,6 +57,8 @@ const ALLOWLIST: readonly Allowed[] = [
     { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: ['fs.promises.rm'], reason: "when photos edit's editor fails: removes photos edit's own working copy" },
     { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: ['fs.promises.rm'], reason: "when photos edit saves: removes photos edit's own working copy" },
     { file: 'lib/catalog/edit-record.ts', fn: 'shellEditor', calls: ["spawn runs a shell script that isn't a literal"], reason: "the owner's own program, run at his request, not an app delete" },
+    // Not a delete: a computed key on the global object, which the rail can't resolve, so it fails closed and is let past here only.
+    { file: 'lib/catalog/preview-reader.ts', fn: 'sharedState', calls: ["global[PREVIEW_READER_STATE_KEY], which the rail can't read", "global[PREVIEW_READER_STATE_KEY], which the rail can't read"], reason: "the preview reader's own state slot on globalThis; reaches no delete" },
     { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
     // Legacy derivatives, until A12 fences or removes them.
     { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm'], reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
@@ -99,7 +101,8 @@ describe('the delete-call rail', () => {
     });
 
     it('gives every entry a reason that says when it runs, and allows the legacy imageOptimizer deletes only inside the photo library until A12', () => {
-        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)|run at his request/;
+        // A delete says when it runs; an entry that isn't one says so instead.
+        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)|run at his request|reaches no delete$/;
         for (const entry of ALLOWLIST) expect(entry.reason, key(entry)).toMatch(WHEN);
         expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').every((entry) => entry.until === 'A12' && entry.reason.startsWith('inside the photo library, until A12'))).toBe(true);
         expect(ALLOWLIST.filter((entry) => entry.until !== undefined).every((entry) => entry.file === 'utils/imageOptimizer.ts')).toBe(true);
@@ -312,6 +315,9 @@ describe('the delete-call rail', () => {
             ['viaMoreEval', "Reflect.get(globalThis, …), which the rail can't read"],
             ['viaMoreEval', "new (require('node:worker_threads').Worker) with eval, which the rail can't read"],
             ['viaMoreEval', "new Spawned with eval, which the rail can't read"],
+            // A computed key on the global object fails closed, however it's cast.
+            ['viaComputedGlobal', "globalThis[name as keyof typeof globalThis], which the rail can't read"],
+            ['viaComputedGlobal', "(globalThis as unknown as Record<string, unknown>)[name], which the rail can't read"],
         ]);
     });
 
