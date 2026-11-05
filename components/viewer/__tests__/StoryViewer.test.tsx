@@ -1,4 +1,4 @@
-import { fireEvent, isInaccessible, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, isInaccessible, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
@@ -7,7 +7,7 @@ import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projection
 import StoryViewer, { type StoryViewerProps } from '../StoryViewer';
 import { fitSizes } from '../viewerSizes';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
-import { FAILED_LABEL, HIDE_TECHNICAL, RETRY_LABEL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, headingText, positionLabel, positionText, technicalFacts, viewerTitle } from '../viewerLabels';
+import { FAILED_LABEL, HIDE_TECHNICAL, RETRY_LABEL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, positionLabel, positionText, technicalFacts, viewerTitle } from '../viewerLabels';
 
 // The props Link gets, as attributes, so a test can see a move replaces the history entry and nothing prefetches.
 vi.mock('next/link', () => ({
@@ -236,6 +236,7 @@ describe('StoryViewer', () => {
         // It says what happened, keeps the alt for everyone, and offers Retry (#7).
         expect(missing).toHaveTextContent(FAILED_LABEL);
         expect(FAILED_LABEL).toBe('This photograph could not be loaded.');
+        expect(within(missing as HTMLElement).getByText(FAILED_LABEL).className).toMatch(/failedLabel/);
         expect(within(missing as HTMLElement).getByText('A fixture description of the visible scene.')).toBeInTheDocument();
         expect(within(missing as HTMLElement).getByRole('button', { name: RETRY_LABEL })).toBeInTheDocument();
         expect(missing?.getAttribute('style')).toContain('--ratio: 2400 / 1600');
@@ -366,6 +367,59 @@ describe('StoryViewer', () => {
         expect(document.activeElement).toBe(container.querySelector('figure[data-viewer-current]'));
     });
 
+    it('puts focus on Retry again when a retry fails too, never on the page', () => {
+        renderViewer();
+        fireEvent.error(screen.getByRole('img'));
+        const first = screen.getByRole('button', { name: RETRY_LABEL });
+        first.focus();
+        fireEvent.click(first);
+        fireEvent.error(screen.getByRole('img'));
+        const again = screen.getByRole('button', { name: RETRY_LABEL });
+        expect(document.activeElement).toBe(again);
+        // And a third try that loads lands on the photograph's box.
+        fireEvent.click(again);
+        expect(document.activeElement).toBe(document.querySelector('figure[data-viewer-current]'));
+    });
+
+    it('keeps the fitted width current as the box resizes, as when the modal opens, and zooms from the latest', () => {
+        const observers: { callback: ResizeObserverCallback; target: Element | null }[] = [];
+        vi.stubGlobal(
+            'ResizeObserver',
+            class {
+                record: { callback: ResizeObserverCallback; target: Element | null };
+                constructor(callback: ResizeObserverCallback) {
+                    this.record = { callback, target: null };
+                    observers.push(this.record);
+                }
+                observe(target: Element) {
+                    this.record.target = target;
+                }
+                unobserve() {}
+                disconnect() {
+                    this.record.target = null;
+                }
+            },
+        );
+        try {
+            const { container } = renderViewer();
+            const figure = container.querySelector('figure')!;
+            const resize = (width: number) =>
+                act(() => {
+                    for (const { callback, target } of observers) {
+                        if (target === figure) callback([{ target, borderBoxSize: [{ inlineSize: width, blockSize: width / 1.5 }], contentRect: { width } } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+                    }
+                });
+            // Measured before the box had its place (the modal before showModal()), then again once it has.
+            resize(120);
+            resize(500.4);
+            fireEvent.click(screen.getByRole('button', { name: 'Zoom' }));
+            // clamp(fitted, 2 * fitted, 1920), rounded up, never under the fitted width.
+            expect(container.querySelector('source[type="image/webp"]')).toHaveAttribute('sizes', '1001px');
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('retries a failed AVIF file with WebP before it shows the failure (#6)', () => {
         const current = vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${mediaUrl(REF, 'w1920', 'avif')}`);
         try {
@@ -433,7 +487,6 @@ describe('viewerLabels', () => {
     it('pads the visible position to the digits of the total, never under two, and spells it out for a screen reader', () => {
         expect([positionLabel(3, 12), positionLabel(1, 1), positionLabel(12, 120), positionLabel(7, 120)]).toEqual(['03 / 12', '01 / 01', '012 / 120', '007 / 120']);
         expect(positionText(3, 12)).toBe('Photograph 3 of 12');
-        expect(headingText('Fixture series', 3, 12)).toBe('Fixture series, photograph 3 of 12');
     });
 
     it('reads the camera facts in their units, the make said once, and drops a value that isn\'t a finite number', () => {

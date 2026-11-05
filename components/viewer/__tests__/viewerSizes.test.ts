@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import postcss, { type AtRule, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
-import { fitSizes } from '../viewerSizes';
+import { fitSizes, zoomWidth } from '../viewerSizes';
 
 const css = postcss.parse(fs.readFileSync(fileURLToPath(new URL('../StoryViewer.module.css', import.meta.url)), 'utf8'));
 
@@ -71,5 +71,29 @@ describe('fitSizes', () => {
         };
         const offset = rem('--viewer-header') + rem('--viewer-stage-chrome');
         expect(fitSizes(2400, 1600)).toContain(`calc(150vh - ${offset * 1.5}rem)`);
+    });
+});
+
+describe('zoomWidth (#7)', () => {
+    it('is clamp(fitted, 2 * fitted, natural), a whole pixel, never under the fitted width', () => {
+        expect([zoomWidth(600, 1920), zoomWidth(960, 1920), zoomWidth(1200, 1920), zoomWidth(2400, 1920)]).toEqual([1200, 1920, 1920, 2400]);
+        // Rounded up, so a fractional fitted width never zooms to less than it shows.
+        expect(zoomWidth(500.4, 1920)).toBe(1001);
+        expect(zoomWidth(1919.4, 1600)).toBe(1920);
+        expect(zoomWidth(null, 1920)).toBe(1920);
+        expect(zoomWidth(0, 1920)).toBe(1920);
+    });
+});
+
+describe('the failed photograph\'s sentence (#7)', () => {
+    it('reads in sentence case, as written, not in the missing-image label\'s capitals', () => {
+        const rules: Rule[] = [];
+        css.walkRules((rule) => {
+            if (rule.selector.split(',').some((part) => part.trim() === '.failedLabel')) rules.push(rule);
+        });
+        expect(rules.length).toBeGreaterThan(0);
+        const transforms: string[] = [];
+        for (const rule of rules) rule.walkDecls('text-transform', (decl) => void transforms.push(decl.value));
+        expect(transforms).not.toContain('uppercase');
     });
 });

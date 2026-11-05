@@ -126,6 +126,56 @@ describe('ResponsivePhoto', () => {
       expect(types(container)).toEqual(['image/webp']);
     });
 
+    it('counts one AVIF failure once when the mount check sees it first and its error event arrives after', () => {
+      vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+      vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+      const current = picked('w1200', 'avif');
+      const onError = vi.fn();
+      const { container } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Checked first" sizes="100vw" loading="eager" onError={onError} />);
+      expect(types(container)).toEqual(['image/webp']);
+      // The same AVIF file's error, late: still the one failure the retry answered.
+      fireEvent.error(container.querySelector('img')!);
+      expect(onError).not.toHaveBeenCalled();
+      // The WebP file is another URL, so its failure is the photograph's.
+      current.mockReturnValue(`http://localhost${url('w1200', 'webp')}`);
+      fireEvent.error(container.querySelector('img')!);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts one AVIF failure once when its error event arrives first and the mount check sees it after', () => {
+      vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+      vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+      picked('w1200', 'avif');
+      const onError = vi.fn();
+      // The ref attaches in the commit, before the mount check's effect: the error event lands there first.
+      const early = (node: HTMLImageElement | null) => {
+        if (node && !node.dataset.fired) {
+          node.dataset.fired = '';
+          node.dispatchEvent(new Event('error'));
+        }
+      };
+      const { container } = render(<ResponsivePhoto ref={early} asset={asset(3000, 2000)} alt="Event first" sizes="100vw" loading="eager" onError={onError} />);
+      expect(onError).not.toHaveBeenCalled();
+      expect(types(container)).toEqual(['image/webp']);
+    });
+
+    it('starts afresh for another photograph in the same element', () => {
+      const onError = vi.fn();
+      const view = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="First" sizes="100vw" onError={onError} />);
+      picked('w1200', 'avif');
+      fireEvent.error(view.container.querySelector('img')!);
+      expect(types(view.container)).toEqual(['image/webp']);
+      const other = asset(3000, 2000);
+      for (const width of VARIANT_WIDTHS) for (const format of VARIANT_FORMATS) other.variants[width][format] = { ...other.variants[width][format], url: other.variants[width][format].url.replace(REF.photoId, 'ph_00000000-0000-4000-8000-000000000009') };
+      view.rerender(<ResponsivePhoto asset={other} alt="Second" sizes="100vw" onError={onError} />);
+      // Its AVIF source is back, and its own AVIF failure gets its own retry.
+      expect(types(view.container)).toEqual(['image/avif', 'image/webp']);
+      vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${other.variants.w1200.avif.url}`);
+      fireEvent.error(view.container.querySelector('img')!);
+      expect(onError).not.toHaveBeenCalled();
+      expect(types(view.container)).toEqual(['image/webp']);
+    });
+
     it('reports a failed WebP file at once: a browser without AVIF already had the retry\'s file', () => {
       const onError = vi.fn();
       const { container } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="WebP first" sizes="100vw" onError={onError} />);
