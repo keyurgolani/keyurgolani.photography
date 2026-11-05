@@ -275,3 +275,108 @@ test('covers load from /media, and a cover /media can\'t serve gives the text fa
         expect(await link.locator('img').getAttribute('src')).toMatch(/^\/media\/ph_[^/]+\/sha256-[0-9a-f]{64}\/p_[0-9a-f]+\/w1200\.webp$/);
     }
 });
+
+/** Each published series' short statement, from the published content, in Work order. */
+const statements = () =>
+    PUBLISHED.map(({ slug }) => {
+        const record = catalog?.content.series.find((series) => series.slug === slug);
+        if (!record?.shortStatement) throw new Error(`${slug} has no short statement in the published content`);
+        return record.shortStatement;
+    });
+
+/** The text as React writes it into HTML. */
+const asHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+
+test('the server HTML holds the h1, and every published series title and short statement, in Work order', async ({ request }) => {
+    const html = await (await request.get(`${origin()}/work`)).text();
+    expect(html).toMatch(/<h1[^>]*>Bodies of work<\/h1>/);
+    const titles = [...html.matchAll(/<h2[^>]*>([^<]*)<\/h2>/g)].map(([, title]) => title);
+    expect(titles).toEqual(PUBLISHED.map((series) => asHtml(series.title)));
+    let from = 0;
+    for (const [index, statement] of statements().entries()) {
+        const at = html.indexOf(`>${asHtml(statement)}</p>`, from);
+        expect(at, `${PUBLISHED[index].slug}'s short statement, after the one before it`).toBeGreaterThan(-1);
+        from = at;
+    }
+});
+
+test.describe('with JavaScript disabled', () => {
+    test.use({ javaScriptEnabled: false });
+
+    test('Work shows every entry with its title, statement, count, and cover, and an entry opens its series', async ({ page }) => {
+        await page.goto(`${origin()}/work`);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bodies of work');
+        await expect(entries(page)).toHaveCount(PUBLISHED.length);
+        for (const [index, series] of PUBLISHED.entries()) {
+            const link = entries(page).nth(index);
+            await expect(link).toHaveAttribute('href', `/work/${series.slug}`);
+            await expect(link.getByRole('heading', { level: 2 })).toHaveText(series.title);
+            await expect(link).toContainText(statements()[index]);
+            await expect(link).toContainText(series.count === 1 ? '1 photograph' : `${series.count} photographs`);
+        }
+        // The first cover is in the server HTML and loads without a script.
+        await expect.poll(() => coverLoaded(entry(page, PUBLISHED[0].slug))).toBe(true);
+        await expect(primary(page).getByRole('link', { name: 'Work', exact: true })).toHaveAttribute('aria-current', 'page');
+        await entry(page, PUBLISHED[1].slug).click();
+        await expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[1].slug}`);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText(PUBLISHED[1].title);
+    });
+});
+
+/** Authored text in main that overflows its box, runs past the viewport, is clipped by an ancestor, or is cut short with an ellipsis or a line clamp. */
+const clippedText = (page: Page) =>
+    page.evaluate((slack) => {
+        const problems: string[] = [];
+        const root = document.documentElement;
+        if (root.scrollWidth > root.clientWidth) problems.push(`the page scrolls sideways, ${root.scrollWidth} px wide in ${root.clientWidth}`);
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>('main h1, main h2, main p'))) {
+            const name = `${el.tagName.toLowerCase()} "${(el.textContent ?? '').slice(0, 24)}"`;
+            const style = getComputedStyle(el);
+            if (el.scrollWidth > el.clientWidth + slack) problems.push(`${name} overflows its box sideways`);
+            // Downwards only where the element clips its own overflow: the display heading's 0.9 leading lets its
+            // glyphs run a few px past the line box, which clips nothing while overflow-y is visible.
+            if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY) && el.scrollHeight > el.clientHeight + slack) problems.push(`${name} is cut off by its own overflow-y ${style.overflowY}`);
+            if (style.textOverflow === 'ellipsis' && style.overflowX !== 'visible') problems.push(`${name} ends in an ellipsis`);
+            if (style.webkitLineClamp !== 'none' && style.webkitLineClamp !== '') problems.push(`${name} is clamped to ${style.webkitLineClamp} lines`);
+            const box = el.getBoundingClientRect();
+            if (box.left < -slack || box.right > root.clientWidth + slack) problems.push(`${name} runs past the side of the viewport`);
+            for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+                const { overflowX, overflowY } = getComputedStyle(node);
+                if (![overflowX, overflowY].some((value) => value === 'hidden' || value === 'clip')) continue;
+                const clip = node.getBoundingClientRect();
+                if (box.left < clip.left - slack || box.right > clip.right + slack || box.top < clip.top - slack || box.bottom > clip.bottom + slack) {
+                    problems.push(`${name} is clipped by ${node.tagName.toLowerCase()}.${node.className.split(' ')[0]}`);
+                }
+            }
+        }
+        return problems;
+    }, 0.5);
+
+test.describe('at 320 px with 200% text', () => {
+    test.skip(({ isMobile }) => isMobile, 'It sets its own size. The desktop project covers it.');
+
+    // An entry, cover and text, is taller than a 320 by 640 window at 200%, so it scrolls: what has to hold is its
+    // width, its neighbours, and its text.
+    test('the entries reflow into one column, clear of each other, and no title, statement, or count is clipped or cut short', async ({ page }) => {
+        await openWork(page);
+        await page.setViewportSize({ width: 320, height: 640 });
+        await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+        // As expectReflow: a transition reports its start value until it ends, so measure once size and font have settled.
+        await expect
+            .poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length))
+            .toBe(0);
+        const boxes = await entries(page).evaluateAll((links) => links.map((link) => link.getBoundingClientRect().toJSON() as DOMRect));
+        const width = await page.evaluate(() => document.documentElement.clientWidth);
+        for (const [index, box] of boxes.entries()) {
+            expect(box.left, `entry ${index + 1}'s left edge`).toBeGreaterThanOrEqual(-0.5);
+            expect(box.right, `entry ${index + 1}'s right edge`).toBeLessThanOrEqual(width + 0.5);
+            if (index > 0) expect(box.top, `entry ${index + 1} starts below entry ${index}`).toBeGreaterThanOrEqual(boxes[index - 1].bottom - 0.5);
+        }
+        expect(await clippedText(page)).toEqual([]);
+        // Synthetic: a long title and statement, with a 40-character unbroken token, swapped into the live page.
+        const first = entry(page, PUBLISHED[0].slug);
+        await first.getByRole('heading', { level: 2 }).evaluate((el) => (el.textContent = 'A much longer series title that wraps over several lines'));
+        await first.locator('p').first().evaluate((el) => (el.textContent = `${'A short statement that runs long. '.repeat(4)}Supercalifragilisticexpialidocious12345`));
+        expect(await clippedText(page)).toEqual([]);
+    });
+});

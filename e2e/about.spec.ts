@@ -217,6 +217,80 @@ async function expectNoOverlap(page: Page) {
     expect(problems).toEqual([]);
 }
 
+/**
+ * Every fixed or sticky element on the page, anywhere in the document, and
+ * which of About's parts (expectNoOverlap's, plus the portrait's caption)
+ * meet one, at the top of the page and scrolled to its end. The parts that
+ * meet one are reported by name.
+ */
+async function expectClearOfPinned(page: Page) {
+    const problems: string[] = [];
+    for (const end of ['top', 'bottom'] as const) {
+        await page.evaluate((to) => window.scrollTo({ top: to === 'top' ? 0 : document.documentElement.scrollHeight, behavior: 'instant' }), end);
+        const found = await page.evaluate((slack) => {
+            const visible = (el: Element) => {
+                const style = getComputedStyle(el);
+                const box = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+            };
+            const pinned = Array.from(document.querySelectorAll('body *')).filter((el) => /^(fixed|sticky)$/.test(getComputedStyle(el).position) && visible(el));
+            const parts = Array.from(
+                document.querySelectorAll('[data-testid="about-portrait"], [data-testid="about-portrait"] figcaption, main h1, main article > p, main nav[aria-label^="External profiles"] a'),
+            );
+            const hits: string[] = [];
+            for (const part of parts) {
+                const a = part.getBoundingClientRect();
+                for (const pin of pinned) {
+                    if (pin.contains(part) || part.contains(pin)) continue;
+                    const b = pin.getBoundingClientRect();
+                    if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > slack && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > slack) {
+                        hits.push(`${part.tagName.toLowerCase()} "${(part.textContent ?? '').trim().slice(0, 24)}" meets the ${getComputedStyle(pin).position} ${pin.tagName.toLowerCase()}`);
+                    }
+                }
+            }
+            return { parts: parts.length, hits };
+        }, SLACK);
+        expect(found.parts, `About's parts were found at the ${end}`).toBeGreaterThan(0);
+        for (const hit of found.hits) problems.push(`at the ${end}: ${hit}`);
+    }
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    expect(problems, 'nothing meets a fixed or sticky element at either end of the page').toEqual([]);
+}
+
+/**
+ * #179's frame: the photo's box is 4:3 stacked and 4:5 side by side. Stacked, its height is capped at
+ * min(45svh, 28rem), so on a short window (640 by 400) or a tablet the cap wins over the ratio and the heading
+ * stays in the first viewport.
+ */
+async function expectFrameRatio(page: Page, layout: 'stacked' | 'side by side') {
+    const { width, height, cap } = await portrait(page).locator(':scope > div').first().evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const probe = document.createElement('div');
+        probe.style.cssText = 'position:absolute;visibility:hidden;height:min(45svh, 28rem)';
+        document.body.append(probe);
+        const cap = probe.getBoundingClientRect().height;
+        probe.remove();
+        return { width: box.width, height: box.height, cap };
+    });
+    if (layout === 'side by side') {
+        expect(width / height, 'the frame is 4:5 side by side').toBeCloseTo(4 / 5, 2);
+    } else if ((width * 3) / 4 <= cap + SLACK) {
+        expect(width / height, 'the frame is 4:3 stacked').toBeCloseTo(4 / 3, 2);
+    } else {
+        expect(Math.abs(height - cap), `the frame is capped at min(45svh, 28rem), ${cap} px`).toBeLessThanOrEqual(1);
+    }
+}
+
+/** The width of the portrait variant the browser chose, from its /about/portrait/<token>/w<width>.<format> URL. */
+async function portraitRung(page: Page): Promise<number> {
+    const image = portrait(page).locator('img');
+    await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+    const source = await image.evaluate((el: HTMLImageElement) => el.currentSrc);
+    const rung = /\/about\/portrait\/[0-9a-f]{32}\/w(\d+)\.(?:avif|webp)$/.exec(new URL(source).pathname)?.[1];
+    expect(rung, source).toBeDefined();
+    return Number(rung);
+}
+
 test.describe('the statement and portrait', () => {
     test('render the authored profile: heading, paragraphs, no biography, and the captioned portrait, on the about surface', async ({ page }) => {
         await openAbout(page);
@@ -323,20 +397,45 @@ test.describe('the statement and portrait', () => {
 test.describe('the statement and portrait at set sizes', () => {
     test.skip(({ isMobile }) => isMobile, 'Each test sets its own size. The checks above run on both projects.');
 
-    for (const [width, height] of [[320, 568], [390, 844], [768, 1024]] as const) {
+    // #12's matrix: 640 by 400 is a short landscape phone, or 1280 by 800 at 200% zoom. At every size the heading
+    // starts inside the first viewport, under the portrait.
+    for (const [width, height] of [[320, 568], [390, 844], [640, 400], [768, 1024]] as const) {
         test(`stack portrait, statement, then links at ${width} by ${height}`, async ({ page }) => {
             await page.setViewportSize({ width, height });
             await openAbout(page);
             await expectStacked(page);
             await expectNoOverlap(page);
             expect(await readabilityProblems(page)).toEqual([]);
+            await expectClearOfPinned(page);
+            await expectFrameRatio(page, 'stacked');
+            expect((await boxOf(heading(page))).top, "the heading's top is inside the first viewport").toBeLessThan(height);
         });
     }
 
-    test('sit side by side at 1280 by 800', async ({ page }) => {
+    test('sit side by side at 1280 by 800, clear of anything pinned, with the heading in the first viewport', async ({ page }) => {
         await openAbout(page);
         await expectSideBySide(page);
         await expectNoOverlap(page);
+        expect(await readabilityProblems(page)).toEqual([]);
+        await expectClearOfPinned(page);
+        await expectFrameRatio(page, 'side by side');
+        expect((await boxOf(heading(page))).top, "the heading's top is inside the first viewport").toBeLessThan(800);
+    });
+
+    for (const [width, height] of [[1024, 768], [1440, 900]] as const) {
+        test(`frame the portrait 4:5 beside the statement at ${width} by ${height}`, async ({ page }) => {
+            await page.setViewportSize({ width, height });
+            await openAbout(page);
+            await expectSideBySide(page);
+            await expectFrameRatio(page, 'side by side');
+        });
+    }
+
+    // The desktop project's pixel ratio is 1, so 41vw of 1280 is about 525 px, and the 800 px rung covers it.
+    test('ask for the 800 px portrait rung or smaller at 1280 by 800', async ({ page }) => {
+        expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1);
+        await openAbout(page);
+        expect(await portraitRung(page)).toBeLessThanOrEqual(800);
     });
 
     // The name panel is the photo frame's outer box, in the frame's tone, so
@@ -439,6 +538,7 @@ test.describe('the statement and portrait at set sizes', () => {
             await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
             expect(await readabilityProblems(page)).toEqual([]);
             await expectNoOverlap(page);
+            await expectClearOfPinned(page);
             // The caption grows the frame below the photo instead of covering the face.
             const [photo, band] = [await boxOf(portrait(page).locator('img')), await boxOf(portrait(page).locator('figcaption'))];
             expect(band.top, 'the caption starts at or below the photo').toBeGreaterThanOrEqual(photo.bottom - SLACK);
@@ -462,4 +562,22 @@ test.describe('the statement and portrait at set sizes', () => {
             await expectNoOverlap(page);
         });
     }
+});
+
+test.describe('with JavaScript disabled', () => {
+    test.use({ javaScriptEnabled: false });
+
+    // The title and description here; the canonical needs SITE_URL, so e2e/shell/metadata.spec.ts checks all three.
+    test('About shows its portrait, statement, and links, with its own title and description', async ({ page }) => {
+        await page.goto('/about');
+        await expect(heading(page)).toHaveText(profile.statementHeading);
+        await expect(heading(page)).toBeVisible();
+        await expect(paragraphs(page)).toHaveText(profile.statementParagraphs);
+        await expect(portrait(page).getByRole('img', { name: STAND_IN_PORTRAIT.alt, exact: true })).toBeVisible();
+        await expect(portrait(page).locator('figcaption')).toHaveText(caption);
+        await expect(links(page)).toHaveText(ENABLED.map((destination) => destination.label));
+        await expect(page).toHaveTitle('About · Keyur Golani Photography');
+        await expect(page.locator('head meta[name="description"]')).toHaveAttribute('content', profile.statementHeading);
+        expect(await readabilityProblems(page)).toEqual([]);
+    });
 });

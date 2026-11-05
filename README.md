@@ -13,7 +13,7 @@ A modern, high-performance photography portfolio website built with Next.js 16, 
 
 <p align="center">
   <img src="docs/screenshots/work-dark.png" alt="Work, the bodies of work" width="49%" />
-  <img src="docs/screenshots/about.png" alt="About page" width="49%" />
+  <img src="docs/screenshots/about.png" alt="About page with portrait and artist statement" width="49%" />
 </p>
 
 <p align="center"><em>Home, Work, the series pages, and the story Viewer.</em><br/>

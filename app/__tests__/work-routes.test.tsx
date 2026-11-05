@@ -9,7 +9,7 @@ import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 // publicRoutes, answered as a render or a throw to app/error.tsx. /gallery,
 // which #13's slice E removed, is proxy.ts's 308 (__tests__/originals.test.ts).
 
-const state = vi.hoisted(() => ({ catalog: null as unknown }));
+const state = vi.hoisted(() => ({ catalog: null as unknown, origin: null as URL | null, request: {} as object, reads: 0 }));
 
 vi.mock('next/navigation', () => ({
     usePathname: () => '/work',
@@ -17,12 +17,26 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/lib/catalog/public-reader')>();
-    return { ...actual, getActiveCatalog: async () => state.catalog };
+    return {
+        ...actual,
+        getActiveCatalog: async () => {
+            state.reads += 1;
+            return state.catalog;
+        },
+    };
+});
+
+// One object per request, as Next keeps the request's headers: a test is one request unless it says otherwise.
+vi.mock('next/headers', () => ({ headers: async () => state.request }));
+
+vi.mock('@/lib/site/config', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/lib/site/config')>();
+    return { ...actual, getSiteOrigin: () => state.origin };
 });
 
 vi.mock('@/components/site/SiteNav', () => ({ default: () => <nav aria-label="Primary" /> }));
 
-const { default: WorkPage, dynamic: workDynamic } = await import('../work/page');
+const { default: WorkPage, dynamic: workDynamic, generateMetadata } = await import('../work/page');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -100,6 +114,8 @@ async function answer(page: () => Promise<React.ReactElement>): Promise<{ html: 
 
 beforeEach(() => {
     state.catalog = unavailable('not-published');
+    state.request = {};
+    state.reads = 0;
 });
 
 describe('the /work gate', () => {
@@ -165,5 +181,51 @@ describe('Work on a served revision', () => {
             expect(tag).toMatch(/ alt=""/);
             expect(tag).toMatch(/ src="\/media\/ph_[^"]+\/w1200\.webp"/);
         }
+    });
+});
+
+describe('the /work metadata', () => {
+    beforeEach(() => {
+        state.origin = null;
+        state.catalog = served('ok');
+    });
+
+    it('with SITE_URL set gives the title, the description, and the canonical path /work', async () => {
+        state.origin = new URL('https://photos.example.test');
+        expect(await generateMetadata()).toEqual({
+            title: 'Work',
+            description: 'Photographic series by Keyur Golani.',
+            alternates: { canonical: '/work' },
+        });
+    });
+
+    it('leaves the canonical link out without a valid SITE_URL, instead of pointing it at localhost', async () => {
+        const metadata = await generateMetadata();
+        expect(metadata).toEqual({ title: 'Work', description: 'Photographic series by Keyur Golani.' });
+        expect(JSON.stringify(metadata)).not.toMatch(/localhost|https?:/);
+    });
+
+    // As the series pages: an unavailable catalog gets {}, so #21's error page keeps the site's defaults with its 500.
+    it.each(['not-published', 'catalog-unreadable', 'active-unreadable', 'revision-unreadable'] as const)('is empty while the catalog is unavailable (%s)', async (reason) => {
+        state.catalog = unavailable(reason);
+        state.origin = new URL('https://photos.example.test');
+        expect(await generateMetadata()).toEqual({});
+    });
+
+    // When the page throws, Next renders the error page's head in a second render of the same request, after the
+    // shell. A fresh read there lands the metadata late, and Next streams the title into the body (Dark parity's
+    // no-JavaScript error page, B1's CI). One read per request keeps it there at once, and the same answer.
+    it("reads the catalog once per request, for the page, its metadata, and the error page's head after a throw", async () => {
+        state.catalog = unavailable('active-unreadable');
+        expect(await answer(WorkPage)).toEqual({ thrown: expect.any(CatalogUnavailableError) });
+        expect(await generateMetadata()).toEqual({});
+        // The error page's render, with the catalog readable by then: it still answers for this request's read.
+        state.catalog = served('ok');
+        expect(await generateMetadata()).toEqual({});
+        expect(state.reads).toBe(1);
+
+        state.request = {};
+        expect(await generateMetadata()).toEqual({ title: 'Work', description: 'Photographic series by Keyur Golani.' });
+        expect(state.reads).toBe(2);
     });
 });
