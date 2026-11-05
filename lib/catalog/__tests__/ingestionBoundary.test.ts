@@ -99,6 +99,9 @@ describe('the watcher process import graph', () => {
         expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\), library: createLibraryReporter\(\) \}\)/);
         // A6 (#17): a library root that is missing at start, or goes while watch mode runs, is reported before the exit.
         expect(source.match(/await reportMissingLibrary\(/g)).toHaveLength(2);
+        // A6 review (7a): an unreadable or emptied share exits with its own code, so Docker's restart re-binds it.
+        expect(source).toMatch(/onRebind: \(cause\) => void shutdown\(LIBRARY_REBIND_EXIT_CODE, /);
+        expect(source).toMatch(/^const LIBRARY_REBIND_EXIT_CODE = 75;$/m);
         // #17: every build records its set on the revision's replacement item, and a failure that stays gets an item, or the build owes them to the sinks, which share `owed` and `owedSources`.
         expect(source).toMatch(/function workerBuilds\(\) \{\n\s+return \{ build: recordingFailuresAfterBuild\(settlingAfterBuild\(buildDerivativeSet, \{ owed \}\), \{ owed: owedSources \}\) \};/);
         expect(source).toMatch(/^const owed = owedSettles\(\);$/m);
