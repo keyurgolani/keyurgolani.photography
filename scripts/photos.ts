@@ -161,6 +161,15 @@
  *     on a usage error, 3 when the draft, the live revision or a record
  *     moved, or the authored lock stays busy, and 4 for I/O.
  *
+ *   npx tsx scripts/photos.ts review --use-published <changeId> --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+ *     Put back what is live for one row instead: the live revision's value
+ *     of the row's field goes into the draft as an authored write, through
+ *     the writer the Publish screen's "Use the published value" calls. Only
+ *     for a field whose review went stale because the live revision changed
+ *     it, or that a restore left in conflict, and never while its Inbox item
+ *     needs a decision. photos diff names the rows it takes. The draft
+ *     changes, so run photos diff again before publishing. Same exit codes.
+ *
  *   npx tsx scripts/photos.ts history [--json] [--limit <n>] [--revisions]
  *     Every activation, oldest first by sequence, with its revision number
  *     and ID, actor, reason, time, validation result, and what its revision
@@ -366,6 +375,8 @@ const USAGE = `Usage:
   ${PROGRAM} diff [--json]
   ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
         Marks the rows photos diff printed reviewed, each named, and rows that share a stamp together; there is no --all.
+  ${PROGRAM} review --use-published <changeId> --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+        Puts the live revision's value back into the draft for one row, as the Publish screen's "Use the published value" does.
   ${PROGRAM} history [--json] [--limit <n>] [--revisions]
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
         --accept, once per editorial rule flagged on the target, brings it back with that error; it's the only flag that repeats.

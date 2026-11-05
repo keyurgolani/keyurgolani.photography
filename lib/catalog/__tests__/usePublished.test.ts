@@ -10,8 +10,8 @@ import { readRevisionFile } from '../repository';
 import { hashValue } from '../review';
 import { readReviewContext } from '../review-context';
 import { ReviewRefusedError } from '../review-write';
-import { authoredFromPublished, usePublishedOf, USE_PUBLISHED_FIELDS } from '../use-published-rules';
-import { usePublishedValue } from '../use-published';
+import { authoredFromPublished, publishedValueOffer, USE_PUBLISHED_FIELDS } from '../use-published-rules';
+import { writePublishedValue } from '../use-published';
 import { readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
 import { AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
 import { readRegistry } from '../../identity/registry';
@@ -72,10 +72,10 @@ const inputFor = async (field: 'photoIds' | 'shortStatement', id = SALT_ROADS) =
 describe('which rows offer it', () => {
     it("offers it on a stale order's move, naming the whole field it puts back, and not on a suggested description or a reviewed row", async () => {
         const { layer, active, review, diff } = await read();
-        const moved = usePublishedOf(rowOf(diff, MOVED), { layer, active: active?.content ?? null, review });
+        const moved = publishedValueOffer(rowOf(diff, MOVED), { layer, active: active?.content ?? null, review });
         expect(moved).toMatchObject({ ok: true, target: { record: { kind: 'series', id: SALT_ROADS }, field: 'photoIds', version: (await series(SALT_ROADS)).version } });
-        expect(usePublishedOf(rowOf(diff, ADDED), { layer, active: active?.content ?? null, review })).toMatchObject({ ok: false });
-        expect(usePublishedOf(rowOf(diff, SHORT), { layer, active: active?.content ?? null, review })).toMatchObject({ ok: false });
+        expect(publishedValueOffer(rowOf(diff, ADDED), { layer, active: active?.content ?? null, review })).toMatchObject({ ok: false });
+        expect(publishedValueOffer(rowOf(diff, SHORT), { layer, active: active?.content ?? null, review })).toMatchObject({ ok: false });
     });
 
     it('lists the fields it can put back, and never a route, the Work order, the bytes or the capture date', () => {
@@ -101,12 +101,12 @@ describe('which rows offer it', () => {
     });
 });
 
-describe('usePublishedValue()', () => {
+describe('writePublishedValue()', () => {
     it("writes the live revision's order back as an authored write, so the stale rows go and the draft changes", async () => {
         const before = await read();
         const published = (before.active?.content.series.find((entry) => entry.id === SALT_ROADS) as { photoIds: string[] }).photoIds;
         const old = await series(SALT_ROADS);
-        const written = await usePublishedValue(await inputFor('photoIds'));
+        const written = await writePublishedValue(await inputFor('photoIds'));
         expect(written.version).toBe(old.version + 1);
         const now = await series(SALT_ROADS);
         expect(now.photoIds).toEqual(published);
@@ -119,22 +119,22 @@ describe('usePublishedValue()', () => {
     it('refuses and writes nothing when the version, the value or the live revision moved', async () => {
         const input = await inputFor('photoIds');
         const version = (await series(SALT_ROADS)).version;
-        await expect(usePublishedValue({ ...input, version: input.version - 1 })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
-        await expect(usePublishedValue({ ...input, valueHash: hashValue(['ph_other']) })).rejects.toBeInstanceOf(AuthoredWriteError);
-        await expect(usePublishedValue({ ...input, baseRevisionId: fixture.revisions[0] })).rejects.toMatchObject({ code: 'active-moved' });
+        await expect(writePublishedValue({ ...input, version: input.version - 1 })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+        await expect(writePublishedValue({ ...input, valueHash: hashValue(['ph_other']) })).rejects.toBeInstanceOf(AuthoredWriteError);
+        await expect(writePublishedValue({ ...input, baseRevisionId: fixture.revisions[0] })).rejects.toMatchObject({ code: 'active-moved' });
         expect((await series(SALT_ROADS)).version).toBe(version);
     });
 
     it("refuses a field whose review isn't stale against the live revision, and one it can't put back", async () => {
-        await expect(usePublishedValue(await inputFor('shortStatement', LOW_TIDE))).rejects.toBeInstanceOf(ReviewRefusedError);
+        await expect(writePublishedValue(await inputFor('shortStatement', LOW_TIDE))).rejects.toBeInstanceOf(ReviewRefusedError);
         const record = await series(SALT_ROADS);
-        await expect(usePublishedValue({ ...(await inputFor('photoIds')), field: 'slug', valueHash: hashValue(record.slug) })).rejects.toMatchObject({ code: 'not-clearable' });
+        await expect(writePublishedValue({ ...(await inputFor('photoIds')), field: 'slug', valueHash: hashValue(record.slug) })).rejects.toMatchObject({ code: 'not-clearable' });
     });
 
     it('refuses a field an Inbox item that needs a decision again rests on, before anything else', async () => {
         await reopenBreakwater(fixture);
         const version = (await series(LOW_TIDE)).version;
-        await expect(usePublishedValue(await inputFor('photoIds', LOW_TIDE))).rejects.toMatchObject({ code: 'inbox' });
+        await expect(writePublishedValue(await inputFor('photoIds', LOW_TIDE))).rejects.toMatchObject({ code: 'inbox' });
         expect((await series(LOW_TIDE)).version).toBe(version);
     });
 
@@ -143,7 +143,7 @@ describe('usePublishedValue()', () => {
         const live = (await read()).active?.content.series.find((entry) => entry.id === LOW_TIDE)?.shortStatement;
         await writeAuthoredRecord({ ...record, conflicts: [{ field: 'shortStatement', base: 'Base words.', active: live ?? null }] }, { expectedVersion: record.version, root: fixture.root });
         const conflicted = await series(LOW_TIDE);
-        await usePublishedValue({ root: fixture.root, record: { kind: 'series', id: LOW_TIDE }, field: 'shortStatement', version: conflicted.version, valueHash: hashValue(conflicted.shortStatement), baseRevisionId: fixture.revisions[1], actor: 'keyur' });
+        await writePublishedValue({ root: fixture.root, record: { kind: 'series', id: LOW_TIDE }, field: 'shortStatement', version: conflicted.version, valueHash: hashValue(conflicted.shortStatement), baseRevisionId: fixture.revisions[1], actor: 'keyur' });
         const settled = await series(LOW_TIDE);
         expect(settled.shortStatement).toBe(live);
         expect(settled.conflicts ?? []).toEqual([]);

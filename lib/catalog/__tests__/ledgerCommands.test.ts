@@ -111,7 +111,7 @@ describe('photos diff', () => {
         expect(data.schemaVersion).toBe(1);
         expect(Object.keys(data).sort()).toEqual(['activeRevisionId', 'activeRevisionNumber', 'candidateId', 'empty', 'rows', 'schemaVersion']);
         const moved = data.rows.find((row) => row.id === MOVED);
-        expect(Object.keys(moved ?? {}).sort()).toEqual(['after', 'before', 'category', 'field', 'group', 'id', 'provenance', 'reason', 'record', 'review', 'reviewable', 'sharedWith', 'stale', 'summary', 'surfaces', 'visible']);
+        expect(Object.keys(moved ?? {}).sort()).toEqual(['after', 'before', 'category', 'field', 'group', 'id', 'provenance', 'reason', 'record', 'review', 'reviewable', 'sharedWith', 'stale', 'summary', 'surfaces', 'usePublished', 'visible']);
         expect(moved).toMatchObject({ group: 'authored', reviewable: true, reason: null, sharedWith: [] });
         expect(Object.keys((moved?.review as unknown as { fields: object[] }).fields[0]).sort()).toEqual(['detail', 'field', 'reason', 'record', 'state']);
         expect(data.rows.find((row) => row.id === ADDED)).toMatchObject({ reviewable: false, reason: expect.stringMatching(/photos edit/) });
@@ -253,7 +253,7 @@ describe('photos review', () => {
     it('needs change IDs, --expect, --expect-active and an actor, and has no --all', () => {
         const candidate = `rev_${'a'.repeat(64)}`;
         const ok = ['--expect', candidate, '--expect-active', candidate];
-        expect(reviewArgs([MOVED, ADDED, MOVED, ...ok], { PHOTOS_ACTOR: 'keyur' })).toEqual({ changeIds: [MOVED, ADDED], expect: candidate, expectActive: candidate, actor: 'keyur' });
+        expect(reviewArgs([MOVED, ADDED, MOVED, ...ok], { PHOTOS_ACTOR: 'keyur' })).toEqual({ changeIds: [MOVED, ADDED], expect: candidate, expectActive: candidate, actor: 'keyur', usePublished: false });
         expect(reviewArgs([MOVED, '--expect', candidate, '--expect-active', 'none', '--actor', 'curator'], {})).toMatchObject({ expectActive: null, actor: 'curator' });
         expect(() => reviewArgs(ok, { PHOTOS_ACTOR: 'keyur' })).toThrow(/needs at least one change ID/);
         expect(() => reviewArgs(['MOVED', ...ok], { PHOTOS_ACTOR: 'keyur' })).toThrow(/is not a change ID/);
