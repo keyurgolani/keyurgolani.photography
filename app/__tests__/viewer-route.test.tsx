@@ -36,6 +36,7 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
 
 const route = await import('../work/[slug]/photo/[photoId]/page');
 const { default: ViewerRoute, generateMetadata } = route;
+const { default: InterceptedRoute } = await import('../work/[slug]/@modal/(.)photo/[photoId]/page');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -260,6 +261,26 @@ describe('the Viewer route', () => {
     ])('answers %s 308 to the canonical URL (#7, decided)', async (_name, slug, photoId, location) => {
         expect(await answer(slug, photoId)).toEqual({ redirect: location });
         expect(await generateMetadata(props(slug, photoId))).toEqual({});
+    });
+
+    it('through the intercepted route, answers a photo moved out of the series not-found, for ViewerUnavailable, and still redirects a letter-case variant (#178)', async () => {
+        const through = async (slug: string, photoId: string): Promise<Awaited<ReturnType<typeof answer>>> => {
+            try {
+                return { html: renderToStaticMarkup(await InterceptedRoute(props(slug, photoId))) };
+            } catch (error) {
+                if (error instanceof Redirected) return { redirect: error.location };
+                if (error instanceof NotFound) return { notFound: true };
+                return { thrown: error };
+            }
+        };
+        // Moved to another series, under the old series' slug and under an uppercase one.
+        expect(await through('route-b', P[0])).toEqual({ notFound: true });
+        expect(await through('Route-A', P[3])).toEqual({ notFound: true });
+        // The same series, another case: the 308 as on the page.
+        expect(await through('Route-A', P[0])).toEqual({ redirect: `/work/route-a/photo/${P[0]}` });
+        expect(html(await through('route-a', P[0]))).toContain('data-surface="viewer"');
+        // The page itself keeps every 308 (#7, decided).
+        expect(await answer('route-b', P[0])).toEqual({ redirect: `/work/route-a/photo/${P[0]}` });
     });
 
     it('keeps the query on every redirect, re-encoded after the canonical path', async () => {
