@@ -22,7 +22,10 @@ import { sequentialIds } from './reconcileFixtures';
 
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+});
 
 async function pendingJob() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'asset-lock-'));
@@ -60,5 +63,42 @@ describe("a build and --set-aside exclude each other by the asset's lock (item 4
         expect(held).toBe(true);
         // And lets it go once done.
         expect(await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0 }, async () => 'free')).toBe('free');
+    });
+
+    it('50 (A2): holds the asset lock already when it makes the staging folder', async () => {
+        const { root, job } = await pendingJob();
+        const staging = stagingRoot(root);
+        const mkdir = fs.promises.mkdir;
+        const probes: boolean[] = [];
+        vi.spyOn(fs.promises, 'mkdir').mockImplementation((async (dir: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+            if (path.resolve(String(dir)).startsWith(`${staging}${path.sep}`)) probes.push(await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0 }, async () => false).catch(() => true));
+            return mkdir(dir, options);
+        }) as typeof fs.promises.mkdir);
+        expect(await buildDerivativeSet(job, { logger: quiet })).toMatchObject({ status: 'ready' });
+        expect(probes).toEqual([true]);
+    });
+
+    it('51 (N3): reads no source while another command holds the asset', async () => {
+        const { root, job } = await pendingJob();
+        const read = vi.spyOn(fs.promises, 'readFile');
+        const outcome = await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0 }, () => buildDerivativeSet(job, { logger: quiet }));
+        expect(outcome).toEqual({ status: 'pending', reason: 'locked' });
+        expect(read.mock.calls.filter(([file]) => String(file).endsWith('landscape.jpg'))).toEqual([]);
+    });
+
+    it('51 (N2): leaves the entry pending, publishing nothing, when it lost the asset lock before the publish', async () => {
+        const { root, job } = await pendingJob();
+        const outcome = await buildDerivativeSet(job, { logger: quiet, faults: { beforePublish: () => {
+            // Another command took the asset's lock over, as one would once this build's lease ran out.
+            const lockFile = path.join(root, 'locks', `${assetLockName(job.photoId, job.assetRevision)}.lock`);
+            fs.renameSync(lockFile, `${lockFile}.broken`);
+            const now = new Date().toISOString();
+            fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
+        } } });
+        expect(outcome).toEqual({ status: 'pending', reason: 'locked' });
+        const registry = await readRegistry(root);
+        expect(registry.photos[job.photoId].revisions[job.assetRevision].profiles[job.profileId].state).toBe('pending');
+        expect(fs.existsSync(path.join(root, 'assets', job.photoId, job.assetRevision))).toBe(false);
+        expect(fs.readdirSync(stagingRoot(root))).toEqual([]);
     });
 });

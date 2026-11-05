@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { callSites, sourceFiles } from '../../../test/helpers/deleteCalls';
+import { callSites, shippedFiles } from '../../../test/helpers/deleteCalls';
 import { directImports, importGraph } from '../../../test/helpers/importGraph';
 import { REPO_ROOT } from '../../../test/helpers/runTsx';
 
@@ -69,7 +69,7 @@ describe('the retention module boundary', () => {
  * that is the photos CLI, and the CLI calls it only for `gc`.
  */
 describe('who can reach GC\'s deletes', () => {
-    const SOURCES = sourceFiles(['lib', 'app', 'components', 'utils', 'scripts'], ['proxy.ts', 'instrumentation.ts', 'next.config.mjs']).filter((file) => !file.endsWith('.sh'));
+    const SOURCES = shippedFiles().filter((file) => !file.endsWith('.sh'));
     const importersOf = (target: string) => SOURCES.filter((file) => file !== target && directImports(file).includes(target));
 
     it('lets only retention-cli.ts import retention.ts, and only the photos CLI import retention-cli.ts', () => {

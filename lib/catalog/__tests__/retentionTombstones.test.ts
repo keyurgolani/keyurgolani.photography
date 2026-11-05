@@ -15,7 +15,10 @@ import { AUTHORED_LOCK } from '../working-layer-writer';
 import { runPurgeCommand, purgeArgs } from '../purge-cli';
 import { references } from '../references';
 import { GC_EXIT_CODES, planDigest, runGc, setAsideTargetProblem, trashName, type GcEntry, type GcOptions, type GcResult } from '../retention';
-import { CURATION_LOCK } from '../../curation/repository';
+import { approveEvent } from '../../curation/actions';
+import { CURATION_LOCK, listEvents } from '../../curation/repository';
+import { createCurationSink } from '../../curation/sink';
+import { createCurationFixture, DRAFT, writeRules } from '../../curation/__tests__/curationFixtures';
 import { gcArgs, runGcCommand } from '../retention-cli';
 import { assetLockName, removeAbandonedStaging, stagingLockName } from '../../identity/derivatives';
 import { dataRootStatus } from '../../storage/config';
@@ -97,7 +100,8 @@ const assetsOf = (root: string) => new Map([...snapshot(root)].filter(([file]) =
 function wholeText(aside: string, original: string, occupied: boolean, then = 'then revoke, or rerun photos gc'): string {
     // A line the owner can run as it stands, from the compose file's own service and data-root path (item 38).
     // It checks the place is free first, and mv -n never overwrites (item 42).
-    const back = `rename it back with docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher sh -c '[ ! -e ${original} ] && mv -n ${aside} ${original}'; ${then}`;
+    // And says so when it didn't move it (item 51's N5).
+    const back = `rename it back with docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher sh -c '[ ! -e ${original} ] && mv -n ${aside} ${original} || echo "Not moved: something is at ${original} already, or ${aside} is not there."'; ${then}`;
     return occupied
         ? `set aside whole at ${aside}, and something else is at ${original}: set that aside with photos gc --set-aside ${original}, then ${back}`
         : `set aside whole at ${aside}: ${back}`;
@@ -1797,5 +1801,170 @@ describe("--set-aside's dot and dirname guard, each half on its own (item 42)", 
         ['.gc-anything', null],
     ])('%s is %s', (name, problem) => {
         expect(setAsideTargetProblem(photoDir, name)).toBe(problem);
+    });
+});
+
+describe('--set-aside, round 9: lock order and wait, the status of a blocked put-back, and the gaps (items 45, 46, 49, 50 and 51)', { timeout: 120_000 }, () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    type Hooks = { beforeRename?(): void | Promise<void>; afterRename?(): void | Promise<void>; afterLock?(name: string): void | Promise<void> };
+    async function setAside(built: { root: string }, target: string, hooks?: Hooks, waitMs = 200) {
+        const out: string[] = [];
+        const exitCode = await runGcCommand(built.root, gcArgs(['--set-aside', target]), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet, waitMs, setAsideHooks: hooks });
+        return { exitCode, text: out.join('\n') };
+    }
+
+    /** Take `name` over from under its holder, as a writer past its lease would: the holder's file moved aside, another's in its place. */
+    function breakLock(root: string, name: string): void {
+        const lockFile = path.join(root, 'locks', `${name}.lock`);
+        fs.renameSync(lockFile, `${lockFile}.broken`);
+        const now = new Date().toISOString();
+        fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
+    }
+
+    function damageInbox(root: string): void {
+        const dir = path.join(root, 'curation', 'events', `evt_${'0'.repeat(23)}9`);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'v1.json'), '{');
+    }
+
+    it('45, 46: takes the asset lock first, then the catalog, curation and authored locks, in the order Inbox approve and publish take them', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const taken: string[] = [];
+        expect((await setAside(built, folderOf(built, built.d), { afterLock: (name) => void taken.push(name) })).exitCode).toBe(0);
+        expect(taken).toEqual([assetLockName(built.d, built.first[built.d]), CATALOG_LOCK, CURATION_LOCK, AUTHORED_LOCK]);
+    });
+
+    it('46: refuses ASSET_LOCKED at once, without waiting and without taking a global lock, while a build holds the asset', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const taken: string[] = [];
+        const before = snapshot(built.root);
+        const started = Date.now();
+        const result = await withLock(assetLockName(built.d, built.first[built.d]), { root: built.root, waitMs: 0 }, () => setAside(built, folderOf(built, built.d), { afterLock: (name) => void taken.push(name) }, 5_000));
+        expect(Date.now() - started).toBeLessThan(2_000);
+        expect(result.exitCode).toBe(3);
+        expect(result.text).toContain('ASSET_LOCKED');
+        expect(taken).toEqual([]);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('45: an Inbox approve and a --set-aside started together both finish', async () => {
+        const f = await createCurationFixture({ published: true });
+        writeRules(f.root, { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] });
+        const fact = f.fact('new', f.fresh[0]);
+        await createCurationSink({ root: f.root, logger: { log: () => undefined, warn: () => undefined, error: () => undefined } })([fact]);
+        const event = (await listEvents(f.root)).events.find((each) => each.photoId === f.fresh[0]) as CurationEvent;
+        // No standing tombstone: --set-aside takes all four locks, then refuses what it finds, as a run that got its locks does.
+        const target = `assets/${f.fresh[1]}/${f.revisionOf(f.fresh[1])}`;
+        const [approved, setAsideRun] = await Promise.all([
+            approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:test', expectedBase: f.catalog.revisionId, choices: {}, waitMs: 10_000 }),
+            setAside(f, target, undefined, 10_000),
+        ]);
+        expect(approved).toMatchObject({ ok: true });
+        expect(setAsideRun.text).not.toMatch(/_LOCKED|LOCK_LOST/);
+        expect(setAsideRun.text).toMatch(/NOT_FOUND|NOT_TAKEN_DOWN/);
+    });
+
+    it.each([
+        ['the asset lock', (built: PurgeFixture) => assetLockName(built.d, built.first[built.d])],
+        ['the catalog lock', () => CATALOG_LOCK],
+        ['the curation lock', () => CURATION_LOCK],
+        ['the authored lock', () => AUTHORED_LOCK],
+    ])('50 (L4): checks %s is still held just before the rename', async (_what, lock) => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash'));
+        const before = kept(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { beforeRename: () => breakLock(built.root, lock(built)) });
+        expect(exitCode).toBe(3);
+        expect(text).toMatch(/LOCK_LOST/);
+        expect(kept(built.root)).toEqual(before);
+    });
+
+    /** Every path but curation/, staging/, trash/ and locks/, which a test writes there or the run may make. */
+    const kept = (root: string) => new Map([...snapshot(root)].filter(([file]) => !/^(?:curation|staging|trash|locks)(?:\/|$)/.test(file)));
+
+    it('50 (P4): puts the folder back, exit 4, when the holders scan fails after the rename', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const folder = path.join(built.root, folderOf(built, built.d));
+        const inode = fs.lstatSync(folder).ino;
+        const before = kept(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { afterRename: () => damageInbox(built.root) });
+        expect(exitCode).toBe(4);
+        expect(text).toMatch(/INTEGRITY_MISMATCH: .*put it back/);
+        expect(fs.lstatSync(folder).ino).toBe(inode);
+        expect(kept(built.root)).toEqual(before);
+    });
+
+    it('50 (P2, P3): an empty folder in its place blocks the put-back too, and the folder in trash/ is the very one it moved', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const folder = path.join(built.root, folderOf(built, built.d));
+        const inode = fs.lstatSync(folder).ino;
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { afterRename: () => {
+            writeOpenEvent(built.root, built.d, built.first[built.d]);
+            fs.mkdirSync(folder);
+        } });
+        const name = trashName(built.d, built.first[built.d], PAST_GRACE);
+        expect(exitCode).toBe(4);
+        expect(text).toMatch(/PUT_BACK_BLOCKED: .*something is at /);
+        expect(fs.lstatSync(path.join(built.root, 'trash', name)).ino).toBe(inode);
+        // The empty folder in its place is left as it was.
+        expect(fs.readdirSync(folder)).toEqual([]);
+    });
+
+    it('49: photos status names a held trash/ entry whatever the count, by its name alone', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        let event = '';
+        await setAside(built, folderOf(built, built.d), { afterRename: () => {
+            event = writeOpenEvent(built.root, built.d, built.first[built.d]).id;
+            fs.mkdirSync(path.join(built.root, folderOf(built, built.d), 'in-the-way'), { recursive: true });
+        } });
+        for (let n = 0; n < 21; n += 1) fs.mkdirSync(path.join(built.root, 'trash', `entry-${n}`));
+        const name = trashName(built.d, built.first[built.d], PAST_GRACE);
+        const { output } = await runStatusCommand({ dataRoot: built.root });
+        expect(output).toContain('Trash: 22 folders in trash/, size unknown.');
+        expect(output).toMatch(new RegExp(`\\n  ${name}; the open Inbox item ${event} names it, so it belongs back at ${folderOf(built, built.d)}`));
+        expect(output).not.toContain('entry-0');
+    });
+
+    it("49: says holders unknown, and fails the check as incomplete, when it can't read what holds a trash/ entry", async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash', trashName(built.d, built.first[built.d], PAST_GRACE)), { recursive: true });
+        // An Inbox item that can't be read: status counts it, and the holder scan can't get past it.
+        damageInbox(built.root);
+        const plain = await runStatusCommand({ dataRoot: built.root });
+        expect(plain.output).toMatch(/Trash: .*\n  holders unknown: /);
+        expect(plain.exitCode).toBe(1);
+        const checked = await runStatusCommand({ dataRoot: built.root }, { check: true });
+        expect(checked.output).toContain("Status couldn't read everything it reports, as above");
+    });
+
+    it("49: a blocked put-back whose holders couldn't be read says so, not that status names a holder", async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { afterRename: () => {
+            damageInbox(built.root);
+            fs.mkdirSync(path.join(built.root, folderOf(built, built.d), 'in-the-way'), { recursive: true });
+        } });
+        expect(exitCode).toBe(4);
+        expect(text).toMatch(/PUT_BACK_BLOCKED: photos gc --set-aside couldn't read what holds/);
+        expect(text).not.toMatch(/names it with its holder/);
+        expect(text).toMatch(/photos status lists it/);
+    });
+
+    it('51 (N1): makes trash/ synchronously, in the same tick as the rename', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const trash = path.join(fs.realpathSync(built.root), 'trash');
+        const made = vi.spyOn(fs.promises, 'mkdir');
+        expect((await setAside(built, folderOf(built, built.d))).exitCode).toBe(0);
+        expect(made.mock.calls.filter(([dir]) => path.resolve(String(dir)) === trash)).toEqual([]);
+        expect(fs.lstatSync(trash).isDirectory()).toBe(true);
     });
 });

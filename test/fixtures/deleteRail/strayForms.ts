@@ -357,3 +357,48 @@ export function renamedSharedState(): unknown {
 export function viaComputedGlobal(name: string): unknown {
     return [globalThis[name as keyof typeof globalThis], (globalThis as unknown as Record<string, unknown>)[name]];
 }
+
+// Round 9 (#181's A10 review, item 48): general rules for the forms left.
+declare const anything: Record<string, (...args: unknown[]) => unknown>;
+
+export function viaLoaderMembers(): void {
+    const proc = process as unknown as Record<string, (...args: unknown[]) => unknown>;
+    proc.binding('fs');
+    proc['_linkedBinding']('x');
+    void (process as unknown as { dlopen: unknown }).dlopen;
+    void (process as unknown as { execve: unknown }).execve;
+    void anything.getBuiltinModule;
+    void anything.createRequire;
+    anything._load('fs');
+}
+
+export function viaProcessEscapes(hand: (value: unknown) => void): void {
+    const p = process;
+    const { env } = process;
+    hand(process);
+    hand(globalThis.process);
+    void p;
+    void env;
+}
+
+export function viaGlobalAliasMembers(): void {
+    const g2 = globalThis;
+    void g2.process;
+    void g2.Function;
+}
+
+export function viaConstructor(): void {
+    void ({}).constructor.constructor('return 1')();
+    void (globalThis as unknown as { Function: (code: string) => unknown }).Function('return 1');
+}
+
+export function viaAnyWorker(): void {
+    void new Worker('./worker.js');
+    void new workers.Worker(new URL('./worker.js', import.meta.url));
+}
+
+export function notFindingsEither(): void {
+    // Reading process by a member, and typeof process, are not escapes.
+    void process.env.HOME;
+    void (typeof process === 'undefined');
+}
