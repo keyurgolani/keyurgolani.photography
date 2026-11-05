@@ -1423,9 +1423,10 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
         const { r, job } = await failedR(w);
         fs.rmSync(w.lib.file(R_PATH));
         await w.pass();
-        // Nothing lists R, so its missing item is withdrawn (A5), and the owner archives it with #10's own command.
-        expect((await w.event(missingEventId(r, job.assetRevision))).decisions.at(-1)).toMatchObject({ resolution: 'withdrawn' });
-        await writeDecision(w.root, createDecision({ type: 'archive', photoId: r, actor: ACTOR }));
+        // A failed build still asks for judgment, so R's missing item isn't withdrawn (A5 review) and archive still settles it.
+        const missing = await w.event(missingEventId(r, job.assetRevision));
+        expect(missing.status).toBe('open');
+        expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
         expect((await w.event(failureEventId(r, job.assetRevision))).status).toBe('failed');
         expect(await w.pass()).toEqual([]);
         expect((await w.registry()).photos[r].sourceHealth).toBe('archived');

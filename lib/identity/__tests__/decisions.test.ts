@@ -885,3 +885,44 @@ describe('reconcile: other pixels suggested for a missing photo (#17, A5)', () =
         expect(r.last.facts[0]).not.toHaveProperty('suggestedFor');
     });
 });
+
+describe('the registry after a restore and a suggestion, read by v1.7.x (#183, A5 review)', () => {
+    // The registry's fields at v1.7.0 (lib/identity/types.ts at 0de8ab31). Its reader there, readStoredRegistry(), is
+    // the one this build runs: lib/identity/registry.ts hasn't changed since.
+    const V1 = {
+        registry: ['schemaVersion', 'version', 'updatedAt', 'photos', 'holds', 'pendingFacts', 'decided'],
+        photo: ['photoId', 'createdAt', 'source', 'sourceHealth', 'duplicateOf', 'mergedInto', 'revisions'],
+        revision: ['assetRevision', 'pixelDigest', 'firstSeenAt', 'firstSeenPath', 'sourceBytes', 'sourceFormat', 'width', 'height', 'orientation', 'derived', 'curatorOnly', 'reassignedTo', 'profiles'],
+        health: ['present', 'missing', 'ambiguous', 'archived'],
+        fact: ['type', 'factId', 'key', 'photoId', 'assetRevision', 'path', 'folder', 'observedAt', 'fromPath', 'candidates', 'duplicateOf', 'samePathAs', 'revert', 'reason'],
+    };
+
+    it('keeps schema version 1 and only fields v1.7.x reads, but for the suggestion on a fact, which its sinks drop', () => {
+        const r = seeded({ 'a.jpg': 'A', 'harbor/boat.jpg': 'B' });
+        const x = r.photoAt('a.jpg').photoId;
+        r.library.remove('a.jpg');
+        r.pass();
+        r.decide({ type: 'archive', photoId: x });
+        r.pass();
+        r.library.put('b.jpg', image('A'));
+        r.pass();
+        const n = Object.values(r.registry.photos).find((photo) => photo.source.path === 'b.jpg')?.photoId as string;
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: x, merge: n });
+        r.pass();
+        r.library.remove('harbor/boat.jpg');
+        r.pass();
+        r.library.put('edits/boat.jpg', image('C'));
+        const suggested = r.pass().facts;
+        expect(suggested).toMatchObject([{ suggestedFor: expect.any(String) }]);
+
+        expect(r.registry.schemaVersion).toBe(1);
+        const within = (value: object, allowed: string[]) => Object.keys(value).filter((key) => !allowed.includes(key));
+        expect(within(r.registry, V1.registry)).toEqual([]);
+        for (const photo of Object.values(r.registry.photos)) {
+            expect(within(photo, V1.photo)).toEqual([]);
+            expect(V1.health).toContain(photo.sourceHealth);
+            for (const revision of Object.values(photo.revisions)) expect(within(revision, V1.revision)).toEqual([]);
+        }
+        for (const fact of suggested) expect(within(fact, V1.fact).sort()).toEqual(['suggestedBy', 'suggestedFor']);
+    });
+});

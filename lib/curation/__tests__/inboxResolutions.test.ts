@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -8,8 +9,9 @@ import { fixtureFiles } from '../../../test/fixtures/makeLibrary';
 import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { readAuthoredRecord } from '../../catalog/working-layer';
 import { runReconcilePass } from '../../identity/pass';
+import { createDecision, writeDecision } from '../../identity/decisions';
 import { identityPaths, readRegistry, writeRegistry } from '../../identity/registry';
-import { approveEvent } from '../actions';
+import { approveEvent, deferEvent, editEvent } from '../actions';
 import { createCandidateSink } from '../candidates';
 import { CURATION_COMMANDS, curationUsage, parseCurationArgs, runCurationCli } from '../commands';
 import {
@@ -27,6 +29,7 @@ import { resolvedResponse } from '../inbox-view';
 import { curationPaths, listEvents, readEvent, withCurationLock, writeEvent } from '../repository';
 import { archiveMissing, bindReplacement } from '../resolutions';
 import { createCurationSink } from '../sink';
+import { settleSources } from '../sources';
 import { createCurationFixture, type CurationFixture } from './curationFixtures';
 import { clock, createMissingWorld, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { createWorld, makeImages, P_PATH, quiet, removeTemplate, replacementEventId, treeBytes, type Images, type World } from './replacementWorld';
@@ -38,6 +41,8 @@ import { createWorld, makeImages, P_PATH, quiet, removeTemplate, replacementEven
  */
 
 const ACTOR = 'curator:test';
+/** lib/curation/events-v1.ts's hash. The file is frozen: never update this to match an edit, revert the edit. */
+const FROZEN_SHA256 = 'b8dfba36bc04725d426652098c91f7a03080a737845f0f9756832bc5cdafb430';
 const REPO = path.resolve(__dirname, '../../..');
 
 /**
@@ -390,7 +395,7 @@ describe('a missing photograph', { timeout: 60_000 }, () => {
         expect(await cli(['confirm-missing', other.id, '--version', String(other.version)])).toMatchObject({ exitCode: 1 });
     });
 
-    it('is suggested for other pixels with its file name at a new path, which bind then takes', async () => {
+    it('is suggested for other pixels with its file name at a new path, which bind takes with --path', async () => {
         const w = await missingWorld();
         fs.rmSync(w.lib.file(P_PATH));
         await w.pass();
@@ -403,7 +408,9 @@ describe('a missing photograph', { timeout: 60_000 }, () => {
         const shown = (await runCurationCli(['show', w.missingId], { dataRoot: w.root, libraryRoot: w.lib.root }, {})).output;
         expect(shown).toContain('Linked: edits/landscape.jpg');
         const missing = await w.event(w.missingId);
-        const bound = await bindReplacement({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR });
+        // A suggestion is the owner's to pick: only a file at the photograph's last path binds with no --path (A5 review).
+        expect(await bindReplacement({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: false, code: 'needs-choice' });
+        const bound = await bindReplacement({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR, path: 'edits/landscape.jpg' });
         expect(bound).toMatchObject({ ok: true });
         expect(pendingIn(w.root)).toEqual([expect.objectContaining({ type: 'bind', path: 'edits/landscape.jpg', photoId: w.p, merge: added.photoId })]);
     });
@@ -490,5 +497,210 @@ describe('landscape-rot6.jpg through the Inbox', { timeout: 60_000 }, () => {
             await data.cleanup();
             await lib.cleanup();
         }
+    });
+});
+
+describe('A5 review', { timeout: 60_000 }, () => {
+    const cliIn = (w: MissingWorld, args: string[]) => runCurationCli(args, { dataRoot: w.root, libraryRoot: w.lib.root }, { PHOTOS_ACTOR: ACTOR });
+    const newItemOf = async (w: MissingWorld, photoId: string) => (await listEvents(w.root)).events.find((entry) => entry.type === 'new' && entry.photoId === photoId) as CurationEvent;
+    const rejectedDir = (w: MissingWorld) => path.join(identityPaths(w.root).decisions, 'rejected');
+
+    /** P archived, then its bytes back at `paths`, each a new photograph the pass says is a copy of P. */
+    async function archivedBack(w: MissingWorld, paths = ['returned/landscape.jpg']): Promise<{ items: CurationEvent[] }> {
+        fs.rmSync(w.lib.file(P_PATH));
+        await w.pass();
+        const missing = await w.event(w.missingId);
+        expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
+        await w.pass();
+        for (const at of paths) {
+            fs.mkdirSync(path.dirname(w.lib.file(at)), { recursive: true });
+            fs.writeFileSync(w.lib.file(at), images.original);
+        }
+        const facts = await w.pass();
+        const items: CurationEvent[] = [];
+        for (const at of paths) {
+            const fact = facts.find((entry) => entry.type === 'new' && entry.path === at);
+            expect(fact).toMatchObject({ duplicateOf: w.p });
+            items.push(await newItemOf(w, fact?.photoId as string));
+        }
+        return { items };
+    }
+    const approve = (w: MissingWorld, item: CurationEvent, at?: number) =>
+        approveEvent({ root: w.root, eventId: item.id, expectedVersion: item.version, expectedBase: w.revisionId, actor: ACTOR, choices: {}, ...(at === undefined ? {} : { clock: () => at }) });
+
+    /** The item open again for judgment, saying the restore was refused and why, in list and show. */
+    async function expectRefused(w: MissingWorld, id: string, why: RegExp) {
+        const item = await w.event(id);
+        expect(item.status).toBe('open');
+        expect(item.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: expect.stringMatching(/^The watcher refused the restore of /) });
+        expect(item.decisions.at(-1)?.reason).toMatch(why);
+        expect((await w.registry()).photos[w.p].sourceHealth).toBe('archived');
+        expect((await cliIn(w, ['list'])).output).toContain(item.id);
+        const shown = (await cliIn(w, ['show', id])).output;
+        expect(shown).toContain('Restore refused');
+        expect(shown).toMatch(why);
+    }
+
+    it('shows a pending restore with when and by whom it was asked, and reopens the item when the file moved first', async () => {
+        const w = await missingWorld();
+        const { items: [item] } = await archivedBack(w);
+        const approved = await approve(w, item);
+        expect(approved).toMatchObject({ ok: true });
+        const at = approved.ok ? approved.event.decisions.at(-1)?.at : '';
+        expect((await cliIn(w, ['show', item.id])).output).toContain(`Restore pending: the watcher applies the decision ${pendingIn(w.root)[0].decisionId} for returned/landscape.jpg on its next pass, unless the file is still changing. Requested at ${at} by ${ACTOR}.`);
+        fs.renameSync(w.lib.file('returned/landscape.jpg'), w.lib.file('returned/moved.jpg'));
+        await w.pass();
+        await expectRefused(w, item.id, /there is no image at returned\/landscape\.jpg/);
+    });
+
+    it('refuses a second duplicate while a restore waits, and reopens the one the watcher refuses when two were written', async () => {
+        const w = await missingWorld();
+        const { items: [first, second] } = await archivedBack(w, ['returned/a.jpg', 'returned/b.jpg']);
+        expect(await approve(w, second, Date.parse('2026-11-01T00:00:00.000Z'))).toMatchObject({ ok: true });
+        expect(await approve(w, first)).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining(`A restore of ${w.p} already waits`) });
+        // As if both were written, the way an older build or a hand-copied decision leaves it: hide the first, approve, put it back.
+        const dir = identityPaths(w.root).decisions;
+        const [waiting] = fs.readdirSync(dir).filter((name) => name.endsWith('.json'));
+        fs.renameSync(path.join(dir, waiting), path.join(dir, `${waiting}.hidden`));
+        expect(await approve(w, first, Date.parse('2026-11-02T00:00:00.000Z'))).toMatchObject({ ok: true });
+        fs.renameSync(path.join(dir, `${waiting}.hidden`), path.join(dir, waiting));
+        await w.pass();
+        expect(await w.event(second.id)).toMatchObject({ status: 'resolved' });
+        const refused = await w.event(first.id);
+        expect(refused.status).toBe('open');
+        expect(refused.decisions.at(-1)?.reason).toMatch(new RegExp(`${w.p} is not archived`));
+        expect((await cliIn(w, ['show', first.id])).output).toContain('Restore refused');
+    });
+
+    it('reopens the item once back on v2.0.0 when a v1.7.x rollback rejected its restore', async () => {
+        const w = await missingWorld();
+        const { items: [item] } = await archivedBack(w);
+        expect(await approve(w, item)).toMatchObject({ ok: true });
+        // v1.7.x doesn't know the type, so its pass files the decision under rejected/ with its text.
+        const dir = identityPaths(w.root).decisions;
+        const [name] = fs.readdirSync(dir).filter((entry) => entry.endsWith('.json'));
+        const raw = fs.readFileSync(path.join(dir, name), 'utf8');
+        fs.mkdirSync(rejectedDir(w), { recursive: true });
+        fs.writeFileSync(path.join(rejectedDir(w), name), JSON.stringify({ rejectedAt: '2026-11-03T00:00:00.000Z', reason: 'type must be one of bind, new, archive, retry, reprofile', raw }));
+        fs.rmSync(path.join(dir, name));
+        await w.restartPass();
+        await expectRefused(w, item.id, /type must be one of bind, new, archive, retry, reprofile/);
+    });
+
+    it('says a restore leaves the saved edits unused, and refuses a duplicate whose photo record holds owner copy', async () => {
+        const w = await missingWorld();
+        const { items: [item] } = await archivedBack(w);
+        const edited = await editEvent({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR, choices: { description: { kind: 'described', text: 'A saved description.' } } });
+        expect(edited).toMatchObject({ ok: true });
+        const n = item.photoId as string;
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: item.assetRevision as string, alt: null, title: 'Owner title' }, { expectedVersion: 0, root: w.root });
+        const saved = await w.event(item.id);
+        expect(await approve(w, saved)).toMatchObject({ ok: false, code: 'refused', message: expect.stringContaining("owner's title") });
+        const record = (await readAuthoredRecord(w.root, 'photo', n)) as { version: number };
+        await writeAuthoredRecord({ kind: 'photo', id: n, assetRevision: item.assetRevision as string, alt: null }, { expectedVersion: record.version, root: w.root });
+        const approved = await approve(w, saved);
+        expect(approved).toMatchObject({ ok: true });
+        expect(approved.ok && approved.notes.join(' ')).toContain('The edits saved on this item are not used');
+    });
+
+    it('withdraws no deferred item, no missing item a bind waits on, and no photograph whose record holds owner copy', async () => {
+        const w = await missingWorld();
+        // A deferred new item stays as the curator left it.
+        fs.writeFileSync(w.lib.file('harbor/fresh.jpg'), images.fresh);
+        const [added] = await w.pass();
+        const item = await newItemOf(w, added.photoId as string);
+        expect(await deferEvent({ root: w.root, eventId: item.id, expectedVersion: item.version, actor: ACTOR })).toMatchObject({ ok: true });
+        fs.rmSync(w.lib.file('harbor/fresh.jpg'));
+        await w.pass();
+        expect(await w.event(item.id)).toMatchObject({ status: 'deferred' });
+
+        // Owner copy on the record lists the photograph, so its missing item stays open; a waiting bind keeps it open once the copy goes.
+        fs.writeFileSync(w.lib.file('harbor/kept.jpg'), images.freshReplacement);
+        const [kept] = await w.pass();
+        const r = kept.photoId as string;
+        await writeAuthoredRecord({ kind: 'photo', id: r, assetRevision: kept.assetRevision, alt: null, title: 'Owner title' }, { expectedVersion: 0, root: w.root });
+        fs.rmSync(w.lib.file('harbor/kept.jpg'));
+        await w.pass();
+        const missing = (await listEvents(w.root)).events.find((entry) => entry.type === 'missing' && entry.photoId === r) as CurationEvent;
+        expect(missing.status).toBe('open');
+        fs.writeFileSync(w.lib.file('harbor/other.jpg'), images.third);
+        await w.pass();
+        expect(await bindReplacement({ root: w.root, eventId: missing.id, expectedVersion: (await w.event(missing.id)).version, expectedBase: w.revisionId, actor: ACTOR, path: 'harbor/other.jpg' })).toMatchObject({ ok: true });
+        const record = (await readAuthoredRecord(w.root, 'photo', r)) as { version: number };
+        await writeAuthoredRecord({ kind: 'photo', id: r, assetRevision: kept.assetRevision, alt: null }, { expectedVersion: record.version, root: w.root });
+        await settleSources(w.root, { logger: quiet, clock });
+        expect(await w.event(missing.id)).toMatchObject({ status: 'open' });
+    });
+
+    it('binds with no --path only a file at the photograph\'s last path, so an IMG_0001.JPG from another shoot stays a suggestion', async () => {
+        const w = await missingWorld();
+        fs.mkdirSync(w.lib.file('shoot-a'));
+        fs.writeFileSync(w.lib.file('shoot-a/IMG_0001.JPG'), images.fresh);
+        const [added] = await w.pass();
+        const r = added.photoId as string;
+        await writeAuthoredRecord({ kind: 'photo', id: r, assetRevision: added.assetRevision, alt: null, title: 'Shoot A, frame 1' }, { expectedVersion: 0, root: w.root });
+        fs.rmSync(w.lib.file('shoot-a/IMG_0001.JPG'));
+        await w.pass();
+        fs.mkdirSync(w.lib.file('shoot-b'));
+        fs.writeFileSync(w.lib.file('shoot-b/IMG_0001.JPG'), images.freshReplacement);
+        const [other] = await w.pass();
+        expect(other).toMatchObject({ type: 'new', suggestedFor: r, suggestedBy: 'basename' });
+        const missing = (await listEvents(w.root)).events.find((entry) => entry.type === 'missing' && entry.photoId === r) as CurationEvent;
+        expect(missing.status).toBe('open');
+        const bare = await cliIn(w, ['bind', missing.id, '--version', String(missing.version), '--base', w.revisionId]);
+        expect(bare).toMatchObject({ exitCode: 2 });
+        expect(bare.output).toContain('--path shoot-b/IMG_0001.JPG');
+        expect(pendingIn(w.root)).toEqual([]);
+        expect((await cliIn(w, ['show', missing.id])).output).toContain('Suggested: shoot-b/IMG_0001.JPG has its file name');
+        expect(await cliIn(w, ['bind', missing.id, '--version', String(missing.version), '--base', w.revisionId, '--path', 'shoot-b/IMG_0001.JPG'])).toMatchObject({ exitCode: 0 });
+    });
+});
+
+describe('A5 review: answers to an ambiguous item', () => {
+    it('refuse a photograph an archive or a bind already waits for', async () => {
+        fixture = await createCurationFixture();
+        const f = fixture;
+        const [x, y] = f.fresh;
+        const HELD = 'trips/held.jpg';
+        const registry = await readRegistry(f.root);
+        const bytes = f.revisionOf(x);
+        for (const id of [x, y]) {
+            registry.photos[id].source.present = false;
+            registry.photos[id].sourceHealth = 'ambiguous';
+        }
+        registry.holds = [{ path: HELD, assetRevision: bytes, candidates: [x, y], since: '2026-02-01T00:00:00.000Z' }];
+        await writeRegistry(f.root, registry, registry.version);
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('ambiguous', null, { assetRevision: bytes, path: HELD, candidates: [x, y] })]);
+        const event = (await listEvents(f.root)).events.find((item) => item.type === 'ambiguous') as CurationEvent;
+        const cli = (args: string[]) => runCurationCli(args, { dataRoot: f.root }, { PHOTOS_ACTOR: ACTOR });
+        await writeDecision(f.root, createDecision({ type: 'archive', photoId: x, actor: ACTOR }));
+        await writeDecision(f.root, createDecision({ type: 'bind', path: 'trips/elsewhere.jpg', photoId: y, actor: ACTOR }));
+        const archived = await cli(['bind', event.id, '--version', String(event.version), '--to', x]);
+        expect(archived).toMatchObject({ exitCode: 1 });
+        expect(archived.output).toContain(`An archive of ${x} waits`);
+        const bound = await cli(['resolve', event.id, '--version', String(event.version), '--as', 'replacement-of', y]);
+        expect(bound).toMatchObject({ exitCode: 1 });
+        expect(bound.output).toContain(`A bind for ${y} already waits`);
+    });
+});
+
+describe('A5 review: version stamping', () => {
+    const FROZEN = path.join(REPO, 'lib/curation/events-v1.ts');
+
+    it('reads against a frozen copy of v1.7.0\'s schema that never changes', () => {
+        expect(createHash('sha256').update(fs.readFileSync(FROZEN)).digest('hex')).toBe(FROZEN_SHA256);
+    });
+
+    it('stamps 2 on any value v1.7.0 doesn\'t know, a new type, status, or enum value included', async () => {
+        const { event } = await freshItem();
+        expect(schemaVersionFor(event)).toBe(1);
+        const unknown = [
+            { ...event, type: 'library-unavailable' },
+            { ...event, status: 'held' },
+            { ...event, candidate: { state: 'failed', profileId: `p_${'0'.repeat(16)}`, failure: 'retries-exhausted', at: event.observedAt } },
+            { ...event, derivedFacts: { ...event.derivedFacts, failure: 'io-error' } },
+            { ...event, decisions: [{ action: 'close', at: event.observedAt, by: 'watcher', baseRevisionId: null, resolution: 'withdrawn' }] },
+        ] as unknown as CurationEvent[];
+        for (const sample of unknown) expect(schemaVersionFor(sample), JSON.stringify(sample).slice(0, 120)).toBe(2);
     });
 });
