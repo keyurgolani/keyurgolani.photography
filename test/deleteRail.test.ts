@@ -256,6 +256,43 @@ describe('the delete-call rail', () => {
             // mkdtempDisposable removes its folder when disposed.
             ['viaDisposable', 'disposable.mkdtempDisposableSync'],
             ['viaDisposable', 'disposable.mkdtempDisposable'],
+            // Round 6 (item 31): Reflect.get on child_process.
+            ['viaReflectProcess', 'Reflect.get(cp, …)'],
+            // exec string commands, split into words.
+            ['viaExecWords', 'cp.execSync runs bash with no literal script, so it may read one from stdin or a file'],
+            ['viaExecWords', "cp.execSync runs node -e with require('fs').rmSync"],
+            ['viaExecWords', "cp.execSync runs a python script, which the rail can't read"],
+            // A wrapper's own script flags, and a wrapper that names no command.
+            ['viaWrapperFlags', "execFileSync runs npx -c, which the rail can't read"],
+            ['viaWrapperFlags', "execFileSync runs env -S, which the rail can't read"],
+            ['viaWrapperFlags', "execFileSync runs sudo -s, which the rail can't read"],
+            ['viaWrapperFlags', "execFileSync runs sudo -i, which the rail can't read"],
+            ['viaWrapperFlags', 'execFileSync runs rm'],
+            // Quoted keys.
+            ['viaQuotedKeys', "spawnSync with shell: true and arguments that aren't literals"],
+            ['viaQuotedKeys', "new Worker with eval, which the rail can't read"],
+            ['viaNamespacedWorker', "new workers.Worker with eval, which the rail can't read"],
+            // Indirect eval.
+            ['viaIndirectEval', "eval, which the rail can't read"],
+            ['viaIndirectEval', "globalThis.eval, which the rail can't read"],
+            ['viaIndirectEval', "window.eval, which the rail can't read"],
+            // More loaders.
+            ['viaMoreLoaders', "process['getBuiltinModule']('node:child_process').execSync runs rm"],
+            ['viaMoreLoaders', "globalThis.process.getBuiltinModule('node:child_process').execSync runs rm"],
+            ['viaMoreLoaders', "process.mainModule?.require('node:child_process').execSync runs rm"],
+            // An absolute rm, and a !rm git alias.
+            ['viaAbsoluteAndAlias', 'execFileSync runs rm'],
+            ['viaAbsoluteAndAlias', 'cp.execSync runs rm'],
+            ['viaAbsoluteAndAlias', 'execFileSync runs rm'],
+            // nohup, doas and busybox as wrappers, and npx running rm (M23).
+            ['viaMoreWrappers', 'execFileSync runs git clean'],
+            ['viaMoreWrappers', 'execFileSync runs git rm'],
+            ['viaMoreWrappers', 'execFileSync runs rm'],
+            ['viaMoreWrappers', 'execFileSync runs rm'],
+            // node:vm.
+            ['viaVm', "vm.runInNewContext, which the rail can't read"],
+            ['viaVm', "vm.runInThisContext, which the rail can't read"],
+            ['viaVm', "new vm.Script, which the rail can't read"],
         ]);
     });
 
@@ -273,6 +310,13 @@ describe('the delete-call rail', () => {
             ['<module>', 'module fs-extra/lib/remove'],
             ['<module>', 'module rimraf/dist/sync'],
             ['dyn', 'computed access fsAlias[name]'],
+            // Round 6: default, as the module object itself; re-exports; a data: URL.
+            ['viaNamedDefault', 'computed access fsNamed[name]'],
+            ['viaDestructuredDefault', "whole.exec with a command that isn't a literal"],
+            ['viaDotDefault', "computed access (await import('node:fs')).default[name]"],
+            ['<module>', 're-exports node:fs'],
+            ['<module>', 're-exports node:child_process'],
+            ['viaData', "import() of a data: URL, which the rail can't read"],
         ]);
     });
 });

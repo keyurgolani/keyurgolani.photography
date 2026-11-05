@@ -14,8 +14,11 @@ import { runPurge, runRevoke } from '../purge';
 import { CATALOG_LOCK } from '../repository';
 import { runPurgeCommand, purgeArgs } from '../purge-cli';
 import { references } from '../references';
-import { GC_EXIT_CODES, planDigest, runGc, type GcEntry, type GcOptions, type GcResult } from '../retention';
+import { GC_EXIT_CODES, planDigest, runGc, trashName, type GcEntry, type GcOptions, type GcResult } from '../retention';
 import { gcArgs, runGcCommand } from '../retention-cli';
+import { removeAbandonedStaging } from '../../identity/derivatives';
+import { dataRootStatus } from '../../storage/config';
+import { runVerifyCommand } from '../verify-cli';
 import { readTombstones, TOMBSTONE_GRACE_MS, tombstonesDir } from '../tombstones';
 import { addAssetRevision, B2, cleanupPurgeTemplates, purgeFixture, quiet, snapshot, stamps, writeOpenEvent, writeRevoke, writeStaging, writeTombstone, type PurgeFixture } from './purgeFixtures';
 
@@ -85,13 +88,20 @@ async function purgeD(built: PurgeFixture): Promise<string> {
 
 const folderOf = (built: PurgeFixture, photoId: string, assetRevision = built.first[photoId]) => `assets/${photoId}/${assetRevision}`;
 const assetsOf = (root: string) => new Map([...snapshot(root)].filter(([file]) => file.startsWith('assets/')));
-/** What every report says of a folder set aside whole: the owner's real steps, moving anything in its place to the Trash first, never rm (item 25). */
+/**
+ * What every report says of a folder set aside whole: the owner's real steps
+ * (items 25 and 29a). Anything in its place goes into the data root's trash/
+ * with photos gc --set-aside, then the exact rename back.
+ */
 function wholeText(aside: string, original: string, occupied: boolean, then = 'then revoke, or rerun photos gc'): string {
-    const back = `rename it back to ${original}; ${then}`;
+    const back = `rename it back with mv ${aside} ${original}, from the data root in image-watcher's container; ${then}`;
     return occupied
-        ? `set aside whole at ${aside}, and something else is at ${original}: move that out of the data root to the Trash (mv ${original} ~/.Trash/ from the data root), never rm, then ${back}`
+        ? `set aside whole at ${aside}, and something else is at ${original}: set that aside with photos gc --set-aside ${original}, then ${back}`
         : `set aside whole at ${aside}: ${back}`;
 }
+
+/** What every report says to do with a partial or unknown leftover (item 29a). */
+const leftoverStep = (aside: string) => `set it aside with photos gc --set-aside ${aside}, then rerun photos gc`;
 
 /** GC's per-run markers for a tombstone, by file name. */
 const markers = (root: string, tombstoneId: string) => fs.readdirSync(tombstonesDir(root)).filter((name) => name.startsWith(`${tombstoneId}.collected.`)).sort();
@@ -726,7 +736,7 @@ describe('a delete that fails partway (S5)', { timeout: 120_000 }, () => {
         expect(rerun.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
         expect(rerun.plan?.leftovers).toEqual([expect.objectContaining({ path: expect.stringMatching(new RegExp(`^assets/${built.d}/\\.gc-${D2}-`)), state: 'partial' })]);
         // Item 12: only what's left of a partial delete is permanent, and every place says so.
-        const permanent = /partly deleted.*permanent.*mv assets\/[^ ]+ ~\/\.Trash\/ from the data root\), never rm, then rerun photos gc/;
+        const permanent = /partly deleted.*permanent.*[Ss]et it aside with photos gc --set-aside assets\/[^ ]+, then rerun photos gc/;
         expect((await command(built.root, [], PAST_GRACE)).out.join('\n')).toMatch(permanent);
         expect((await runStatusCommand({ dataRoot: built.root }, { check: true })).output).toMatch(permanent);
         const before = snapshot(built.root);
@@ -1103,7 +1113,7 @@ describe("the files GC compares (item 23)", { timeout: 120_000 }, () => {
 });
 
 describe("the owner's way out, followed step by step (item 25)", { timeout: 120_000 }, () => {
-    /** Run A sets D aside, a rebuilt copy lands in its place, and A's put-back fails ENOTEMPTY. Returns the aside and a stand-in for the Trash outside the data root. */
+    /** Run A sets D aside, a rebuilt copy lands in its place, and A's put-back fails ENOTEMPTY. Returns the aside. */
     async function stuck(built: PurgeFixture) {
         const id = await purgeD(built);
         const planned = await gc(built.root, PAST_GRACE);
@@ -1113,8 +1123,7 @@ describe("the owner's way out, followed step by step (item 25)", { timeout: 120_
             fs.cpSync(at, path.join(built.root, folderOf(built, built.d)), { recursive: true });
             throw new Error('a fault just before the delete');
         } } });
-        const trash = fs.mkdtempSync(path.join(path.dirname(built.root), 'Trash-'));
-        return { id, aside, trash, whole: wholeText(aside, folderOf(built, built.d), true) };
+        return { id, aside, whole: wholeText(aside, folderOf(built, built.d), true) };
     }
 
     it('gives the same real steps in revoke, status --check, the plan and its kept line', async () => {
@@ -1125,24 +1134,27 @@ describe("the owner's way out, followed step by step (item 25)", { timeout: 120_
         const { out } = await command(built.root, [], PAST_GRACE);
         expect(out.find((line) => line.startsWith('Kept '))).toContain(whole);
         expect(out.find((line) => line.startsWith('Left by '))).toContain(whole);
-        expect(out.join('\n')).not.toMatch(/\brm -|rm -rf/);
+        expect(out.join('\n')).not.toMatch(/\brm -|rm -rf|~\/\.Trash/);
     });
 
-    it('ends in a revoke when the owner moves what is in its place to the Trash and renames the folder back', async () => {
-        const built = await fixture();
-        const { id, aside, trash } = await stuck(built);
-        // As the message says: mv <it> ~/.Trash/, here a stand-in Trash outside the data root, then rename the .gc- folder back.
-        fs.renameSync(path.join(built.root, folderOf(built, built.d)), path.join(trash, path.basename(folderOf(built, built.d))));
+    /** The steps, as the messages give them: photos gc --set-aside what is in its place, then the rename back. */
+    async function followSteps(built: PurgeFixture, aside: string): Promise<void> {
+        const io = { out: () => undefined, err: () => undefined };
+        expect(await runGcCommand(built.root, gcArgs(['--set-aside', folderOf(built, built.d)]), io, { clock: at(PAST_GRACE), logger: quiet, waitMs: 200 })).toBe(0);
         fs.renameSync(path.join(built.root, aside), path.join(built.root, folderOf(built, built.d)));
+    }
+
+    it('ends in a revoke when the owner sets aside what is in its place with photos gc --set-aside and renames the folder back', async () => {
+        const built = await fixture();
+        const { id, aside } = await stuck(built);
+        await followSteps(built, aside);
         expect((await revoke(built, id)).outcome).toBe('REVOKED');
     });
 
     it('ends in a finished takedown when the owner takes the same steps and reruns photos gc instead', async () => {
         const built = await fixture();
-        await stuck(built).then(({ aside, trash }) => {
-            fs.renameSync(path.join(built.root, folderOf(built, built.d)), path.join(trash, path.basename(folderOf(built, built.d))));
-            fs.renameSync(path.join(built.root, aside), path.join(built.root, folderOf(built, built.d)));
-        });
+        const { aside } = await stuck(built);
+        await followSteps(built, aside);
         const planned = await gc(built.root, PAST_GRACE);
         expect(planned.plan?.delete.map((entry) => entry.path)).toEqual([folderOf(built, built.d)]);
         const applied = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
@@ -1173,7 +1185,7 @@ describe("item 21's reporting (item 26)", { timeout: 120_000 }, () => {
         const planned = await gc(built.root, PAST_GRACE);
         let n = 0;
         let aside = '';
-        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target, removeAt) => {
+        const run = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target, removeAt) => {
             n += 1;
             if (n === 1) return removeAt(target);
             aside = path.relative(fs.realpathSync(built.root), target).split(path.sep).join('/');
@@ -1182,7 +1194,36 @@ describe("item 21's reporting (item 26)", { timeout: 120_000 }, () => {
         const refused = await revoke(built, id);
         expect(refused.outcome).toBe('ALREADY_COLLECTED');
         expect(refused.message).toContain(folderOf(built, built.d));
-        expect(refused.message).toContain(wholeText(aside, folderOf(built, built.d, D2), false, 'then rerun photos gc'));
+        // Item 30: revoke, status, the plan and GC's own stop all say "then rerun photos gc", never "revoke", since a folder of the tombstone was reached.
+        const said = wholeText(aside, folderOf(built, built.d, D2), false, 'then rerun photos gc');
+        expect(refused.message).toContain(said);
+        expect(run.message).toContain(said);
+        expect((await runStatusCommand({ dataRoot: built.root }, { check: true })).output).toContain(said);
+        expect((await command(built.root, [], PAST_GRACE)).out.join('\n')).toContain(said);
+    });
+
+    it("M7: a partial leftover with an incomplete copy in its place reads permanent in revoke, status and the plan", async () => {
+        const built = await fixture();
+        const id = await purgeD(built);
+        const saved = fs.mkdtempSync(path.join(path.dirname(built.root), 'saved-'));
+        fs.cpSync(path.join(built.root, folderOf(built, built.d)), path.join(saved, 'copy'), { recursive: true });
+        const planned = await gc(built.root, PAST_GRACE);
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target, removeAt) => {
+            const set = path.join(target, built.profileId);
+            const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json');
+            await removeAt(path.join(set, file));
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        } } });
+        // A copy in its place, cut short, so nothing there holds what was recorded.
+        const place = path.join(built.root, folderOf(built, built.d));
+        fs.cpSync(path.join(saved, 'copy'), place, { recursive: true });
+        const [file] = fs.readdirSync(path.join(place, built.profileId)).filter((name) => name !== 'manifest.json').sort();
+        fs.truncateSync(path.join(place, built.profileId, file), 1);
+        const refused = await revoke(built, id);
+        expect(refused.outcome).toBe('ALREADY_COLLECTED');
+        for (const text of [refused.message, (await runStatusCommand({ dataRoot: built.root }, { check: true })).output, (await command(built.root, [], PAST_GRACE)).out.join('\n')]) {
+            expect(text).toMatch(/permanent/);
+        }
     });
 
     it("S3 and S4: a partial leftover isn't permanent while the folder's place holds what was recorded, revoke, status and the plan agree, and it keeps the folder", async () => {
@@ -1201,7 +1242,7 @@ describe("item 21's reporting (item 26)", { timeout: 120_000 }, () => {
         } } });
         // A rebuilt copy holding everything recorded is in its place.
         fs.cpSync(path.join(saved, 'copy'), path.join(built.root, folderOf(built, built.d)), { recursive: true });
-        const step = `move ${aside} out of assets/ to the Trash (mv ${aside} ~/.Trash/ from the data root), never rm, then rerun photos gc`;
+        const step = leftoverStep(aside);
 
         const planned2 = await gc(built.root, PAST_GRACE);
         expect(planned2.plan?.kept).toContainEqual(expect.objectContaining({ path: folderOf(built, built.d), reason: 'set-aside-leftover' }));
@@ -1220,6 +1261,8 @@ describe('a .gc- name GC only half reads keeps the folder (item 28)', { timeout:
     it.each([
         ['a revision but no run', (built: PurgeFixture) => `.gc-${built.first[built.d]}-not-a-run`],
         ['no revision at all', () => '.gc-left-by-hand'],
+        // M10: a full revision with junk run straight on, no dash.
+        ['a revision with junk after it', (built: PurgeFixture) => `.gc-${built.first[built.d]}junk`],
     ])('keeps the tombstoned folder for %s', async (_what, name) => {
         const built = await fixture();
         await purgeD(built);
@@ -1227,5 +1270,160 @@ describe('a .gc- name GC only half reads keeps the folder (item 28)', { timeout:
         const planned = await gc(built.root, PAST_GRACE);
         expect(planned.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
         expect(planned.plan?.kept).toContainEqual(expect.objectContaining({ path: folderOf(built, built.d), reason: 'set-aside-leftover', detail: `assets/${built.d}/${name(built)}` }));
+    });
+});
+
+describe('photos gc --set-aside, the data root trash/ (item 29a)', { timeout: 120_000 }, () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    async function setAside(built: PurgeFixture, target: string, now = PAST_GRACE) {
+        const out: string[] = [];
+        const exitCode = await runGcCommand(built.root, gcArgs(['--set-aside', target]), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(now), logger: quiet, waitMs: 200 });
+        return { exitCode, text: out.join('\n') };
+    }
+
+    /** D purged, and a rebuilt copy of its set in a .gc- aside, as a stopped run could leave one. */
+    async function withLeftover(built: PurgeFixture): Promise<string> {
+        await purgeD(built);
+        const aside = `assets/${built.d}/.gc-${built.first[built.d]}-0f0f0f0f0f0f0f0f-0f0f0f0f-0000-4000-8000-0000000000aa`;
+        fs.cpSync(path.join(built.root, folderOf(built, built.d)), path.join(built.root, aside), { recursive: true });
+        return aside;
+    }
+
+    it("renames a tombstoned folder into trash/, inside the data root and on its device, and deletes nothing", async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        expect(exitCode).toBe(0);
+        const name = trashName(built.d, built.first[built.d], PAST_GRACE);
+        const trash = path.join(built.root, 'trash');
+        expect(fs.existsSync(path.join(built.root, folderOf(built, built.d)))).toBe(false);
+        // On the persisted data-root volume: under the data root, on its device, not on a container's own disk.
+        expect(fs.lstatSync(trash).dev).toBe(fs.lstatSync(built.root).dev);
+        expect(fs.lstatSync(path.join(trash, name)).dev).toBe(fs.lstatSync(built.root).dev);
+        expect(path.relative(fs.realpathSync(built.root), fs.realpathSync(path.join(trash, name)))).toBe(`trash/${name}`);
+        // Every byte is there, under trash/.
+        const after = snapshot(built.root);
+        for (const [file, value] of before) {
+            const moved = file.startsWith(`${folderOf(built, built.d)}/`) ? `trash/${name}/${file.slice(folderOf(built, built.d).length + 1)}` : file === folderOf(built, built.d) ? `trash/${name}` : file;
+            expect(after.get(moved), file).toBe(value);
+        }
+        expect(text).toContain(`trash/${name}`);
+        expect(text).toMatch(/Emptying trash\/ is your own step/);
+        expect(text).not.toMatch(/\brm\b|~\/\.Trash/);
+    });
+
+    it('sets aside a .gc- leftover too', async () => {
+        const built = await fixture();
+        const aside = await withLeftover(built);
+        expect((await setAside(built, aside)).exitCode).toBe(0);
+        expect(fs.existsSync(path.join(built.root, aside))).toBe(false);
+    });
+
+    it.each([
+        ['a catalog folder', () => 'catalog/revisions'],
+        ['the registry', () => 'identity'],
+        ['a photo folder', (built: PurgeFixture) => `assets/${built.d}`],
+        ['a profile folder', (built: PurgeFixture) => `${folderOf(built, built.d)}/${built.profileId}`],
+        ['a path out of the data root', () => '../library'],
+        ['a library path', (built: PurgeFixture) => path.join(path.dirname(built.root), 'library')],
+        ['trash/ itself', () => 'trash'],
+    ])('refuses %s, exits 1, and changes nothing', async (_what, target) => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(path.dirname(built.root), 'library'), { recursive: true });
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, target(built));
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/NOT_AN_ASSET_PATH/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('refuses a folder the photo library holds, by the library guard', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', path.join(built.root, folderOf(built, built.d), built.profileId));
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/photo library/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('refuses a folder no standing tombstone takes down, such as one the live revision shows', async () => {
+        const built = await fixture();
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.a));
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/NOT_TAKEN_DOWN/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('refuses a destination that is there already', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash', trashName(built.d, built.first[built.d], PAST_GRACE)), { recursive: true });
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/EXISTS/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('refuses a move across devices, as trash/ on another disk would be', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const target = fs.realpathSync(path.join(built.root, folderOf(built, built.d)));
+        const real = fs.lstatSync;
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+            if (typeof each !== 'string' || path.resolve(each) !== target || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { dev: stat.dev + 1 });
+        }) as typeof fs.lstatSync);
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/CROSS_DEVICE/);
+        vi.restoreAllMocks();
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('runs under the catalog lock: a held lock exits 3 and moves nothing', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const before = snapshot(built.root);
+        const result = await withLock(CATALOG_LOCK, { root: built.root, waitMs: 0 }, () => setAside(built, folderOf(built, built.d)));
+        expect(result.exitCode).toBe(3);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('is skipped by every walker: gc, references, verify, the staging clear and the data-root check', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        await setAside(built, folderOf(built, built.d));
+        const trash = snapshot(path.join(built.root, 'trash'));
+        const planned = await gc(built.root, PAST_GRACE);
+        const named = JSON.stringify(planned.plan);
+        expect(named).not.toContain('trash/');
+        expect(JSON.stringify(await references(built.root, { live: true }))).not.toContain('trash');
+        const lines: string[] = [];
+        const verified = await runVerifyCommand(built.root, { json: false }, { out: (line) => lines.push(line), err: (line) => lines.push(line) });
+        expect(verified).toBe(0);
+        expect(lines.join('\n')).not.toContain('trash');
+        expect(await removeAbandonedStaging(built.root, { logger: { log: () => undefined, warn: () => undefined, error: () => undefined } })).toEqual([]);
+        expect(dataRootStatus({ root: built.root }).state).toBe('ready');
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
+        expect(snapshot(path.join(built.root, 'trash'))).toEqual(trash);
+    });
+
+    it("is named in photos status, with what is in it and its size, and emptying it is the owner's own step", async () => {
+        const built = await fixture();
+        await purgeD(built);
+        await setAside(built, folderOf(built, built.d));
+        const name = trashName(built.d, built.first[built.d], PAST_GRACE);
+        const { output } = await runStatusCommand({ dataRoot: built.root });
+        expect(output).toMatch(new RegExp(`Trash: 1 folder, \\d+\\.\\d kB, in trash/: ${name}\\. Emptying trash/ is your own step\\.`));
+        expect(output).not.toMatch(/\brm\b/);
     });
 });

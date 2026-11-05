@@ -10,6 +10,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
+import * as vm from 'node:vm';
+import * as workers from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
 
 declare const fse: { remove(dir: string): Promise<void>; removeSync(dir: string): void; emptyDir(dir: string): Promise<void>; emptyDirSync(dir: string): void };
@@ -200,4 +202,64 @@ export function viaWrappers(args: string[]): void {
 export async function viaDisposable(): Promise<void> {
     disposable.mkdtempDisposableSync('x');
     await disposable.mkdtempDisposable('y');
+}
+
+// Round 6 (#181's A10 review, items 31 and 32): the rail's false negatives.
+
+export function viaReflectProcess(): void {
+    Reflect.get(cp, 'execSync');
+}
+
+export function viaExecWords(): void {
+    cp.execSync('bash -s', { input: 'echo hi' });
+    cp.execSync('node -e "require(\'fs\').rmSync(1)"');
+    cp.execSync('python -c "print(1)"');
+}
+
+export function viaWrapperFlags(): void {
+    execFileSync('npx', ['-c', 'echo hi']);
+    execFileSync('env', ['-S', 'sh -c "echo hi"']);
+    execFileSync('sudo', ['-s']);
+    execFileSync('sudo', ['-i']);
+    execFileSync('xargs', ['-I', 'rm -rf {}']);
+}
+
+export function viaQuotedKeys(file: string): void {
+    spawnSync('ls', [file], { 'shell': true });
+    void new Worker('x', { 'eval': true });
+}
+
+export function viaNamespacedWorker(code: string): void {
+    void new workers.Worker(code, { eval: true });
+}
+
+export function viaIndirectEval(code: string): void {
+    (0, eval)(code);
+    globalThis.eval(code);
+    window.eval(code);
+}
+
+export function viaMoreLoaders(): void {
+    process['getBuiltinModule']('node:child_process').execSync('rm -rf a');
+    globalThis.process.getBuiltinModule('node:child_process').execSync('rm -rf b');
+    process.mainModule?.require('node:child_process').execSync('rm -rf c');
+}
+
+export function viaAbsoluteAndAlias(): void {
+    execFileSync('/usr/local/bin/rm', ['-rf', 'x']);
+    cp.execSync('/usr/local/bin/rm -rf x');
+    execFileSync('git', ['config', 'alias.wipe', '!rm -rf .']);
+}
+
+export function viaMoreWrappers(): void {
+    execFileSync('nohup', ['git', 'clean', '-fd']);
+    execFileSync('doas', ['git', 'rm', 'x']);
+    execFileSync('busybox', ['rm', '-rf', 'x']);
+    execFileSync('npx', ['--yes', 'rm', '-rf', 'x']);
+}
+
+export function viaVm(code: string): void {
+    vm.runInNewContext(code);
+    vm.runInThisContext(code);
+    void new vm.Script(code);
 }
