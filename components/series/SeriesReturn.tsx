@@ -84,11 +84,17 @@ function endFind(): void {
     pendingFind = null;
 }
 
-/** Focus `held`'s photograph if it's on the page, else the heading, and use the record up. */
+/**
+ * Focus `held`'s photograph if it's on the page, else the heading, and use the
+ * record up. Focus the visitor moved during the round trip stays where it is.
+ */
 function landReturn(held: HeldKeys): void {
-    const target = openerElement(held.record);
-    if (target === null) focusHeading();
-    else focusInView(target);
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) {
+        const target = openerElement(held.record);
+        if (target === null) focusHeading();
+        else focusInView(target);
+    }
     clearReturn();
 }
 
@@ -117,12 +123,14 @@ function navigationType(): string | undefined {
  * - When a return's saved pages can't bring its photograph back (no extent,
  *   one for another revision, or one that ended without it), it asks the
  *   server once for the page that holds it, with `?photo=` and no scroll.
- *   When that page lands (in place, or mounted afresh), it writes `kgSeriesPages` and `kgSeriesReturn`
- *   back before #6 reads them (the navigation drops both, #6's limit 24),
- *   and focuses the photograph. Only when the server's answer doesn't hold
- *   it (it left the revision) does focus go to the series heading. If the
- *   answer never lands, RESTORE_WAIT_MS later focus goes there from the
- *   body and the record is used up.
+ *   When that page lands (in place, or mounted afresh), it writes
+ *   `kgSeriesPages` and `kgSeriesReturn` back before #6 reads them (the
+ *   navigation drops both, #6's limit 24), and focuses the photograph. Only
+ *   when the server's answer doesn't hold it (it left the revision) does
+ *   focus go to the series heading. If the answer never lands,
+ *   RESTORE_WAIT_MS later focus goes there. Either way it moves focus only
+ *   from the body, never from where the visitor put it, and the record is
+ *   used up.
  * - Back to a series page that mounts again (after a reload on the Viewer,
  *   or any return that renders the page afresh) restores the scroll offset
  *   and focuses the opener. When the opener is past what's loaded and #6 is
@@ -206,8 +214,7 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
                     // The answer never landed: put focus somewhere sensible and use the record up.
                     if (pendingFind?.timer !== timer) return;
                     endFind();
-                    if (document.activeElement === null || document.activeElement === document.body) landReturn(held);
-                    else clearReturn();
+                    landReturn(held);
                 }, RESTORE_WAIT_MS);
                 pendingFind = { ...held, timer };
                 router.replace(hrefWithPhoto(path, lost.photoId), { scroll: false });
