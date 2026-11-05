@@ -118,6 +118,8 @@ describe('PublishScreen', () => {
         const { jumpTo } = await import('../jump');
         document.body.innerHTML = '<details><summary>Show</summary><p id="chg-target-summary" tabindex="-1">Row</p></details>';
         const details = document.querySelector('details') as HTMLDetailsElement;
+        // jsdom lays nothing out, so it has no scrollIntoView.
+        (document.getElementById('chg-target-summary') as HTMLElement).scrollIntoView = () => undefined;
         jumpTo({ preventDefault: () => undefined } as never, 'chg-target-summary');
         expect(details.open).toBe(true);
         expect(document.activeElement?.id).toBe('chg-target-summary');

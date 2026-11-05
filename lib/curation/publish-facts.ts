@@ -1,4 +1,5 @@
 import type { HistoryView } from './publish-history';
+import type { TextPart } from './text-diff';
 
 /**
  * #16's Publish screen (16-3): the view the page renders and the facts that
@@ -30,7 +31,8 @@ export interface OrderCompare {
 }
 
 export type Compare =
-    | { type: 'text'; before: string | null; after: string | null }
+    /** `diff`: the words kept, removed and added (A9), which the screen shows as `<del>` and `<ins>`. */
+    | { type: 'text'; before: string | null; after: string | null; diff?: TextPart[] }
     | { type: 'images'; before: Picture | null; after: Picture | null }
     | OrderCompare
     /** A new photograph's description, on its own: there is no published one to set it beside. */
@@ -66,6 +68,22 @@ export type Fix =
     /** `command`: the photos command with the record's full ID, which a rebase conflict's fix carries (15-4). */
     | { type: 'hint'; text: string; command?: string };
 
+/**
+ * A9's "Use the published value" on a row: the record and field the writer
+ * puts back, and exactly what the page read of it. `record` is the
+ * action's accessible name after the label ("the order of Salt Roads"), and
+ * `note` says when it puts back more than the row shows.
+ */
+export interface UsePublishedFix {
+    kind: 'site' | 'series' | 'photo';
+    id: string;
+    field: string;
+    version: number;
+    valueHash: string;
+    record: string;
+    note?: string;
+}
+
 export interface LedgerRow {
     id: string;
     kind: KindLabel;
@@ -75,6 +93,7 @@ export interface LedgerRow {
     blocks: boolean;
     compare?: Compare;
     fix?: Fix;
+    usePublished?: UsePublishedFix;
 }
 
 export interface Ledger {
@@ -162,6 +181,8 @@ export type Answer =
     | { kind: 'failed'; heading: string; body: string; live: RevisionFacts | null; previous: RevisionFacts | null; retry: 'validate' | 'publish'; history?: HistoryView }
     | { kind: 'not-validated' }
     | { kind: 'fixed'; rowId: string }
+    /** A9: Use the published value wrote the live value back; the row leaves the ledger, so this says what happened. */
+    | { kind: 'reverted'; text: string }
     | { kind: 'fix-refused'; rowId: string; text: string };
 
 /** Who made the active revision live, read from its activation: a publish or a rollback, by an actor, at a time. */
@@ -171,7 +192,19 @@ export interface Publisher {
     at: string;
 }
 
-export type Intent = 'validate' | 'publish' | 'mark-description' | 'mark-reviewed';
+export type Intent = 'validate' | 'publish' | 'mark-description' | 'mark-reviewed' | 'use-published';
+
+/**
+ * A9's watch (lib/curation/publish-watch.ts): what the server says when the
+ * open page asks again. `ok`: the rows stale now, by row ID with their
+ * summaries, and whether the draft compiles to another candidate than the
+ * page shows. `base-moved`: another revision is live. `unavailable`: the
+ * input wasn't the page's, or the catalog couldn't be read.
+ */
+export type WatchAnswer =
+    | { kind: 'ok'; stale: { rowId: string; summary: string }[]; draftChanged: boolean }
+    | { kind: 'base-moved'; live: RevisionFacts }
+    | { kind: 'unavailable' };
 
 /**
  * What the screen's one action returns. `serial` grows with every answer, so
@@ -363,7 +396,7 @@ const PREVIEW_PANEL_TITLE = 'Visitor preview';
  * from the page or the answer, and an answer that moved the pointer carries
  * the new one, so the page never shows a number it no longer believes.
  */
-export function displayFacts(view: ScreenView, answer: Answer | null, previewHref: string | null): DisplayFacts {
+export function displayFacts(view: ScreenView, answer: Answer | null, previewHref: string | null, baseMoved: RevisionFacts | null = null): DisplayFacts {
     const n = view.draftNumber;
     const fresh = answer && (answer.kind === 'blocked' || answer.kind === 'blocked-at-publish') ? answer : null;
     // A passing Validate is the gate's word: no row blocks then, whatever the page predicted on load.
@@ -446,16 +479,20 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         }, true);
     }
 
-    if (answer?.kind === 'changed' || answer?.kind === 'someone-published') {
-        const pointer = answer.kind === 'someone-published' ? answer.live : view.active;
-        const previous = answer.kind === 'someone-published' ? answer.previous : null;
+    // A9: the watch found another revision live after the page loaded. An answer that says more about it reads first.
+    const moved = baseMoved && answer?.kind !== 'changed' && answer?.kind !== 'someone-published' ? baseMoved : null;
+    if (answer?.kind === 'changed' || answer?.kind === 'someone-published' || moved) {
+        const pointer = answer?.kind === 'someone-published' ? answer.live : moved ?? view.active;
+        const previous = answer?.kind === 'someone-published' ? answer.previous : null;
         return {
             mode: 'out-of-date',
             heading: 'Preview your draft',
             countLine: OUT_OF_DATE_COUNT,
             revision: { current: `Current public revision ${pointer.number}`, hashes: hashes(pointer, false) },
             ledgerHeading: 'Change ledger, out of date',
-            outOfDate: `This compares the draft this page loaded against revision ${view.active.number}.`,
+            outOfDate: moved
+                ? `Base moved. Revision ${moved.number} went live after this page loaded, so this compares the draft against revision ${view.active.number}.`
+                : `This compares the draft this page loaded against revision ${view.active.number}.`,
             groups: draftGroups,
             compareLabels: draftLabels,
             publishedLabels: false,
@@ -467,7 +504,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
                 frameTitle: 'Visitor preview of the draft catalog',
                 frameSrc: null,
                 frameNote: 'Load the updated ledger to preview the new draft.',
-                ...(answer.kind === 'someone-published' ? rollbackLine(false, pointer, previous) : rollbackLine(true, view.active, null, view.rollbackReady)),
+                ...(answer?.kind === 'someone-published' ? rollbackLine(false, pointer, previous) : moved ? rollbackLine(false, pointer, null) : rollbackLine(true, view.active, null, view.rollbackReady)),
             },
             bar: { validate: 'hidden', publish: 'hidden', loadUpdated: true },
             ledger,

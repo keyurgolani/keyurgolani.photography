@@ -9,7 +9,9 @@
 .toolbar {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
+  column-gap: 1rem;
   min-height: 44px;
   margin: 0;
   padding: 0 var(--site-gutter);
@@ -51,4 +53,81 @@
    line its toolbar opens with (the design review's P2-3). Dark keeps the summary box's fill as the edge. */
 :global(html[data-theme='black']) .frame[data-embedded='true'] {
   border-bottom: 1px solid var(--gah-rule-strong);
+}
+
+/* A9: the full preview's toolbar: the short hash, the size presets and the way back. */
+.hash {
+  color: var(--gah-ink-soft);
+  font-family: var(--gah-font-mono, ui-monospace, monospace);
+  font-size: var(--gah-type-label);
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.preset {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--gah-ink);
+  cursor: pointer;
+}
+
+.preset input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: var(--gah-ink);
+}
+
+.size {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+.back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  margin-inline-start: auto;
+  color: var(--gah-ink);
+}
+
+/* The presets' box fills the column as the bare iframe does; a preset's frame sits in it with room for the focus ring on
+   every side (contract rule 4). */
+.stage {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sizer {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.stage:not([data-preset='fit']) {
+  padding: 6px;
+}
+
+.stage:not([data-preset='fit']) .sizer {
+  flex: none;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

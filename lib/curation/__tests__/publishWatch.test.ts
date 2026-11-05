@@ -80,8 +80,8 @@ function harness(answers: (WatchAnswer | Error)[]) {
     const settle = async () => {
         while (pending.length > 0) {
             (pending.shift() as () => void)();
-            await Promise.resolve();
-            await Promise.resolve();
+            // A real macrotask, so the watch's own continuation runs before the next step.
+            await new Promise((resolve) => setTimeout(resolve, 0));
         }
     };
     /** Move the clock on, firing each timer due, and let their checks answer. */

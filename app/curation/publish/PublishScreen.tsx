@@ -24,8 +24,13 @@ import {
     type OrderCompare,
     type PublishState,
     type ReviewLabel,
+    type RevisionFacts,
     type ScreenView,
+    type UsePublishedFix,
+    type WatchAnswer,
 } from '@/lib/curation/publish-facts';
+import { createWatch, watchNews } from '@/lib/curation/publish-watch';
+import type { TextPart } from '@/lib/curation/text-diff';
 import styles from './publish.module.css';
 
 /**
@@ -141,6 +146,38 @@ function OrderBlock({ compare, side }: { compare: OrderCompare; side: 'before' |
     );
 }
 
+/**
+ * A9: one side of a text change, its words kept as they are and the rest in
+ * `<del>` (the published side) or `<ins>` (the draft's), each with a hidden
+ * word a screen reader says, since most don't announce the elements.
+ */
+function Words({ parts, side }: { parts: TextPart[]; side: 'before' | 'after' }) {
+    return (
+        <>
+            {parts.map((part, index) => {
+                if (part.type === 'same') return <Fragment key={index}>{part.text}</Fragment>;
+                if (side === 'before' && part.type === 'removed') {
+                    return (
+                        <del key={index} className={styles.removed}>
+                            <span className={curator.visuallyHidden}>removed: </span>
+                            {part.text}
+                        </del>
+                    );
+                }
+                if (side === 'after' && part.type === 'added') {
+                    return (
+                        <ins key={index} className={styles.added}>
+                            <span className={curator.visuallyHidden}>added: </span>
+                            {part.text}
+                        </ins>
+                    );
+                }
+                return null;
+            })}
+        </>
+    );
+}
+
 function Comparison({ compare, labels }: { compare: Compare; labels: Labels }) {
     if (compare.type === 'description') {
         return (
@@ -157,11 +194,11 @@ function Comparison({ compare, labels }: { compare: Compare; labels: Labels }) {
             <dl className={styles.compare}>
                 <div>
                     <dt>{labels.before}</dt>
-                    <dd>{compare.before ?? <span className={styles.none}>None yet</span>}</dd>
+                    <dd>{compare.before === null ? <span className={styles.none}>None yet</span> : compare.diff ? <Words parts={compare.diff} side="before" /> : compare.before}</dd>
                 </div>
                 <div>
                     <dt>{labels.after}</dt>
-                    <dd>{compare.after ?? <span className={styles.none}>None</span>}</dd>
+                    <dd>{compare.after === null ? <span className={styles.none}>None</span> : compare.diff ? <Words parts={compare.diff} side="after" /> : compare.after}</dd>
                 </div>
             </dl>
         );
@@ -364,6 +401,42 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
     );
 }
 
+/** A9: Use the published value, a native submit in its own form, named for the record; the server action is the gate. */
+function UsePublishedAction({ row, fix, ctx }: { row: LedgerRow; fix: UsePublishedFix; ctx: FixContext }) {
+    const refused = ctx.refusal?.rowId === row.id ? ctx.refusal.text : null;
+    return (
+        <div className={styles.restamp}>
+            <form action={ctx.dispatch}>
+                <input type="hidden" name="intent" value="use-published" />
+                <input type="hidden" name="rowId" value={row.id} />
+                <input type="hidden" name="kind" value={fix.kind} />
+                <input type="hidden" name="id" value={fix.id} />
+                <input type="hidden" name="field" value={fix.field} />
+                <input type="hidden" name="version" value={fix.version} />
+                <input type="hidden" name="valueHash" value={fix.valueHash} />
+                <input type="hidden" name="active" value={ctx.view.active.revisionId} />
+                <button
+                    type="submit"
+                    className={curator.button}
+                    aria-describedby={[fix.note ? `${row.id}-published-note` : '', refused ? 'fix-refusal' : ''].filter(Boolean).join(' ') || undefined}
+                    aria-disabled={refused || ctx.busy ? true : undefined}
+                    data-off={refused ? 'true' : undefined}
+                    onClick={(event) => (refused ? event.preventDefault() : ctx.guard(event, 'use-published'))}
+                >
+                    <Undo2 size={16} aria-hidden="true" />
+                    Use the published value
+                    <span className={curator.visuallyHidden}>: {fix.record}</span>
+                </button>
+            </form>
+            {fix.note ? (
+                <p id={`${row.id}-published-note`} className={styles.fixHint}>
+                    {fix.note}
+                </p>
+            ) : null}
+        </div>
+    );
+}
+
 function Row({ row, facts, ctx }: { row: LedgerRow; facts: DisplayFacts; ctx: FixContext }) {
     const fixOpen = row.fix?.type === 'description' && ctx.open === row.id;
     const blocks = row.blocks && facts.mode === 'draft';
@@ -391,27 +464,42 @@ function Row({ row, facts, ctx }: { row: LedgerRow; facts: DisplayFacts; ctx: Fi
             {row.detail && facts.mode !== 'live' ? <p className={styles.detail}>{localize(row.detail, ctx.zone)}</p> : null}
             {/* While its fix is open, the fix shows the same values beside the photograph. */}
             {row.compare && !fixOpen ? <Comparison compare={row.compare} labels={facts.compareLabels} /> : null}
-            {row.fix && facts.showFixes && blocks ? (
+            {(row.fix || row.usePublished) && facts.showFixes && blocks ? (
                 <div className={styles.rowFix}>
-                    <FixAction row={row} fix={row.fix} ctx={ctx} />
+                    {row.fix ? <FixAction row={row} fix={row.fix} ctx={ctx} /> : null}
+                    {row.usePublished ? <UsePublishedAction row={row} fix={row.usePublished} ctx={ctx} /> : null}
                 </div>
             ) : null}
         </li>
     );
 }
 
+/** A9: a group of more rows than this starts collapsed, in a native disclosure. */
+export const GROUP_COLLAPSE_AFTER = 50;
+
 function Group({ heading, rows, tone, facts, ctx }: { heading: string; rows: LedgerRow[]; tone: 'authored' | 'derived' | 'health'; facts: DisplayFacts; ctx: FixContext }) {
     if (rows.length === 0) return null;
+    const list = (
+        <ul className={styles.rows}>
+            {rows.map((row) => (
+                <Row key={row.id} row={row} facts={facts} ctx={ctx} />
+            ))}
+        </ul>
+    );
     return (
         <section className={styles.group} data-group={tone} aria-labelledby={`group-${tone}`}>
             <h3 id={`group-${tone}`} className={styles.groupHeading}>
                 {heading} <span className={styles.count}>({rows.length})</span>
             </h3>
-            <ul className={styles.rows}>
-                {rows.map((row) => (
-                    <Row key={row.id} row={row} facts={facts} ctx={ctx} />
-                ))}
-            </ul>
+            {rows.length > GROUP_COLLAPSE_AFTER ? (
+                // A link to a row inside opens it (jump.ts), and so does find in page.
+                <details className={styles.collapse}>
+                    <summary className={styles.collapseSummary}>Show all {rows.length} changes in this group</summary>
+                    {list}
+                </details>
+            ) : (
+                list
+            )}
         </section>
     );
 }
@@ -635,17 +723,61 @@ interface PublishScreenProps {
     history?: ReactNode;
     /** How many History entries the page shows and the revision it checked (`?history=`, `?check=`), which an answer keeps. */
     historyParams?: { shown: number | null; check: number | null };
+    /** A9: the read-only server action the watch asks every 60 s (./actions.ts's watchPublish), passed down like `action`. */
+    watch?: (input: { draftId: string; active: string }) => Promise<WatchAnswer>;
 }
 
-export default function PublishScreen({ view, previewHref, openFix, action, history, historyParams }: PublishScreenProps) {
+/** Answers that moved the live revision from this page or saw it move; the watch has nothing to add after one. */
+const POINTER_MOVED: ReadonlySet<Answer['kind']> = new Set(['published', 'already-live', 'someone-published']);
+
+export default function PublishScreen({ view, previewHref, openFix, action, history, historyParams, watch }: PublishScreenProps) {
     const [state, dispatch, pending] = useActionState(action, IDLE_STATE);
+    // A9's watch: what it last announced, and the live revision once the base moved.
+    const [watchLine, setWatchLine] = useState('');
+    const [baseMoved, setBaseMoved] = useState<RevisionFacts | null>(null);
+    const announced = useRef(new Set<string>());
+    const pendingNow = useRef(pending);
+    pendingNow.current = pending;
+    const answerKind = state.result?.kind;
+    const pointerMoved = answerKind !== undefined && (POINTER_MOVED.has(answerKind) || (state.result?.kind === 'failed' && state.result.live !== null));
     // The press that's waiting, for the live region and the pending label. Set on the click, before the post.
     const [sent, setSent] = useState<Intent | null>(null);
     const [open, setOpen] = useState<string | null>(openFix);
     // Where focus goes back to when a fix opened from the blocker list closes: the row's summary.
     const openedFrom = useRef<'row' | 'list'>('row');
     const [focusFix, setFocusFix] = useState(0);
-    const facts = displayFacts(view, state.result, previewHref);
+    const facts = displayFacts(view, state.result, previewHref, pointerMoved ? null : baseMoved);
+
+    useEffect(() => {
+        if (!watch || view.kind !== 'ledger' || pointerMoved) return;
+        const watcher = createWatch({
+            check: () => watch({ draftId: view.draftId, active: view.active.revisionId }),
+            onAnswer: (answer) => {
+                const news = watchNews(view, answer, announced.current);
+                for (const key of news.stale) announced.current.add(key);
+                if (news.baseMoved) setBaseMoved(news.baseMoved);
+                if (news.line) setWatchLine(news.line);
+            },
+            now: () => Date.now(),
+            setTimer: (run, ms) => window.setTimeout(run, ms),
+            clearTimer: (timer) => window.clearTimeout(timer as number),
+            hidden: () => document.visibilityState === 'hidden',
+            busy: () => pendingNow.current,
+        });
+        const wake = () => {
+            if (document.visibilityState === 'visible') watcher.wake();
+        };
+        watcher.start();
+        document.addEventListener('visibilitychange', wake);
+        window.addEventListener('focus', wake);
+        return () => {
+            watcher.stop();
+            document.removeEventListener('visibilitychange', wake);
+            window.removeEventListener('focus', wake);
+        };
+        // The page's view is fixed for its life; a new one (after a fix reloads the ledger) starts a new watch.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [watch, view.draftId, view.active.revisionId, view.kind, pointerMoved]);
     const busy = pending;
     const zone = useSyncExternalStore(never, browserZone, serverZone);
     // Set on the click itself, so a second click before React renders the pending state is ignored too.
@@ -712,12 +844,12 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
         answered.current = state.serial;
         const answer = state.answer;
         if (!answer) return;
-        if (answer.kind === 'fixed') setOpen(null);
-        const id = answer.kind === 'fix-refused' ? 'fix-refusal' : answer.kind === 'fixed' ? `${answer.rowId}-summary` : 'result-heading';
+        if (answer.kind === 'fixed' || answer.kind === 'reverted') setOpen(null);
+        const id = answer.kind === 'fix-refused' ? 'fix-refusal' : answer.kind === 'fixed' ? `${answer.rowId}-summary` : answer.kind === 'reverted' ? 'reverted-notice' : 'result-heading';
         requestAnimationFrame(() => {
             const target = document.getElementById(id) ?? document.getElementById('ledger-heading');
             target?.focus({ preventScroll: true });
-            if (answer.kind === 'fixed') {
+            if (answer.kind === 'fixed' || answer.kind === 'reverted') {
                 target?.scrollIntoView({ block: 'start', behavior: 'instant' });
                 return;
             }
@@ -728,7 +860,10 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
     }, [state]);
 
     const n = view.draftNumber;
-    const live = pending && sent === 'validate' ? `Checking revision ${n}.` : pending && sent === 'publish' ? `Publishing revision ${n}. Revision ${view.active.number} stays live until the switch.` : '';
+    const pressing = pending && sent === 'validate' ? `Checking revision ${n}.` : pending && sent === 'publish' ? `Publishing revision ${n}. Revision ${view.active.number} stays live until the switch.` : '';
+    // The one live region: a waiting press first, else what the watch found since the page loaded (A9).
+    const live = pressing || (pointerMoved ? '' : watchLine);
+    const reverted = state.answer?.kind === 'reverted' ? state.answer.text : null;
     const { ledger } = facts;
     const nothing = facts.mode === 'nothing';
     return (
@@ -768,6 +903,12 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
                             {facts.ledgerHeading}
                         </h2>
                         {facts.outOfDate ? <p className={styles.outOfDate}>{facts.outOfDate}</p> : null}
+                        {reverted ? (
+                            <p id="reverted-notice" tabIndex={-1} className={`${curator.notice} ${styles.reverted}`} data-tone="done">
+                                <Check size={16} aria-hidden="true" />
+                                {reverted}
+                            </p>
+                        ) : null}
                         <Group heading={facts.groups.authored} rows={ledger.authored} tone="authored" facts={facts} ctx={ctx} />
                         <Group heading={facts.groups.derived} rows={ledger.derived} tone="derived" facts={facts} ctx={ctx} />
                         <Group heading="Source health" rows={ledger.health} tone="health" facts={facts} ctx={ctx} />

@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import CuratorHeader from '../CuratorHeader';
 import styles from '../curator.module.css';
 import { requireCurator } from '@/lib/curation/auth';
-import { publishAction, restoreAction } from './actions';
+import { publishAction, restoreAction, watchPublish } from './actions';
 import { numberFrom } from './history-load';
 import HistorySection from './HistorySection';
 import { loadPublishPage } from './load';
@@ -44,6 +44,7 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
                     previewHref={page.previewHref}
                     openFix={fix}
                     action={publishAction}
+                    watch={watchPublish}
                     historyParams={history}
                     history={<HistorySection view={page.history} action={restoreAction} openRestore={restore} />}
                 />

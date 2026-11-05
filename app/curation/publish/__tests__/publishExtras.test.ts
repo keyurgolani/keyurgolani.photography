@@ -72,7 +72,7 @@ function form(fields: Record<string, string | number>): FormData {
 }
 
 /** The form the row's "Use the published value" posts. */
-function usePublishedForm(screen: ScreenView, row: LedgerRow, overrides: Record<string, string | number> = {}): FormData {
+function publishedForm(screen: ScreenView, row: LedgerRow, overrides: Record<string, string | number> = {}): FormData {
     const target = row.usePublished;
     if (!target) throw new Error(`The row ${row.summary} offers no published value`);
     return form({ intent: 'use-published', rowId: row.id, kind: target.kind, id: target.id, field: target.field, version: target.version, valueHash: target.valueHash, active: screen.active.revisionId, ...overrides });
@@ -105,7 +105,7 @@ describe('the rows (A9)', () => {
 describe('Use the published value (A9)', () => {
     it("puts the live revision's order back, says so, and the page reads the ledger again", async () => {
         const screen = await view();
-        const state = await publishAction(IDLE_STATE, usePublishedForm(screen, rowAbout(screen, MOVED)));
+        const state = await publishAction(IDLE_STATE, publishedForm(screen, rowAbout(screen, MOVED)));
         expect(state.answer).toEqual({ kind: 'reverted', text: 'The published order of Salt Roads is back in the draft. Validate again before you publish.' });
         expect(state.result).toBeNull();
         expect(revalidated).toEqual(['/curation/publish']);
@@ -118,9 +118,9 @@ describe('Use the published value (A9)', () => {
         const screen = await view();
         const row = rowAbout(screen, MOVED);
         const before = folderBytes(fixture.root);
-        const moved = await publishAction(IDLE_STATE, usePublishedForm(screen, row, { version: (row.usePublished?.version ?? 1) + 5 }));
+        const moved = await publishAction(IDLE_STATE, publishedForm(screen, row, { version: (row.usePublished?.version ?? 1) + 5 }));
         expect(moved.answer).toMatchObject({ kind: 'fix-refused', rowId: row.id, text: 'The order changed since the page loaded, so nothing was written.' });
-        const live = await publishAction(IDLE_STATE, usePublishedForm(screen, row, { active: fixture.revisions[0] }));
+        const live = await publishAction(IDLE_STATE, publishedForm(screen, row, { active: fixture.revisions[0] }));
         expect(live.answer).toMatchObject({ kind: 'fix-refused', text: 'The live revision changed since the page loaded, so nothing was written.' });
         expect(folderBytes(fixture.root)).toEqual(before);
     });
@@ -129,8 +129,9 @@ describe('Use the published value (A9)', () => {
         const screen = await view();
         const row = rowAbout(screen, MOVED);
         const before = folderBytes(fixture.root);
-        for (const junk of [{ field: 'slug' }, { field: 'photoIds[x]' }, { valueHash: 'not-a-hash' }, { id: 'x'.repeat(300) }, { kind: 'activation' }, { rowId: '<script>' }]) {
-            const state = await publishAction(IDLE_STATE, usePublishedForm(screen, row, junk));
+        const junks: Record<string, string>[] = [{ field: 'slug' }, { field: 'photoIds[x]' }, { valueHash: 'not-a-hash' }, { id: 'x'.repeat(300) }, { kind: 'activation' }, { rowId: '<script>' }];
+        for (const junk of junks) {
+            const state = await publishAction(IDLE_STATE, publishedForm(screen, row, junk));
             expect(state.answer?.kind, JSON.stringify(junk)).toBe('fix-refused');
         }
         expect(folderBytes(fixture.root)).toEqual(before);
@@ -141,7 +142,7 @@ describe('Use the published value (A9)', () => {
         const screen = await view();
         const row = rowAbout(screen, MOVED);
         const record = await readAuthoredRecord(fixture.root, 'series', LOW_TIDE);
-        const state = await publishAction(IDLE_STATE, usePublishedForm(screen, row, { id: LOW_TIDE, version: record?.version ?? 0, valueHash: hashValue(record?.kind === 'series' ? record.photoIds : null) }));
+        const state = await publishAction(IDLE_STATE, publishedForm(screen, row, { id: LOW_TIDE, version: record?.version ?? 0, valueHash: hashValue(record?.kind === 'series' ? record.photoIds : null) }));
         expect(state.answer).toMatchObject({ kind: 'fix-refused', text: 'Its Inbox item needs a decision again, so nothing was written. Decide it in the Inbox first.' });
     });
 
@@ -149,7 +150,7 @@ describe('Use the published value (A9)', () => {
         const screen = await view();
         const before = folderBytes(fixture.root);
         session.anonymous = true;
-        await expect(publishAction(IDLE_STATE, usePublishedForm(screen, rowAbout(screen, MOVED)))).rejects.toBeInstanceOf(Refused);
+        await expect(publishAction(IDLE_STATE, publishedForm(screen, rowAbout(screen, MOVED)))).rejects.toBeInstanceOf(Refused);
         expect(folderBytes(fixture.root)).toEqual(before);
     });
 });
