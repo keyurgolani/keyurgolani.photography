@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import IntentPrefetchLink from '@/components/IntentPrefetchLink';
 import { photoCountLabel } from '@/lib/catalog/labels';
 import type { WorkCatalog } from '@/lib/catalog/projections/work';
 import { coverSpan } from './coverSizes';
@@ -18,11 +18,13 @@ export interface SeriesCatalogProps {
  * short statement and the derived count, set apart from the authored copy,
  * describe it. The link's ::after stretches over the whole entry, cover and
  * copy, as its target and its ring, so a click or tap anywhere on the entry
- * opens the series. All of it is visible without hover. The list carries the
+ * opens the series. The link prefetches its series only when a visitor
+ * points at it, focuses it or touches it (#6, B10), so scrolling Work asks
+ * for no series page. All of it is visible without hover. The list carries the
  * revision its entries came from (`data-catalog-revision`), as Home's main and
  * the series page's main do, for #12's freshness checks; so does the empty
- * line. A server component: only the cover ships props to the client, and
- * those are the projection's cover fields.
+ * line. A server component: the cover ships the projection's cover fields to
+ * the client, and the link its href, its title and its attributes.
  */
 export default function SeriesCatalog({ work }: SeriesCatalogProps) {
     return (
@@ -54,10 +56,11 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                                         span={coverSpan(index)}
                                     />
                                     <div className={styles.copy}>
+                                        {/* The title link prefetches its series on a pointer, focus or touch only, never on coming into view (#6, B10). */}
                                         <h2 className={styles.seriesTitle}>
-                                            <Link href={series.href} className={styles.link} aria-describedby={describedBy}>
+                                            <IntentPrefetchLink href={series.href} className={styles.link} aria-describedby={describedBy}>
                                                 {series.title}
-                                            </Link>
+                                            </IntentPrefetchLink>
                                         </h2>
                                         {series.shortStatement !== null && (
                                             <p id={statementId} className={styles.statement}>
