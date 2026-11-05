@@ -90,6 +90,8 @@ export interface SuggestInput {
     seriesTitles?: ReadonlyMap<string, string>;
     /** Each series' photographs in authored order, with the capture date #10 read for each, or null (#14, A8). */
     seriesMembers?: ReadonlyMap<string, readonly SeriesMember[]>;
+    /** The photograph being placed, left out of its series' members (A8 review N8). */
+    photoId?: string | null;
     producedAt: string;
 }
 
@@ -108,8 +110,14 @@ export const PLACEMENT_PRODUCER = 'placement@2';
  * captured before every dated member goes just before the first of them, which is the start when that member leads.
  * One after them all goes at the end when the last dated member is last. An undated photograph, or a series with no
  * dated member, goes at the end at `low`. Evidence names dates, never files.
+ *
+ * Dates are #10's `YYYY-MM-DD` capture dates, the camera's own wall-clock day with no zone (A8 review N9), compared as
+ * text. So two photographs of the same day are a tie, whatever the hour or the zone, and a tie goes after the one
+ * already there. `photoId`, the photograph being placed, is left out of `members` when the series already lists it
+ * (N8), so it never goes after itself.
  */
-export function placementFor(capturedDate: string | null, members: readonly SeriesMember[], seriesName: string, producedAt: string): NonNullable<Suggestions['placement']> {
+export function placementFor(capturedDate: string | null, all: readonly SeriesMember[], seriesName: string, producedAt: string, photoId: string | null = null): NonNullable<Suggestions['placement']> {
+    const members = photoId === null ? all : all.filter((member) => member.photoId !== photoId);
     const dated = members.map((member, index) => ({ ...member, index })).filter((member): member is SeriesMember & { index: number; capturedDate: string } => member.capturedDate !== null);
     const atEnd = (why: string): NonNullable<Suggestions['placement']> => ({
         producedBy: PLACEMENT_PRODUCER,
@@ -184,6 +192,6 @@ export function suggestForNew(input: SuggestInput): Suggestions {
     const [chosen] = narrowed;
     return {
         series: { producedBy, producedAt, confidence: how === 'folder' ? 'high' : 'medium', value: chosen.seriesId, evidence },
-        placement: placementFor(input.capturedDate, input.seriesMembers?.get(chosen.seriesId) ?? [], describe(chosen.seriesId), producedAt),
+        placement: placementFor(input.capturedDate, input.seriesMembers?.get(chosen.seriesId) ?? [], describe(chosen.seriesId), producedAt, input.photoId ?? null),
     };
 }

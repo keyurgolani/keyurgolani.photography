@@ -33,7 +33,11 @@ export const SUMMARY_PATH = '/api/curation/inbox/summary';
 /** The window event the open item listens for (ItemActions), once the poll sees it changed since the page loaded. */
 export const ITEM_CHANGED_EVENT = 'curation-inbox:item-changed';
 
-export type InboxWatchAnswer = { kind: 'summary'; summary: ReadyInboxSummary } | { kind: 'signed-out' } | { kind: 'offline' } | { kind: 'unavailable' };
+/** `rebased`: the server refused the cursor the poll sent, so this answer counts from its own cursor instead (4a). */
+export type InboxWatchAnswer = { kind: 'summary'; summary: ReadyInboxSummary; rebased?: true } | { kind: 'signed-out' } | { kind: 'offline' } | { kind: 'unavailable' };
+
+/** One wording for the offline state, in the notice and in the live line alike (A8 review N6). */
+export const OFFLINE_TEXT = "You're offline, or the server can't be reached, so the inbox can't check for changes, and what it shows may be out of date. An action won't go through until you're back.";
 
 export interface InboxWatchDeps {
     check: () => Promise<InboxWatchAnswer>;
@@ -51,7 +55,7 @@ export interface InboxWatch {
     stop(): void;
     /** The tab came back or took focus: check now, unless one ran moments ago or one is in flight. */
     wake(): void;
-    /** The browser is online again: forget the backoff and check now, even after errors stopped it. */
+    /** The browser is online again: forget the backoff and check, after the 15 s gap, even after errors stopped it. */
     resume(): void;
 }
 
@@ -124,6 +128,12 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
         },
         stop: () => end(true),
         wake() {
+            // A8 review S5: errors stopped it, but the curator is back on the tab: try again, at the backoff's cap.
+            if (stopped && !ended && errors >= INBOX_WATCH_MAX_ERRORS && !asleep()) {
+                stopped = false;
+                schedule(MAX_BACKOFF_MS);
+                return;
+            }
             if (stopped || inFlight || asleep()) return;
             // After an error the backoff's timer decides; one asleep while hidden picks it up again.
             if (errors > 0) {
@@ -143,14 +153,19 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
             stopped = false;
             errors = 0;
             clear();
-            void run();
+            // A8 review S5: the same 15 s gap a refocus keeps, so flapping on and offline is no request storm.
+            const since = deps.now() - last;
+            if (since >= INBOX_WATCH_MIN_GAP_MS) void run();
+            else schedule(INBOX_WATCH_MIN_GAP_MS - since);
         },
     };
 }
 
-/** As lib/curation/events.ts's EVENT_ID_RE, which this client-side module can't import. */
-const EVENT_ID = /^evt_[0-9a-f]{24}$/;
-const STATUSES = new Set(['open', 'deferred', 'dismissed', 'approved', 'failed', 'resolved']);
+/** As lib/curation/events.ts's EVENT_ID_RE and EVENT_STATUSES, which this client-side module can't import. A test pins both (N2). */
+export const SUMMARY_EVENT_ID_RE = /^evt_[0-9a-f]{24}$/;
+export const SUMMARY_STATUSES: ReadonlySet<string> = new Set(['open', 'deferred', 'dismissed', 'approved', 'failed', 'resolved']);
+const EVENT_ID = SUMMARY_EVENT_ID_RE;
+const STATUSES = SUMMARY_STATUSES;
 const count = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
 
 function watcherOf(value: unknown): InboxWatcher | null {
@@ -168,7 +183,8 @@ function summaryOf(value: unknown): ReadyInboxSummary | null {
     if (typeof value !== 'object' || value === null) return null;
     const body = value as Record<string, unknown>;
     if (body.state !== 'ready' || typeof body.readAt !== 'string') return null;
-    if (![body.needsJudgment, body.waiting, body.placed, body.unplaced, body.total, body.unreadable].every(count)) return null;
+    if (![body.cursor, body.needsJudgment, body.waiting, body.placed, body.unplaced, body.total, body.unreadable].every(count)) return null;
+    if (body.arrived !== null && !count(body.arrived)) return null;
     const watcher = watcherOf(body.watcher);
     if (watcher === null) return null;
     let item: ReadyInboxSummary['item'] = null;
@@ -180,6 +196,8 @@ function summaryOf(value: unknown): ReadyInboxSummary | null {
     return {
         state: 'ready',
         readAt: body.readAt,
+        cursor: body.cursor as number,
+        arrived: body.arrived as number | null,
         needsJudgment: body.needsJudgment as number,
         waiting: body.waiting as number,
         placed: body.placed as number,
@@ -196,8 +214,22 @@ function summaryOf(value: unknown): ReadyInboxSummary | null {
  * ended is sent to the login page), and only on this origin. A 401, 403 or 404, or a redirect, is the session gone;
  * any other refusal, or an answer of another shape, unavailable; a request that never reached the server, offline.
  */
-export async function fetchInboxSummary(itemId: string | null, fetcher: typeof fetch = fetch): Promise<InboxWatchAnswer> {
-    const url = itemId !== null && EVENT_ID.test(itemId) ? `${SUMMARY_PATH}?item=${itemId}` : SUMMARY_PATH;
+export async function fetchInboxSummary(itemId: string | null, since: number | null, fetcher: typeof fetch = fetch): Promise<InboxWatchAnswer> {
+    const query = new URLSearchParams();
+    if (itemId !== null && EVENT_ID.test(itemId)) query.set('item', itemId);
+    if (since !== null && Number.isSafeInteger(since) && since >= 0) query.set('since', String(since));
+    const at = () => (query.toString() ? `${SUMMARY_PATH}?${query.toString()}` : SUMMARY_PATH);
+    const answer = await readSummary(at(), fetcher);
+    // A8 review, 4a: a cursor the server didn't issue, as after a restore of the data root. Read again without it.
+    if (answer === 'bad-cursor') {
+        query.delete('since');
+        const again = await readSummary(at(), fetcher);
+        return again === 'bad-cursor' ? { kind: 'unavailable' } : again.kind === 'summary' ? { ...again, rebased: true } : again;
+    }
+    return answer;
+}
+
+async function readSummary(url: string, fetcher: typeof fetch): Promise<InboxWatchAnswer | 'bad-cursor'> {
     let response: Response;
     try {
         response = await fetcher(url, { cache: 'no-store', redirect: 'manual', credentials: 'same-origin', headers: { accept: 'application/json' } });
@@ -205,6 +237,10 @@ export async function fetchInboxSummary(itemId: string | null, fetcher: typeof f
         return { kind: 'offline' };
     }
     if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403 || response.status === 404 || (response.status >= 300 && response.status < 400)) return { kind: 'signed-out' };
+    if (response.status === 400) {
+        const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+        return body?.error === 'bad-cursor' ? 'bad-cursor' : { kind: 'unavailable' };
+    }
     if (!response.ok) return { kind: 'unavailable' };
     try {
         const summary = summaryOf(await response.json());
@@ -230,12 +266,14 @@ export interface InboxNews {
     forget: string[];
     /** The open item changed or left since the page loaded: the item's own alert says so. */
     itemChanged: boolean;
+    /** The version the page showed when it changed, so the item raises its alert only while it still shows that one (S4). */
+    changedFrom: number | null;
     offline: boolean;
     /** The watcher as this answer says it, or null when it says nothing about it. */
     watcher: InboxWatcher | null;
 }
 
-const OFFLINE_LINE = "You're offline, so the inbox can't check for changes, and an action won't reach the server until you're back.";
+const OFFLINE_LINE = OFFLINE_TEXT;
 const BACK_LINE = 'Back online. The inbox is checking for changes again.';
 
 /**
@@ -243,7 +281,7 @@ const BACK_LINE = 'Back online. The inbox is checking for changes again.';
  * judgment (by how many more than the page shows), the watcher stopping or coming back, the browser offline or back.
  */
 export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announced: ReadonlySet<string>): InboxNews {
-    const news: InboxNews = { line: '', keys: [], forget: [], itemChanged: false, offline: false, watcher: null };
+    const news: InboxNews = { line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, watcher: null };
     if (answer.kind === 'signed-out' || answer.kind === 'unavailable') return news;
     if (answer.kind === 'offline') {
         news.offline = true;
@@ -260,10 +298,12 @@ export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announ
         lines.push(BACK_LINE);
         news.forget.push('offline');
     }
-    const more = summary.needsJudgment - page.needsJudgment;
-    if (more > 0 && !announced.has(`judgment:${summary.needsJudgment}`)) {
+    // A8 review B4, 4a: the items that arrived after the page's cursor, by the server's own order, not the net count,
+    // which an item decided elsewhere would cancel out.
+    const more = summary.arrived ?? 0;
+    if (more > 0 && !announced.has(`arrived:${more}`)) {
         lines.push(more === 1 ? '1 new item needs judgment. Refresh the inbox to see it.' : `${more} new items need judgment. Refresh the inbox to see them.`);
-        news.keys.push(`judgment:${summary.needsJudgment}`);
+        news.keys.push(`arrived:${more}`);
     }
     const wasRunning = page.watcher.state === 'running';
     const running = summary.watcher.state === 'running';
@@ -276,6 +316,7 @@ export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announ
     }
     if (page.item !== null && !announced.has(`item:${page.item.id}`) && (summary.item === null || summary.item.id !== page.item.id || summary.item.version !== page.item.version)) {
         news.itemChanged = true;
+        news.changedFrom = page.item.version;
         news.keys.push(`item:${page.item.id}`);
     }
     news.line = lines.join(' ');

@@ -218,6 +218,8 @@ export interface InboxItem {
     unplacedSeries: string | null;
     /** When the watcher first saw what the item reports, for its age label (#14, A8). */
     observedAt: string;
+    /** A series is saved on the item (`edits.seriesId`, not null), so Leave unassigned would drop it (A8 review S2). */
+    seriesChosen: boolean;
 }
 
 /** What names an item's file in the list and its heading. A6's library item has no file: it's the library (#14, A8). */
@@ -482,6 +484,8 @@ export type InboxView =
           watcher: InboxWatcher;
           /** When the server read the inbox, which the list's age labels count from, so the server and the browser agree (#14, A8). */
           readAt: string;
+          /** The arrival sequence as the page read it, which the poll sends back as `since` (A8 review, 4a). */
+          cursor: number;
           /** The active revision every action is checked against. Null before the first publish. */
           activeRevisionId: string | null;
           needsJudgment: number;
@@ -944,6 +948,10 @@ export const IDLE: InboxActionState = { status: 'idle' };
 export interface ReadyInboxSummary {
     state: 'ready';
     readAt: string;
+    /** The newest arrival sequence the server issued (lib/curation/arrivals.ts). The poll sends it back as `since`. */
+    cursor: number;
+    /** How many items that need judgment now arrived after `since`, or null when no `since` was asked. */
+    arrived: number | null;
     needsJudgment: number;
     waiting: number;
     placed: number;
@@ -956,7 +964,8 @@ export interface ReadyInboxSummary {
     item: { id: string; version: number; status: CurationEventStatus } | null;
 }
 
-export type InboxSummary = ReadyInboxSummary | { state: 'not-ready' };
+/** `bad-cursor`: a `since` the server didn't issue, which the route answers with a 400. */
+export type InboxSummary = ReadyInboxSummary | { state: 'not-ready' } | { state: 'bad-cursor' };
 
 /** #14 (A8): the two bulk actions. `defer` is Decide later (the mockup's "Leave in draft"), `unassigned` approves with no series. */
 export type BulkKind = 'defer' | 'unassigned';
@@ -966,6 +975,8 @@ export interface BulkResult {
     eventId: string;
     status: Exclude<InboxActionState, { status: 'idle' }>['status'];
     message: string;
+    /** It went through with an answer of its own, such as an approval that says publishing waits (A8 review S1). */
+    note?: boolean;
 }
 
 /**

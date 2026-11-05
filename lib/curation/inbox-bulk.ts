@@ -1,8 +1,10 @@
 import { REVISION_ID_RE } from '../catalog/schema';
+import { dataRootStatus } from '../storage/config';
 import { EVENT_ID_RE } from './events';
 import { runInboxAction } from './inbox-form';
-import type { BulkKind, BulkResult, InboxBulkState } from './inbox-view';
-import { INBOX_PAGE_SIZE } from './inbox-list';
+import { DONE_ANSWER, type BulkKind, type BulkResult, type InboxBulkState } from './inbox-view';
+import { BULK_DEFER_TYPES, INBOX_PAGE_SIZE } from './inbox-list';
+import { readEvent } from './repository';
 
 /**
  * #14 (A8): the Inbox list's bulk actions, Decide later (the mockup's "Leave
@@ -15,11 +17,22 @@ import { INBOX_PAGE_SIZE } from './inbox-list';
  * while the rest go through. app/curation/inbox/actions.ts calls this only
  * after requireCurator() lets the request in.
  *
- * - Decide later is the page's own defer: #17's leaveInDraft().
+ * - Decide later is the page's own defer: #17's leaveInDraft(), and only for
+ *   a new photograph or a file the watcher couldn't process (A8 review S1).
+ *   Any other type is refused here, item by item: what Decide later does to
+ *   a replacement's draft or the library is decided on that item alone.
  * - Leave unassigned approves a new photograph into the draft with no series
  *   (14-1's approve, with `keepPlaced`, so a photograph a series holds is
- *   refused), keeping any description saved on the item.
+ *   refused), keeping any description saved on the item. An item with a
+ *   series saved on it is refused under the lock (`keepSavedSeries`, S2).
+ *
+ * An item that went through with an answer of its own, such as an approval
+ * that says publishing waits for a description, is marked `note`, so the page
+ * lists it.
  */
+
+/** What bulk Decide later answers for a type it doesn't take (A8 review S1). */
+export const DEFER_TYPE_REFUSAL = "Decide later on selected takes new photographs and files the watcher couldn't process. Open this item to decide it on its own. Nothing was written.";
 
 /** As many as one page of the list shows, which is all a curator can check at once. */
 export const MAX_BULK_ITEMS = INBOX_PAGE_SIZE;
@@ -30,19 +43,22 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 let serial = 0;
 
-/** What the whole action says, by how many went through. Each item's own answer is in `results`. */
+/**
+ * What the whole action says, by how many went through. What was left alone is the error summary's alone (N1), and
+ * each item's own answer is in `results`.
+ */
 function headline(kind: BulkKind, done: number, total: number): string {
-    const left = total - done;
-    const rest = left === 0 ? '' : ` ${left === 1 ? '1 was' : `${left} were`} left as ${left === 1 ? 'it is' : 'they are'}.`;
     if (kind === 'defer') {
-        if (done === 0) return `Nothing was left for later. ${left === 1 ? 'The item was' : `All ${left} were`} left as ${left === 1 ? 'it is' : 'they are'}.`;
-        const count = done === total ? plural(done, 'item', 'items') : `${done} of ${plural(total, 'item', 'items')}`;
-        return `Left ${count} for later.${rest}`;
+        if (done === 0) return 'Nothing was left for later.';
+        return `Left ${done === total ? plural(done, 'item', 'items') : `${done} of ${plural(total, 'item', 'items')}`} for later.`;
     }
-    if (done === 0) return `Nothing was approved. ${left === 1 ? 'The item was' : `All ${left} were`} left as ${left === 1 ? 'it is' : 'they are'}.`;
+    if (done === 0) return 'Nothing was approved.';
     const count = done === total ? plural(done, 'new photograph', 'new photographs') : `${done} of ${plural(total, 'new photograph', 'new photographs')}`;
-    return `Approved ${count} into the draft, unassigned.${rest} Nothing is published until you publish.`;
+    return `Approved ${count} into the draft, unassigned. Nothing is published until you publish.`;
 }
+
+/** The answer an item gets when nothing more needs saying; any other done answer is a note (S1). */
+const PLAIN: Record<BulkKind, string> = { defer: DONE_ANSWER.defer, unassigned: DONE_ANSWER.approve };
 
 /** Run one bulk action from its form. Never throws for anything the form or the data holds. */
 export async function runInboxBulk(kind: BulkKind, form: unknown, options: Parameters<typeof runInboxAction>[2] = {}): Promise<InboxBulkState> {
@@ -64,7 +80,16 @@ export async function runInboxBulk(kind: BulkKind, form: unknown, options: Param
         items.push({ eventId: match[1], version: match[2] });
     }
     const results: BulkResult[] = [];
+    const root = dataRootStatus().root;
     for (const { eventId, version } of items) {
+        if (kind === 'defer' && root !== null) {
+            // A type never changes, so this read needs no lock: a moved item is still the writer's to call stale.
+            const type = await readEvent(root, eventId).then((event) => event?.type ?? null, () => null);
+            if (type !== null && !BULK_DEFER_TYPES.has(type)) {
+                results.push({ eventId, status: 'refused', message: DEFER_TYPE_REFUSAL });
+                continue;
+            }
+        }
         const single = new FormData();
         single.set('eventId', eventId);
         single.set('version', version);
@@ -74,8 +99,9 @@ export async function runInboxBulk(kind: BulkKind, form: unknown, options: Param
             single.set('series', 'unassigned');
             single.set('decorative', 'off');
         }
-        const answer = await runInboxAction(kind === 'defer' ? 'defer' : 'approve', single, options);
-        results.push(answer.status === 'idle' ? { eventId, status: 'failed', message: "The inbox couldn't finish that. Nothing was written." } : { eventId, status: answer.status, message: answer.message });
+        const answer = await runInboxAction(kind === 'defer' ? 'defer' : 'approve', single, { ...options, ...(kind === 'unassigned' ? { keepSavedSeries: true } : {}) });
+        if (answer.status === 'idle') results.push({ eventId, status: 'failed', message: "The inbox couldn't finish that. Nothing was written." });
+        else results.push({ eventId, status: answer.status, message: answer.message, ...(answer.status === 'done' && answer.message !== PLAIN[kind] ? { note: true } : {}) });
     }
     const done = results.filter((result) => result.status === 'done').length;
     return { status: done === results.length ? 'done' : done === 0 ? 'refused' : 'partial', kind, message: headline(kind, done, results.length), results, serial };
