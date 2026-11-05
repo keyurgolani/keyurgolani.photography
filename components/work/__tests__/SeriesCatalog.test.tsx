@@ -8,6 +8,9 @@ import WorkCoverImage from '../WorkCoverImage';
 import { coverSizes, coverSpan } from '../coverSizes';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
+// Each entry's link prefetches through the router on intent (B10), so it needs one. SeriesCatalogPrefetch.test.tsx covers it.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ prefetch: () => undefined }) }));
+
 const REF = (n: number) => ({ photoId: `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, assetRevision: `sha256-${String(n % 10).repeat(64)}`, profileId: 'p_0123456789abcdef' });
 
 function cover(n: number, overrides: Partial<WorkCover> = {}): WorkCover {
