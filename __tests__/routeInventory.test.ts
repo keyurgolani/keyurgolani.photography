@@ -278,6 +278,64 @@ describe('the route inventory', () => {
             expect(inventory.violations).toEqual([]);
             expect(inventory.actions).toEqual(['app/curation/actions.ts', 'app/curation/inbox/page.tsx#go']);
         });
+
+        // Next 16 also takes 'use server' in object methods and static class methods. It rejects
+        // instance methods at build time, but the rail flags one the same way rather than lean on that.
+        /** A guarded curator page with `body` written inside its render. */
+        const inPage = (body: string) => `${G}${DYN}export default async function P() { await requireCurator({ read: true }); ${body} return null; }\n`;
+        const METHOD_SHAPES = [
+            ['an object method', "const a = { async go() { 'use server'; save(); } };"],
+            ['an object property holding an async function', "const a = { go: async function () { 'use server'; save(); } };"],
+            ['a static class method', "class A { static async go() { 'use server'; save(); } }"],
+            ['a class instance method', "class A { async go() { 'use server'; save(); } }"],
+        ];
+
+        it.each(METHOD_SHAPES)('fails on an unguarded inline action written as %s in a curator page', (_, body) => {
+            write('app/curation/x/page.tsx', inPage(body));
+            const { violations } = routeInventory(tree);
+            expect(violations).toEqual([expect.stringContaining("app/curation/x/page.tsx#go is a server action whose first statement isn't await requireCurator()")]);
+        });
+
+        it.each(METHOD_SHAPES)('fails on an inline action written as %s in a library', (_, body) => {
+            write('lib/x.ts', `${body}\n`);
+            const { violations } = routeInventory(tree);
+            expect(violations).toEqual([expect.stringContaining("lib/x.ts has a 'use server' directive outside")]);
+        });
+
+        // A 'use server' prologue in a shape the rail can't classify fails closed, guarded or not.
+        const ODD_SHAPES = [
+            ['a getter', "const a = { get go() { 'use server'; await requireCurator(); return 1; } };"],
+            ['a setter', "class A { static set go(v) { 'use server'; await requireCurator(); } }"],
+            ['a computed-name method', "const a = { async [key]() { 'use server'; await requireCurator(); } };"],
+            ['a computed-name static method', "class A { static async [key]() { 'use server'; await requireCurator(); } }"],
+            ['a constructor', "class A { constructor() { 'use server'; save(); } }"],
+            ['a class static block', "class A { static { 'use server'; save(); } }"],
+            ['a bare block', "{ 'use server'; save(); }"],
+        ];
+
+        it.each(ODD_SHAPES)("fails on 'use server' in %s in a curator page, since it can't be checked", (_, body) => {
+            write('app/curation/x/page.tsx', inPage(body));
+            const { violations } = routeInventory(tree);
+            expect(violations).toEqual([expect.stringContaining("can't be checked")]);
+        });
+
+        it.each(ODD_SHAPES)("fails on 'use server' in %s in a library, since it can't be checked", (_, body) => {
+            write('lib/x.ts', `${body}\n`);
+            const { violations } = routeInventory(tree);
+            expect(violations).toEqual([expect.stringContaining("lib/x.ts has a 'use server' directive outside"), expect.stringContaining("can't be checked")]);
+        });
+
+        it('passes guarded inline actions written as object methods, object properties and static methods, and names them', () => {
+            write(
+                'app/curation/x/page.tsx',
+                inPage(
+                    "const a = { async go() { 'use server'; await requireCurator(); }, stop: async () => { 'use server'; await requireCurator(); }, 'quoted'() { 'use server'; await requireCurator(); } }; class B { static async keep() { 'use server'; await requireCurator(); } static drop = async () => { 'use server'; await requireCurator(); }; }",
+                ),
+            );
+            const inventory = routeInventory(tree);
+            expect(inventory.violations).toEqual([]);
+            expect(inventory.actions).toEqual(['app/curation/x/page.tsx#go', 'app/curation/x/page.tsx#stop', 'app/curation/x/page.tsx#quoted', 'app/curation/x/page.tsx#keep', 'app/curation/x/page.tsx#drop']);
+        });
     });
 });
 
