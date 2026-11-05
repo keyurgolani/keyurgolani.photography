@@ -1,27 +1,25 @@
 // @vitest-environment node
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readLibraryItem } from '../../lib/curation/library';
 import { currentProfileId } from '../../lib/identity/profile';
 import type { Registry } from '../../lib/identity/types';
 import { fixtureFiles } from '../../test/fixtures/makeLibrary';
 import { newestRegistryVersion, readNewestRegistry } from '../../test/helpers/registryFiles';
 import { createTempDataRoot, type TempDataRoot } from '../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../test/helpers/tempLibrary';
+import { killWatchers, spawnWatcher, waitUntil } from '../../test/helpers/watcherProcess';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 let lib: TempLibrary | undefined;
 let data: TempDataRoot | undefined;
-const children: ChildProcess[] = [];
 
 afterEach(async () => {
-    for (const child of children.splice(0)) {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    }
+    killWatchers();
     await data?.cleanup();
     data = undefined;
     await lib?.cleanup();
@@ -37,52 +35,6 @@ afterEach(async () => {
  */
 function startWatcher(root: string, ...args: string[]) {
     return spawnWatcher(args, { PHOTOGRAPHY_LIBRARY_DIR: root, PHOTOGRAPHY_DATA_DIR: path.join(path.dirname(root), 'no-data-root') });
-}
-
-function spawnWatcher(args: string[], env: Record<string, string>) {
-    const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/imageWatcher.ts', ...args], {
-        cwd: REPO_ROOT,
-        env: { ...process.env, ...env },
-    });
-    children.push(child);
-    let output = '';
-    const onOutput: (() => void)[] = [];
-    const collect = (chunk: Buffer) => {
-        output += chunk.toString();
-        onOutput.forEach((check) => check());
-    };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
-    const exited = new Promise<number | null>((resolve, reject) => {
-        child.on('error', reject);
-        child.on('close', (code) => resolve(code));
-    });
-
-    return {
-        child,
-        exited,
-        get output() {
-            return output;
-        },
-        /** Resolve once the output contains `text`. */
-        waitFor(text: string, timeoutMs = 60_000): Promise<void> {
-            return new Promise((resolve, reject) => {
-                const timer = setTimeout(() => reject(new Error(`No "${text}" within ${timeoutMs} ms:\n${output}`)), timeoutMs);
-                const check = () => {
-                    if (output.includes(text)) {
-                        clearTimeout(timer);
-                        resolve();
-                    }
-                };
-                onOutput.push(check);
-                check();
-                void exited.then(() => {
-                    clearTimeout(timer);
-                    if (!output.includes(text)) reject(new Error(`Exited before "${text}":\n${output}`));
-                });
-            });
-        },
-    };
 }
 
 async function runOnce(root: string, ...args: string[]): Promise<{ code: number | null; output: string }> {
@@ -127,14 +79,6 @@ function assetStore(root: string): Record<string, string> {
         if (fs.statSync(file).isFile()) files[relativePath] = fs.readFileSync(file).toString('base64');
     }
     return files;
-}
-
-async function waitUntil(check: () => boolean, timeoutMs: number, what: string, output: () => string): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (!check()) {
-        if (Date.now() > deadline) throw new Error(`${what} within ${timeoutMs} ms:\n${output()}`);
-        await new Promise((resolve) => setTimeout(resolve, 500));
-    }
 }
 
 const LEGACY_FOLDERS = ['thumbnails', 'medium', 'optimized', 'thumbnails-avif', 'medium-avif', 'optimized-avif', 'lqip', 'cache'];
@@ -189,6 +133,8 @@ describe('imageWatcher --once', { timeout: 120_000 }, () => {
         expect(run.output).toContain(`Library root not found: ${lib.root}`);
         expect(fs.existsSync(lib.root)).toBe(false);
         expect(newestRegistryVersion(data.root)).toBe(0);
+        // A6 (#17): reported in the data root's inbox, for photos status --check.
+        expect(await readLibraryItem(data.root)).toMatchObject({ type: 'library-unavailable', status: 'open', derivedFacts: { library: { cause: 'missing' } } });
     });
 
     it.each(['--once', '--watch'])('%s exits 1 when PHOTOGRAPHY_LIBRARY_DIR is unset, naming it, and never falls back to public/assets/photos', async (mode) => {
@@ -288,6 +234,22 @@ describe('imageWatcher --watch', { timeout: 120_000 }, () => {
 
         expect(await within(watcher.exited, 30_000, 'Exiting after the root disappeared'), watcher.output).toBe(1);
         expect(watcher.output).toMatch(/Library root (removed|disappeared): /);
+    });
+
+    it('reports the library unavailable in the data root before it exits on a root that disappears (A6)', async () => {
+        lib = await createTempLibrary({ fixtures: 'basic' });
+        data = createTempDataRoot();
+        const root = data.root;
+        const watcher = spawnWatcher(['--watch'], { PHOTOGRAPHY_LIBRARY_DIR: lib.root, PHOTOGRAPHY_DATA_DIR: root });
+        await watcher.waitFor('Initial scan complete');
+        await waitUntil(() => readySets(root).length === 3, 90_000, 'No sets for the three photos', () => watcher.output);
+
+        fs.rmSync(lib.root, { recursive: true, force: true });
+
+        expect(await within(watcher.exited, 30_000, 'Exiting after the root disappeared'), watcher.output).toBe(1);
+        expect(await readLibraryItem(root)).toMatchObject({ type: 'library-unavailable', status: 'open', derivedFacts: { library: { cause: 'missing' } } });
+        // Nothing went missing in the registry: the pass never ran against the gone root.
+        expect(Object.values(readRegistryFile(root).photos).map((photo) => photo.sourceHealth)).toEqual(['present', 'present', 'present']);
     });
 
     it('exits 0 on SIGTERM after closing the watcher', async () => {
