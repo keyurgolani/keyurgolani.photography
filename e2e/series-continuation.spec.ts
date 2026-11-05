@@ -97,7 +97,7 @@ test('Back from the Viewer of a photograph past the first page finds it again', 
     await entry(page, 150).click();
     await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[149]}$`));
     await page.goBack();
-    await expect(page).toHaveURL(/\/work\/long$/);
+    await expect(page).toHaveURL(new RegExp(`/work/long\\?photo=${LONG[149]}$`));
     await expect(entry(page, 150)).toBeAttached();
     await expect(sequence(page)).not.toHaveAttribute('aria-busy', 'true');
     await expect(entries(page)).toHaveCount(200);
@@ -118,7 +118,7 @@ test('Back after a reload on the Viewer loads the same pages again and fires the
         });
     });
     await page.goBack();
-    await expect(page).toHaveURL(/\/work\/long$/);
+    await expect(page).toHaveURL(new RegExp(`/work/long\\?photo=${LONG[149]}$`));
     await expect(entries(page)).toHaveCount(200);
     await expect(entry(page, 150)).toBeAttached();
     await expect.poll(() => page.evaluate(() => (window as unknown as { restored?: number }).restored ?? 0)).toBe(1);

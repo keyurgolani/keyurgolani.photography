@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, clearReturn, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
+import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, SERIES_TITLE_ID, clearReturn, focusHeading, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 
 // The series page's return record (#5): what goes into the series' history
@@ -372,6 +372,87 @@ describe('restoreReturn and scheduleRestore', () => {
         const remove = vi.spyOn(window, 'removeEventListener');
         scheduleRestore(record(LATE), SERIES)();
         expect(remove.mock.calls.map(([type, , options]) => [type, options])).toEqual(expect.arrayContaining([['keydown', true], ['pointerdown', true], ['wheel', true]]));
+    });
+});
+
+describe('the heading fallback (#5, B5)', () => {
+    const LEFT = 'ph_00000000-0000-4000-8000-000000000009';
+    const SERIES = { slug: 'harbor', revisionId: 'rev_a', total: 300 };
+    let scrollIntoView: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        document.body.innerHTML = `
+            <main>
+                <h1 id="${SERIES_TITLE_ID}">Harbor</h1>
+                <section aria-labelledby="series-sequence">
+                    <h2 id="series-sequence">Sequence</h2>
+                    <ol><li><a id="photo-${PHOTO}" href="/work/harbor/photo/${PHOTO}">Entry</a></li></ol>
+                </section>
+            </main>`;
+        window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+        scrollIntoView = vi.fn();
+        Element.prototype.scrollIntoView = scrollIntoView as unknown as Element['scrollIntoView'];
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+        window.history.replaceState(null, '');
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        document.body.innerHTML = '';
+    });
+
+    const heading = () => document.getElementById(SERIES_TITLE_ID) as HTMLElement;
+
+    it('focuses the series heading when the photograph that opened the Viewer left the revision, and it can take focus only by script', () => {
+        vi.spyOn(heading(), 'getBoundingClientRect').mockReturnValue(rect(40, 60));
+        expect(restoreReturn({ photoId: LEFT, opener: 'entry', scrollY: 0 })).toBe(heading());
+        expect(document.activeElement).toBe(heading());
+        expect(heading().getAttribute('tabindex')).toBe('-1');
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        // Once focus leaves it, it's out of reach again, as it was in the server HTML.
+        heading().blur();
+        expect(heading().hasAttribute('tabindex')).toBe(false);
+    });
+
+    it('falls back to it from a gone cover too, and scrolls it the least distance into view when the offset left it out', () => {
+        vi.spyOn(heading(), 'getBoundingClientRect').mockReturnValue(rect(-900, 60));
+        restoreReturn({ photoId: LEFT, opener: 'cover', scrollY: 2400 });
+        expect(document.activeElement).toBe(heading());
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'instant' });
+    });
+
+    it('takes focus only from the body with onlyIfIdle, and never with heading off', () => {
+        const entry = document.getElementById(`photo-${PHOTO}`) as HTMLElement;
+        entry.focus();
+        expect(restoreReturn({ photoId: LEFT, opener: 'entry', scrollY: 0 }, { onlyIfIdle: true })).toBeNull();
+        expect(document.activeElement).toBe(entry);
+        entry.blur();
+        expect(restoreReturn({ photoId: LEFT, opener: 'entry', scrollY: 0 }, { heading: false })).toBeNull();
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('is where an immediate restore lands, and the record is used up', () => {
+        window.history.replaceState({ ...NEXT_KEYS, [RETURN_KEY]: { photoId: LEFT, opener: 'entry', scrollY: 0 } }, '');
+        scheduleRestore({ photoId: LEFT, opener: 'entry', scrollY: 0 }, SERIES);
+        expect(document.activeElement).toBe(heading());
+        expect(window.history.state).toEqual(NEXT_KEYS);
+    });
+
+    it('is where a restore that waited for #6 lands when the photograph still isn\'t there, but not at the timeout', () => {
+        vi.useFakeTimers();
+        window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, '');
+        scheduleRestore({ photoId: LEFT, opener: 'entry', scrollY: 0 }, SERIES);
+        vi.advanceTimersByTime(RESTORE_WAIT_MS);
+        expect(document.activeElement).toBe(document.body);
+        document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+        expect(document.activeElement).toBe(heading());
+    });
+
+    it('focusHeading does nothing without a heading', () => {
+        heading().remove();
+        expect(focusHeading()).toBeNull();
+        expect(document.activeElement).toBe(document.body);
     });
 });
 

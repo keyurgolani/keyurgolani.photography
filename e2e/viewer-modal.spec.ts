@@ -56,7 +56,7 @@ test.describe('a directly loaded Viewer is a page', () => {
         await expect(page.locator('[inert]')).toHaveCount(0);
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(['Fixture harbor']);
         await expect(viewer(page).getByRole('link', { name: 'Close' })).toBeVisible();
-        await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', '/work/harbor');
+        await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', `/work/harbor?photo=${P[1]}`);
         // A page moves no focus on load.
         expect(await focusPlace(page)).toBe('body');
         // The region is there and empty, so the first move is a change it announces.
@@ -150,7 +150,8 @@ test.describe('a directly loaded Viewer is a page', () => {
 });
 
 test.describe('opened from the series page, the Viewer is a modal dialog', () => {
-    const seriesUrl = () => `${origin()}/work/harbor`;
+    /** The series URL, with the ?photo= the activation of `photoId` wrote into it (B5). */
+    const seriesUrl = (photoId?: string) => `${origin()}/work/harbor${photoId === undefined ? '' : `?photo=${photoId}`}`;
     const entry = (page: Page, photoId: string) => page.locator(`[id="photo-${photoId}"]`);
     const dialog = (page: Page) => page.getByRole('dialog', { name: /^Fixture harbor/ });
 
@@ -186,7 +187,7 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
     test('Escape closes it in one step, with focus back on the entry that opened it', async ({ page }) => {
         await openFromSeries(page, P[1]);
         await page.keyboard.press('Escape');
-        await expect(page).toHaveURL(seriesUrl());
+        await expect(page).toHaveURL(seriesUrl(P[1]));
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(entry(page, P[1])).toBeFocused();
     });
@@ -196,7 +197,7 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
         await openFromSeries(page, P[1]);
         await page.keyboard.press('Escape');
         await page.keyboard.press('Escape');
-        await expect(page).toHaveURL(seriesUrl());
+        await expect(page).toHaveURL(seriesUrl(P[1]));
         await expect(page.locator('dialog')).toHaveCount(0);
     });
 
@@ -214,7 +215,7 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
         await expect(page).toHaveURL(`${origin()}${href(HARBOR[2])}`);
         expect(await focusIsMarked(page)).toBe(true);
         await dialog(page).getByRole('button', { name: 'Close' }).click();
-        await expect(page).toHaveURL(seriesUrl());
+        await expect(page).toHaveURL(seriesUrl(HARBOR[0]));
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(entry(page, HARBOR[0])).toBeFocused();
     });
@@ -224,7 +225,7 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
         await dialog(page).getByRole('button', { name: 'Next photograph' }).click();
         await expect(page).toHaveURL(`${origin()}${href(HARBOR[1])}`);
         await page.goBack();
-        await expect(page).toHaveURL(seriesUrl());
+        await expect(page).toHaveURL(seriesUrl(HARBOR[0]));
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(entry(page, HARBOR[0])).toBeFocused();
     });

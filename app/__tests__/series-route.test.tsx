@@ -797,6 +797,58 @@ describe('no discovery through the page', () => {
 
     it('hands the return position only the series path, the canonical slug, the served revision, and the total', async () => {
         await html();
-        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION, total: ORDER_A.length }]);
+        expect(state.returnProps).toEqual([{ path: '/work/fixture-a', slug: 'fixture-a', revisionId: REVISION, total: ORDER_A.length, focusPhotoId: null }]);
+    });
+});
+
+describe('?photo= (#5, #6 deep entry, B5)', () => {
+    async function htmlWith(query: Record<string, string | string[] | undefined>, slug = 'fixture-a'): Promise<string> {
+        const result = await answer(slug, query);
+        if (!('html' in result)) throw new Error(`/work/${slug} did not render: ${JSON.stringify(result)}`);
+        return result.html;
+    }
+
+    it('renders the series with that photograph named for the return position to focus, read on the server', async () => {
+        const page = await htmlWith({ photo: P[2] });
+        expect(page).toContain(`id="photo-${P[2]}"`);
+        expect(state.returnProps.at(-1)).toEqual(expect.objectContaining({ focusPhotoId: P[2] }));
+        expect(state.loads).toBe(1);
+    });
+
+    it.each([
+        ['an unknown photograph', id(98)],
+        ['another series\' photograph', P[6]],
+        ['a draft series\' photograph', P[7]],
+        ['a photograph in no series', P[9]],
+        ['a malformed value', 'not-a-photo'],
+        ['an upper-case ID', P[2].toUpperCase()],
+        ['markup', '"><script>alert("x")</script>'],
+        ['two values', [P[2], P[3]]],
+        ['an empty value', ''],
+    ])('gives %s the plain series page, a 200 and never an error, focusing nothing', async (_case, photo) => {
+        const plain = await htmlWith({});
+        state.returnProps = [];
+        expect(await htmlWith({ photo })).toBe(plain);
+        expect(state.returnProps).toEqual([expect.objectContaining({ focusPhotoId: null })]);
+    });
+
+    it('never puts the requested value in the page, escaped or not', async () => {
+        const hostile = '"><img src=x onerror=alert(1)>';
+        const page = await htmlWith({ photo: hostile, other: hostile });
+        for (const piece of ['onerror', '&quot;&gt;&lt;img', 'img src=x']) expect(page, piece).not.toContain(piece);
+    });
+
+    it('gives the same metadata with or without it, the canonical path bare', async () => {
+        state.origin = new URL('https://photos.example.test');
+        const plain = await generateMetadata(props('fixture-a'));
+        expect(await generateMetadata(props('fixture-a', { photo: P[2] }))).toEqual(plain);
+        expect(await generateMetadata(props('fixture-a', { photo: 'x' }))).toEqual(plain);
+        expect(plain.alternates).toEqual({ canonical: '/work/fixture-a' });
+    });
+
+    it('keeps it through a former slug\'s or a letter-case variant\'s 308', async () => {
+        for (const slug of ['old-fixture-a', 'Fixture-A']) {
+            expect(await answer(slug, { photo: P[2] }), slug).toEqual({ redirect: expect.objectContaining({ location: `/work/fixture-a?photo=${P[2]}`, status: 308 }) });
+        }
     });
 });

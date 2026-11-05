@@ -58,7 +58,8 @@ test('a direct load renders the whole Viewer: series, position, photograph, auth
     const images = imageRequests(page);
     await openViewer(page, P[0]);
     await expect(header(page)).toContainText('01 / 03');
-    await expect(close(page)).toHaveAttribute('href', '/work/harbor');
+    // Close names this photograph, so the series focuses its entry (B5).
+    await expect(close(page)).toHaveAttribute('href', `/work/harbor?photo=${P[0]}`);
     await expect(page.getByRole('heading', { level: 2 })).toHaveText('Fixture harbor at dusk');
     await expect(page.getByText('Fixture authored caption.')).toBeVisible();
     await expect(page.getByText('Fixture description of the harbor.', { exact: true })).toBeVisible();
@@ -477,7 +478,7 @@ test('Tab runs Close, Zoom, Previous, Next, and the technical toggle, and Enter 
     await expect(next(page)).toBeFocused();
     await close(page).focus();
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(`${origin()}/work/harbor`);
+    await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
 });
 
 test('the technical details open apart from the photograph, and the first photograph\'s facts are its allowlisted ones', async ({ page }) => {

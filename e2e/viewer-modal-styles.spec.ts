@@ -122,7 +122,8 @@ async function expectHeldThenOpen(page: Page, sheets: Awaited<ReturnType<typeof 
     // Long enough for the RSC answer and a commit, had the open not waited.
     await page.waitForTimeout(1000);
     await expect(page.locator('dialog'), 'no dialog while the sheet is held').toHaveCount(0);
-    await expect(page).toHaveURL(`${origin()}/work/harbor`);
+    // Still the series page; the activation has written its ?photo= (B5).
+    expect(new URL(page.url()).pathname).toBe('/work/harbor');
     sheets.release();
     await expect(dialog(page)).toBeVisible();
     const first = await watched(page);
@@ -287,7 +288,7 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         expect(await page.evaluate(() => (window as unknown as { kgPolls: () => number }).kgPolls()), 'no poll left running').toBe(0);
         // One Back returns to the series, scrolled where it was.
         await page.goBack();
-        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
         await expect(entry(page, P[1])).toBeInViewport();
         expect(Math.abs((await page.evaluate(() => Math.round(window.scrollY))) - before.scrollY), 'scrolled where it was').toBeLessThanOrEqual(4);
     });
@@ -327,7 +328,8 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         await viewer.getByRole('link', { name: 'Previous photograph' }).click();
         await opened(P[1]);
         await viewer.getByRole('link', { name: 'Close' }).click();
-        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        // Close names the photograph shown (B5).
+        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
         expect(errors.filter((text) => /hydrat|did not match|mismatch/i.test(text)), 'no hydration mismatch').toEqual([]);
     });
 

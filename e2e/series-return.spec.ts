@@ -88,7 +88,8 @@ async function scrollTo(page: Page, link: Locator): Promise<number> {
 
 /** Back on the series, with focus on `opener`, at `offset` within a pixel, and `opener` in view. */
 async function expectReturned(page: Page, opener: Locator, offset: number): Promise<void> {
-    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    // The series URL, with the ?photo= the activation wrote (B5).
+    await expect(page).toHaveURL(new RegExp(`^${origin()}${SERIES}\\?photo=ph_[0-9a-f-]{36}$`));
     await expect(page.locator('dialog')).toHaveCount(0);
     await expect(opener).toBeFocused();
     await expect.poll(async () => Math.abs((await scrollY(page)) - offset), { message: `scroll offset near ${offset}` }).toBeLessThanOrEqual(1);
