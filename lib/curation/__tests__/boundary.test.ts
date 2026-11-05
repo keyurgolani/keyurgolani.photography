@@ -64,6 +64,8 @@ describe('the public routes', () => {
             'app/curation/inbox/LandOnItem.tsx',
             'app/curation/inbox/LocalTime.tsx',
             'app/curation/inbox/ReturnToRow.tsx',
+            // #14 (v2.0.0 A2): the watcher warning and its item pointer, which only the Inbox page and its item view load.
+            'app/curation/inbox/WatcherNotice.tsx',
             'app/curation/inbox/actions.ts',
             'app/curation/inbox/journey.ts',
             'app/curation/inbox/loading.tsx',
