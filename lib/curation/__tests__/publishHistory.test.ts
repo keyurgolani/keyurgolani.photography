@@ -472,3 +472,45 @@ describe('the done notice', () => {
         expect(doneView(undefined, null, null, 0)).toBeUndefined();
     });
 });
+
+// #181's A7: a revision whose recorded photos verify failed can't come back from History. The CLI's
+// --accept verify.failed is the only override, so History offers no Restore and no box for it.
+describe('a revision a photos verify failed (A7)', () => {
+    const rows = [
+        row({ sequence: 1, revision: 1, previous: null }),
+        row({ sequence: 2, revision: 2 }),
+        row({ sequence: 3, revision: 3, live: true }),
+    ];
+
+    it('shows no Restore, and a reason that names photos verify', () => {
+        const history = view(rows, { 2: { outcome: 'VERIFY_FAILED', reason: 'last-verify' }, 1: { outcome: 'VERIFY_FAILED', reason: 'record-damaged' } });
+        const [, two, one] = history.entries;
+        expect(two.eligibility).toEqual({ type: 'text', text: "It failed its last check, so it can't come back from here. Run photos verify to see what to fix.", tone: 'alert' });
+        expect(one.eligibility).toEqual({ type: 'text', text: "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again.", tone: 'alert' });
+    });
+
+    it("answers a post that reached it anyway without restoring, and names photos verify", () => {
+        const facts: OutcomeFacts = { target: 5, active: 6, activeRevisionId: rev(6), pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false };
+        expect(local(restoreResult('VERIFY_FAILED', facts))).toEqual({
+            tone: 'alert',
+            heading: "Revision 5 failed its last check, so it can't come back",
+            body: ['Nothing was restored. Revision 6 stays live. Run photos verify to see what to fix.'],
+            actions: ['close', 'reload'],
+        });
+    });
+
+    it('says when the record of the last check is what refused it', () => {
+        const facts: OutcomeFacts = { target: 5, active: 6, activeRevisionId: rev(6), pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false, verify: 'record-damaged' };
+        expect(local(restoreResult('VERIFY_FAILED', facts))).toEqual({
+            tone: 'alert',
+            heading: "The record of the last check can't be read, so revision 5 can't come back",
+            body: ['Nothing was restored. Revision 6 stays live. Run photos verify to check it again.'],
+            actions: ['close', 'reload'],
+        });
+    });
+
+    it('words an override the command line recorded', () => {
+        expect(acceptedWords(['verify.failed'])).toBe('a failed check from photos verify');
+        expect(acceptedWords(['accent.contrast', 'verify.failed'])).toBe("an accent color that's hard to read on the Viewer's dark bands and a failed check from photos verify");
+    });
+});

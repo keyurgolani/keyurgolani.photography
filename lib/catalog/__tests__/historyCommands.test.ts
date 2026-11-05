@@ -133,7 +133,9 @@ describe('photos history and photos rollback, as commands', { timeout: 180_000 }
         const notReady = await photos(missing, ['history']);
         expect(notReady.code).toBe(3);
         expect(notReady.stderr).toContain('[photos] DATA_ROOT_NOT_READY');
-        expect((await photos(missing, ['history', '--json'])).code).toBe(2);
+        expect((await photos(missing, ['history', '--since', 'monday'])).code).toBe(2);
+        // #181 (A7): history's flags parse before the data root is read, so a bad one is a usage error there too.
+        expect((await photos(missing, ['history', '--limit', '0'])).code).toBe(2);
     });
 });
 
@@ -173,7 +175,7 @@ describe('photos rollback --accept', () => {
     it('refuses an ID that is no rule, and an integrity rule, as usage errors', () => {
         // Only the rules a rollback can flag: #16's review.* rules are editorial too, but never fire on a stored revision.
         // #5's route rules are flaggable: a rollback across a rename trips them against the live revision.
-        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format, route.alias-reassigned, route.slug-change), not contrast.');
+        expect(usage(() => rollbackArgs([...base, '--accept', 'contrast']))).toBe('--accept takes an editorial rule ID (accent.contrast, accent.format, route.alias-reassigned, route.slug-change) or verify.failed, not contrast.');
         expect(rollbackArgs([...base, '--accept', 'route.slug-change', '--accept', 'route.alias-reassigned']).accept).toEqual(['route.slug-change', 'route.alias-reassigned']);
         expect(usage(() => rollbackArgs([...base, '--accept=']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
         expect(usage(() => rollbackArgs([...base, '--accept', 'accent.contrast', '--accept', ' ']))).toBe('--accept needs a rule ID, such as --accept accent.contrast.');
