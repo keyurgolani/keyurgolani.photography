@@ -1,13 +1,13 @@
 // @vitest-environment node
 /**
- * e2e/support/requestUrl.ts, the reflection check's view of a page: Next's
+ * test/helpers/requestUrl.ts, the reflection check's view of a page: Next's
  * `c` and `q` come out of the parsed root flight row, and only they do.
  * The pages here are built the way Next writes them: the flight stream in
  * `self.__next_f.push([1, chunk])` scripts, JSON-stringified and HTML-escaped,
  * cut anywhere, with length-prefixed text rows that can hold newlines.
  */
 import { describe, expect, it } from 'vitest';
-import { withoutRequestUrl } from '../e2e/support/requestUrl';
+import { withoutRequestUrl } from './helpers/requestUrl';
 
 const ID = 'ph_00000000-0000-4000-8000-000000000999';
 const HOSTILE = '"><img src=x onerror=alert(1)>';

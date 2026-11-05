@@ -4,7 +4,7 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog, type VariantByteTable } from '../lib/catalog/testing';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
-import { withoutRequestUrl } from './support/requestUrl';
+import { withoutRequestUrl } from '../test/helpers/requestUrl';
 import { expect, test } from './support/test';
 
 // #6's continuation in the browser, on a published 250-photo series served
