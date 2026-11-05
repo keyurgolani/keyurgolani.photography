@@ -591,9 +591,11 @@ test('a failed AVIF file retries once with WebP, and the photograph shows (#6)',
     await expect.poll(() => photograph(page).evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     expect(await photograph(page).evaluate((image: HTMLImageElement) => new URL(image.currentSrc).pathname)).toMatch(/\.webp$/);
     await expect(page.locator('[data-surface="viewer"] [data-photo="unavailable"]')).toHaveCount(0);
-    // One AVIF try, then WebP: no second AVIF request for the photograph.
-    expect(asked.filter((path) => path.endsWith('.avif')).length).toBeLessThanOrEqual(2);
-    expect(asked.some((path) => path.endsWith('.webp'))).toBe(true);
+    // At most the head's preload and the image's one AVIF try, then WebP, and no AVIF request after the retry began.
+    const firstWebp = asked.findIndex((path) => path.endsWith('.webp'));
+    expect(firstWebp, 'the retry asked for WebP').toBeGreaterThanOrEqual(0);
+    expect(asked.slice(0, firstWebp).filter((path) => path.endsWith('.avif')).length).toBeLessThanOrEqual(2);
+    expect(asked.slice(firstWebp).filter((path) => path.endsWith('.avif')), 'no AVIF request after the retry').toEqual([]);
 });
 
 test('a failed photograph says so, keeps its alt, and Retry loads the same variant again (#7)', async ({ page }) => {

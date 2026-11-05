@@ -564,10 +564,11 @@ const failCover = async (page: Page) => {
 const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr-only', why: '#175 (B8): the position is said in the heading' }];
 /**
  * A sanctioned departure (#175, B8): a Viewer photograph whose file failed says "This photograph could not be
- * loaded.", shows its alt and offers Retry, where the base had the missing-image label alone. The box is left out
- * with its contents; the stage, the moves and the reading area around it are still compared.
+ * loaded.", shows its alt and offers Retry, where the base had the missing-image label alone. Only the box's contents
+ * are left out. The box itself is still compared, its Dark paint (ground, edge, diagonal) and its place included,
+ * except the scroll it gains for a long alt (VIEWER_FAILED_SCROLL); so are the stage, the moves and the reading area.
  */
-const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"]', why: '#175 (B8): a failed photograph says so, with its alt and Retry' };
+const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"] > *', why: '#175 (B8): a failed photograph says so, with its alt and Retry' };
 
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true, glass: true },
@@ -859,7 +860,8 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
     // After Enter the series, its last child, so nothing before it in the story changes its path.
     { selector: '[data-chrome-region="story"] > div > a[href="/work"]:last-child', why: "#4 (B7): Home's All bodies of work link after Enter the series" },
-    // Screen-reader only (position: absolute, clipped), so it takes no room in either build.
+    // Screen-reader only: static in the heading's line, 1 px wide with a -1 px margin and clipped (sr-only's overflow and
+    // clip, and the heading's own overflow), so it takes no room, and the head hides it besides.
     { selector: '[data-surface="viewer"] header h1 > span.sr-only', why: '#175 (B8): the Viewer heading says "{series}, photograph N of T"' },
 ];
 
@@ -957,6 +959,20 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
     ];
 })();
 
+/**
+ * A sanctioned departure (#175, B8): Zoom is `clamp(fitted, 2 * fitted, largest file)`, where the base zoomed every
+ * photograph to its largest file. HOME_OPENING is a 1600 by 2400 portrait, so the base's zoomed print is 1600 by 2400
+ * at every size, and the head's about twice its fitted width. Only the zoomed print's own boxes may differ, by up to
+ * that print's height; their styles are still compared. The zoomed stage is capped at the stage's height, which both
+ * builds' prints overflow at the gate's three sizes, so the stage, the moves and the reading area must still match.
+ */
+const VIEWER_ZOOM: Allowance[] = ['figure', 'figure > picture', 'figure img'].map((part) => ({
+    page: 'viewer-zoomed',
+    selector: `[data-surface="viewer"] [data-zoomed] ${part}`,
+    maxDelta: 2400,
+    why: '#175 (B8): Zoom is clamp(fitted, 2 * fitted, the largest file)',
+}));
+
 const ALLOWANCES: Allowance[] = [
     ...WORK_ENTRIES,
     ...ABOUT_FRAME,
@@ -975,6 +991,9 @@ const ALLOWANCES: Allowance[] = [
     })),
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
+    ...VIEWER_ZOOM,
+    // The failed box scrolls a long alt or enlarged text inside itself (overflow-y: auto, which makes overflow-x auto).
+    { page: 'viewer-missing', selector: '[data-surface="viewer"] [data-photo="unavailable"]', properties: ['overflow-x', 'overflow-y'], why: '#175 (B8): the failed box scrolls its alt' },
 ];
 /** A state's own allowances, and those of the page it's a state of. */
 const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => (entry.page === pair.name || entry.page === pair.stateOf) && (entry.width === undefined || entry.width === width));
