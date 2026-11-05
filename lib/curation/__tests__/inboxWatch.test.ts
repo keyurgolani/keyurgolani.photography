@@ -270,11 +270,11 @@ describe('what the watch says', () => {
 
     it('says new items need judgment once per count, and points to Refresh', () => {
         const news = inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set());
-        expect(news.line).toBe('3 new items need judgment. Refresh the inbox to see them.');
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment. Refresh the inbox to see it.');
+        expect(news.line).toBe('3 new items need judgment.');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment.');
         expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set(news.keys)).line).toBe('');
         // Arrivals, not the net count (A8 review B4): one came in while another was decided elsewhere.
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 2, arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment. Refresh the inbox to see it.');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 2, arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment.');
         // And a count that went up only because the page's own count was out of date says nothing.
         expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 9, arrived: 0 }) }, new Set()).line).toBe('');
     });

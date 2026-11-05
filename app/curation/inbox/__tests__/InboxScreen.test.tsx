@@ -403,8 +403,10 @@ describe('the poll', () => {
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(fetcher.mock.calls[0][0]).toBe(`/api/curation/inbox/summary?item=${EVT(1)}&since=7`);
         const region = screen.getByRole('status', { name: 'Inbox updates' });
-        expect(region).toHaveTextContent('2 new items need judgment. Refresh the inbox to see them.');
+        expect(region).toHaveTextContent('2 new items need judgment.');
         expect(within(region).getByRole('link', { name: 'Refresh the inbox' })).toBeInTheDocument();
+        // C1 review: the region says "Refresh the inbox" once, as the link, not again in the sentence before it.
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
         const said = region.querySelector('p');
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher).toHaveBeenCalledTimes(2);
