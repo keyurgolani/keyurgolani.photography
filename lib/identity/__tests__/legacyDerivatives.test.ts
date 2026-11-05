@@ -247,7 +247,7 @@ describe('photos legacy-derivatives', () => {
         fs.symlinkSync(elsewhere, path.join(dataRoot, 'status'));
         const result = await runTsx('scripts/photos.ts', ['legacy-derivatives'], { env });
         expect(result.code).toBe(1);
-        expect(result.stderr).toMatch(/status\/ is a symlink.*Nothing was written/s);
+        expect(result.stderr).toMatch(/status\/ is a symlink[\s\S]*Nothing was written/);
         expect(fs.readdirSync(elsewhere)).toEqual([]);
     }, 30_000);
 

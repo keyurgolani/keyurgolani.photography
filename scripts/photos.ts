@@ -351,16 +351,19 @@
  *     when something took its place, it exits 4 (PUT_BACK_BLOCKED), leaves it
  *     in trash/, and photos status names it with its holder. Emptying trash/
  *     is the owner's own step.
- *   npx tsx scripts/photos.ts legacy-derivatives
+ *   npx tsx scripts/photos.ts legacy-derivatives [--stdout]
  *     Judge the legacy folders a watcher before v1.7.0 wrote at the top of
  *     the library, for scripts/host/legacy-move-aside.sh. For each of the
  *     eight names the library's root lists exactly, case-sensitively, it
- *     records every file with its size and mtime when each is a derivative
- *     of an original the scan sees at the root, and otherwise why the folder
- *     stays. It only reads the library, and writes only
- *     status/legacy-derivatives.json in the data root, which the script takes
- *     for 24 hours and one --apply. Exits 0 when written, 1 when the library
- *     or the data root isn't there or ready, and 2 on a usage error.
+ *     records every file with its size and mtime when each is one the v1.x
+ *     pipeline wrote for an original the scan sees at the root, by name,
+ *     header and width, and otherwise why the folder stays. It only reads
+ *     the library, and writes only status/legacy-derivatives.json in the
+ *     data root, mode 0644, refusing a symlinked status/. --stdout also
+ *     prints the manifest, and the summary goes to stderr, so the owner can
+ *     save a copy he can read. The script takes it for 24 hours and one
+ *     --apply. Exits 0 when written, 1 when the library or the data root
+ *     isn't there or ready, and 2 on a usage error.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
  * reads the library exits 1 when it's unset. The data root is
@@ -461,8 +464,8 @@ ${curationUsage(PROGRAM)}
   ${PROGRAM} gc [--apply <planDigest>]
   ${PROGRAM} gc --set-aside <assets/photoId/assetRevision>
         Moves that folder, or a .gc- folder beside it, into the data root's trash/. It never deletes.
-  ${PROGRAM} legacy-derivatives
-        Writes the manifest scripts/host/legacy-move-aside.sh needs; it only reads the library.
+  ${PROGRAM} legacy-derivatives [--stdout]
+        Writes the manifest scripts/host/legacy-move-aside.sh needs; it only reads the library. --stdout also prints it, to save a copy.
 ${credentialUsage(PROGRAM)}
 A flag given twice is refused, except --accept. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
@@ -765,7 +768,8 @@ async function gcCommand(args: string[]): Promise<number> {
 }
 
 async function legacyDerivativesCommand(args: string[]): Promise<number> {
-    if (args.length > 0) throw new UsageError('photos legacy-derivatives takes no arguments.');
+    if (args.length > 1 || (args.length === 1 && args[0] !== '--stdout')) throw new UsageError('photos legacy-derivatives takes only --stdout.');
+    const stdout = args[0] === '--stdout';
     const root = ownerRoot();
     if (typeof root === 'number') return root;
     const status = dataRootStatus({ write: true });
@@ -773,7 +777,15 @@ async function legacyDerivativesCommand(args: string[]): Promise<number> {
         console.error(`[photos] The data root isn't ready (${status.state}${status.detail ? `: ${status.detail}` : ''}). Nothing was written.`);
         return 1;
     }
-    return printed(await runLegacyDerivativesCommand({ dataRoot: root, library: libraryRoot() }));
+    const result = await runLegacyDerivativesCommand({ dataRoot: root, library: libraryRoot(), stdout });
+    if (result.exitCode !== 0) {
+        process.stderr.write(result.output);
+        return result.exitCode;
+    }
+    // With --stdout the manifest is the output, so a redirect saves exactly it, and the summary goes to stderr.
+    process.stdout.write(result.output);
+    if (stdout) process.stderr.write(result.summary);
+    return 0;
 }
 
 /** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
