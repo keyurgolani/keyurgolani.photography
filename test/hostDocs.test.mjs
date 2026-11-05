@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ACCEPTANCE, ownerPassProblems, withoutStep } from './helpers/ownerPass.mjs';
 
 // The host docs never tell the owner to delete anything on or under the photo
 // library, his originals: no `rm` on a line, or in a code block, that names
@@ -91,73 +92,25 @@ describe("the README's screenshots", () => {
 });
 
 // #184: the owner's screen-reader and device pass is a checklist in the accessibility contract, one part per area,
-// covering each of #184's acceptance steps, and ending with what to do with a finding.
+// with one step for each of #184's acceptance steps, and what to do with a finding (test/helpers/ownerPass.mjs).
 describe("the accessibility contract's owner pass", () => {
   const contract = fs.readFileSync(path.join(REPO_ROOT, 'docs/accessibility-contract.md'), 'utf8');
-  const start = contract.indexOf('\n## The owner\'s screen-reader and device pass\n');
-  const rest = start === -1 ? '' : contract.slice(start + 1);
-  const next = rest.indexOf('\n## ', 3);
-  const section = next === -1 ? rest : rest.slice(0, next);
-  /** Each `### ` part of the section, by its heading, with its text. */
-  const parts = Object.fromEntries(
-    section
-      .split(/\n(?=### )/)
-      .slice(1)
-      .map((part) => [part.slice(4, part.indexOf('\n')).trim(), part]),
-  );
-  /** Each checkbox step, with the indented lines under it. */
-  const steps = (text) => text.split(/\n(?=\S)/).filter((block) => /^- \[ \] /.test(block));
 
-  it('is one section of the contract', () => {
-    expect(start, 'the section heading').not.toBe(-1);
-    expect(contract.split("\n## The owner's screen-reader and device pass\n")).toHaveLength(2);
+  it('holds every part and acceptance step, says what each step expects, and names no PR', () => {
+    expect(ownerPassProblems(contract)).toEqual([]);
   });
 
-  it('has a part for each area, in order, and every part has checkbox steps', () => {
-    const areas = ['Home', 'Site navigation and the theme menu', 'The Viewer', 'Publish', 'The Inbox', 'What to do with a finding'];
-    expect(Object.keys(parts)).toEqual(areas);
-    for (const area of areas.slice(0, -1)) expect(steps(parts[area]).length, area).toBeGreaterThan(0);
+  // The check can fail: the contract with any one acceptance step taken out fails it, for that step.
+  it.each(ACCEPTANCE.map((item) => [item.name, item]))('fails without the step for %s', (name, item) => {
+    const without = withoutStep(contract, item);
+    expect(without, 'the step was found and taken out').not.toBe(contract);
+    expect(ownerPassProblems(without)).toContain(`no step for ${name}`);
   });
 
-  // Each of #184's acceptance steps, by the words its step can't do without.
-  it.each([
-    ['Home', /one double-tap/],
-    ['Home', /VoiceOver on iOS Safari/],
-    ['Home', /TalkBack on Android Chrome/],
-    ['Home', /macOS Safari, with a mouse/],
-    ['Home', /Enter activates nothing/],
-    ['Home', /All bodies of work/],
-    ['Home', /"All work"/],
-    ['Site navigation and the theme menu', /"Primary"/],
-    ['Site navigation and the theme menu', /current page/],
-    ['Site navigation and the theme menu', /five/],
-    ['Site navigation and the theme menu', /Escape/],
-    ['Site navigation and the theme menu', /statement and the count .*again/],
-    ['The Viewer', /iPhone Safari/],
-    ['The Viewer', /Android Chrome/],
-    ['The Viewer', /screen reader off/],
-    ['The Viewer', /Zoom/],
-    ['The Viewer', /focus/],
-    ['The Viewer', /twice/],
-    ['The Viewer', /NVDA with Chrome/],
-    ['The Viewer', /modal/],
-    ['Publish', /group/],
-    ['Publish', /collapsed/],
-    ['Publish', /review/],
-    ['Publish', /live region/],
-    ['Publish', /Base moved/],
-    ['The Inbox', /filters/],
-    ['The Inbox', /detail/],
-    ['The Inbox', /error summary/],
-    ['The Inbox', /role="alert"/],
-    ['What to do with a finding', /bug issue/],
-    ['What to do with a finding', /in writing/],
-  ])('%s covers %s', (area, words) => {
-    expect(parts[area] ?? '', area).toMatch(words);
-  });
-
-  it('says what each step should announce, and names no PR', () => {
-    for (const line of steps(section)) expect(line, line).toMatch(/Expect|expect/);
-    expect(section).not.toMatch(/\b[ABCR]\d{1,2}\b/);
+  it('fails on a PR label, a step with nothing to expect, and a missing finding rule', () => {
+    expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee B6.\n'))).toContain('the section names a PR: B6');
+    expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee PR #193.\n'))).toContain('the section names a PR: PR #193');
+    expect(ownerPassProblems(contract.replace('### The Inbox\n', '### The Inbox\n\n- [ ] **Listen.** Read the page.\n'))).toContain('The Inbox: "Listen." says nothing to expect');
+    expect(ownerPassProblems(contract.replace('in writing', 'later'))).toContain('a finding is never accepted in writing');
   });
 });
