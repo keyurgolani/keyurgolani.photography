@@ -333,9 +333,9 @@ describe('the route inventory', () => {
 
         // A .js page may hold JSX (Next accepts it). Parsed as plain TS, a backtick in its text swallows the file and hides the action.
         it('fails on an unguarded inline action in a .js curator page with JSX text holding a backtick', () => {
-            write('app/curation/y/page.js', "export default function Page() {\n    return <form action={async () => { 'use server'; save(); }}><p>Press ` to open</p></form>;\n}\n");
+            write('app/curation/y/page.js', inPage("const hint = <p>Press ` to open</p>; const form = <form action={async () => { 'use server'; save(); }} />;"));
             const { violations } = routeInventory(tree);
-            expect(violations).toEqual([expect.stringContaining("app/curation/y/page.js")]);
+            expect(violations).toEqual([expect.stringContaining("app/curation/y/page.js#<anonymous> is a server action whose first statement isn't await requireCurator()")]);
         });
 
         it('passes guarded inline actions written as object methods, object properties and static methods, and names them', () => {
