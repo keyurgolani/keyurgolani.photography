@@ -128,3 +128,75 @@ describe("the README's screenshots", () => {
     expect(alts['docs/screenshots/about.png']).toBe('About page with portrait and artist statement');
   });
 });
+
+// #184: the owner's screen-reader and device pass is a checklist in the accessibility contract, one part per area,
+// covering each of #184's acceptance steps, and ending with what to do with a finding.
+describe("the accessibility contract's owner pass", () => {
+  const contract = fs.readFileSync(path.join(REPO_ROOT, 'docs/accessibility-contract.md'), 'utf8');
+  const start = contract.indexOf('\n## The owner\'s screen-reader and device pass\n');
+  const rest = start === -1 ? '' : contract.slice(start + 1);
+  const next = rest.indexOf('\n## ', 3);
+  const section = next === -1 ? rest : rest.slice(0, next);
+  /** Each `### ` part of the section, by its heading, with its text. */
+  const parts = Object.fromEntries(
+    section
+      .split(/\n(?=### )/)
+      .slice(1)
+      .map((part) => [part.slice(4, part.indexOf('\n')).trim(), part]),
+  );
+  /** Each checkbox step, with the indented lines under it. */
+  const steps = (text) => text.split(/\n(?=\S)/).filter((block) => /^- \[ \] /.test(block));
+
+  it('is one section of the contract', () => {
+    expect(start, 'the section heading').not.toBe(-1);
+    expect(contract.split("\n## The owner's screen-reader and device pass\n")).toHaveLength(2);
+  });
+
+  it('has a part for each area, in order, and every part has checkbox steps', () => {
+    const areas = ['Home', 'Site navigation and the theme menu', 'The Viewer', 'Publish', 'The Inbox', 'What to do with a finding'];
+    expect(Object.keys(parts)).toEqual(areas);
+    for (const area of areas.slice(0, -1)) expect(steps(parts[area]).length, area).toBeGreaterThan(0);
+  });
+
+  // Each of #184's acceptance steps, by the words its step can't do without.
+  it.each([
+    ['Home', /one double-tap/],
+    ['Home', /VoiceOver on iOS Safari/],
+    ['Home', /TalkBack on Android Chrome/],
+    ['Home', /macOS Safari, with a mouse/],
+    ['Home', /Enter activates nothing/],
+    ['Home', /All bodies of work/],
+    ['Home', /"All work"/],
+    ['Site navigation and the theme menu', /"Primary"/],
+    ['Site navigation and the theme menu', /current page/],
+    ['Site navigation and the theme menu', /five/],
+    ['Site navigation and the theme menu', /Escape/],
+    ['Site navigation and the theme menu', /statement and the count .*again/],
+    ['The Viewer', /iPhone Safari/],
+    ['The Viewer', /Android Chrome/],
+    ['The Viewer', /screen reader off/],
+    ['The Viewer', /Zoom/],
+    ['The Viewer', /focus/],
+    ['The Viewer', /twice/],
+    ['The Viewer', /NVDA with Chrome/],
+    ['The Viewer', /modal/],
+    ['Publish', /group/],
+    ['Publish', /collapsed/],
+    ['Publish', /review/],
+    ['Publish', /live region/],
+    ['Publish', /Base moved/],
+    ['The Inbox', /filters/],
+    ['The Inbox', /detail/],
+    ['The Inbox', /error summary/],
+    ['The Inbox', /role="alert"/],
+    ['What to do with a finding', /bug issue/],
+    ['What to do with a finding', /in writing/],
+  ])('%s covers %s', (area, words) => {
+    expect(parts[area] ?? '', area).toMatch(words);
+  });
+
+  it('says what each step should announce, and names no PR', () => {
+    for (const line of steps(section)) expect(line, line).toMatch(/Expect|expect/);
+    expect(section).not.toMatch(/\b[ABCR]\d{1,2}\b/);
+  });
+});
