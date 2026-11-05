@@ -6,7 +6,7 @@ import type { LibraryVerdict } from './library';
 import { jsonLogSink, runReconcilePass, type FactSink, type PassOptions } from './pass';
 import { currentProfileId } from './profile';
 import { readRegistry } from './registry';
-import { createWorker, onceExitCode, pendingJobs, retryingResults, summarizeResults, WorkerStartError, type DerivativeWorker, type WorkerOptions } from './worker';
+import { createWorker, onceExitCode, pendingJobs, requeueIoErrors, summarizeResults, WorkerStartError, type DerivativeWorker, type WorkerOptions } from './worker';
 
 /**
  * The watcher's identity step, the only one it has. When the data root is
@@ -70,13 +70,30 @@ export interface IdentityStepOptions {
      * available, and why not. The watcher passes the curation inbox's
      * reporter (lib/curation/library.ts). A throw is logged, never fatal.
      */
-    library?: (verdict: LibraryVerdict) => void | Promise<void>;
+    library?: (verdict: LibraryVerdict, hooks?: LibraryHooks) => void | Promise<void>;
+    /**
+     * A6 review (7a): called once when an unreadable root, or an empty one
+     * while the registry holds photos, has refused LIBRARY_REBIND_LOOKS
+     * passes in a row over LIBRARY_REBIND_AFTER_MS. The watcher exits so
+     * Docker's restart re-binds a share remounted on the host.
+     */
+    onRebind?: (cause: 'empty' | 'unreadable') => void;
     /**
      * Keep what each build did until the caller takes it, as `--once` does.
      * Otherwise each pass drops the results, so a watcher that runs for
      * months doesn't keep one per build.
      */
     keepResults?: boolean;
+}
+
+/** A6 review: what the library hook calls back. */
+export interface LibraryHooks {
+    /**
+     * Called with the outage's id before the hook closes an open
+     * `library-unavailable` item, outside any curation lock, so the step can
+     * put the outage's io-error builds back once (requeueIoErrors()).
+     */
+    beforeClose?(outageId: string): Promise<void>;
 }
 
 export interface IdentityStep {
@@ -104,6 +121,9 @@ export const LIBRARY_RETRY_MS = 60_000;
 export const LIBRARY_EMPTY_RETRY_MS = LIBRARY_RETRY_MS;
 /** The backoff doubles to this, the periodic pass's 10 minutes. */
 export const LIBRARY_RETRY_MAX_MS = 10 * 60_000;
+/** A6 review (7a): how many refused looks in a row, and over how long, before the watcher exits to re-bind the share. */
+export const LIBRARY_REBIND_LOOKS = 3;
+export const LIBRARY_REBIND_AFTER_MS = 30 * 60_000;
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
@@ -138,12 +158,31 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     // A6: the library's last cause, logged once, and the backoff's last delay. Both reset once a pass gets through.
     let libraryCause: string | null = null;
     let libraryDelay = 0;
+    // A6 review (7a): the refused looks in a row at an empty or unreadable root, since when, and whether the step asked to re-bind.
+    let refusedLooks = 0;
+    let refusedSince: number | null = null;
+    let rebindAsked = false;
+
+    /** Count one refused look; ask to re-bind once an empty or unreadable root has refused long enough. */
+    function noteRefusal(cause: 'missing' | 'empty' | 'unreadable'): void {
+        worker?.pause?.();
+        refusedLooks++;
+        refusedSince ??= clock();
+        if (cause === 'missing' || rebindAsked || refusedLooks < LIBRARY_REBIND_LOOKS || clock() - refusedSince < LIBRARY_REBIND_AFTER_MS) return;
+        rebindAsked = true;
+        logger.error(`[identity] The library root has been ${cause === 'empty' ? 'empty' : "unreadable"} for ${Math.round((clock() - refusedSince) / 60_000)} minutes over ${refusedLooks} looks. A share remounted on the host is seen only after a restart, so the watcher exits to let Docker's restart re-bind it.`);
+        try {
+            options.onRebind?.(cause);
+        } catch (error) {
+            logger.error(`[identity] Asking to re-bind the library failed: ${errorText(error)}`);
+        }
+    }
 
     /** Tell the library hook, logging a throw. */
-    async function tellLibrary(verdict: LibraryVerdict): Promise<void> {
+    async function tellLibrary(verdict: LibraryVerdict, hooks?: LibraryHooks): Promise<void> {
         if (!options.library) return;
         try {
-            await options.library(verdict);
+            await options.library(verdict, hooks);
         } catch (error) {
             logger.warn(`[identity] Could not report the library ${verdict.available ? 'available' : 'unavailable'} to the inbox; the next pass tries again: ${errorText(error)}`);
         }
@@ -236,6 +275,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
                 noteUnavailable('empty', () => `[identity] The library at ${libraryRoot()} has no photos, but the registry has ${outcome.present} present. It looks unmounted or emptied, so this pass marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR.`);
                 lastPassResult = 'library-empty';
                 await tellLibrary({ available: false, cause: 'empty' });
+                noteRefusal('empty');
                 requestPass('library-empty', nextLibraryDelay());
                 return { status: 'refused', reason: 'library-empty', present: outcome.present };
             }
@@ -245,6 +285,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
                 noteUnavailable(`${outcome.cause}\0${outcome.cause === 'unreadable' ? outcome.detail : ''}`, () => `[identity] ${why}, so this pass changed nothing and marked nothing missing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR. The watcher looks again in a minute, then less often.`);
                 lastPassResult = 'library-unavailable';
                 await tellLibrary(outcome.cause === 'missing' ? { available: false, cause: 'missing' } : { available: false, cause: 'unreadable', detail: outcome.detail });
+                noteRefusal(outcome.cause);
                 requestPass('library-unavailable', nextLibraryDelay());
                 return outcome.cause === 'missing'
                     ? { status: 'refused', reason: 'library-unavailable', cause: 'missing' }
@@ -261,7 +302,21 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
         if (libraryCause !== null) logger.log('[identity] The library is back, so passes run as usual again.');
         libraryCause = null;
         libraryDelay = 0;
-        await tellLibrary({ available: true });
+        refusedLooks = 0;
+        refusedSince = null;
+        rebindAsked = false;
+        // A6 review (2a): an outage that ends puts its io-error builds back once, by the outage's id, before its item
+        // closes; then any io-error build gets its one try after a clean pass. Both are no-ops with nothing to put back.
+        const requeue = async (outageId?: string) => {
+            try {
+                await requeueIoErrors(root, { profileId, logger, lock: options.pass?.lock, ...(outageId === undefined ? {} : { outageId }) });
+            } catch (error) {
+                logger.warn(`[identity] Could not put unreadable builds back for another try; the next pass tries again: ${errorText(error)}`);
+            }
+        };
+        await tellLibrary({ available: true }, { beforeClose: (outageId) => requeue(outageId) });
+        await requeue();
+        worker?.resume?.();
         deferredDecisions = new Set(outcome.decisions.filter((decision) => decision.status === 'deferred').map((decision) => decision.name));
         if (!options.keepResults) worker?.takeResults();
         const queued = await feedWorker();
@@ -295,7 +350,8 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
         }
         lastPassAt = iso(clock());
         // A locked, failed, or off pass got nowhere, so photos status --check measures a stall from the last one that did.
-        if (report.status === 'committed' || report.status === 'refused') lastProgressAt = lastPassAt;
+        // A6 review: a refused pass is no progress either, so a long outage reads as a stall too.
+        if (report.status === 'committed') lastProgressAt = lastPassAt;
         await writeHeartbeat(status);
         return report;
     }
@@ -316,6 +372,8 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
 
     /** Work another process left for the watcher: a decision, facts no sink has had, or pending sets the worker hasn't queued. */
     async function waitingWork(root: string): Promise<PassReason | null> {
+        // A6 review: while the library is unavailable, only the backoff asks for a pass, never the 30 s check.
+        if (libraryCause !== null) return null;
         try {
             // A decision the last pass deferred waits for what it waits on: a file to settle, which that pass
             // already asked another pass for, or a folder to become readable, which the 10-minute pass checks.
@@ -512,9 +570,12 @@ export async function runIdentityOnce(options: IdentityOnceOptions = {}): Promis
         }
         const superseded = summary.superseded > 0 ? `, ${summary.superseded} superseded` : '';
         logger.log(`[identity] Done: ${summary.built} built, ${summary.kept} kept, ${summary.failed.length} failed${superseded}.`);
-        // A6: a transient failure waits for its retry, which a later run makes once it is due.
-        const retrying = retryingResults(results).flatMap(({ outcome }) => (outcome.status === 'pending' && outcome.reason === 'retrying' ? [outcome.retryAt] : [])).sort();
-        if (retrying.length > 0) logger.log(`[identity] ${retrying.length} ${retrying.length === 1 ? 'build' : 'builds'} failed and ${retrying.length === 1 ? 'retries' : 'retry'} from ${retrying[0]}. Run it again after that, or leave it to the watcher.`);
+        // A6 review: a build waiting for its retry, from this run or one before it, isn't built, so --once says so and exits 1.
+        const waits = step.worker?.retryWaits?.() ?? { count: 0, earliest: null };
+        if (waits.count > 0) {
+            logger.log(`[identity] ${waits.count} ${waits.count === 1 ? 'build waits' : 'builds wait'} for a retry at ${waits.earliest}. Run it again after that, or leave it to the watcher.`);
+            return 1;
+        }
         if (step.workerError !== null) return 1;
         if (step.startError !== null) {
             logger.error('[identity] The worker never started, so no set was built. Run it again.');

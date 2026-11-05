@@ -64,7 +64,7 @@ afterEach(async () => {
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
 
 const TYPE_OF: Record<IdentityFact['type'], CurationEventType> = {
-    new: 'new', replaced: 'replacement', 'metadata-changed': 'replacement', missing: 'missing', reappeared: 'reappeared', ambiguous: 'ambiguous', 'processing-failed': 'processing-failure', renamed: 'new',
+    new: 'new', replaced: 'replacement', 'metadata-changed': 'replacement', missing: 'missing', reappeared: 'reappeared', ambiguous: 'ambiguous', 'processing-failed': 'processing-failure', renamed: 'new', 'io-recovered': 'processing-failure',
 };
 
 /** A fixture, served as the data root, with the events the sink opened from `facts`. */

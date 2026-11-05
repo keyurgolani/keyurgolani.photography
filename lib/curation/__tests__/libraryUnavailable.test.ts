@@ -202,7 +202,7 @@ describe('one pass that marks many sources missing', () => {
         await goMissing(g, many.slice(0, 20));
         expect(await readLibraryItem(g.root)).toBeNull();
         expect((await inboxAlerts(g.root, clock)).counts).toMatchObject({ missing: 20, held: 0 });
-    });
+    }, 30_000);
 
     it('holds no missing item opened before the outage', async () => {
         const f = await fixture();

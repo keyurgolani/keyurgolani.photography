@@ -23,7 +23,11 @@
  * `library-unavailable` item in the data root, which `photos status --check`
  * fails on, and a root that is empty or can't be read keeps the watcher
  * running, refusing each pass, looking again after 1 minute and then less
- * often, up to every 10 minutes.
+ * often, up to every 10 minutes. Once an unreadable root, or an empty one
+ * while the registry holds photos, has refused 3 looks over 30 minutes,
+ * watch mode exits 75, so Docker's `restart: always` starts it again and
+ * re-binds a share remounted on the host. An empty root with an empty
+ * registry is a new library, and never exits.
  * Both exit 1 with no data root, since there is nothing else to do. An
  * unknown flag, and --force, which rebuilt the legacy derivatives, exit 2.
  *
@@ -101,15 +105,34 @@ const SHUTDOWN_GRACE_MS = 8000;
 /** How often watch mode checks that the library root is still there. */
 const ROOT_CHECK_MS = 5000;
 
-function libraryRootExists(root: string): boolean {
+/**
+ * A6 (#17, review 7): where the library root stands, by errno, so only a
+ * root that is really gone exits at once. `missing`: ENOENT or ENOTDIR, not a
+ * directory, or a host folder deleted from under a bind mount, which still
+ * stats as a directory with no links left. `unreadable`: EACCES or EPERM.
+ * `unavailable`: ESTALE, EIO or anything else, as a share dropping out
+ * gives. The passes refuse the last two, and the watcher exits to re-bind
+ * once they last.
+ */
+function libraryRootState(root: string): 'present' | 'missing' | 'unreadable' | 'unavailable' {
     try {
         const stat = fs.statSync(root);
-        // A host folder deleted from under a bind mount still stats as a directory, with no links left
-        return stat.isDirectory() && stat.nlink > 0;
-    } catch {
-        return false;
+        return stat.isDirectory() && stat.nlink > 0 ? 'present' : 'missing';
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing';
+        if (code === 'EACCES' || code === 'EPERM') return 'unreadable';
+        return 'unavailable';
     }
 }
+
+/**
+ * A6 review (7a): the exit code when an unreadable or emptied library root
+ * has lasted LIBRARY_REBIND_AFTER_MS, so `restart: always` starts the
+ * watcher again and Docker re-binds a share remounted on the host. 75 is
+ * EX_TEMPFAIL: try again later.
+ */
+const LIBRARY_REBIND_EXIT_CODE = 75;
 
 /**
  * A6 (#17): record the library as missing in the data root's inbox, before
@@ -136,7 +159,7 @@ async function requireRoots(): Promise<string> {
         console.error(`[ImageWatcher] ${error.message} Nothing was processed.`);
         process.exit(1);
     }
-    if (!libraryRootExists(root)) {
+    if (libraryRootState(root) === 'missing') {
         console.error(
             `[ImageWatcher] Library root not found: ${root}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. Nothing was processed.`,
         );
@@ -205,6 +228,7 @@ async function startWatcher(): Promise<void> {
         sinks: factSinks(),
         worker: workerBuilds(),
         library: createLibraryReporter(),
+        onRebind: (cause) => void shutdown(LIBRARY_REBIND_EXIT_CODE, `The library root has been ${cause} for 30 minutes. Exiting with ${LIBRARY_REBIND_EXIT_CODE} so Docker's restart re-binds the mount`),
         requestPass: (reason, delayMs) => watch?.schedule(reason, delayMs),
     });
     watch = watchIdentity(identity);
@@ -224,7 +248,7 @@ async function startWatcher(): Promise<void> {
 
     // Polling may not report the root itself going away, so check it directly too
     const rootCheck = setInterval(() => {
-        if (!libraryRootExists(root)) void shutdown(1, `Library root disappeared: ${root}`, { libraryGone: true });
+        if (libraryRootState(root) === 'missing') void shutdown(1, `Library root disappeared: ${root}`, { libraryGone: true });
     }, ROOT_CHECK_MS);
 
     // Stop taking events, close chokidar, give a pass or build under way a bounded time to finish, then exit

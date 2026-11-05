@@ -79,6 +79,12 @@ export type BuildOutcome =
     | { status: 'pending'; reason: 'digest-mismatch' | 'source-changing' | 'locked' }
     /** A6: a transient failure, left pending for its retry number `retries`, due at `retryAt`. */
     | { status: 'pending'; reason: 'retrying'; retries: number; retryAt: string; error: string }
+    /**
+     * A6 review: reading the source failed while the library root itself
+     * can't be read or is gone. Nothing is recorded, and the worker pauses
+     * until a pass finds the library again.
+     */
+    | { status: 'pending'; reason: 'library-unavailable' }
     /** Nothing to do, and nothing changed. */
     | { status: 'skipped'; reason: 'data-root' | 'unknown' | 'reassigned' | 'not-pending' | 'source-missing' };
 
@@ -103,6 +109,27 @@ class DecodeFailure extends Error {
     constructor(code: string, cause: unknown) {
         super(`${code}: ${errorText(cause)}`, { cause });
         this.name = 'DecodeFailure';
+    }
+}
+
+/**
+ * A6 review: the reason a build that threw records. An IntegrityError is
+ * `corrupt-destination` (`integrity: ...`) only for the set's own folder,
+ * `finalDir`; one for any other folder, such as staging checked before the
+ * rename, names no code, so it retries.
+ */
+export function buildFailureText(error: unknown, finalDir: string): string {
+    if (error instanceof IntegrityError) return `${error.dir === finalDir ? 'integrity' : 'staging check failed'}: ${error.problems.join('; ')}`;
+    return errorText(error);
+}
+
+/** Whether the library root can still be listed: the difference between one unreadable file and an outage. */
+async function libraryReadable(library: string): Promise<boolean> {
+    try {
+        await fs.promises.readdir(library);
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -246,13 +273,15 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         let written: ProfileEntry | null = null;
         const next = (current: ProfileEntry): ProfileEntry => {
             const attempts = current.attempts + 1;
+            // The requeue an io-error already had (A6 review) stays with the entry, so it isn't given again.
+            const requeued = current.requeuedFor === undefined ? {} : { requeuedFor: current.requeuedFor };
             if (delays === undefined || failureCodeOf(error) !== null) {
-                written = { state: 'failed', attempts, error };
+                written = { state: 'failed', attempts, error, ...requeued };
             } else {
                 const retries = current.retries ?? 0;
                 written = retries < delays.length
-                    ? { state: 'pending', attempts, error, retries: retries + 1, retryAt: iso(clock() + delays[retries]) }
-                    : { state: 'failed', attempts, error: `retries-exhausted: ${error}` };
+                    ? { state: 'pending', attempts, error, retries: retries + 1, retryAt: iso(clock() + delays[retries]), ...requeued }
+                    : { state: 'failed', attempts, error: `retries-exhausted: ${error}`, ...requeued };
             }
             return written;
         };
@@ -295,6 +324,8 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     try {
         source = await fs.promises.readFile(path.join(library, photo.source.path));
     } catch (error) {
+        // A6 review: an outage, not this file. Record nothing, so no set fails for a share that dropped out.
+        if (!await libraryReadable(library)) return { status: 'pending', reason: 'library-unavailable' };
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
         return recordFailed(`source unreadable: ${errorText(error)}`, error);
     }
@@ -347,7 +378,7 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
             }
         });
     } catch (error) {
-        return recordFailed(error instanceof IntegrityError ? `integrity: ${error.problems.join('; ')}` : errorText(error), error);
+        return recordFailed(buildFailureText(error, finalDir), error);
     }
     return recordReady(false);
 }

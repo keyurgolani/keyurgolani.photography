@@ -4,6 +4,15 @@ import { folderOf, isUnder, keyOf, type LibraryScan, type ScanEntry } from './sc
 import type { DecisionFile, DecisionOutcome, IdentityDecision } from './decisions';
 import type { AssetRevisionRecord, DerivativeJob, Hold, IdentityFact, PhotoRecord, ProfileEntry, Registry, SourceHealth } from './types';
 
+/**
+ * Whether a revision can't be decoded: no pixel digest and no size. One over
+ * the pixel cap (A6 review) has its header's size and no digest, so it is
+ * queued, and its build fails as `too-large`.
+ */
+export function isUndecodable(revision: Pick<AssetRevisionRecord, 'pixelDigest' | 'width'>): boolean {
+    return revision.pixelDigest === null && revision.width === null;
+}
+
 /** A file changed this recently waits for the next pass. */
 export const STABILITY_MS = 5_000;
 
@@ -13,6 +22,9 @@ export const STABILITY_MS = 5_000;
  * Until then it is skipped, and its photo, if it has one, stays as it was.
  */
 export const IO_ERROR_AFTER_PASSES = 3;
+
+/** A6 review: and those passes must span this long, so a flap across a few quick passes reports nothing. */
+export const IO_ERROR_MIN_SPAN_MS = 10 * 60_000;
 
 /**
  * Whether a file changed within STABILITY_MS of `observedAt`, either way, so
@@ -334,7 +346,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
 
     function addRevision(photo: PhotoRecord, item: ImageSeen): void {
         const inspection = item.inspection;
-        const undecodable = inspection.pixelDigest === null;
+        const undecodable = isUndecodable(inspection);
         const record: AssetRevisionRecord = {
             assetRevision: inspection.assetRevision,
             pixelDigest: inspection.pixelDigest,
@@ -363,7 +375,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
 
     /** The current profile's first entry for a revision another photo gives up: built afresh under its new photo. */
     function freshProfile(revision: AssetRevisionRecord): ProfileEntry {
-        return revision.pixelDigest === null ? { state: 'failed', attempts: 0, error: 'undecodable' } : { state: 'pending', attempts: 0 };
+        return isUndecodable(revision) ? { state: 'failed', attempts: 0, error: 'undecodable' } : { state: 'pending', attempts: 0 };
     }
 
     /**
@@ -662,7 +674,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             const photo = photos[id];
             if (isRetired(photo) || photo.sourceHealth !== 'present' || !photo.source.present) continue;
             const revision = photo.revisions[photo.source.observedRevision];
-            if (!revision || revision.reassignedTo || revision.pixelDigest === null || revision.profiles[context.profileId]) continue;
+            if (!revision || revision.reassignedTo || isUndecodable(revision) || revision.profiles[context.profileId]) continue;
             revision.profiles[context.profileId] = { state: 'pending', attempts: 0 };
             queue(photo, revision.assetRevision, photo.source.path);
             queued++;

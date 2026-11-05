@@ -296,8 +296,9 @@ describe('the worker', () => {
         // Ten seconds later a new process starts.
         const timers = manualTimers();
         let built = 0;
+        let now = NOW + 10_000;
         const second = worker({
-            clock: () => NOW + 10_000,
+            clock: () => now,
             timers,
             build: async (job, options) => {
                 built++;
@@ -311,10 +312,12 @@ describe('the worker', () => {
         expect(second.isQueued(s.job)).toBe(true);
         // A pass that finds the entry pending queues nothing new.
         expect(await second.enqueuePending()).toBe(0);
+        // The timer fires when the retry is due. One that fired early would wait again (A6 review's 24 h clamp).
+        now = NOW + 30_000;
         await timers.fire();
         await second.idle();
         expect(built).toBe(1);
-        expect(await s.entry()).toEqual({ state: 'ready', attempts: 2, readyAt: iso(NOW + 10_000) });
+        expect(await s.entry()).toEqual({ state: 'ready', attempts: 2, readyAt: iso(NOW + 30_000) });
     }, 60_000);
 
     it('builds at once an entry whose retry fell due while no worker ran', async () => {

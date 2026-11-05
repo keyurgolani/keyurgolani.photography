@@ -147,6 +147,8 @@ export interface StatCacheEntry {
     emitted: string[];
     /** A6: how many passes in a row this version of the file was skipped as unreadable. */
     skipped?: number;
+    /** A6 review: when the first of those passes ran. The io-error report waits for IO_ERROR_MIN_SPAN_MS from it. */
+    firstSkippedAt?: string;
 }
 
 /** `identity/stat-cache.json`. Disposable: losing it only means files are read again. */

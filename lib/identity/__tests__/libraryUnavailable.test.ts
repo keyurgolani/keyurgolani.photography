@@ -74,12 +74,16 @@ describe('a pass over an unavailable library', { timeout: 60_000 }, () => {
         const pass = passWith();
         expect((await pass()).status).toBe('committed');
         const version = newestRegistryVersion(data.root);
+        const before = lib.snapshot();
         const gone = `${lib.root}-unmounted`;
         cleanups.push(async () => setLibraryDir(lib.root)());
         setLibraryDir(gone);
         const outcome = await pass();
         expect(outcome).toEqual({ status: 'skipped', reason: 'library-unavailable', cause: 'missing' } satisfies PassOutcome);
         expect(newestRegistryVersion(data.root)).toBe(version);
+        // Review nit: the watcher wrote nothing under the library, and nothing where it was.
+        expect(lib.snapshot()).toEqual(before);
+        expect(fs.existsSync(gone)).toBe(false);
     });
 
     it.skipIf(isRoot)('refuses an unreadable root, naming the errno and no path', async () => {

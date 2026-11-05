@@ -32,7 +32,7 @@ interface Opened {
 }
 
 const TYPE_OF: Record<IdentityFact['type'], CurationEventType> = {
-    new: 'new', replaced: 'replacement', 'metadata-changed': 'replacement', missing: 'missing', reappeared: 'reappeared', ambiguous: 'ambiguous', 'processing-failed': 'processing-failure', renamed: 'new',
+    new: 'new', replaced: 'replacement', 'metadata-changed': 'replacement', missing: 'missing', reappeared: 'reappeared', ambiguous: 'ambiguous', 'processing-failed': 'processing-failure', renamed: 'new', 'io-recovered': 'processing-failure',
 };
 
 /** A fixture with one event the sink opened from `fact`. */
