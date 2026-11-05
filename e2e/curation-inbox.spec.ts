@@ -8,6 +8,7 @@ import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
 import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
 import { ARCHIVE_TAKEDOWN, archiveQuestion, bindAnswer, DONE_ANSWER, humanTime, REPLACEMENT_HINT } from '../lib/curation/inbox-view';
+import { watcherStatusFile } from '../lib/identity/heartbeat';
 import { identityPaths } from '../lib/identity/registry';
 import { listEvents, readEvent } from '../lib/curation/repository';
 import { confirmReplacement } from '../lib/curation/resolutions';
@@ -286,6 +287,35 @@ async function openShortWide(page: Page) {
     for (const panel of [list, form]) expect(await panel.evaluate((element) => element.scrollHeight > element.clientHeight), 'the panel overflows at this height').toBe(true);
     return { list, form };
 }
+
+test("warns when the watcher has no heartbeat, above the list and from inside an item, and stops once it beats (#14)", async ({ page }) => {
+    const { watcher, root } = data();
+    watcher.stop();
+    fs.rmSync(watcherStatusFile(root), { force: true });
+    try {
+        await openInbox(page);
+        const notice = page.getByRole('region', { name: 'Watcher' });
+        await expect(notice).toBeVisible();
+        await expect(notice).toHaveText("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
+        await expect(notice).not.toHaveAttribute('aria-live');
+        await expectNoA11yViolations(page, { include: '#watcher' });
+        // The items the test above opened. A deep link lands on the item, past the strip, so a phone gets a pointer back to it there. A wide screen shows both.
+        await openInbox(page, eventOf(FRESH.approve), { landed: true });
+        const pointer = page.locator('#item').getByRole('link', { name: "The watcher isn't checking in" });
+        if ((page.viewportSize()?.width ?? 0) < 768) {
+            await expect(pointer).toBeInViewport();
+            await pointer.click();
+            await expect(notice).toBeInViewport();
+        } else {
+            await expect(pointer).toHaveCount(0);
+            await expect(notice).toBeInViewport();
+        }
+    } finally {
+        await watcher.start();
+    }
+    await openInbox(page);
+    await expect(page.getByRole('region', { name: 'Watcher' })).toHaveCount(0);
+});
 
 test('scrolls the list alone under the wheel, to its end, and the form and the photograph stay where they are (#145)', async ({ page, isMobile }) => {
     test.skip(isMobile, 'A phone shows one side at a time');

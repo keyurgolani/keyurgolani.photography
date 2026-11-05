@@ -246,6 +246,18 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(s.heartbeat()).toMatchObject({ lastPassResult: 'locked' });
     });
 
+    it('records when it last finished a pass, from its start, and a locked pass moves nothing (v2.0.0 A2)', async () => {
+        let now = NOW;
+        const s = await setup({ options: { clock: () => now, pass: { lock: { waitMs: 0 } } } });
+        await s.step.pass('startup');
+        await s.step.idle();
+        expect(s.heartbeat()).toMatchObject({ lastPassResult: 'committed', lastPassAt: iso(NOW), lastProgressAt: iso(NOW) });
+        now = NOW + 20 * 60_000;
+        expect(await withLock('registry', { root: s.data.root }, () => s.step.pass('timer'))).toEqual({ status: 'locked' });
+        // The try is recorded, but photos status --check measures the stall from the last pass that got through.
+        expect(s.heartbeat()).toMatchObject({ lastPassResult: 'locked', lastPassAt: iso(NOW + 20 * 60_000), lastProgressAt: iso(NOW) });
+    });
+
     it('asks for another pass once a file still being written has had time to settle', async () => {
         const s = await setup({ photos: 0, options: { pass: { clock: Date.now } } });
         fs.writeFileSync(s.lib.file('fresh.jpg'), images[0]);

@@ -1449,4 +1449,24 @@ describe('the watcher notice (#14)', () => {
         render(<WatcherNotice watcher={{ state: 'missing' }} />);
         expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
     });
+
+    it('takes the id the item view points at, so a phone on a deep link can reach it (review)', () => {
+        render(<WatcherNotice watcher={{ state: 'missing' }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveAttribute('id', 'watcher');
+        expect(screen.getByRole('region', { name: 'Watcher' })).not.toHaveAttribute('aria-live');
+    });
+
+    it("points at the warning from inside the item, which a phone's #item link scrolls to past it (review)", () => {
+        render(<InboxDetailView view={view({ watcher: { state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 } })} />);
+        const item = document.getElementById('item')!;
+        const pointer = within(item).getByRole('link', { name: "The watcher isn't checking in" });
+        expect(pointer).toHaveAttribute('href', '#watcher');
+        expect(pointer.closest('p')).toHaveTextContent("The watcher isn't checking in, so new photographs won't appear here until it runs.");
+        expect(pointer.closest('[aria-live]')).toBeNull();
+    });
+
+    it('says nothing about the watcher inside the item while it checks in', () => {
+        render(<InboxDetailView view={view()} />);
+        expect(within(document.getElementById('item')!).queryByRole('link', { name: /watcher/ })).toBeNull();
+    });
 });
