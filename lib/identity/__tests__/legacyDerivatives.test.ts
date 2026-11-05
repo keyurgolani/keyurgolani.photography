@@ -149,6 +149,7 @@ describe('buildLegacyManifest', () => {
         ['an upright marker with no time', 'cache/upright-rebuild.json', '{"photos":2}', "isn't the marker"],
         ['an upright marker with an empty retry list', 'cache/upright-rebuild.json', '{"rebuiltAt":"2026-01-02T03:04:05.000Z","photos":2,"retry":[]}', "isn't the marker"],
         ['an upright marker that is no JSON', 'cache/upright-rebuild.json', 'done', "isn't the marker"],
+        ['an upright marker whose retry list holds no names', 'cache/upright-rebuild.json', '{"rebuiltAt":"2026-01-02T03:04:05.000Z","photos":2,"retry":[1,null]}', "isn't the marker"],
     ])('says a folder stays for %s, by its content', async (_label, relative, bytes, reason) => {
         const lib = library(tempRoot());
         write(path.join(lib, relative), bytes);

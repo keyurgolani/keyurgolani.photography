@@ -39,9 +39,18 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * The tests' own temp folder, 0700 and not sticky: the script refuses a
+ * library or destination under a folder others can write, and on Linux CI
+ * os.tmpdir() is /tmp, 1777 and sticky.
+ */
+const TEST_BASE = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'keyurgolani-photography-tests');
+fs.mkdirSync(TEST_BASE, { recursive: true, mode: 0o700 });
+fs.chmodSync(TEST_BASE, 0o700);
+
 /** A temp folder for one test's library and data root, resolved so paths compare with the script's. */
 function tempRoot() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-move-aside-')));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(TEST_BASE, 'legacy-move-aside-')));
   roots.push(root);
   state ??= path.join(root, 'state');
   return root;
@@ -148,6 +157,8 @@ const heredoc = (tag) => SCRIPT_TEXT.match(new RegExp(`<<'${tag}' \\|\\| true\\n
 const COMMON = heredoc('COMMON');
 /** The forward rename helper, the one program --rename-as-root sends through sudo. */
 const FORWARD = `${COMMON}\n${heredoc('FORWARD')}`;
+/** The forward helper after `prelude`, perl that can override a builtin (CORE::GLOBAL) to force one fault at an exact step. */
+const forwardWith = (prelude) => `${prelude}\n${COMMON}\n${heredoc('FORWARD')}`;
 /** The way back's helper, which move-back.sh carries. */
 const BACK = heredoc('BACK');
 const digestOf = (manifest) => JSON.parse(fs.readFileSync(manifest, 'utf8')).digest;
@@ -773,21 +784,68 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expectRefused(root, ['--manifest', await manifestFor(library), library, '--to', dest, '--apply'], /move-back\.sh.*different --to/s);
     });
 
-    it('that another user can write, unless the sticky bit is set, here or above', async () => {
+    it('under a folder its group or others can write, sticky or not, with how to fix it', async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
       const shared = path.join(root, 'shared');
       fs.mkdirSync(shared);
-      for (const mode of [0o777, 0o775, 0o757]) {
+      for (const mode of [0o777, 0o775, 0o757, 0o1777, 0o1775]) {
         fs.chmodSync(shared, mode);
-        expectRefused(root, ['--manifest', manifest, '--to', path.join(shared, 'aside'), library], /writable by another user/);
-        expectRefused(root, ['--manifest', manifest, '--to', path.join(shared, 'deeper', 'x', '..'), library], /isn't a folder|writable by another user/);
+        expectRefused(root, ['--manifest', manifest, '--to', path.join(shared, 'aside'), library], new RegExp(`${literal(shared)} is writable by its group or others[\\s\\S]*chmod g-w,o-w ${literal(shared)}`));
       }
-      fs.chmodSync(shared, 0o1777);
-      const sticky = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library]);
-      expect(sticky.status, sticky.stderr).toBe(0);
       fs.chmodSync(shared, 0o755);
+      const fine = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library]);
+      expect(fine.status, fine.stderr).toBe(0);
+    });
+
+    it('a library under a sticky, world-writable folder', async () => {
+      const root = tempRoot();
+      const shared = path.join(root, 'shared');
+      fs.mkdirSync(shared);
+      const library = fullLibrary(shared);
+      const manifest = await manifestFor(library);
+      fs.chmodSync(shared, 0o1777);
+      try {
+        expectRefused(root, ['--manifest', manifest, '--to', path.join(root, 'aside'), library], /writable by its group or others/);
+      } finally {
+        fs.chmodSync(shared, 0o755);
+      }
+    });
+
+    it('under a folder owned by someone other than root or you', async () => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      // A stubbed id makes this user someone else, so the temp folders above are another user's.
+      const env = envOf(stubs(root, { uid: process.getuid() + 1 }));
+      expectRefused(root, ['--manifest', manifest, library], new RegExp(`is owned by uid ${process.getuid()}, neither root nor you`), env);
+    });
+
+    it('an existing --to that is not yours to write, before anything is written', async () => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const dest = path.join(root, 'aside');
+      fs.mkdirSync(dest);
+      fs.chmodSync(dest, 0o555);
+      try {
+        expectRefused(root, ['--manifest', manifest, '--to', dest, '--apply', library], /isn't writable by you/);
+      } finally {
+        fs.chmodSync(dest, 0o755);
+      }
+      expect(fs.existsSync(state)).toBe(false);
+    });
+
+    it('on macOS, under a folder whose ACL allows others anything', async (ctx) => {
+      if (process.platform !== 'darwin') ctx.skip();
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const shared = path.join(root, 'acl');
+      fs.mkdirSync(shared);
+      expect(spawnSync('chmod', ['+a', 'everyone allow add_file,add_subdirectory,delete_child', shared]).status).toBe(0);
+      expectRefused(root, ['--manifest', manifest, '--to', path.join(shared, 'aside'), library], /ACL that allows/);
     });
 
     it('inside a data root, by its data-root.json', async () => {
@@ -849,6 +907,27 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
   });
 
   describe('with --apply', () => {
+    it.each([
+      ['as the owner', false],
+      ['with --rename-as-root, through a stubbed sudo', true],
+    ])('works under a umask of 002, %s, making the aside folder 0700', async (_label, asRoot) => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const env = asRoot ? envOf(stubs(root, { sudo: true })) : {};
+      const previous = process.umask(0o002);
+      let result;
+      try {
+        result = run(['--manifest', manifest, '--apply', ...(asRoot ? ['--rename-as-root'] : []), library], env);
+      } finally {
+        process.umask(previous);
+      }
+      expect(result.status, result.stderr).toBe(0);
+      const dest = asideOf(library);
+      expect(fs.statSync(dest).mode & 0o777).toBe(0o700);
+      expect(fs.readdirSync(dest).sort()).toEqual([...NAMES, ...AFTER_APPLY].sort());
+    });
+
     it('stops at a failed rename, says what moved, and leaves a move-back.sh that undoes just that', async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
@@ -944,7 +1023,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const calls = stub.sudoCalls();
       expect(calls).toHaveLength(8);
       calls.forEach((call, n) => {
-        expect(call).toEqual(['env', '-i', 'PATH=/usr/bin:/bin', `SUDO_UID=${process.getuid()}`, '/usr/bin/perl', '-e', FORWARD, '--', 'forward', manifest, library, dest, NAMES[n]]);
+        expect(call).toEqual(['/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', `SUDO_UID=${process.getuid()}`, '/usr/bin/perl', '-e', FORWARD, '--', 'forward', manifest, library, dest, NAMES[n]]);
       });
       expect(stdout).toMatch(/^Only the rename helper runs as root, through sudo, once a folder\./m);
       expect(fs.readdirSync(dest).sort()).toEqual([...NAMES, ...AFTER_APPLY].sort());
@@ -1049,13 +1128,120 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expect(manifest).toBeTruthy();
     });
 
-    it('refuses an aside folder owned by another user, or writable by group or others', async () => {
+    it('refuses folders above the library or the aside folder owned by someone other than root or SUDO_UID', async () => {
+      const { root, ok } = await setUp();
+      expectHelperRefused(root, ok, new RegExp(`is owned by uid ${process.getuid()}, neither root nor uid ${process.getuid() + 1}`), { SUDO_UID: String(process.getuid() + 1) });
+    });
+
+    it('refuses an aside folder its group or others can write, and says how to fix it', async () => {
       const { root, aside, ok } = await setUp();
-      expectHelperRefused(root, ok, /isn't yours/, { SUDO_UID: String(process.getuid() + 1) });
-      fs.chmodSync(aside, 0o775);
-      expectHelperRefused(root, ok, /writable by group or others/);
-      fs.chmodSync(aside, 0o757);
-      expectHelperRefused(root, ok, /writable by group or others/);
+      for (const mode of [0o775, 0o757, 0o1777]) {
+        fs.chmodSync(aside, mode);
+        expectHelperRefused(root, ok, new RegExp(`${literal(aside)} is writable by its group or others[\\s\\S]*chmod g-w,o-w ${literal(aside)}`));
+      }
+    });
+
+    it('refuses SUDO_UID 0, so root never stands in for the owner', async () => {
+      const { root, ok } = await setUp();
+      expectHelperRefused(root, ok, /SUDO_UID isn't a user's uid/, { SUDO_UID: '0' });
+    });
+
+    it('checks the manifest\'s age itself', async () => {
+      const { root, library, aside } = await setUp();
+      const stale = await manifestFor(library, { clock: () => Date.now() - 25 * 60 * 60 * 1000 });
+      fs.writeFileSync(path.join(aside, 'legacy-derivatives.used'), `${digestOf(stale)}\n`);
+      expectHelperRefused(root, ['forward', stale, library, aside, 'thumbnails'], /more than 24 hours old/);
+    });
+
+    it.each([
+      ['move-back.sh as a hard link', (aside, root) => fs.linkSync(path.join(aside, 'move-back.sh'), path.join(root, 'second-link'))],
+      ['move-back.sh as a symlink', (aside, root) => {
+        fs.renameSync(path.join(aside, 'move-back.sh'), path.join(root, 'real-move-back.sh'));
+        fs.symlinkSync(path.join(root, 'real-move-back.sh'), path.join(aside, 'move-back.sh'));
+      }],
+      ['the used record as a hard link', (aside, root) => fs.linkSync(path.join(aside, 'legacy-derivatives.used'), path.join(root, 'second-record'))],
+    ])("refuses the aside folder's own files when they aren't plain files with one link: %s", async (_label, change) => {
+      const { root, aside, ok } = await setUp();
+      change(aside, root);
+      expectHelperRefused(root, ok, /isn't a plain file of yours with one link/);
+    });
+
+    it("refuses an aside folder on another device than the library's", async () => {
+      const { root, aside, ok } = await setUp();
+      const prelude = String.raw`BEGIN { *CORE::GLOBAL::lstat = sub (;*) { my $path = @_ ? $_[0] : $_; my @s = CORE::lstat($path); $s[0] += 1 if @s && $path eq '${aside}'; return wantarray ? @s : scalar @s } }`;
+      const before = tree(root);
+      const result = spawnSync(realBin('perl'), ['-e', forwardWith(prelude), '--', ...ok], { encoding: 'utf8', env: { PATH: process.env.PATH, SUDO_UID: '' } });
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toMatch(/isn't on the library's device/);
+      expect(tree(root)).toEqual(before);
+    });
+
+    /** A prelude that hides `thumbnails` from readdir only on the handle opened on `where`. */
+    const hideFrom = (where) => String.raw`my %dir_of;
+BEGIN {
+  *CORE::GLOBAL::opendir = sub (*$) { my $ok = CORE::opendir($_[0], $_[1]); $dir_of{"$_[0]"} = $_[1] if $ok; return $ok };
+  *CORE::GLOBAL::readdir = sub (*) { my @entries = CORE::readdir($_[0]); return ($dir_of{"$_[0]"} // '') eq '${where}' ? grep { $_ ne 'thumbnails' } @entries : @entries };
+}`;
+
+    it('stops at the root listing when it no longer lists the name exactly, on its own', async () => {
+      const { root, library, ok } = await setUp();
+      const before = tree(root);
+      const result = spawnSync(realBin('perl'), ['-e', forwardWith(hideFrom(library)), '--', ...ok], { encoding: 'utf8', env: { PATH: process.env.PATH, SUDO_UID: '' } });
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toMatch(/no entry named exactly thumbnails now, so it changed since the check/);
+      expect(tree(root)).toEqual(before);
+    });
+
+    it('stops at the last fresh listing, right before the rename, on its own', async () => {
+      const { root, ok } = await setUp();
+      const before = tree(root);
+      const result = spawnSync(realBin('perl'), ['-e', forwardWith(hideFrom('.')), '--', ...ok], { encoding: 'utf8', env: { PATH: process.env.PATH, SUDO_UID: '' } });
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toMatch(/no entry named exactly thumbnails right before the rename/);
+      expect(tree(root)).toEqual(before);
+    });
+
+    it('refuses a library path swapped for a symlink to another library between the check and the rename', async () => {
+      const { root, library, ok } = await setUp();
+      const other = fullLibrary(path.join(root, 'other'));
+      const prelude = String.raw`BEGIN { *CORE::GLOBAL::chdir = sub (;$) { my $to = $_[0]; if ($to eq '${library}' && !$main::swapped++) { CORE::rename('${library}', '${library}.real'); symlink('${other}', '${library}') } return CORE::chdir($to) } }`;
+      const result = spawnSync(realBin('perl'), ['-e', forwardWith(prelude), '--', ...ok], { encoding: 'utf8', env: { PATH: process.env.PATH, SUDO_UID: '' } });
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toMatch(/isn't the library the check saw/);
+      expect(fs.readdirSync(`${library}.real`)).toContain('thumbnails');
+      expect(fs.readdirSync(other)).toContain('thumbnails');
+    });
+
+    /** A prelude that, right after the forward rename succeeds, runs `perl` once, in the library. */
+    const afterRename = (perl) => String.raw`BEGIN { *CORE::GLOBAL::rename = sub ($$) { my ($from, $to) = @_; my $ok = CORE::rename($from, $to); if ($ok && $from eq 'thumbnails' && !$main::done++) { ${perl} } return $ok } }`;
+    const runAfterRename = (ok, perl) => spawnSync(realBin('perl'), ['-e', forwardWith(afterRename(perl)), '--', ...ok], { encoding: 'utf8', env: { PATH: process.env.PATH, SUDO_UID: '' } });
+
+    it('renames straight back when what arrived is not the checked folder', async () => {
+      const { library, aside, ok } = await setUp();
+      const result = runAfterRename(ok, String.raw`CORE::rename('${aside}/thumbnails', '${aside}/moved-away'); mkdir '${aside}/thumbnails';`);
+      expect(result.status, result.stderr).toBe(5);
+      expect(result.stderr).toMatch(/wasn't the folder that was checked, so it was moved straight back/);
+      expect(fs.readdirSync(path.join(library, 'thumbnails'))).toEqual([]);
+      expect(fs.existsSync(path.join(aside, 'thumbnails'))).toBe(false);
+    });
+
+    it('leaves it where it is, rather than move it straight back, when the aside folder changed', async () => {
+      const { library, aside, ok } = await setUp();
+      const result = runAfterRename(ok, String.raw`CORE::rename('${aside}', '${aside}-old'); mkdir '${aside}'; mkdir '${aside}/thumbnails';`);
+      expect(result.status, result.stderr).toBe(5);
+      expect(result.stderr).toMatch(/aside folder .* changed[\s\S]*left where it is/);
+      expect(fs.existsSync(path.join(library, 'thumbnails'))).toBe(false);
+      expect(fs.readdirSync(path.join(`${aside}-old`, 'thumbnails')).sort()).toEqual(['a.webp', 'b.webp']);
+    });
+
+    it('leaves it where it is, rather than move it straight back, when the library holds the name again, in any case', async () => {
+      const { library, aside, ok } = await setUp();
+      const result = runAfterRename(ok, String.raw`CORE::rename('${aside}/thumbnails', '${aside}/moved-away'); mkdir '${aside}/thumbnails'; mkdir 'Thumbnails';`);
+      expect(result.status, result.stderr).toBe(5);
+      expect(result.stderr).toMatch(/holds thumbnails again[\s\S]*left where it is/);
+      expect(fs.readdirSync(library)).toContain('Thumbnails');
+      expect(fs.readdirSync(path.join(library, 'Thumbnails'))).toEqual([]);
+      expect(fs.readdirSync(path.join(aside, 'thumbnails'))).toEqual([]);
     });
 
     it('refuses a name the manifest says stays, or that is not one of the eight', async () => {
@@ -1105,6 +1291,50 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expect(result.status, result.stderr).toBe(0);
       expect(fs.existsSync(path.join(library, 'thumbnails'))).toBe(false);
       expect(fs.readdirSync(path.join(aside, 'thumbnails')).sort()).toEqual(['a.webp', 'b.webp']);
+    });
+  });
+
+  describe("the README's manual way back", () => {
+    const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+    /** The documented line that starts with `[ ! -e "$library/$name" ]` and ends in `mv <flag>`. */
+    const documented = (flag) => README.split('\n').map((line) => line.trim()).find((line) => line.startsWith('[ ! -e "$library/$name" ]') && line.includes(`&& mv ${flag} "$aside/$name" "$library/$name"`));
+    const gnuMv = spawnSync('mv', ['--version'], { encoding: 'utf8' }).stdout?.includes('GNU') ?? false;
+
+    function tryIt(line, album) {
+      const root = tempRoot();
+      const library = path.join(root, 'photos');
+      const aside = path.join(root, 'aside');
+      write(path.join(aside, 'thumbnails', 'a.webp'), WEBP[0]);
+      if (album) write(path.join(library, album, 'portrait.jpg'), crypto.randomBytes(64));
+      else fs.mkdirSync(library, { recursive: true });
+      const before = snapshot(root);
+      const result = spawnSync('sh', ['-c', `aside='${aside}'; library='${library}'; name=thumbnails\n${line}`], { encoding: 'utf8' });
+      return { root, library, aside, before, result };
+    }
+
+    it.each([['-n'], ['-nT']])('documents a form with mv %s', (flag) => {
+      expect(documented(flag), `a README line ending in mv ${flag}`).toBeDefined();
+      expect(documented(flag)).toContain('grep -ixq');
+    });
+
+    it.each([['an album by the same name in another case', 'Thumbnails'], ['an album by the same name', 'thumbnails']])('with mv -n, never nests into %s', (_label, album) => {
+      const { root, before, result } = tryIt(documented('-n'), album);
+      expect(result.status).not.toBe(0);
+      expect(snapshot(root)).toEqual(before);
+    });
+
+    it('with mv -n, moves the folder back when the name is clear', () => {
+      const { library, aside, result } = tryIt(documented('-n'), null);
+      expect(result.status, result.stderr).toBe(0);
+      expect(fs.readdirSync(library)).toEqual(['thumbnails']);
+      expect(fs.readdirSync(aside)).toEqual([]);
+    });
+
+    // Skipped where mv isn't GNU coreutils, which -T needs, as on macOS; CI's Linux runner has it.
+    it.skipIf(!gnuMv).each([['Thumbnails'], ['thumbnails']])('with GNU mv -nT, never nests into %s', (album) => {
+      const { root, before, result } = tryIt(documented('-nT'), album);
+      expect(result.status).not.toBe(0);
+      expect(snapshot(root)).toEqual(before);
     });
   });
 
