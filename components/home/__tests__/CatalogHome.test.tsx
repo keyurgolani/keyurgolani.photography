@@ -683,6 +683,8 @@ describe('CatalogHome', () => {
     const heading = () => screen.getByRole('heading', { level: 1 }).textContent;
     const enter = () => screen.getByRole('link', { name: 'Enter the series' }).getAttribute('href');
     const status = () => screen.getByRole('status');
+    /** The carousel's visually hidden live region, Home's one announcement. */
+    const said = () => document.querySelector<HTMLElement>('[data-home-carousel] [aria-live]')!;
     /** Walks Next `steps` times, loading each photograph Home moves to. */
     const next = (...ns: number[]) => {
       for (const n of ns) {
@@ -697,6 +699,9 @@ describe('CatalogHome', () => {
       expect([heading(), enter(), position()]).toEqual(['Fixture series A', '/work/fixture-a', '03 / 04']);
       expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
       expect(status().textContent).toBe('');
+      // The opening isn't a crossing: the heading names its series.
+      expect(said().textContent).toBe('3 of 4, Described photograph 3');
+      expect(said()).toHaveAttribute('aria-live', 'off');
     });
 
     it('plays the series through, wrapping to the photographs before its opening one, then crosses into the next series\' opening photograph, and the chrome follows', async () => {
@@ -720,25 +725,28 @@ describe('CatalogHome', () => {
     it('announces the new series\' name once in the live region at each crossing, and nothing on a move inside a series', async () => {
       await renderHome(looped());
       load(3);
-      const changes: string[] = [];
-      const observer = new MutationObserver(() => changes.push(status().textContent ?? ''));
-      observer.observe(status(), { subtree: true, childList: true, characterData: true });
-      const settle = () => act(async () => await Promise.resolve());
-      next(0, 4, 1);
-      await settle();
-      expect(changes).toEqual([]);
-      next(8);
-      await settle();
-      expect(status()).toHaveTextContent('Now showing Fixture series B');
-      next(9, 7);
-      await settle();
-      expect(changes).toEqual(['Now showing Fixture series B']);
-      next(3);
-      await settle();
-      expect(changes).toEqual(['Now showing Fixture series B', 'Now showing Fixture series A']);
+      // What the carousel's region says after each of the visitor's moves.
+      const lines: string[] = [];
+      const walk = (...ns: number[]) => {
+        for (const n of ns) {
+          next(n);
+          lines.push(said().textContent ?? '');
+        }
+      };
+      walk(0, 4, 1);
+      expect(lines).toEqual(['4 of 4, Described photograph 0', '1 of 4, Described photograph 4', '2 of 4, Described photograph 1']);
+      walk(8);
+      expect(said()).toHaveTextContent('Now showing Fixture series B. 2 of 3, Described photograph 8');
+      walk(9, 7);
+      expect(lines.filter((line) => line.startsWith('Now showing'))).toEqual(['Now showing Fixture series B. 2 of 3, Described photograph 8']);
+      expect(lines.slice(-2)).toEqual(['3 of 3, Described photograph 9', '1 of 3, Described photograph 7']);
+      walk(3);
+      expect(lines.filter((line) => line.startsWith('Now showing'))).toEqual(['Now showing Fixture series B. 2 of 3, Described photograph 8', 'Now showing Fixture series A. 3 of 4, Described photograph 3']);
+      // The status region keeps only failures.
+      expect(status().textContent).toBe('');
       // The announcement is for assistive technology: the heading already shows the name.
-      expect(within(status()).getByText('Now showing Fixture series A')).toHaveClass('sr-only');
-      observer.disconnect();
+      expect(said()).toHaveClass('sr-only');
+      expect(said()).toHaveAttribute('aria-live', 'polite');
     });
 
     it('steps back across the boundary with Previous, onto the last photograph the series before plays', async () => {
@@ -748,7 +756,8 @@ describe('CatalogHome', () => {
       load(7);
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(7));
       expect([heading(), enter(), position()]).toEqual(['Fixture series B', '/work/fixture-b', '01 / 03']);
-      expect(status()).toHaveTextContent('Now showing Fixture series B');
+      expect(said().textContent).toBe('Now showing Fixture series B. 1 of 3, Described photograph 7');
+      expect(status().textContent).toBe('');
       click('Next photograph');
       expect([heading(), position()]).toEqual(['Fixture series A', '03 / 04']);
     });
@@ -784,13 +793,14 @@ describe('CatalogHome', () => {
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
       expect([heading(), enter()]).toEqual(['Fixture series A', '/work/fixture-a']);
       expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
-      expect(status().textContent).toBe('');
+      expect(said().textContent).toBe('2 of 4, Described photograph 1');
       // The position stays with the photograph on screen too (#4's commit model).
       expect(position()).toBe('02 / 04');
       load(8);
       expect(position()).toBe('02 / 03');
       expect([heading(), enter()]).toEqual(['Fixture series B', '/work/fixture-b']);
-      expect(status()).toHaveTextContent('Now showing Fixture series B');
+      expect(said().textContent).toBe('Now showing Fixture series B. 2 of 3, Described photograph 8');
+      expect(status().textContent).toBe('');
     });
 
     it('names the series a failed photograph is in when it isn\'t the one on screen, and announces nothing for it', async () => {
@@ -801,25 +811,29 @@ describe('CatalogHome', () => {
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
       expect(heading()).toBe('Fixture series A');
       expect(status().textContent).toBe('Couldn’t load photograph 02 of 03 in Fixture series B');
+      expect(said().textContent).toBe('2 of 4, Described photograph 1');
       // Skip moves on to 9, which loads: now B is on screen, so the chrome and the announcement follow.
       click('Skip');
       load(9);
       expect(heading()).toBe('Fixture series B');
-      expect(status().textContent).toBe('Now showing Fixture series B');
+      expect(said().textContent).toBe('Now showing Fixture series B. 3 of 3, Described photograph 9');
+      expect(status().textContent).toBe('');
     });
 
-    it('drops the announcement once a failure note shows, so the region reads the note alone', async () => {
+    it('keeps the crossing out of the status region, so a failure note reads alone, and the crossing isn\'t said again', async () => {
       await renderHome(looped({ photos: [...ORDER.map((n) => photo(n)), photo(7), photo(8), photo(9, { image: null })] }));
       load(3);
       next(0, 4, 1, 8);
-      expect(status().textContent).toBe('Now showing Fixture series B');
+      expect(said().textContent).toBe('Now showing Fixture series B. 2 of 3, Described photograph 8');
+      expect(status().textContent).toBe('');
       click('Next photograph');
       expect(shownSlide()).toHaveAttribute('data-photo-id', id(8));
       expect(status().textContent).toBe('Couldn’t load photograph 03 of 03');
-      // And it doesn't come back when the note goes.
+      // And it doesn't come back when the note goes: the next move is inside B.
       click('Next photograph');
       load(7);
       expect(status().textContent).toBe('');
+      expect(said().textContent).toBe('1 of 3, Described photograph 7');
     });
 
     it('starts over on the new pick when the same revision renders again with another series first', async () => {
@@ -834,6 +848,68 @@ describe('CatalogHome', () => {
       // The new opening photograph is the one the head preloads and the sequence opens on.
       next(9, 7, 3);
       expect(heading()).toBe('Fixture series A');
+    });
+
+    describe('one message at a crossing (#4, v2.0.0)', () => {
+      /**
+       * Every change a screen reader would hear: each DOM change inside a polite live region on the page, an
+       * aria-live="polite" one or a status region, as that region's text once the moves are done.
+       */
+      function watchPolite() {
+        const changed: Element[] = [];
+        const politeRegionOf = (node: Node) => {
+          const region = (node instanceof Element ? node : node.parentElement)?.closest('[aria-live], [role="status"]');
+          if (!region) return null;
+          const live = region.getAttribute('aria-live');
+          return live === 'polite' || (live === null && region.getAttribute('role') === 'status') ? region : null;
+        };
+        const take = (records: MutationRecord[]) => {
+          for (const record of records) {
+            const region = politeRegionOf(record.target);
+            if (region) changed.push(region);
+          }
+        };
+        const observer = new MutationObserver(take);
+        observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+        return () => {
+          take(observer.takeRecords());
+          observer.disconnect();
+          return changed.map((region) => region.textContent ?? '');
+        };
+      }
+
+      it('a manual move into another series makes one change across every polite region, with the series and the slide', async () => {
+        await renderHome(looped());
+        load(3);
+        next(0, 4, 1);
+        const said = watchPolite();
+        next(8);
+        expect(said()).toEqual(['Now showing Fixture series B. 2 of 3, Described photograph 8']);
+        expect(status().textContent).toBe('');
+      });
+
+      it('a manual move inside a series makes one change, with no series name', async () => {
+        await renderHome(looped());
+        load(3);
+        const said = watchPolite();
+        next(0);
+        expect(said()).toEqual(['4 of 4, Described photograph 0']);
+      });
+
+      it('Home\'s own move into another series makes no polite change', async () => {
+        await renderHome(looped());
+        load(3);
+        for (const n of [0, 4, 1]) {
+          advance(HOME_AUTO_ADVANCE_MS);
+          load(n);
+        }
+        const said = watchPolite();
+        advance(HOME_AUTO_ADVANCE_MS);
+        load(8);
+        expect(heading()).toBe('Fixture series B');
+        expect(said()).toEqual([]);
+        expect(status().textContent).toBe('');
+      });
     });
 
     it('asks the loop route for the series each window is in, crossing into the next one', async () => {
@@ -1537,11 +1613,14 @@ describe('CatalogHome', () => {
         }
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Fixture series B');
         expect(screen.getByRole('status').textContent).toBe('');
+        expect(live()).toHaveAttribute('aria-live', 'off');
         for (const n of [9, 7, 3]) {
           click('Next photograph');
           load(n);
         }
-        expect(screen.getByRole('status')).toHaveTextContent('Now showing Fixture series A');
+        expect(live()).toHaveAttribute('aria-live', 'polite');
+        expect(live().textContent).toBe('Now showing Fixture series A. 3 of 4, Described photograph 3');
+        expect(screen.getByRole('status').textContent).toBe('');
       });
     });
 

@@ -164,16 +164,8 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
     const { position, count } = placeOf(photoId);
     return `${position + 1} of ${count}`;
   }, [placeOf]);
-
-  // Crossing into another series says its name once in the live region. The one Home opens on isn't announced: the
-  // page's own heading names it.
-  const [announcedId, setAnnouncedId] = useState(series.id);
-  const [announcement, setAnnouncement] = useState<string | null>(null);
-  // Only the visitor's own move announces it: while Home moves by itself its announcements are off (#4).
-  if (announcedId !== series.id) {
-    setAnnouncedId(series.id);
-    setAnnouncement(playback.source === 'manual' ? `Now showing ${series.title}` : null);
-  }
+  // The carousel's live region names a series it crosses into, with the slide, as one message (#4).
+  const seriesOfPhoto = useCallback((photoId: string) => placeOf(photoId).entry, [placeOf]);
 
   const current = currentId === undefined ? undefined : photos.get(currentId);
   // A record still on its way isn't a failure: the photograph before it stays on screen meanwhile.
@@ -198,8 +190,6 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
       : noticeId !== null
         ? noticeText(placeOf(noticeId), series.id)
         : null;
-  // The status region is atomic, so a failure note replaces the announcement rather than being read after it.
-  if (note !== null && announcement !== null) setAnnouncement(null);
 
   // A failure decides once per visit to a photograph, and again after a Retry.
   useEffect(() => {
@@ -398,6 +388,7 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
           attempts={attempts}
           label={series.title}
           slideLabel={slideLabel}
+          seriesOf={seriesOfPhoto}
           announce={announce}
           onImageReady={handleImageReady}
           onImageFailed={handleImageFailed}
@@ -433,7 +424,6 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
         sequence={
           <div className={styles.sequence}>
             <div role="status" className={styles.failure} data-failed={note !== null ? '' : undefined}>
-              {announcement !== null && <p className="sr-only">{announcement}</p>}
               {note !== null && <p>{note}</p>}
             </div>
             {(showActions || unavailable) && (

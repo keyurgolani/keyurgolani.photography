@@ -29,6 +29,8 @@ interface CatalogSequenceProps {
   label: string;
   /** Each slide's name, "3 of 12": its place in its own series. */
   slideLabel: (photoId: string) => string;
+  /** The series a photograph is in, so the live region can name a new one when the photograph on screen crosses into it. */
+  seriesOf: (photoId: string) => { id: string; title: string };
   /** The hidden live region's politeness: off while Home moves by itself, polite after the visitor moves it. */
   announce: 'off' | 'polite';
   /** Called whenever the photograph at `index` has decoded and is on screen: its commit. */
@@ -62,7 +64,7 @@ const removeFrom = (set: ReadonlySet<string>, id: string) => {
  * stops fetching (ResponsivePhoto). It keeps no timer, renders no control,
  * and never moves focus.
  */
-export default function CatalogSequence({ photoIds, photos, index, openingId, playbackState, attempts, label, slideLabel, announce, onImageReady, onImageFailed, onShownChange }: CatalogSequenceProps) {
+export default function CatalogSequence({ photoIds, photos, index, openingId, playbackState, attempts, label, slideLabel, seriesOf, announce, onImageReady, onImageFailed, onShownChange }: CatalogSequenceProps) {
   // The mounted slides whose image has decoded. A slide leaves it when it unmounts, so a remount decodes again.
   const [decoded, setDecoded] = useState<ReadonlySet<string>>(new Set());
   const [anyDecoded, setAnyDecoded] = useState(false);
@@ -70,13 +72,19 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
   const nextId = photoIds.length > 1 ? photoIds[(index + 1) % photoIds.length] : undefined;
 
   // What's on screen: the photograph at `index` once it has decoded, else the one there before if that one had.
-  const [stage, setStage] = useState<{ shown?: string; outgoing: readonly string[] }>({ shown: activeId, outgoing: [] });
+  // `crossed`: it's in another series than the one before it, so the live region names that series. The opening
+  // photograph isn't a crossing: the page's heading names its series.
+  const [stage, setStage] = useState<{ shown?: string; outgoing: readonly string[]; crossed: boolean }>({ shown: activeId, outgoing: [], crossed: false });
   const keep = stage.shown !== undefined && stage.shown !== activeId && decoded.has(stage.shown) && !(activeId !== undefined && decoded.has(activeId));
   const shownId = keep ? stage.shown : activeId;
   if (stage.shown !== shownId) {
     // The photograph that was on screen fades out, and a newer commit ends any older fade at once. One that never
-    // decoded has nothing on screen to fade.
-    setStage({ shown: shownId, outgoing: stage.shown !== undefined && decoded.has(stage.shown) ? [stage.shown] : [] });
+    // decoded has nothing on screen to fade. Decided in this render, so the crossing and the slide are one message.
+    setStage({
+      shown: shownId,
+      outgoing: stage.shown !== undefined && decoded.has(stage.shown) ? [stage.shown] : [],
+      crossed: stage.shown !== undefined && shownId !== undefined && seriesOf(shownId).id !== seriesOf(stage.shown).id,
+    });
   }
 
   const markDecoded = useCallback((id: string) => {
@@ -161,9 +169,13 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
           </div>
         );
       })}
-      {/* The slide on screen and its photograph, for a screen reader: read out after the visitor's own move, never Home's. */}
+      {/*
+        The slide on screen and its photograph, after the series' name when it crossed into another, for a screen
+        reader: read out after the visitor's own move, never Home's. Home's only announcement, so a crossing is one
+        message (#4).
+      */}
       <p className="sr-only" aria-live={announce} aria-atomic="true">
-        {shownId === undefined ? '' : `${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`}
+        {shownId === undefined ? '' : `${stage.crossed ? `Now showing ${seriesOf(shownId).title}. ` : ''}${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`}
       </p>
     </div>
   );
