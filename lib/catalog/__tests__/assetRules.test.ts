@@ -1,10 +1,13 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mediaFilePath } from '../../media/path';
 import { ASSET_RULE_IDS } from '../asset-rules';
 import { registeredRules, runRules } from '../rules';
 import { createTestCatalog, type TestCatalog } from '../testing';
+import { tombstonesDir } from '../tombstones';
+import { writeTombstone } from './purgeFixtures';
 import type { CandidatePhotoRecord, Issue, RuleContext } from '../types';
 import { VARIANT_BYTES } from './catalogFixtures';
 
@@ -72,6 +75,17 @@ const rows: Row[] = [
     } },
     { label: 'a member left out for an unknown revision', code: 'assets.revision', breakIt: (context) => ({ ...left(context, 'unknown-revision', null), field: 'assetRevision' }) },
     { label: 'a member left out for a missing manifest', code: 'assets.manifest', breakIt: (context) => ({ ...left(context, 'no-manifest', catalog.profileId), field: 'profileId' }) },
+    // #181's A10.
+    { label: 'a photo at an asset revision a standing tombstone lists', code: 'assets.tombstoned', breakIt: (context) => {
+        const photo = first(context);
+        writeTombstone(catalog.root, { photoId: photo.id, assetRevisions: [photo.assetRevision] });
+        return { record: { kind: 'photo', id: photo.id }, field: 'assetRevision' };
+    } },
+    { label: 'a tombstone file nobody can read, which might take down any photo', code: 'assets.tombstoned', breakIt: () => {
+        fs.mkdirSync(tombstonesDir(catalog.root), { recursive: true });
+        fs.writeFileSync(path.join(tombstonesDir(catalog.root), 'tomb_00000000-0000-4000-8000-0000000000ab.json'), '{');
+        return { record: { kind: 'site', id: 'site' }, field: 'catalog/tombstones/tomb_00000000-0000-4000-8000-0000000000ab.json' };
+    } },
 ];
 
 describe('the asset rules', () => {

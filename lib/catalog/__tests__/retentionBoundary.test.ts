@@ -8,9 +8,11 @@ import { REPO_ROOT } from '../../../test/helpers/runTsx';
 /**
  * #15's Keep 12: only the CLI can delete files through GC, so no HTTP route,
  * page, or the watcher may reach the retention module, by any import path.
+ * #181's A10: nor purge, which writes tombstones and revokes. `/media` reads
+ * tombstones through lib/catalog/tombstones.ts, which writes nothing.
  */
 
-const RETENTION = /^lib\/catalog\/retention(?:-cli)?\.ts$/;
+const RETENTION = /^lib\/catalog\/(?:retention|purge)(?:-cli)?\.ts$/;
 const reaches = (entry: string) => importGraph(entry).files.filter((file) => RETENTION.test(file));
 
 /** Every module under `dir`, tests left out. */
@@ -44,6 +46,14 @@ describe('the retention module boundary', () => {
     });
 
     it('is reached from the photos CLI, so the walk would see it', () => {
-        expect(reaches('scripts/photos.ts')).toEqual(['lib/catalog/retention-cli.ts', 'lib/catalog/retention.ts']);
+        expect(reaches('scripts/photos.ts')).toEqual(['lib/catalog/purge-cli.ts', 'lib/catalog/purge.ts', 'lib/catalog/retention-cli.ts', 'lib/catalog/retention.ts']);
+    });
+
+    it("lets /media read tombstones, and reach neither writer through them", () => {
+        const route = 'app/media/[photoId]/[assetRevision]/[profileId]/[variant]/route.ts';
+        expect(importGraph(route).files).toContain('lib/catalog/tombstones.ts');
+        expect(reaches(route)).toEqual([]);
+        expect(reaches('lib/catalog/tombstones.ts')).toEqual([]);
+        expect(reaches('lib/catalog/asset-rules.ts')).toEqual([]);
     });
 });
