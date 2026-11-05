@@ -53,13 +53,19 @@ describe('the public routes', () => {
         expect(curator.filter((file) => !preview.includes(file))).toEqual([
             'app/api/curation/login/route.ts',
             'app/api/curation/logout/route.ts',
+            // #14 (v2.0.0 A8): the summary the Inbox's poll reads, behind requireCurator().
+            'app/api/curation/inbox/summary/route.ts',
             'app/api/curation/media/[photoId]/[assetRevision]/[profileId]/[variant]/route.ts',
             'app/curation/CuratorHeader.tsx',
             'app/curation/inbox/ArrivalStrip.tsx',
+            // #14 (v2.0.0 A8): the bulk form, the error summary, and the poll with its offline state.
+            'app/curation/inbox/BulkActions.tsx',
             'app/curation/inbox/EmptyArrival.tsx',
+            'app/curation/inbox/ErrorSummary.tsx',
             'app/curation/inbox/EventBadge.tsx',
             'app/curation/inbox/InboxDetailView.tsx',
             'app/curation/inbox/InboxList.tsx',
+            'app/curation/inbox/InboxWatch.tsx',
             'app/curation/inbox/ItemActions.tsx',
             'app/curation/inbox/LandOnItem.tsx',
             'app/curation/inbox/LocalTime.tsx',
