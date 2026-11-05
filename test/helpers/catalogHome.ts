@@ -36,6 +36,11 @@ export const HOME_SERIES = {
  */
 export const HOME_FRAMING = {
     contain: HOME_OPENING,
+    /**
+     * The contain opening's size: 1500 by 2400, so createTestCatalog's 20 px LQIP comes out 13 by 20, a little wider
+     * than the print, and a pillarboxed contain slide that kept it would show it either side of the print.
+     */
+    containSize: { width: 1500, height: 2400 },
     focal: { photoId: HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + 1) % HOME_ORDER.length], focalPoint: { x: 0.25, y: 0.75 } },
 } as const;
 

@@ -32,7 +32,7 @@ export { HOME_FIXTURE_CATALOG, VARIETY_FIXTURE_CATALOG };
 /** Publishes the fixture into `root`, an empty data root outside the repository, or a temp one without it. */
 export async function publishHomeFixture(root?: string, framing = false): Promise<{ catalog: TestCatalog; revisionId: string }> {
     const framed = ({ id }: { id: string }) =>
-        !framing ? { id } : id === HOME_FRAMING.contain ? { id, crop: 'contain' as const } : id === HOME_FRAMING.focal.photoId ? { id, focalPoint: { ...HOME_FRAMING.focal.focalPoint } } : { id };
+        !framing ? { id } : id === HOME_FRAMING.contain ? { id, crop: 'contain' as const, ...HOME_FRAMING.containSize } : id === HOME_FRAMING.focal.photoId ? { id, focalPoint: { ...HOME_FRAMING.focal.focalPoint } } : { id };
     const catalog = await createTestCatalog({ root, ...HOME_FIXTURE_CATALOG, photos: HOME_FIXTURE_CATALOG.photos.map(framed) });
     const result = await publish({ dataRoot: catalog.root, actor: 'e2e', reason: 'fixture', confirmLaunch: true, logger: { log: () => undefined } });
     if (result.outcome !== 'PUBLISHED' || result.revisionId === null) throw new Error(`The Home fixture didn't publish: ${result.outcome}: ${result.message} ${result.issues.map((issue) => issue.code).join(', ')}`);

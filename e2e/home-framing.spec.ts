@@ -57,6 +57,8 @@ async function openHome(page: Page, theme: keyof typeof MATS) {
     await waitForHydration(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await expectShown(page, HOME_FRAMING.contain);
+    // HeroReveal's overlay, the theme's ground and grain, covers the mat until the intro settles (e2e/support/home.ts).
+    await expect(page.locator('main[data-interface-state]')).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
 }
 
 /** Tabs to `target`, which reveals the chrome and holds it, then presses Enter on it. */
@@ -68,12 +70,16 @@ async function press(page: Page, target: Locator) {
 const pressNext = (page: Page) => press(page, next(page));
 
 /**
- * The colour just outside the shown slide's print, 2 px from its edge, beside it when the box is wider than the print and
- * above it otherwise, with Home's chrome, vignette and badge hidden so only the slide stack paints there. Every device
- * pixel of that CSS pixel is returned.
+ * The colour just outside the shown slide's print, 3 px from its edge, beside it when the box is wider than the print and
+ * above it otherwise, with Home's chrome, vignette and badge hidden so only the slide stack paints there. The slow zoom
+ * is off, so the box is measured and shot at one scale: Playwright's `animations: 'disabled'` finishes a paused
+ * animation, which would shoot the slide at 1.05 after measuring it nearer 1.02. Every device pixel of that CSS pixel
+ * is returned.
  */
 async function besidePrint(page: Page): Promise<number[][]> {
-    const style = await page.addStyleTag({ content: '[data-home-chrome], [data-home-vignette], [data-home-badge] { visibility: hidden !important; }' });
+    const style = await page.addStyleTag({
+        content: '[data-home-chrome], [data-home-vignette], [data-home-badge] { visibility: hidden !important; } [data-home-carousel] [data-photo-id] { animation: none !important; }',
+    });
     try {
         const point = await shownSlide(page)
             .locator('img')
@@ -116,6 +122,8 @@ for (const theme of Object.keys(MATS) as (keyof typeof MATS)[]) {
         const opening = shownSlide(page);
         await expect(opening).toHaveAttribute('data-crop', 'contain');
         await expect(opening).toHaveCSS('opacity', '1');
+        // Its decode, not its load, is what drops the LQIP.
+        await expect(opening).toHaveAttribute('data-decoded', '');
         expect(await style(opening.locator('img'), 'object-fit', 'object-position', 'background-size', 'background-repeat', 'background-position', 'background-image')).toEqual({
             'object-fit': 'contain',
             'object-position': '50% 50%',
@@ -126,7 +134,10 @@ for (const theme of Object.keys(MATS) as (keyof typeof MATS)[]) {
             // Once the print has decoded the LQIP goes, since its own shape drifts from the photograph's (B7 review).
             'background-image': 'none',
         });
-        // So the mat, and nothing of the LQIP, shows just outside the print.
+        // So the mat, and nothing of the LQIP, shows just outside the print. The framing fixture's opening is 1500 by 2400
+        // and its LQIP 13 by 20 px, a little wider than the print (0.65 against 0.625): pillarboxed, as at 1280 by 800, its
+        // LQIP would show either side of the print, so this pixel catches it. On Pixel 7 the print fills the width and
+        // that LQIP sits inside it, so there the background-image check above carries it.
         const mat = rgbOf(MATS[theme]);
         for (const pixel of await besidePrint(page)) for (const [channel, value] of pixel.entries()) expect(Math.abs(value - mat[channel]), `${pixel} against the mat ${mat}`).toBeLessThanOrEqual(3);
 
@@ -168,14 +179,15 @@ async function openingRungs(browser: Browser, options: BrowserContextOptions) {
         await page.goto(`${origin()}/`);
         await waitForHydration(page);
         await page.waitForLoadState('networkidle');
-        const seen = await page.locator(`[data-photo-id="${HOME_FRAMING.contain}"] img`).evaluate((img: HTMLImageElement) => {
+        const seen = await page.locator(`[data-photo-id="${HOME_FRAMING.contain}"] img`).evaluate((img: HTMLImageElement, photoId: string) => {
             const source = img.parentElement!.querySelector('source[type="image/avif"]')!;
             const candidates = source
                 .getAttribute('srcset')!
                 .split(',')
                 .map((part) => part.trim().split(/\s+/))
                 .map(([url, descriptor]) => ({ rung: Number(/\/w(\d+)\./.exec(url)![1]), width: Number.parseInt(descriptor, 10) }));
-            const preload = document.querySelector<HTMLLinkElement>('link[rel="preload"][as="image"]');
+            // The slide's own: Home's first image preload is About's portrait, which HeroReveal renders first.
+            const preload = document.querySelector<HTMLLinkElement>(`link[rel="preload"][as="image"][imagesrcset*="${photoId}"]`);
             return {
                 candidates,
                 sizes: source.getAttribute('sizes'),
@@ -185,7 +197,7 @@ async function openingRungs(browser: Browser, options: BrowserContextOptions) {
                 fit: getComputedStyle(img).objectFit,
                 shape: Number(img.getAttribute('width')) / Number(img.getAttribute('height')),
             };
-        });
+        }, HOME_FRAMING.contain);
         return { ...seen, fetched, dpr: options.deviceScaleFactor ?? 1 };
     } finally {
         await context.close();
@@ -198,6 +210,7 @@ for (const [name, options] of Object.entries(CONTEXTS)) {
         test.skip(testInfo.project.name !== 'desktop', 'Each size opens a context of its own.');
         const seen = await openingRungs(browser, options);
         expect(seen.fit).toBe('contain');
+        expect(seen.preloadSizes, "the slide's own preload").not.toBeNull();
         expect(seen.preloadSizes).toBe(seen.sizes);
         const rule = rungFor(seen.candidates, Math.min(seen.box.width, seen.box.height * seen.shape) * seen.dpr);
         expect(seen.fetched.length, 'the opening was fetched').toBeGreaterThan(0);
