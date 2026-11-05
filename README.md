@@ -169,7 +169,7 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher sees new bytes, and the curation Inbox opens a replacement item for its new `/media` set. The site serves no file from the library: `/assets/photos` answers 404, `/_next/image` refuses it, and visitors see photos only through the `/media` sets the active revision holds.
 - **Delete** a photo's file and the site keeps showing it: the active catalog revision keeps listing the photo, and `/media` keeps serving it. Take it down as the next item describes.
-- **The legacy derivatives** a watcher before v1.7.0 wrote, the seven folders `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` and `lqip`, and `cache/`, at the top of the library, are left exactly as they are. Nothing writes, reads, or serves them, and the identity scan skips those folder names, so a photo inside them is never taken for one of yours. They harm nothing, so leave them in place: #15's GC reclaims them once it ships. No step here moves or deletes them.
+- **The legacy derivatives** a watcher before v1.7.0 wrote, the seven folders `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` and `lqip`, and `cache/`, at the top of the library, stay there until you move them. Nothing in the stack writes or serves them, and nothing reclaims them automatically: `photos gc` cleans the data root only. The identity scan skips those eight names at the top of the library only, so a photo inside them is never taken for one of yours while they stay there. Two things still read them: `photos carry-over`, which rebuilds the legacy Gallery's list from them, and a `v1.6.x` watcher after a rollback, which writes them again and fills in what's missing. They take space and nothing else, so leaving them is fine. To take them out of the library, [move them aside](#moving-the-legacy-derivatives-aside) on the host.
 - **Take a photo down** from the site: archive, then publish. `/assets/photos` never serves, so its legacy derivatives are out of reach already. Deleting, moving, or renaming the file takes nothing down by itself. The active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox. Putting the same file back closes that item. Run each command below in `image-watcher`, as `docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>`. To take the photo down:
   1. Move its file out of the library, or delete it, and find its `missing` item with `curation list`.
   2. Run `curation archive <eventId> --version <n> --base <revisionId>`, with the version and base `curation show` prints. It takes the photo out of every series in the draft with `sequence remove` and archives it. Nothing is public yet. A publish then needs these too. Archive prints the cover, opening photograph, and chapter ones that apply, and `validate` names the rest:
@@ -190,6 +190,43 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose never creates a missing photos folder, `image-watcher` can't start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
 - **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. The site serves only a published catalog revision, and a publish needs the IDs, so until the plan is applied and a revision is published, `/api/ready` answers 503 with `not-published`, and Home and Work show the error page. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
 - **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. From then on, the site serves the active revision, and `/media` serves only the sets it holds. "Curating the catalog" below has the rest of the commands.
+
+### Moving the legacy derivatives aside
+
+`scripts/host/legacy-move-aside.sh` moves the eight legacy folders out of the library, into a dated folder beside it on the same filesystem. It runs on the host, not in a container: the stack mounts the library read-only, so no container can move them. Fetch it from the release, read it, and run the dry run first. Give it the folder the host binds at `/data/library`, which is `public/assets/photos` unless an override binds another:
+
+```bash
+curl -fsSL -o legacy-move-aside.sh https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/v2.0.0/scripts/host/legacy-move-aside.sh
+bash legacy-move-aside.sh public/assets/photos
+sudo bash legacy-move-aside.sh public/assets/photos --apply
+```
+
+- **The dry run** lists each move as an `mv` line with its size, then the total, then the lines that move the folders back, and moves nothing. `--apply` prints the same list and makes exactly those moves. `sudo` is there because the folders often belong to uid 1001. A library you own yourself needs no `sudo`.
+- **What it moves:** the eight names only, `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip` and `cache`, each only when it's a real folder at the top of the library. A file or a symlink by one of those names, a folder of that name further down, and every other file stay where they are.
+- **Where it moves them:** to `public/assets/photos.legacy-derivatives-<YYYY-MM-DD>/`, beside the library, or to the folder `--to <dir>` names. It refuses, exits 1 and moves nothing when that folder is the library or inside it, symlinks resolved, when it already holds any of the eight names, or when it's on another filesystem or mount than the library. Inside the library, the scan would take every WebP in them for a new photo, since it skips the eight names at the top only. On another filesystem, `mv` would copy them rather than rename them. If the library is a disk of its own, there's nowhere it can go, so leave the folders in place.
+- **What it costs:** a rename frees no disk space, since the folders stay on the same filesystem. The watcher keeps running meanwhile, since it never looked inside them. Once they're moved, `photos carry-over` and a `v1.6.x` rollback can't find them, and a backup of `public/assets/photos` no longer holds them, so keep the dated folder with your backups if you want them back after a restore.
+
+Move them back first before any of these:
+- restoring a data-root backup made before the catalog launch with `web` on `v1.5.x` or older, as [After the catalog launch](docs/releasing.md#after-the-catalog-launch) describes;
+- rolling back to `v1.6.x`, whose watcher otherwise writes every one of them again;
+- rerunning `photos carry-over`, which reads them.
+
+The script prints the lines that move them back, with its own paths. For the default folder, this does the same, from the folder `docker-compose.prod.yml` is in. Each folder goes back only while the library doesn't hold that name again, as it may after restoring an older backup. Compare the two first if it says so:
+
+```bash
+(
+  cd public/assets || exit 1
+  aside=photos.legacy-derivatives-<YYYY-MM-DD>
+  for name in thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache; do
+    [ -d "$aside/$name" ] || continue
+    if [ -e "photos/$name" ] || [ -L "photos/$name" ]; then
+      echo "photos/$name exists. Compare it with $aside/$name first." >&2
+    else
+      sudo mv "$aside/$name" "photos/$name"
+    fi
+  done
+)
+```
 
 ### Curating the catalog
 

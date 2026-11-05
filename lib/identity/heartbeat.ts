@@ -32,9 +32,10 @@ export interface WatcherHeartbeat {
     /**
      * Whether this watcher writes the legacy basename derivatives into the
      * library. Always false from v1.7.0, which stopped writing them (#13's
-     * slice E). Older watchers write no such field, and #15's GC reads a
-     * missing field as "still writes them", so it only takes legacy files
-     * while a fresh heartbeat says false.
+     * slice E). Older watchers write no such field. CI's smokes and the
+     * v1.7.0 deploy's checks read it. No GC does: #15 decided on none for
+     * the legacy folders, and scripts/host/legacy-move-aside.sh moves them
+     * out of the library by hand, on the host.
      */
     legacyDerivatives: false;
 }
