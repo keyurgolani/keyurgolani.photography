@@ -216,11 +216,13 @@ describe('the watch (A9)', () => {
         expect(folderBytes(fixture.root)).toEqual(before);
     });
 
-    it('runs requireCurator() first, and a refused session answers signed-out quietly rather than a not-found the page would show (A9 review)', async () => {
+    it("runs requireCurator() first, and throws its refusal as every action here does, so nothing after it runs (A9 CI fix)", async () => {
         const screen = await view();
         session.anonymous = true;
         const before = folderBytes(fixture.root);
-        expect(await watchPublish({ draftId: screen.draftId, active: screen.active.revisionId })).toEqual({ kind: 'signed-out' });
+        // The route inventory's rail: a curator action never answers a refusal, it throws it. proxy.ts refuses the
+        // page's call first, with a plain 401 that leaves the page as it is (the watch's tests).
+        await expect(watchPublish({ draftId: screen.draftId, active: screen.active.revisionId })).rejects.toBeInstanceOf(Refused);
         expect(folderBytes(fixture.root)).toEqual(before);
     });
 

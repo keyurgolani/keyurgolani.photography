@@ -68,6 +68,16 @@ describe('PreviewFrame', () => {
         expect(frame.style.width).toBe('');
     });
 
+    it('names each preset the same once the stylesheet lays it out (A9 CI fix)', () => {
+        render(<PreviewFrame src={SRC} presets />);
+        // jsdom applies no CSS module. In a browser, the visually hidden words are absolutely placed, which makes them a
+        // block, and a block's text joins a name with a space around it: "Desktop , 1440 by 900", which the e2e walk missed.
+        for (const part of screen.getByRole('group', { name: 'Frame size' }).querySelectorAll<HTMLElement>('button *')) part.style.display = 'block';
+        expect(screen.getByRole('button', { name: 'Desktop, 1440 by 900' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Mobile, 390 by 844' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Fit the window' })).toBeInTheDocument();
+    });
+
     it('keeps the embedded panel to its marker, with no presets', () => {
         render(<PreviewFrame src={SRC} embedded focusable={false} />);
         expect(screen.queryByRole('group', { name: 'Frame size' })).toBeNull();

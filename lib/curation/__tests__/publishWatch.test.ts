@@ -227,11 +227,12 @@ describe('createWatch()', () => {
         expect(h.calls()).toBe(2);
     });
 
-    it('stops quietly once the session is gone', async () => {
-        const h = harness([{ kind: 'signed-out' }]);
+    it('says nothing once the session is gone: the refused call rejects, so it backs off and stops (A9 CI fix)', async () => {
+        // proxy.ts answers the action with a plain 401, which Next's client rejects without touching the page.
+        const h = harness(Array.from({ length: WATCH_MAX_ERRORS + 2 }, () => new Error('An unexpected response was received from the server.')));
         h.watch.start();
-        await h.advance(10 * WATCH_INTERVAL_MS);
-        expect(h.calls()).toBe(1);
+        await h.advance(2 ** (WATCH_MAX_ERRORS + 2) * WATCH_INTERVAL_MS);
+        expect(h.calls()).toBe(WATCH_MAX_ERRORS);
         expect(h.timers()).toBe(0);
         expect(h.seen).toEqual([]);
     });
