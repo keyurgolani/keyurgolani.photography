@@ -5,10 +5,8 @@ import ResponsivePhoto from '@/components/ResponsivePhoto';
 import type { HomePhoto as CatalogPhoto } from '@/lib/catalog/projections/home';
 import type { PlaybackState } from './homePlayback';
 import styles from './HomeSequence.module.css';
+import { heroSizes } from './heroSizes';
 import { useCopyTone } from './useCopyTone';
-
-/** Every slide fills the viewport. */
-export const HOME_SIZES = '100vw';
 
 interface CatalogSequenceProps {
   /** The authored order. */
@@ -154,7 +152,8 @@ function SlideImage({ id, image, alt, priority, lead, onLoaded, onFailed }: Slid
       ref={ref}
       asset={image}
       alt={alt}
-      sizes={HOME_SIZES}
+      // Every slide is drawn to cover the viewport (HomeSequence.module.css), whatever its crop.
+      sizes={heroSizes(image)}
       loading="eager"
       fetchPriority={priority ? 'high' : 'auto'}
       preload={lead}

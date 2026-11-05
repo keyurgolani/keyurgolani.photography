@@ -33,9 +33,15 @@ export default function SeriesCatalog({ work }: SeriesCatalogProps) {
                         <li key={series.id} className={styles.item}>
                             {/* data-ring-room: the focus ring clears the cover's surround (--ring-room, the module). */}
                             <Link href={series.href} className={styles.entry} data-ring-room="">
-                                {/* The first cover loads at once, the rest as they near the viewport. Keyed on
-                                    the cover's file, so a refresh that brings a new cover clears a failure. */}
-                                <WorkCoverImage key={series.cover?.variants.w1200.webp.url ?? 'none'} cover={series.cover} eager={index === 0} span={coverSpan(index)} />
+                                {/* The first two covers load at once, the first at high priority and the second at low,
+                                    the rest as they near the viewport (#3). Keyed on the cover's file, so a refresh that brings a new cover
+                                    clears a failure. */}
+                                <WorkCoverImage
+                                    key={series.cover?.variants.w1200.webp.url ?? 'none'}
+                                    cover={series.cover}
+                                    loading={index === 0 ? 'lead' : index === 1 ? 'eager' : 'lazy'}
+                                    span={coverSpan(index)}
+                                />
                                 <div className={styles.copy}>
                                     <h2 className={styles.seriesTitle}>{series.title}</h2>
                                     {series.shortStatement !== null && <p className={styles.statement}>{series.shortStatement}</p>}

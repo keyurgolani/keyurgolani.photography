@@ -85,10 +85,14 @@ const pathOf = (screen: Screen) =>
  */
 type Policy = { api: number; lead: Record<Profile, number>; rest: Record<Profile, number> | null } & ({ images: number } | { reach: true });
 const POLICY: Record<Screen, Policy> = {
-    // 100vw: 1280 px, or 412 px at 2.625. The opening, then the next once it shows: two at most.
-    home: { images: 2, api: 1, lead: { desktop: 1920, phone: 1200 }, rest: { desktop: 1920, phone: 1200 } },
-    // 59vw for a wide entry and 42vw for a narrow one above 768 px, else 100vw. Only covers near the first viewport, never the hundred.
-    work: { reach: true, api: 0, lead: { desktop: 800, phone: 1200 }, rest: { desktop: 800, phone: 1200 } },
+    // heroSizes(): the slide covers the viewport, so 1280 px wide, or on the phone the photograph at 915 px tall (1,372 px
+    // wide for 3:2, 610 for 2:3) at 2.625. The opening, then the next once it shows: two at most.
+    home: { images: 2, api: 1, lead: { desktop: 1920, phone: 1920 }, rest: { desktop: 1920, phone: 1920 } },
+    // coverSizes(): 7/12 of the column at 3:2 for a wide entry, 5/12 at 4:5 for a narrow one above 768 px, the column at 4:3
+    // below, each times what a cover crop overhangs. A 3:2 cover in a narrow box is 1.875 boxes wide, so 874 px. Under
+    // 768 px, the rung under the rule's (rule 5): the phone's 1,122 device px ask for 748. Only covers near the first
+    // viewport, never the hundred.
+    work: { reach: true, api: 0, lead: { desktop: 800, phone: 800 }, rest: { desktop: 1200, phone: 800 } },
     // The cover at its 82vh-capped width, then thumbnails at 20vw or 50vw, only near the first viewport.
     series: { reach: true, api: 0, lead: { desktop: 1200, phone: 1200 }, rest: { desktop: 400, phone: 800 } },
     // One photograph, at 80vw or 100vw capped by the screen's height. Nothing else.
