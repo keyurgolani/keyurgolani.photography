@@ -336,16 +336,21 @@
  *     Renames a folder a standing tombstone takes down, or the .gc- folder a
  *     stopped run left beside one, into the data root's own
  *     trash/<photoId>-<name>-<date-time>/, on the same filesystem, under the
- *     catalog and authored locks, and deletes nothing. It refuses, exit 1, any
+ *     catalog and authored locks, the curation lock and the asset's own lock,
+ *     and deletes nothing. It refuses, exit 1, any
  *     other path (NOT_AN_ASSET_PATH), a folder no standing tombstone takes
  *     down (NOT_TAKEN_DOWN), one the live revision, a draft series, an open
  *     Inbox item or a staging folder names (PROTECTED), a .gc- folder set
  *     aside whole, which goes back instead (SET_ASIDE_WHOLE), a symlink, a
  *     file or a symlinked trash/ (UNSAFE_PATH), a cross-device move
  *     (CROSS_DEVICE) and an existing destination (EXISTS); 3 when a lock stays
- *     busy or is lost or the data root isn't ready, and 4 when a file is
- *     damaged or an I/O error stops it. Emptying trash/ is the owner's own
- *     step.
+ *     busy (CATALOG_LOCKED, AUTHORED_LOCKED, CURATION_LOCKED, ASSET_LOCKED) or
+ *     is lost or the data root isn't ready, and 4 when a file is damaged or an
+ *     I/O error stops it. After the rename it asks the always-protected set
+ *     again, and puts the folder back (PROTECTED) if anything names it now;
+ *     when something took its place, it exits 4 (PUT_BACK_BLOCKED), leaves it
+ *     in trash/, and photos status names it with its holder. Emptying trash/
+ *     is the owner's own step.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
  * reads the library exits 1 when it's unset. The data root is
