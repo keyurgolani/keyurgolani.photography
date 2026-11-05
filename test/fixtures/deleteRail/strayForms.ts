@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
+import { Worker } from 'node:worker_threads';
 
 declare const fse: { remove(dir: string): Promise<void>; removeSync(dir: string): void; emptyDir(dir: string): Promise<void>; emptyDirSync(dir: string): void };
 
@@ -110,4 +111,95 @@ export async function viaDynamicModule(name: string): Promise<void> {
 
 export function viaHandOff(hand: (run: (command: string) => unknown) => void): void {
     hand(cp.execSync);
+}
+
+// Round 5 (#181's A10 review, item 27): the rail fails closed for real.
+
+declare const disposable: { mkdtempDisposableSync(prefix: string): unknown; mkdtempDisposable(prefix: string): Promise<unknown> };
+
+export function viaQuotedRm(dir: string): void {
+    cp.execSync('bash -c "rm -rf build"');
+    cp.execSync("eval 'rm -rf build'");
+    cp.execSync(`sh -c \`rm -rf ${dir}\``);
+}
+
+export function viaProcessElement(name: 'exec'): void {
+    cp['execSync']('rm -rf x');
+    cp[name]('ls');
+}
+
+export function viaBuiltinLoaders(): void {
+    process.getBuiltinModule('node:child_process').execSync('rm -rf x');
+    module.require('node:child_process').execSync('rm -rf y');
+    const load = require;
+    load('node:child_process').execSync('rm -rf z');
+}
+
+export function viaEscapes(use: (value: unknown) => void): unknown {
+    use(fs);
+    void import('node:fs').then((loaded) => loaded.rmSync('x'));
+    const copy = { ...cp };
+    const alias: unknown = fsp;
+    void copy;
+    void alias;
+    return fs.promises;
+}
+
+export { fsp as exportedFs };
+
+export function viaStdin(): void {
+    spawnSync('sh', [], { input: 'rm -rf x' });
+    spawnSync('python3', ['script.py']);
+}
+
+export function viaOptions(file: string, options: object): void {
+    spawnSync('ls', [file], options);
+    spawnSync('ls', [file], { ...options });
+    const shell = true;
+    spawnSync('ls', [file], { shell });
+}
+
+export function viaNodeScript(): void {
+    spawnSync('node', ['-e', "require('fs').rmSync('x')"]);
+    spawnSync('node22', ['-e', 'require("fs").rmSync("x")']);
+    spawnSync('node', ['-e', 'console.log(1)']);
+}
+
+export function viaInterpreterScripts(): void {
+    spawnSync('perl', ['-e', 'print 1']);
+    spawnSync('python', ['-c', 'print(1)']);
+    spawnSync('python3.12', ['-c', 'print(1)']);
+    spawnSync('ruby', ['-e', 'puts 1']);
+    spawnSync('bun', ['-e', '1']);
+    spawnSync('deno', ['eval', '1']);
+}
+
+export function viaEval(code: string): void {
+    // eslint-disable-next-line no-eval -- the rail's positive control: a form it must catch
+    eval(code);
+    // eslint-disable-next-line no-new-func -- the rail's positive control: a form it must catch
+    void new Function(code);
+    void new Worker(code, { eval: true });
+}
+
+export function viaMissingControls(name: 'rmSync' | 'unlinkSync', x: string): void {
+    const { [name]: anything } = fs;
+    void anything;
+    spawnSync('sh', ['-c', 'echo "$1"', 'sh', x]);
+}
+
+export function viaWrappers(args: string[]): void {
+    execFileSync('sudo', ['-u', 'root', 'git', 'clean', '-fd']);
+    execFileSync('nice', ['-n', '10', 'git', 'clean', '-fd']);
+    execFileSync('timeout', ['5', 'git', 'rm', '-r', 'x']);
+    execFileSync('xargs', ['-0', 'git', 'worktree', 'remove']);
+    execFileSync('npx', ['--yes', 'rimraf', 'build']);
+    execFileSync('env', args);
+    execFileSync('sudo', args);
+    cp.execSync('npx rimraf build');
+}
+
+export async function viaDisposable(): Promise<void> {
+    disposable.mkdtempDisposableSync('x');
+    await disposable.mkdtempDisposable('y');
 }

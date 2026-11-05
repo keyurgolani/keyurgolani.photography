@@ -85,6 +85,14 @@ async function purgeD(built: PurgeFixture): Promise<string> {
 
 const folderOf = (built: PurgeFixture, photoId: string, assetRevision = built.first[photoId]) => `assets/${photoId}/${assetRevision}`;
 const assetsOf = (root: string) => new Map([...snapshot(root)].filter(([file]) => file.startsWith('assets/')));
+/** What every report says of a folder set aside whole: the owner's real steps, moving anything in its place to the Trash first, never rm (item 25). */
+function wholeText(aside: string, original: string, occupied: boolean, then = 'then revoke, or rerun photos gc'): string {
+    const back = `rename it back to ${original}; ${then}`;
+    return occupied
+        ? `set aside whole at ${aside}, and something else is at ${original}: move that out of the data root to the Trash (mv ${original} ~/.Trash/ from the data root), never rm, then ${back}`
+        : `set aside whole at ${aside}: ${back}`;
+}
+
 /** GC's per-run markers for a tombstone, by file name. */
 const markers = (root: string, tombstoneId: string) => fs.readdirSync(tombstonesDir(root)).filter((name) => name.startsWith(`${tombstoneId}.collected.`)).sort();
 const readMarker = (root: string, name: string) => JSON.parse(fs.readFileSync(path.join(tombstonesDir(root), name), 'utf8')) as { planDigest: string; paths: { path: string; bytes: number; newestMs: number; files: { name: string; bytes: number }[] }[] };
@@ -648,7 +656,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
             },
         } });
         expect(exitCode).toBe(4);
-        const whole = `set aside whole at ${aside}: rename it back to ${folderOf(built, built.d)}, then revoke, or rerun photos gc to finish the takedown`;
+        const whole = wholeText(aside, folderOf(built, built.d), true);
         expect(out.join('\n')).toContain(whole);
         // Everything that was in it is in the folder set aside, byte for byte.
         const moved = assetsOf(built.root);
@@ -718,7 +726,7 @@ describe('a delete that fails partway (S5)', { timeout: 120_000 }, () => {
         expect(rerun.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
         expect(rerun.plan?.leftovers).toEqual([expect.objectContaining({ path: expect.stringMatching(new RegExp(`^assets/${built.d}/\\.gc-${D2}-`)), state: 'partial' })]);
         // Item 12: only what's left of a partial delete is permanent, and every place says so.
-        const permanent = /partly deleted.*permanent/;
+        const permanent = /partly deleted.*permanent.*mv assets\/[^ ]+ ~\/\.Trash\/ from the data root\), never rm, then rerun photos gc/;
         expect((await command(built.root, [], PAST_GRACE)).out.join('\n')).toMatch(permanent);
         expect((await runStatusCommand({ dataRoot: built.root }, { check: true })).output).toMatch(permanent);
         const before = snapshot(built.root);
@@ -1030,7 +1038,7 @@ describe('a whole folder set aside beats "reached" (item 21)', { timeout: 120_00
         } } });
         expect(GC_EXIT_CODES[result.outcome]).toBe(4);
         expect(result.message).toContain('ENOTEMPTY');
-        return { id, aside, whole: `set aside whole at ${aside}: rename it back to ${folderOf(built, built.d)}, then revoke, or rerun photos gc to finish the takedown` };
+        return { id, aside, whole: wholeText(aside, folderOf(built, built.d), true) };
     }
 
     it('keeps the rebuilt folder in run B as set-aside-leftover, and revoke and status --check then agree', async () => {
@@ -1091,5 +1099,133 @@ describe("the files GC compares (item 23)", { timeout: 120_000 }, () => {
         expect(result.outcome).toBe('PLAN_CHANGED');
         expect(result.message).toContain(`${folderOf(built, built.d)} holds other files than the plan.`);
         expect(fs.existsSync(folder)).toBe(true);
+    });
+});
+
+describe("the owner's way out, followed step by step (item 25)", { timeout: 120_000 }, () => {
+    /** Run A sets D aside, a rebuilt copy lands in its place, and A's put-back fails ENOTEMPTY. Returns the aside and a stand-in for the Trash outside the data root. */
+    async function stuck(built: PurgeFixture) {
+        const id = await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        let aside = '';
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { beforeRemove: (_entry, at) => {
+            aside = path.relative(fs.realpathSync(built.root), at).split(path.sep).join('/');
+            fs.cpSync(at, path.join(built.root, folderOf(built, built.d)), { recursive: true });
+            throw new Error('a fault just before the delete');
+        } } });
+        const trash = fs.mkdtempSync(path.join(path.dirname(built.root), 'Trash-'));
+        return { id, aside, trash, whole: wholeText(aside, folderOf(built, built.d), true) };
+    }
+
+    it('gives the same real steps in revoke, status --check, the plan and its kept line', async () => {
+        const built = await fixture();
+        const { id, whole } = await stuck(built);
+        expect((await revoke(built, id)).message).toContain(whole);
+        expect((await runStatusCommand({ dataRoot: built.root }, { check: true })).output).toContain(whole);
+        const { out } = await command(built.root, [], PAST_GRACE);
+        expect(out.find((line) => line.startsWith('Kept '))).toContain(whole);
+        expect(out.find((line) => line.startsWith('Left by '))).toContain(whole);
+        expect(out.join('\n')).not.toMatch(/\brm -|rm -rf/);
+    });
+
+    it('ends in a revoke when the owner moves what is in its place to the Trash and renames the folder back', async () => {
+        const built = await fixture();
+        const { id, aside, trash } = await stuck(built);
+        // As the message says: mv <it> ~/.Trash/, here a stand-in Trash outside the data root, then rename the .gc- folder back.
+        fs.renameSync(path.join(built.root, folderOf(built, built.d)), path.join(trash, path.basename(folderOf(built, built.d))));
+        fs.renameSync(path.join(built.root, aside), path.join(built.root, folderOf(built, built.d)));
+        expect((await revoke(built, id)).outcome).toBe('REVOKED');
+    });
+
+    it('ends in a finished takedown when the owner takes the same steps and reruns photos gc instead', async () => {
+        const built = await fixture();
+        await stuck(built).then(({ aside, trash }) => {
+            fs.renameSync(path.join(built.root, folderOf(built, built.d)), path.join(trash, path.basename(folderOf(built, built.d))));
+            fs.renameSync(path.join(built.root, aside), path.join(built.root, folderOf(built, built.d)));
+        });
+        const planned = await gc(built.root, PAST_GRACE);
+        expect(planned.plan?.delete.map((entry) => entry.path)).toEqual([folderOf(built, built.d)]);
+        const applied = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
+        expect(applied.deleted).toEqual([folderOf(built, built.d)]);
+    });
+});
+
+describe("item 21's reporting (item 26)", { timeout: 120_000 }, () => {
+    it('S1: a delete that fails before removing anything leaves the folder whole, reported as whole, not partly deleted', async () => {
+        const built = await fixture();
+        const id = await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        let aside = '';
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target) => {
+            aside = path.relative(fs.realpathSync(built.root), target).split(path.sep).join('/');
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        } } });
+        expect(GC_EXIT_CODES[result.outcome]).toBe(4);
+        expect(result.partial).toEqual([]);
+        expect(result.message).not.toMatch(/partly deleted/);
+        expect(result.message).toContain(wholeText(aside, folderOf(built, built.d), false));
+        expect((await revoke(built, id)).outcome).toBe('SET_ASIDE');
+    });
+
+    it('S2: one folder reached and another set aside whole keeps ALREADY_COLLECTED, and names the whole one to rename back and rerun gc', async () => {
+        const built = await fixture();
+        const id = await purgeTwo(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        let n = 0;
+        let aside = '';
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target, removeAt) => {
+            n += 1;
+            if (n === 1) return removeAt(target);
+            aside = path.relative(fs.realpathSync(built.root), target).split(path.sep).join('/');
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        } } });
+        const refused = await revoke(built, id);
+        expect(refused.outcome).toBe('ALREADY_COLLECTED');
+        expect(refused.message).toContain(folderOf(built, built.d));
+        expect(refused.message).toContain(wholeText(aside, folderOf(built, built.d, D2), false, 'then rerun photos gc'));
+    });
+
+    it("S3 and S4: a partial leftover isn't permanent while the folder's place holds what was recorded, revoke, status and the plan agree, and it keeps the folder", async () => {
+        const built = await fixture();
+        const id = await purgeD(built);
+        const saved = fs.mkdtempSync(path.join(path.dirname(built.root), 'saved-'));
+        fs.cpSync(path.join(built.root, folderOf(built, built.d)), path.join(saved, 'copy'), { recursive: true });
+        const planned = await gc(built.root, PAST_GRACE);
+        let aside = '';
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target, removeAt) => {
+            aside = path.relative(fs.realpathSync(built.root), target).split(path.sep).join('/');
+            const set = path.join(target, built.profileId);
+            const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json');
+            await removeAt(path.join(set, file));
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        } } });
+        // A rebuilt copy holding everything recorded is in its place.
+        fs.cpSync(path.join(saved, 'copy'), path.join(built.root, folderOf(built, built.d)), { recursive: true });
+        const step = `move ${aside} out of assets/ to the Trash (mv ${aside} ~/.Trash/ from the data root), never rm, then rerun photos gc`;
+
+        const planned2 = await gc(built.root, PAST_GRACE);
+        expect(planned2.plan?.kept).toContainEqual(expect.objectContaining({ path: folderOf(built, built.d), reason: 'set-aside-leftover' }));
+        const plan = (await command(built.root, [], PAST_GRACE)).out.join('\n');
+        const status = (await runStatusCommand({ dataRoot: built.root }, { check: true })).output;
+        const dry = await runRevoke({ dataRoot: built.root, tombstoneId: id, reason: 'x', actor: 'owner', clock: at(PAST_GRACE), logger: quiet });
+        expect(dry.outcome).toBe('REVOKE_PLANNED');
+        for (const text of [plan, status, dry.revokePlan?.summary ?? '']) {
+            expect(text).toContain(step);
+            expect(text).not.toMatch(/permanent/);
+        }
+    });
+});
+
+describe('a .gc- name GC only half reads keeps the folder (item 28)', { timeout: 120_000 }, () => {
+    it.each([
+        ['a revision but no run', (built: PurgeFixture) => `.gc-${built.first[built.d]}-not-a-run`],
+        ['no revision at all', () => '.gc-left-by-hand'],
+    ])('keeps the tombstoned folder for %s', async (_what, name) => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'assets', built.d, name(built)));
+        const planned = await gc(built.root, PAST_GRACE);
+        expect(planned.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
+        expect(planned.plan?.kept).toContainEqual(expect.objectContaining({ path: folderOf(built, built.d), reason: 'set-aside-leftover', detail: `assets/${built.d}/${name(built)}` }));
     });
 });
