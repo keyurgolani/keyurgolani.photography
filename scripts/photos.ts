@@ -306,6 +306,13 @@
  *     a file is damaged or an I/O error stops it.
  *
  *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
+ *   npx tsx scripts/photos.ts gc --set-aside <assets/<photoId>/<assetRevision or .gc-…>>
+ *     --set-aside renames a folder a standing tombstone takes down, or the
+ *     .gc- folder a stopped run left beside one, into the data root's own
+ *     trash/<photoId>-<name>-<date-time>/, on the same filesystem, under
+ *     the catalog lock, and deletes nothing. It refuses, exit 1, any other
+ *     path, a cross-device move and an existing destination. Emptying
+ *     trash/ is the owner's own step.
  *     Plan the cleanup docs/data-root.md's retention rules allow: staging
  *     folders a killed derivative build left and candidates that never became
  *     a revision, once each is more than 7 days old, and the asset folders a
@@ -428,6 +435,8 @@ ${curationUsage(PROGRAM)}
   ${PROGRAM} purge --revoke <tombstoneId> --reason <text> [--actor <name>] [--yes]
         A dry run unless --yes. A tombstone answers 410 at once. Only photos gc --apply deletes the bytes, after 7 days.
   ${PROGRAM} gc [--apply <planDigest>]
+  ${PROGRAM} gc --set-aside <assets/photoId/assetRevision>
+        Moves that folder, or a .gc- folder beside it, into the data root's trash/. It never deletes.
 ${credentialUsage(PROGRAM)}
 A flag given twice is refused, except --accept. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
