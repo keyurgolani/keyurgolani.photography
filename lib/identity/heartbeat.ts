@@ -22,6 +22,13 @@ export interface WatcherHeartbeat {
     passStartedAt: string | null;
     heartbeatAt: string;
     /**
+     * v2.0.0: when a pass last got through the library, committed or refusing
+     * an empty one, or when the watcher started, before its first. A locked,
+     * failed, or off pass doesn't move it, so `photos status --check` can tell
+     * a watcher that beats but makes no progress. Older watchers write none.
+     */
+    lastProgressAt?: string;
+    /**
      * Whether this watcher writes the legacy basename derivatives into the
      * library. Always false from v1.7.0, which stopped writing them (#13's
      * slice E). Older watchers write no such field, and #15's GC reads a
@@ -61,8 +68,28 @@ export type HeartbeatAge =
           /** The last pass's result and when it finished, or null before the first or when the heartbeat doesn't say. */
           lastPassResult: PassResult | null;
           lastPassAt: string | null;
+          /** WatcherHeartbeat's lastProgressAt, or null from a watcher that writes none. */
+          lastProgressAt: string | null;
       }
-    | { found: false; reason: string };
+    | {
+          found: false;
+          /** Why, as a code, so a caller can word it without the path. */
+          cause: HeartbeatProblem;
+          /** Why, naming the file's absolute path: for the watcher's own healthcheck, never for an owner command's output. */
+          reason: string;
+      };
+
+/** Why `status/watcher.json` gives no heartbeat. */
+export type HeartbeatProblem = 'absent' | 'unreadable' | 'not-json' | 'no-heartbeat-at' | 'bad-pass-started-at';
+
+/** What each HeartbeatProblem means, with the file named relative to the data root, as owner output may show it. */
+export const HEARTBEAT_PROBLEM_TEXT: Record<HeartbeatProblem, string> = {
+    absent: "status/watcher.json doesn't exist",
+    unreadable: "status/watcher.json can't be read",
+    'not-json': "status/watcher.json isn't valid JSON",
+    'no-heartbeat-at': 'status/watcher.json has no valid heartbeatAt',
+    'bad-pass-started-at': 'status/watcher.json has an invalid passStartedAt',
+};
 
 const PASS_RESULT_RE = /^(committed|locked|failed|library-empty|data-root-(unset|unavailable|unwritable|uninitialized))$/;
 
@@ -73,20 +100,21 @@ export async function watcherHeartbeatAge(root: string, clock: () => number = Da
     try {
         heartbeat = await readJsonFile(file);
     } catch (error) {
-        if (error instanceof CorruptDocumentError) return { found: false, reason: error.message };
-        return { found: false, reason: `${file} can't be read: ${error instanceof Error ? error.message : String(error)}` };
+        if (error instanceof CorruptDocumentError) return { found: false, cause: 'not-json', reason: error.message };
+        return { found: false, cause: 'unreadable', reason: `${file} can't be read: ${error instanceof Error ? error.message : String(error)}` };
     }
-    if (heartbeat === null) return { found: false, reason: `${file} doesn't exist` };
+    if (heartbeat === null) return { found: false, cause: 'absent', reason: `${file} doesn't exist` };
     const at = isRecord(heartbeat) ? heartbeat.heartbeatAt : undefined;
-    if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) return { found: false, reason: `${file} has no valid heartbeatAt` };
+    if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) return { found: false, cause: 'no-heartbeat-at', reason: `${file} has no valid heartbeatAt` };
     const started = isRecord(heartbeat) ? heartbeat.passStartedAt : undefined;
     if (started !== undefined && started !== null && (typeof started !== 'string' || Number.isNaN(Date.parse(started)))) {
-        return { found: false, reason: `${file} has an invalid passStartedAt` };
+        return { found: false, cause: 'bad-pass-started-at', reason: `${file} has an invalid passStartedAt` };
     }
     const now = clock();
     const libraryEmpty = isRecord(heartbeat) && heartbeat.lastPassResult === 'library-empty';
     const result = isRecord(heartbeat) ? heartbeat.lastPassResult : undefined;
     const lastAt = isRecord(heartbeat) ? heartbeat.lastPassAt : undefined;
+    const progress = isRecord(heartbeat) ? heartbeat.lastProgressAt : undefined;
     return {
         found: true,
         heartbeatAt: at,
@@ -95,6 +123,7 @@ export async function watcherHeartbeatAge(root: string, clock: () => number = Da
         libraryEmpty,
         lastPassResult: typeof result === 'string' && PASS_RESULT_RE.test(result) ? (result as PassResult) : null,
         lastPassAt: typeof lastAt === 'string' && !Number.isNaN(Date.parse(lastAt)) ? lastAt : null,
+        lastProgressAt: typeof progress === 'string' && !Number.isNaN(Date.parse(progress)) ? progress : null,
     };
 }
 
@@ -106,6 +135,16 @@ export async function watcherHeartbeatAge(root: string, clock: () => number = Da
  * restart doesn't page; the container's own healthcheck stays at 120 s.
  */
 export const WATCHER_STALE_AFTER_MS = 5 * 60_000;
+
+/**
+ * v2.0.0: `photos status --check` fails once no pass has got through for
+ * this long, though the heartbeat still beats: a registry that stays locked,
+ * or one pass that never ends. Three of watcherStep.ts's 10-minute periodic
+ * passes, so an idle watcher misses two before it counts, and a long first
+ * scan of a big library has room. The healthcheck's own limit on one pass is
+ * WATCHER_PASS_LIMIT_MS, also 30 minutes.
+ */
+export const WATCHER_STALLED_AFTER_MS = 30 * 60_000;
 
 /** Whether a heartbeat this old (negative: stamped ahead of the clock) is stale. */
 export function heartbeatStale(ageMs: number): boolean {

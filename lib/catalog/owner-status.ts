@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { inboxAlertLines, inboxAlerts, type InboxAlerts } from '../curation/alerts';
 import { ageText } from '../curation/inbox-view';
-import { heartbeatStale, WATCHER_STALE_AFTER_MS, watcherHeartbeatAge, type HeartbeatAge } from '../identity/heartbeat';
+import { HEARTBEAT_PROBLEM_TEXT, heartbeatStale, WATCHER_STALE_AFTER_MS, WATCHER_STALLED_AFTER_MS, watcherHeartbeatAge, type HeartbeatAge } from '../identity/heartbeat';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import { identityStatus, type IdentityStatus } from '../identity/status';
@@ -224,7 +224,17 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     return status;
 }
 
-function formatStatus(status: OwnerStatus): string {
+/** The heartbeat line: its age, and why it's stale when it is, worded as --check words it. */
+function heartbeatLine(watcher: IdentityStatus['watcher'], now: number): string {
+    if (watcher === null) return 'Watcher heartbeat: none yet';
+    // identityStatus() clamps a stamp ahead of the clock to 0 s, which is right for a few seconds of drift and wrong past the stale bound.
+    const ageMs = now - Date.parse(watcher.heartbeatAt);
+    if (ageMs < -WATCHER_STALE_AFTER_MS) return `Watcher heartbeat: stamped ${ageText(ageMs)} ahead of this clock (${watcher.heartbeatAt}), so it can't show the watcher runs`;
+    const late = ageMs > WATCHER_STALE_AFTER_MS ? ", over 5 minutes old, so new photographs won't reach the Inbox until the watcher runs" : '';
+    return `Watcher heartbeat: ${watcher.ageSeconds} s ago (${watcher.heartbeatAt})${late}`;
+}
+
+function formatStatus(status: OwnerStatus, now: number): string {
     const { identity, catalog, working } = status;
     const lines = [`Data root: ${identity.dataRoot.root ?? 'not set'} (${identity.dataRoot.state}${identity.dataRoot.detail ? `: ${identity.dataRoot.detail}` : ''})`];
     if (identity.dataRoot.state === 'uninitialized') lines.push('  photos:migrate initializes it, as docs/data-root.md describes.');
@@ -283,15 +293,21 @@ function formatStatus(status: OwnerStatus): string {
     }
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
-    const late = identity.watcher !== null && identity.watcher.ageSeconds * 1000 > WATCHER_STALE_AFTER_MS
-        ? ", over 5 minutes old, so new photographs won't reach the Inbox until the watcher runs"
-        : '';
-    lines.push(`Watcher heartbeat: ${identity.watcher ? `${identity.watcher.ageSeconds} s ago (${identity.watcher.heartbeatAt})${late}` : 'none yet'}`);
+    lines.push(heartbeatLine(identity.watcher, now));
     return `${lines.join('\n')}\n`;
 }
 
 /** Why `photos status --check` fails, one code each, so a monitor can tell them apart. A6 adds `library-unavailable`. */
-export type CheckCode = 'status-incomplete' | 'missing-open' | 'failed-open' | 'ambiguous-open' | 'last-pass-failed' | 'heartbeat-missing' | 'heartbeat-stale';
+export type CheckCode =
+    | 'status-incomplete'
+    | 'inbox-unreadable'
+    | 'missing-open'
+    | 'failed-open'
+    | 'ambiguous-open'
+    | 'last-pass-failed'
+    | 'pass-stalled'
+    | 'heartbeat-missing'
+    | 'heartbeat-stale';
 
 export interface StatusCheck {
     ok: boolean;
@@ -299,12 +315,13 @@ export interface StatusCheck {
 }
 
 /** The heartbeat's problem for the check, or null while it's fresh. */
-function heartbeatProblem(heartbeat: HeartbeatAge): StatusCheck['problems'][number] | null {
+function heartbeatProblem(heartbeat: HeartbeatAge | null): StatusCheck['problems'][number] | null {
+    // The reason names the file's absolute path, so the check words the cause instead.
+    if (heartbeat === null) return { code: 'heartbeat-missing', message: "PHOTOGRAPHY_DATA_DIR is not set, so there's no heartbeat to read" };
     if (!heartbeat.found) {
-        return {
-            code: 'heartbeat-missing',
-            message: /doesn't exist$/.test(heartbeat.reason) ? "The watcher hasn't written a heartbeat, so nothing shows it runs" : `The watcher's heartbeat can't be used: ${heartbeat.reason}`,
-        };
+        if (heartbeat.cause === 'absent') return { code: 'heartbeat-missing', message: "The watcher hasn't written a heartbeat, so nothing shows it runs" };
+        const what = HEARTBEAT_PROBLEM_TEXT[heartbeat.cause].replace(/^status\/watcher\.json /, '');
+        return { code: 'heartbeat-missing', message: `The watcher's heartbeat, status/watcher.json, ${what}, so nothing shows it runs` };
     }
     if (!heartbeatStale(heartbeat.ageMs)) return null;
     return {
@@ -315,12 +332,31 @@ function heartbeatProblem(heartbeat: HeartbeatAge): StatusCheck['problems'][numb
     };
 }
 
+/**
+ * A watcher that beats but gets no pass through: none committed or refused
+ * an empty library for WATCHER_STALLED_AFTER_MS, measured from lastProgressAt.
+ * A heartbeat from a watcher older than that field is read by its last pass
+ * when that one got through, else by the pass under way.
+ */
+function stallProblem(heartbeat: Extract<HeartbeatAge, { found: true }>, now: number): StatusCheck['problems'][number] | null {
+    const progressed = heartbeat.lastPassResult === 'committed' || heartbeat.lastPassResult === 'library-empty';
+    const running = heartbeat.passRunningMs === null ? null : new Date(now - heartbeat.passRunningMs).toISOString();
+    const since = heartbeat.lastProgressAt ?? (progressed ? heartbeat.lastPassAt : null) ?? running;
+    if (since === null || now - Date.parse(since) <= WATCHER_STALLED_AFTER_MS) return null;
+    const why = heartbeat.passRunningMs !== null
+        ? `; the pass under way started ${ageText(heartbeat.passRunningMs)} ago`
+        : heartbeat.lastPassResult !== null && !progressed ? `; its last try was ${heartbeat.lastPassResult}` : '';
+    return { code: 'pass-stalled', message: `The watcher has finished no pass for ${ageText(now - Date.parse(since))}, over 30 minutes, since ${since}${why}` };
+}
+
 /** `--check`'s verdict on what status read, and on the heartbeat. `complete` is whether status itself read everything. */
 async function statusCheck(status: OwnerStatus, dataRoot: string | null, complete: boolean, clock: () => number): Promise<StatusCheck> {
     const problems: StatusCheck['problems'] = [];
     if (!complete) problems.push({ code: 'status-incomplete', message: "Status couldn't read everything it reports, as above" });
     if (status.inbox && !('error' in status.inbox)) {
-        const { missing, failed, ambiguous } = status.inbox;
+        const { missing, failed, ambiguous, unreadable } = status.inbox;
+        // An item that can't be read may be an open missing source or failure, so the check can't pass over it.
+        if (unreadable > 0) problems.push({ code: 'inbox-unreadable', message: `${count(unreadable, 'inbox item')} can't be read, so the check can't tell what ${unreadable === 1 ? 'it holds' : 'they hold'}. curation list names ${unreadable === 1 ? 'it' : 'them'}` });
         if (missing.length > 0) {
             const oldest = Math.max(...missing.map((item) => item.ageSeconds));
             problems.push({ code: 'missing-open', message: `${count(missing.length, 'missing source')} open, the oldest ${ageText(oldest * 1000)} old` });
@@ -328,12 +364,14 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
         if (failed.length > 0) problems.push({ code: 'failed-open', message: `${count(failed.length, 'failure')} open` });
         if (ambiguous.length > 0) problems.push({ code: 'ambiguous-open', message: `${ambiguous.length} ambiguous ${ambiguous.length === 1 ? 'item' : 'items'} open` });
     }
-    const heartbeat: HeartbeatAge = dataRoot === null
-        ? { found: false, reason: "PHOTOGRAPHY_DATA_DIR is not set, so there's no heartbeat to read" }
-        : await watcherHeartbeatAge(path.resolve(dataRoot), clock);
-    if (heartbeat.found && heartbeat.lastPassResult === 'failed') {
+    const heartbeat = dataRoot === null ? null : await watcherHeartbeatAge(path.resolve(dataRoot), clock);
+    // A last pass that refused an empty library (`library-empty`) fails nothing here: A6's library-unavailable item
+    // reports it, and the container's healthcheck already does. Its pass got through, so it isn't a stall either.
+    if (heartbeat?.found && heartbeat.lastPassResult === 'failed') {
         problems.push({ code: 'last-pass-failed', message: `The watcher's last pass failed${heartbeat.lastPassAt ? `, at ${heartbeat.lastPassAt}` : ''}` });
     }
+    const stalled = heartbeat?.found ? stallProblem(heartbeat, clock()) : null;
+    if (stalled) problems.push(stalled);
     const late = heartbeatProblem(heartbeat);
     if (late) problems.push(late);
     return { ok: problems.length === 0, problems };
@@ -350,11 +388,14 @@ export async function runStatusCommand(layer: StatusHandle, { json = false, chec
         const status = await ownerStatus({ ...layer, clock: now });
         const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined
             && status.inbox !== null && !('error' in status.inbox);
-        if (!check) return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status) };
+        if (!check) return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status, now()) };
         const verdict = await statusCheck(status, layer.dataRoot, ok, now);
-        return { exitCode: verdict.ok ? 0 : 1, output: json ? `${JSON.stringify({ ...status, check: verdict }, null, 2)}\n` : `${formatStatus(status)}${checkLines(verdict)}` };
+        return { exitCode: verdict.ok ? 0 : 1, output: json ? `${JSON.stringify({ ...status, check: verdict }, null, 2)}\n` : `${formatStatus(status, now())}${checkLines(verdict)}` };
     } catch (error) {
-        return { exitCode: 1, output: `Error: ${message(error)}\n` };
+        // A monitor parsing --json gets JSON even now, and --check's verdict in its usual shape.
+        const verdict: StatusCheck = { ok: false, problems: [{ code: 'status-incomplete', message: `Status couldn't run: ${message(error)}` }] };
+        if (json) return { exitCode: 1, output: `${JSON.stringify(check ? { error: message(error), check: verdict } : { error: message(error) }, null, 2)}\n` };
+        return { exitCode: 1, output: `Error: ${message(error)}\n${check ? checkLines(verdict) : ''}` };
     }
 }
 
