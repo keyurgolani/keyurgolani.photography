@@ -45,7 +45,9 @@
 # - is inside a checkout of this repository (a folder above it holds
 #   package.json or next.config.*), which a build copies into the image;
 # - is inside a data root (a folder above it holds data-root.json);
-# - another user can write, here or above, without the sticky bit;
+# - sits under a folder (or above the library one) that another user owns,
+#   that others can write, or that a group can write unless it's your own
+#   private group, sticky or not, or, on macOS, whose ACL allows others in;
 # - already holds any of the eight names, a move-back.sh or a used record;
 # - sits on another device or mount than the library;
 # - or whose path, or the library's or the manifest's, holds a newline.
@@ -124,224 +126,6 @@ refuse_inside_library() {
   done
 }
 
-library=''
-dest=''
-manifest=''
-to_given=0
-apply=0
-as_root=0
-take_library() {
-  [ -z "$library" ] && [ -n "$1" ] || usage
-  library=$1
-}
-while [ $# -gt 0 ]; do
-  case $1 in
-    --apply) apply=1 ;;
-    --rename-as-root) as_root=1 ;;
-    --to)
-      [ $# -ge 2 ] && [ -n "$2" ] && [ "$to_given" -eq 0 ] || usage
-      dest=$2
-      to_given=1
-      shift
-      ;;
-    --manifest)
-      [ $# -ge 2 ] && [ -n "$2" ] && [ -z "$manifest" ] || usage
-      manifest=$2
-      shift
-      ;;
-    --)
-      shift
-      [ $# -le 1 ] || usage
-      [ $# -eq 0 ] || take_library "$1"
-      break
-      ;;
-    -*) usage ;;
-    *) take_library "$1" ;;
-  esac
-  shift
-done
-[ -n "$library" ] || usage
-
-[ "$(id -u)" != 0 ] || refuse "Run this as yourself, not as root or with sudo. If a rename needs root, --rename-as-root runs only that rename through sudo."
-command -v perl >/dev/null 2>&1 || refuse "This needs perl, to read the manifest and so that each move is a checked rename and never a copy."
-if [ "$as_root" -eq 1 ]; then
-  command -v sudo >/dev/null 2>&1 || refuse "--rename-as-root needs sudo, which isn't on PATH."
-  [ -x /usr/bin/perl ] && [ -x /usr/bin/env ] || refuse "--rename-as-root runs the helper as /usr/bin/env -i /usr/bin/perl, which this host doesn't have."
-fi
-
-if has_newline "$library" || has_newline "$dest" || has_newline "$manifest"; then
-  refuse "A path given holds a newline, which the printed and saved lines can't carry safely."
-fi
-
-# Both sides with symlinks resolved.
-[ -d "$library" ] || refuse "The library $library isn't a folder."
-lib=$(cd -P -- "$library" && pwd -P) || refuse "Can't open the library $library."
-[ "$lib" != / ] || refuse "The library can't be /."
-
-if [ "$to_given" -eq 0 ]; then
-  parent=$(dirname -- "$lib")
-  dest="${parent%/}/$(basename -- "$lib").legacy-derivatives-$(date +%Y-%m-%d)"
-fi
-if [ -e "$dest" ] || [ -L "$dest" ]; then
-  [ -d "$dest" ] || refuse "The destination $dest isn't a folder."
-  to=$(cd -P -- "$dest" && pwd -P) || refuse "Can't open the destination $dest."
-  anchor=$to
-  dest_exists=1
-  [ "$(stat_of %u "$to")" = "$(id -u)" ] || refuse "The destination $to isn't yours. Pass a --to folder you own."
-  [ -w "$to" ] || refuse "The destination $to isn't writable by you. Pass a --to folder you can write."
-else
-  parent=$(dirname -- "$dest")
-  [ -d "$parent" ] || refuse "The destination's parent $parent isn't a folder. Make it first, outside the library."
-  anchor=$(cd -P -- "$parent" && pwd -P) || refuse "Can't open the destination's parent $parent."
-  to="${anchor%/}/$(basename -- "$dest")"
-  dest_exists=0
-fi
-if has_newline "$lib" || has_newline "$to"; then
-  refuse "The library's or the destination's path holds a newline, which the printed and saved lines can't carry safely."
-fi
-
-# Inside the library: by path, then by device and inode for every folder from
-# the destination up to /, which catches a path that differs only in case, a
-# firmlink, and a bind mount of the library.
-inside="The destination $to is the library or inside it, where the watcher would scan the folders and take their WebP files for new photos. Pick one outside the library, on the same filesystem."
-case "$to/" in
-  "$lib/"*) refuse "$inside" ;;
-esac
-lib_id=$(stat_of %d:%i "$lib") || lib_id=''
-case $lib_id in
-  *[0-9]:[0-9]*) ;;
-  *) refuse "Can't read the device and inode of $lib." ;;
-esac
-refuse_inside_library "$anchor" "$inside"
-
-# Inside a checkout, which the image build copies, or a data root, which the
-# stack owns. On the resolved path, so a symlink can't hide either.
-folder=$to
-while :; do
-  checkout=0
-  [ ! -e "$folder/package.json" ] || checkout=1
-  for config in "${folder%/}"/next.config.*; do
-    [ ! -e "$config" ] || checkout=1
-  done
-  if [ "$checkout" -eq 1 ]; then
-    if [ "$to_given" -eq 0 ]; then
-      refuse "The default destination $to is inside the checkout in $folder, which a build copies into the image. Pass --to a folder outside the checkout, on the library's filesystem."
-    fi
-    refuse "The destination $to is inside the checkout in $folder, which a build copies into the image. Pick one outside the checkout, on the library's filesystem."
-  fi
-  if [ -e "$folder/data-root.json" ]; then
-    refuse "The destination $to is inside the data root in $folder, which belongs to the stack. Pick one outside it, on the library's filesystem."
-  fi
-  [ "$folder" != / ] || break
-  folder=$(dirname -- "$folder")
-done
-
-# A folder above the library or the destination that another user owns, or
-# that its group or others can write (sticky or not), could swap what's in
-# it between the checks and the renames. Root's and your own folders pass,
-# so / and /srv do. $1 the first folder to check, $2 what it's above.
-read -r -d '' ANCESTORS <<'ANCESTORS' || true
-my ($dir, $uid, $what) = @ARGV;
-while (1) {
-  my @s = lstat $dir;
-  if (@s && !-l _) {
-    print("$dir is owned by uid $s[4], neither root nor you, so it could change what's under it. Pick a $what only root and you own the folders above.\n"), exit 0 unless $s[4] == 0 || $s[4] == $uid;
-    print("$dir is writable by its group or others, so what's in it could be swapped between the checks and the renames. Make it yours alone with: chmod g-w,o-w $dir\n"), exit 0 if $s[2] & 022;
-  }
-  last if $dir eq "/";
-  $dir =~ s{/[^/]+/?\z}{};
-  $dir = "/" if $dir eq "";
-}
-ANCESTORS
-guard_ancestors() {
-  local found
-  found=$(perl -e "$ANCESTORS" -- "$1" "$(id -u)" "$2") || refuse "Can't read the folders above $1."
-  [ -z "$found" ] || refuse "$found"
-}
-guard_ancestors "$(dirname -- "$lib")" "library"
-guard_ancestors "$anchor" "destination"
-
-# On macOS, an ACL entry can grant what the mode bits don't. Deny-only
-# entries, such as a home folder's, take nothing away from this.
-if [ "$(uname -s)" = Darwin ]; then
-  folder=$anchor
-  while :; do
-    if /bin/ls -led -- "$folder" 2>/dev/null | sed 1d | grep -q ' allow '; then
-      refuse "$folder has an ACL that allows others to change it, so the aside folder could be swapped under it. Pick a destination with no such ACL above it."
-    fi
-    [ "$folder" != / ] || break
-    folder=$(dirname -- "$folder")
-  done
-fi
-
-lib_device=$(stat_of %d "$lib") || lib_device=''
-anchor_device=$(stat_of %d "$anchor") || anchor_device=''
-case "$lib_device$anchor_device" in
-  '' | *[!0-9]*) refuse "Can't read the device of $lib or $anchor." ;;
-esac
-lib_mount=$(mount_of "$lib") || lib_mount=''
-anchor_mount=$(mount_of "$anchor") || anchor_mount=''
-[ -n "$lib_mount" ] && [ -n "$anchor_mount" ] || refuse "Can't read the mount of $lib or $anchor."
-if [ "$lib_device" != "$anchor_device" ] || [ "$lib_mount" != "$anchor_mount" ]; then
-  refuse "The destination $to is on another filesystem than the library, where a move would have to copy the folders. Pick a --to on the library's filesystem, outside the library. If the library is a whole disk of its own, leave the folders where they are."
-fi
-
-# A library on a read-only mount can't be renamed in at all; on Linux, say so up front.
-if [ -r /proc/self/mountinfo ]; then
-  ro=$(perl -e '
-    my ($path) = @ARGV;
-    my ($best, $options) = ("", "");
-    open(my $fh, "<", "/proc/self/mountinfo") or exit 0;
-    while (<$fh>) {
-      my @f = split / /;
-      (my $point = $f[4]) =~ s/\\([0-7]{3})/chr(oct $1)/ge;
-      next unless $path eq $point || index($path, $point eq "/" ? "/" : "$point/") == 0;
-      ($best, $options) = ($point, $f[5]) if length $point >= length $best;
-    }
-    print $best if $options =~ /(?:\A|,)ro(?:,|\z)/;
-  ' -- "$lib") || ro=''
-  [ -z "$ro" ] || refuse "The library $lib is on $ro, mounted read-only, so nothing in it can be moved."
-fi
-
-for name in "${NAMES[@]}"; do
-  if [ -e "$to/$name" ] || [ -L "$to/$name" ]; then
-    refuse "The destination $to already holds $name."
-  fi
-done
-
-# Which of the eight names the library's root lists exactly, from a real
-# listing: a test of "$lib/medium" would find an album named Medium on a
-# case-insensitive disk.
-present=$(perl -e 'opendir(my $d, $ARGV[0]) or exit 3; my %want = map { $_ => 1 } @ARGV[1 .. $#ARGV]; print "$_\n" for sort grep { $want{$_} } readdir $d' -- "$lib" "${NAMES[@]}") ||
-  refuse "Can't list the library $lib."
-echo "Library: $lib"
-echo "Destination: $to, outside the library on the same filesystem"
-if [ -z "$present" ]; then
-  echo
-  echo "Nothing to move: the library's top holds none of the eight legacy folder names."
-  exit 0
-fi
-
-[ -n "$manifest" ] || refuse "This needs the manifest photos legacy-derivatives writes. Save it in the watcher's container with --stdout, then pass that file with --manifest."
-manifest_file=$(resolved "$manifest") || refuse "Can't open the folder of the manifest $manifest. Save it with photos legacy-derivatives --stdout first."
-refuse_inside_library "$(dirname -- "$manifest_file")" "The manifest $manifest_file is inside the library. Keep the copy outside it, such as in your home folder."
-
-state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/photos"
-has_newline "$state_dir" && refuse "The state folder's path $state_dir holds a newline."
-state_dir=$(resolved "$state_dir") || refuse "Can't resolve the state folder $state_dir."
-refuse_inside_library "$state_dir" "The state folder $state_dir is inside the library. Set XDG_STATE_HOME outside it."
-used_file="$state_dir/legacy-derivatives.used"
-
-# Sizes come first, so nothing runs between the check below and the renames but the helper's own re-check.
-sizes=''
-for name in $present; do
-  if usage_line=$(du -sk -- "$lib/$name" 2>/dev/null); then
-    sizes="$sizes$name ${usage_line%%[[:space:]]*}"$'\n'
-  else
-    sizes="$sizes$name ?"$'\n'
-  fi
-done
-
 # The checks the host and the forward helper share: the manifest, its age and
 # use, the library, the rules for what the v1.x pipeline wrote, and a folder's
 # live listing against the manifest. A refusal prints to stderr and exits
@@ -370,7 +154,8 @@ sub clean {
   $text =~ s/[\x00-\x1f\x7f-\x9f]/?/g;
   return encode_utf8($text);
 }
-sub refuse { print STDERR clean($_[0] . $TAIL), "\n"; exit($_[1] // $REFUSED) }
+# A message's lines cleaned one at a time, so a line break the message means survives.
+sub refuse { print STDERR join("\n", map { clean($_) } split /\n/, $_[0] . $TAIL), "\n"; exit($_[1] // $REFUSED) }
 
 sub read_manifest {
   my ($file) = @_;
@@ -421,22 +206,101 @@ sub used_holds {
 
 sub manifest_library { my ($m) = @_; return ($m->{library}{dev} // '') . ':' . ($m->{library}{ino} // '') }
 
-# Refuses when a folder from $dir up to / is owned by anyone but root or
-# $uid, or its group or others can write it, sticky or not.
-sub guard_above {
-  my ($dir, $uid) = @_;
+sub parent_of { my ($dir) = @_; $dir =~ s{/[^/]+/?\z}{}; return $dir eq '' ? '/' : $dir }
+
+# The passwd and group databases, read in full, as ([name, uid, gid]...,
+# [name, gid, [members]]...), or nothing when they can't be. Tests give
+# fixture files in /etc's format through PHOTOS_TEST_PASSWD and
+# PHOTOS_TEST_GROUP; --rename-as-root's clean environment never carries
+# them. Otherwise only Linux, and only when nsswitch.conf names nothing
+# beyond files, compat and systemd, whose entries getpwent and getgrent
+# list in full.
+sub accounts {
+  my (@passwd, @group);
+  if (length($ENV{PHOTOS_TEST_PASSWD} // '') && length($ENV{PHOTOS_TEST_GROUP} // '')) {
+    open(my $p, '<', $ENV{PHOTOS_TEST_PASSWD}) or return;
+    while (my $line = <$p>) { chomp $line; next if $line =~ /\A\s*(?:#|\z)/; my @f = split /:/, $line, -1; push @passwd, [@f[0, 2, 3]] }
+    open(my $g, '<', $ENV{PHOTOS_TEST_GROUP}) or return;
+    while (my $line = <$g>) { chomp $line; next if $line =~ /\A\s*(?:#|\z)/; my @f = split /:/, $line, -1; push @group, [$f[0], $f[2], [grep { length } split /,/, $f[3] // '']] }
+  } else {
+    return unless $^O eq 'linux';
+    open(my $ns, '<', '/etc/nsswitch.conf') or return;
+    my %sources;
+    while (my $line = <$ns>) {
+      $line =~ s/#.*//;
+      $sources{$1} = [grep { length } split /\s+/, $2] if $line =~ /\A\s*(passwd|group)\s*:\s*(.*?)\s*\z/;
+    }
+    for my $db ('passwd', 'group') {
+      my @names = grep { !/\A\[/ } @{ $sources{$db} // [] };
+      return unless @names;
+      for (@names) { return unless /\A(?:files|compat|systemd)\z/ }
+    }
+    setpwent();
+    while (my @pw = getpwent()) { push @passwd, [$pw[0], $pw[2], $pw[3]] }
+    endpwent();
+    setgrent();
+    while (my @gr = getgrent()) { push @group, [$gr[0], $gr[2], [grep { length } split / /, $gr[3] // '']] }
+    endgrent();
+  }
+  return unless @passwd && @group;
+  return (\@passwd, \@group);
+}
+
+# Ruling 2a: a folder's group may write it only when that group is $uid's
+# own private one. It must be $uid's primary group, name no other member,
+# and be no one else's primary group.
+our ($PASSWD, $GROUP, $READ_ACCOUNTS);
+sub private_group {
+  my ($gid, $uid) = @_;
+  ($PASSWD, $GROUP, $READ_ACCOUNTS) = (accounts(), 1) unless $READ_ACCOUNTS;
+  return 0 unless $PASSWD && $GROUP;
+  my ($me) = grep { $_->[1] eq $uid } @$PASSWD;
+  return 0 unless $me && $me->[2] eq $gid;
+  return 0 if grep { $_->[1] ne $uid && $_->[2] eq $gid } @$PASSWD;
+  my @entries = grep { $_->[1] eq $gid } @$GROUP;
+  return 0 unless @entries;
+  for my $entry (@entries) { return 0 if grep { $_ ne $me->[0] } @{ $entry->[2] } }
+  return 1;
+}
+
+# Every folder from $dir up to / that's at fault, in one message, or '':
+# owned by anyone but root or $uid; writable by others, or by a group that
+# isn't $uid's private one, sticky or not; or, on macOS, with an ACL entry
+# that allows others anything. $whom names $uid in the message.
+sub above_problems {
+  my ($dir, $uid, $whom) = @_;
+  my (%owned, @writable, @acl);
   while (1) {
-    my @s = lstat $dir or refuse("Can't read $dir.");
+    my @s = lstat $dir;
+    return "Can't read $dir, above the library or the aside folder." unless @s;
     if (!-l _) {
-      refuse("$dir is owned by uid $s[4], neither root nor uid $uid, so it could change what's under it.") unless $s[4] == 0 || $s[4] == $uid;
-      refuse("$dir is writable by its group or others, so what's in it could be swapped. Make it yours alone with: chmod g-w,o-w $dir") if $s[2] & 022;
+      push @{ $owned{ $s[4] } }, $dir unless $s[4] == 0 || $s[4] == $uid;
+      push @writable, $dir if ($s[2] & 002) || (($s[2] & 020) && !private_group($s[5], $uid));
+      if ($^O eq 'darwin' && open(my $ls, '-|', '/bin/ls', '-led', '--', $dir)) {
+        my @lines = <$ls>;
+        close $ls;
+        push @acl, $dir if grep { / allow / } @lines[1 .. $#lines];
+      }
     }
     last if $dir eq '/';
-    $dir =~ s{/[^/]+/?\z}{};
-    $dir = '/' if $dir eq '';
+    $dir = parent_of($dir);
   }
+  my @parts;
+  for my $owner (sort { $a <=> $b } keys %owned) {
+    my @dirs = @{ $owned{$owner} };
+    push @parts, join(', ', @dirs) . (@dirs == 1 ? ' is' : ' are') . " owned by uid $owner, neither root nor $whom, so what's under " . (@dirs == 1 ? 'it' : 'them') . ' could change.';
+  }
+  push @parts, join(', ', @acl) . (@acl == 1 ? ' has an ACL' : ' have ACLs') . ' that allows others to change ' . (@acl == 1 ? 'it' : 'them') . '.' if @acl;
+  if (@writable) {
+    push @parts, join(', ', @writable) . (@writable == 1 ? ' is writable by its group or others' : ' are writable by their group or others') . ", so what's in " . (@writable == 1 ? 'it' : 'them') . " could be swapped between the checks and the renames. Group write is fine only for your own private group. Make " . (@writable == 1 ? 'it' : 'them') . " yours alone with:\nchmod g-w,o-w " . join(' ', @writable) . "\n";
+  }
+  return join(' ', @parts);
 }
-sub parent_of { my ($dir) = @_; $dir =~ s{/[^/]+/?\z}{}; return $dir eq '' ? '/' : $dir }
+sub guard_above {
+  my ($dir, $uid) = @_;
+  my $problems = above_problems($dir, $uid, "uid $uid");
+  refuse($problems) if length $problems;
+}
 
 # The library's root: every name in it, and the base name of each original
 # the scan reads there, a plain file with a source extension, not a dot-file.
@@ -533,6 +397,213 @@ sub check_folder {
 }
 COMMON
 
+# Whether a path sits on a read-only mount, from a mountinfo file
+# (/proc/self/mountinfo in production): the deepest mount above it, ro in
+# its own options or in the filesystem's super options after the " - "
+# separator. Prints that mount point, or nothing.
+read -r -d '' MOUNTINFO <<'MOUNTINFO' || true
+my ($file, $path) = @ARGV;
+open(my $fh, '<', $file) or exit 0;
+my ($best, $ro) = ('', 0);
+while (my $line = <$fh>) {
+  chomp $line;
+  my ($left, $right) = split / - /, $line, 2;
+  next unless defined $right;
+  my @f = split / /, $left;
+  my @r = split / /, $right;
+  next unless @f >= 6 && @r >= 3;
+  (my $point = $f[4]) =~ s/\\([0-7]{3})/chr(oct $1)/ge;
+  next unless $path eq $point || index($path, $point eq '/' ? '/' : "$point/") == 0;
+  next if length $point < length $best;
+  $best = $point;
+  $ro = (grep { $_ eq 'ro' } split(/,/, $f[5]), split(/,/, $r[2])) ? 1 : 0;
+}
+print $best if $ro;
+MOUNTINFO
+
+library=''
+dest=''
+manifest=''
+to_given=0
+apply=0
+as_root=0
+take_library() {
+  [ -z "$library" ] && [ -n "$1" ] || usage
+  library=$1
+}
+while [ $# -gt 0 ]; do
+  case $1 in
+    --apply) apply=1 ;;
+    --rename-as-root) as_root=1 ;;
+    --to)
+      [ $# -ge 2 ] && [ -n "$2" ] && [ "$to_given" -eq 0 ] || usage
+      dest=$2
+      to_given=1
+      shift
+      ;;
+    --manifest)
+      [ $# -ge 2 ] && [ -n "$2" ] && [ -z "$manifest" ] || usage
+      manifest=$2
+      shift
+      ;;
+    --)
+      shift
+      [ $# -le 1 ] || usage
+      [ $# -eq 0 ] || take_library "$1"
+      break
+      ;;
+    -*) usage ;;
+    *) take_library "$1" ;;
+  esac
+  shift
+done
+[ -n "$library" ] || usage
+
+[ "$(id -u)" != 0 ] || refuse "Run this as yourself, not as root or with sudo. If a rename needs root, --rename-as-root runs only that rename through sudo."
+command -v perl >/dev/null 2>&1 || refuse "This needs perl, to read the manifest and so that each move is a checked rename and never a copy."
+if [ "$as_root" -eq 1 ]; then
+  command -v sudo >/dev/null 2>&1 || refuse "--rename-as-root needs sudo, which isn't on PATH."
+  [ -x /usr/bin/perl ] && [ -x /usr/bin/env ] || refuse "--rename-as-root runs the helper as /usr/bin/env -i /usr/bin/perl, which this host doesn't have."
+fi
+
+if has_newline "$library" || has_newline "$dest" || has_newline "$manifest"; then
+  refuse "A path given holds a newline, which the printed and saved lines can't carry safely."
+fi
+
+# Both sides with symlinks resolved.
+[ -d "$library" ] || refuse "The library $library isn't a folder."
+lib=$(cd -P -- "$library" && pwd -P) || refuse "Can't open the library $library."
+[ "$lib" != / ] || refuse "The library can't be /."
+# A library on a read-only mount can't be renamed in at all. Linux only, through /proc; macOS has no mountinfo.
+if [ -r /proc/self/mountinfo ]; then
+  ro=$(perl -e "$MOUNTINFO" -- /proc/self/mountinfo "$lib") || ro=''
+  [ -z "$ro" ] || refuse "The library $lib is on $ro, mounted read-only, so nothing in it can be moved."
+fi
+
+if [ "$to_given" -eq 0 ]; then
+  parent=$(dirname -- "$lib")
+  dest="${parent%/}/$(basename -- "$lib").legacy-derivatives-$(date +%Y-%m-%d)"
+fi
+if [ -e "$dest" ] || [ -L "$dest" ]; then
+  [ -d "$dest" ] || refuse "The destination $dest isn't a folder."
+  to=$(cd -P -- "$dest" && pwd -P) || refuse "Can't open the destination $dest."
+  anchor=$to
+  dest_exists=1
+  [ "$(stat_of %u "$to")" = "$(id -u)" ] || refuse "The destination $to isn't yours. Pass a --to folder you own."
+  [ -w "$to" ] || refuse "The destination $to isn't writable by you. Pass a --to folder you can write."
+else
+  parent=$(dirname -- "$dest")
+  [ -d "$parent" ] || refuse "The destination's parent $parent isn't a folder. Make it first, outside the library."
+  anchor=$(cd -P -- "$parent" && pwd -P) || refuse "Can't open the destination's parent $parent."
+  to="${anchor%/}/$(basename -- "$dest")"
+  dest_exists=0
+fi
+if has_newline "$lib" || has_newline "$to"; then
+  refuse "The library's or the destination's path holds a newline, which the printed and saved lines can't carry safely."
+fi
+
+# Inside the library: by path, then by device and inode for every folder from
+# the destination up to /, which catches a path that differs only in case, a
+# firmlink, and a bind mount of the library.
+inside="The destination $to is the library or inside it, where the watcher would scan the folders and take their WebP files for new photos. Pick one outside the library, on the same filesystem."
+case "$to/" in
+  "$lib/"*) refuse "$inside" ;;
+esac
+lib_id=$(stat_of %d:%i "$lib") || lib_id=''
+case $lib_id in
+  *[0-9]:[0-9]*) ;;
+  *) refuse "Can't read the device and inode of $lib." ;;
+esac
+refuse_inside_library "$anchor" "$inside"
+
+# Inside a checkout, which the image build copies, or a data root, which the
+# stack owns. On the resolved path, so a symlink can't hide either.
+folder=$to
+while :; do
+  checkout=0
+  [ ! -e "$folder/package.json" ] || checkout=1
+  for config in "${folder%/}"/next.config.*; do
+    [ ! -e "$config" ] || checkout=1
+  done
+  if [ "$checkout" -eq 1 ]; then
+    if [ "$to_given" -eq 0 ]; then
+      refuse "The default destination $to is inside the checkout in $folder, which a build copies into the image. Pass --to a folder outside the checkout, on the library's filesystem."
+    fi
+    refuse "The destination $to is inside the checkout in $folder, which a build copies into the image. Pick one outside the checkout, on the library's filesystem."
+  fi
+  if [ -e "$folder/data-root.json" ]; then
+    refuse "The destination $to is inside the data root in $folder, which belongs to the stack. Pick one outside it, on the library's filesystem."
+  fi
+  [ "$folder" != / ] || break
+  folder=$(dirname -- "$folder")
+done
+
+# Every folder above the library, and the destination and every folder
+# above it, must be root's or yours, writable by no one else (group write
+# only for your own private group, sticky or not), and on macOS carry no ACL
+# that allows others anything: such a folder could swap what's in it
+# between the checks and the renames. One message lists every one at fault.
+guard_ancestors() {
+  local found
+  found=$(perl -e "$COMMON"$'\n''print above_problems($ARGV[0], $ARGV[1], "you")' -- "$1" "$(id -u)") || refuse "Can't read the folders above $1."
+  [ -z "$found" ] || refuse "$found"$'\n'
+}
+guard_ancestors "$(dirname -- "$lib")"
+guard_ancestors "$anchor"
+
+lib_device=$(stat_of %d "$lib") || lib_device=''
+anchor_device=$(stat_of %d "$anchor") || anchor_device=''
+case "$lib_device$anchor_device" in
+  '' | *[!0-9]*) refuse "Can't read the device of $lib or $anchor." ;;
+esac
+lib_mount=$(mount_of "$lib") || lib_mount=''
+anchor_mount=$(mount_of "$anchor") || anchor_mount=''
+[ -n "$lib_mount" ] && [ -n "$anchor_mount" ] || refuse "Can't read the mount of $lib or $anchor."
+if [ "$lib_device" != "$anchor_device" ] || [ "$lib_mount" != "$anchor_mount" ]; then
+  refuse "The destination $to is on another filesystem than the library, where a move would have to copy the folders. Pick a --to on the library's filesystem, outside the library. If the library is a whole disk of its own, leave the folders where they are."
+fi
+
+
+for name in "${NAMES[@]}"; do
+  if [ -e "$to/$name" ] || [ -L "$to/$name" ]; then
+    refuse "The destination $to already holds $name."
+  fi
+done
+
+# Which of the eight names the library's root lists exactly, from a real
+# listing: a test of "$lib/medium" would find an album named Medium on a
+# case-insensitive disk.
+present=$(perl -e 'opendir(my $d, $ARGV[0]) or exit 3; my %want = map { $_ => 1 } @ARGV[1 .. $#ARGV]; print "$_\n" for sort grep { $want{$_} } readdir $d' -- "$lib" "${NAMES[@]}") ||
+  refuse "Can't list the library $lib."
+echo "Library: $lib"
+echo "Destination: $to, outside the library on the same filesystem"
+if [ -z "$present" ]; then
+  echo
+  echo "Nothing to move: the library's top holds none of the eight legacy folder names."
+  exit 0
+fi
+
+[ -n "$manifest" ] || refuse "This needs the manifest photos legacy-derivatives writes. Save it in the watcher's container with --stdout, then pass that file with --manifest."
+manifest_file=$(resolved "$manifest") || refuse "Can't open the folder of the manifest $manifest. Save it with photos legacy-derivatives --stdout first."
+refuse_inside_library "$(dirname -- "$manifest_file")" "The manifest $manifest_file is inside the library. Keep the copy outside it, such as in your home folder."
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/photos"
+has_newline "$state_dir" && refuse "The state folder's path $state_dir holds a newline."
+state_dir=$(resolved "$state_dir") || refuse "Can't resolve the state folder $state_dir."
+refuse_inside_library "$state_dir" "The state folder $state_dir is inside the library. Set XDG_STATE_HOME outside it."
+used_file="$state_dir/legacy-derivatives.used"
+
+# Sizes come first, so nothing runs between the check below and the renames but the helper's own re-check.
+sizes=''
+for name in $present; do
+  if usage_line=$(du -sk -- "$lib/$name" 2>/dev/null); then
+    sizes="$sizes$name ${usage_line%%[[:space:]]*}"$'\n'
+  else
+    sizes="$sizes$name ?"$'\n'
+  fi
+done
+
+
 # The host's check: everything in COMMON, for every folder. It prints `move`,
 # `stay`, `written` and `digest` lines, or refuses on stderr with exit 1.
 read -r -d '' VERIFY <<'VERIFY' || true
@@ -579,6 +650,7 @@ $REFUSED = 3;
 $TAIL = ' Nothing further was moved.';
 refuse("Usage: forward <manifest> <library> <aside folder> <name>.", 2) unless @ARGV == 5 && $ARGV[0] eq 'forward';
 my (undef, $file, $lib, $aside, $name) = @ARGV;
+for ($lib, $aside) { refuse("$_ isn't an absolute path, and after the helper goes into the library a relative one would mean a folder there.") unless m{\A/} && !/\n/ }
 my $uid = defined $ENV{SUDO_UID} && length $ENV{SUDO_UID} ? $ENV{SUDO_UID} : $<;
 refuse("SUDO_UID isn't a user's uid.") unless $uid =~ /\A\d+\z/ && $uid != 0;
 refuse("$name is not one of the eight legacy folder names, exactly.") unless grep { $_ eq $name } @EIGHT;
@@ -608,13 +680,15 @@ for (my $dir = $real; ; $dir = parent_of($dir)) {
 }
 guard_above(parent_of($real), $uid);
 refuse("The aside folder $aside isn't yours: it belongs to uid $a[4], not $uid.") unless $a[4] == $uid;
-refuse("The aside folder $aside is writable by its group or others. Make it yours alone with: chmod g-w,o-w $aside") if $a[2] & 022;
+refuse("The aside folder $aside is writable by its group or others. Make it yours alone with:\nchmod g-w,o-w $aside\n") if $a[2] & 022;
+my @r = lstat $real or refuse("Can't read the aside folder $real.");
+refuse("The aside folder $aside resolves to $real, which isn't the folder that was checked.") unless -d _ && !-l _ && "$r[0]:$r[1]" eq $aside_id;
 for my $own ('move-back.sh', 'legacy-derivatives.used') {
-  my @s = lstat "$aside/$own" or refuse("The aside folder $aside holds no $own, so it isn't one this run made.");
+  my @s = lstat "$real/$own" or refuse("The aside folder $aside holds no $own, so it isn't one this run made.");
   refuse("$aside/$own isn't a plain file of yours with one link.") unless -f _ && !-l _ && $s[3] == 1 && $s[4] == $uid;
 }
-refuse("$aside/legacy-derivatives.used doesn't hold this manifest's digest, so the aside folder isn't this run's.") unless used_holds("$aside/legacy-derivatives.used", $digest);
-refuse("$aside/$name exists. Compare it with $lib/$name first.") if lstat "$aside/$name";
+refuse("$aside/legacy-derivatives.used doesn't hold this manifest's digest, so the aside folder isn't this run's.") unless used_holds("$real/legacy-derivatives.used", $digest);
+refuse("$aside/$name exists. Compare it with $lib/$name first.") if lstat "$real/$name";
 
 # Last, immediately before the rename, from inside the library by relative
 # names: the library's identity, the exact name, and the folder's identity.
@@ -627,7 +701,7 @@ closedir $dh;
 refuse("$lib has no entry named exactly $name right before the rename, so it changed.") unless $listed;
 my @s = lstat $name or refuse("Can't read $lib/$name.");
 refuse("$lib/$name is not the folder that was checked: its device and inode changed.") unless -d _ && !-l _ && "$s[0]:$s[1]" eq $folder_id;
-if (!rename($name, "$aside/$name")) {
+if (!rename($name, "$real/$name")) {
   if ($!{EACCES} || $!{EPERM}) {
     my $cause = !-w '.' ? "the library's top folder $lib isn't writable" : !-w $name ? "$lib/$name isn't writable, and moving a folder to a new parent rewrites its .. entry" : "the system refused it ($!)";
     print STDERR clean("Permission denied renaming $lib/$name: $cause. Nothing further was moved."), "\n";
@@ -635,16 +709,16 @@ if (!rename($name, "$aside/$name")) {
   }
   refuse("Renaming $lib/$name failed: $!.", 5);
 }
-my @after = lstat "$aside/$name";
+my @after = lstat "$real/$name";
 if (!(@after && -d _ && !-l _ && "$after[0]:$after[1]" eq $folder_id)) {
   my $wrong = "What arrived at $aside/$name wasn't the folder that was checked";
-  my @now = lstat $aside;
+  my @now = lstat $real;
   refuse("$wrong, and the aside folder $aside changed too, so it was left where it is. Look before going on.", 5) unless @now && !-l _ && "$now[0]:$now[1]" eq $aside_id;
   opendir(my $again, '.') or refuse("$wrong, and $lib can't be listed, so it was left where it is. Look before going on.", 5);
   my $back = grep { lc $_ eq lc $name } readdir $again;
   closedir $again;
   refuse("$wrong, and the library holds $name again, in some letter case, so it was left where it is. Look before going on.", 5) if $back;
-  rename("$aside/$name", $name) or refuse("$wrong, and moving it straight back failed ($!). Look before going on.", 5);
+  rename("$real/$name", $name) or refuse("$wrong, and moving it straight back failed ($!). Look before going on.", 5);
   refuse("$wrong, so it was moved straight back.", 5);
 }
 exit 0;
@@ -680,8 +754,14 @@ if (!rename("$from/$name", "$to/$name")) {
 }
 my @after = lstat "$to/$name";
 if (!(@after && "$after[0]:$after[1]" eq $folder_id)) {
-  rename("$to/$name", "$from/$name") or stop(5, "$to/$name is not the folder that was moved, and moving it straight back failed: $!. Look before going on.");
-  stop(5, "What arrived at $to/$name was not the folder that was moved, so it went straight back.");
+  my $wrong = "What arrived at $to/$name was not the folder that was moved";
+  stop(5, "$wrong, and the aside folder $from changed too, so it was left where it is. Look before going on.") unless id_of($from) eq $from_id;
+  opendir(my $again, $from) or stop(5, "$wrong, and $from cannot be listed, so it was left where it is. Look before going on.");
+  my $clash = grep { lc $_ eq lc $name } readdir $again;
+  closedir $again;
+  stop(5, "$wrong, and the aside folder holds $name again, in some letter case, so it was left where it is. Look before going on.") if $clash;
+  rename("$to/$name", "$from/$name") or stop(5, "$wrong, and moving it straight back failed: $!. Look before going on.");
+  stop(5, "$wrong, so it went straight back.");
 }
 exit 0;
 BACK

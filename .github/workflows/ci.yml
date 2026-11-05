@@ -49,6 +49,26 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test -- --run
+      # scripts/host/legacy-move-aside.sh refuses a library on a read-only
+      # mount, from /proc/self/mountinfo, which no unit test can mount. The
+      # runner has passwordless sudo: this binds a folder it made itself,
+      # read-only, checks the refusal, and unmounts it. Nothing else is
+      # mounted, and the script itself runs as the runner, never as root.
+      - name: Check legacy-move-aside.sh refuses a read-only library
+        run: |
+          base="$HOME/.cache/legacy-ro-mount-check"
+          mkdir -p -m 0700 "$base"
+          chmod 0700 "$base"
+          mkdir -p "$base/library/thumbnails" "$base/ro"
+          sudo mount --bind "$base/library" "$base/ro"
+          sudo mount -o remount,bind,ro "$base/ro"
+          set +e
+          out=$(bash scripts/host/legacy-move-aside.sh --to "$base/aside" "$base/ro" 2>&1)
+          code=$?
+          set -e
+          sudo umount "$base/ro"
+          printf '%s\n' "$out"
+          [ "$code" -eq 1 ] && printf '%s' "$out" | grep -q 'mounted read-only'
       # Builds, then publishes to and rolls back the standalone server on a
       # temp data root. The steps after it check that same build.
       - run: npm run test:prod

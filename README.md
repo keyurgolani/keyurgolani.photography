@@ -224,13 +224,13 @@ curl -fsSL -o legacy-move-aside.sh https://raw.githubusercontent.com/keyurgolani
   - is the library or inside it, which it checks by the folders' device and inode, so a different letter case, a symlink or a second mount of the library can't hide it. Inside the library, the scan would take every WebP in them for a new photo, since it skips the eight names at the top only;
   - is inside a checkout of this repository, under a folder holding a `package.json` or `next.config.*`, which an image build copies. On a checkout, the default folder is there, so pass `--to` a folder outside the checkout on the same filesystem;
   - is inside the data root, under a folder holding `data-root.json`;
-  - sits under a folder another user owns (root's and yours are fine), or one its group or others can write, sticky or not, where the aside folder could be swapped. The library's own folders above it must pass the same rule. The refusal says `chmod g-w,o-w <folder>` when that's the fix. On macOS, a folder whose ACL allows others to change it is refused too;
+  - sits under a folder another user owns (root's and yours are fine), or one others can write, or one a group can write unless that group is your own private one (your primary group, with no other member, and no one else's primary group), sticky or not, where the aside folder could be swapped. The folders above the library must pass the same rule. One refusal lists every folder at fault, with the one `chmod g-w,o-w <folders...>` line that fixes the write bits. On macOS, a folder whose ACL allows others to change it is refused too;
   - already holds any of the eight names, a `move-back.sh` or a used record from an earlier run. Pass a different `--to`;
   - is on another filesystem or mount than the library, where a move would have to copy them. If the library is a disk of its own, there's nowhere it can go, so leave the folders in place;
   - has a newline in its path, or the library or the manifest does;
   - is an existing folder that isn't yours or that you can't write.
 
-  The dated folder is made 0700, whatever your umask, and checked before the manifest is spent. On Linux, a library on a read-only mount is refused up front.
+  The dated folder is made 0700, whatever your umask, and checked before the manifest is spent. On Linux, a library on a read-only mount is refused up front, from `/proc/self/mountinfo`. That check doesn't run on macOS, which has no mountinfo.
 - **What it costs:** a rename frees no disk space, since the folders stay on the same filesystem. The watcher keeps running meanwhile, since it never looked inside them. Once they're moved, `photos carry-over` and a `v1.6.x` rollback can't find them, and a backup of `public/assets/photos` no longer holds them, so keep the dated folder with your backups if you want them back after a restore.
 
 Move them back first before any of these:
@@ -244,17 +244,17 @@ To move them back, run the `move-back.sh` the script wrote in the dated folder, 
 sh public/assets/photos.legacy-derivatives-<YYYY-MM-DD>/move-back.sh
 ```
 
-`move-back.sh` goes by the device and inode each folder had, so it refuses, moving nothing for that folder, when those changed: after the library was restored from a backup, which gives every folder new ones, or after the dated folder itself was moved. Then the way back is your own manual step, a folder at a time, from the folder `docker-compose.prod.yml` is in. Set the three names, then run the one line, which moves the folder only when the library holds no entry by that name in any letter case, and never into a folder that's there. It fails rather than nesting one folder inside another:
+`move-back.sh` goes by the device and inode each folder had, so it refuses, moving nothing for that folder, when those changed: after the library was restored from a backup, which gives every folder new ones, or after the dated folder itself was moved. Then the way back is your own manual step, a folder at a time, from the folder `docker-compose.prod.yml` is in. Set the three names: `aside` is the folder you passed to `--to`, or the dated folder beside the library. Then run the one line. It moves the folder only when the library holds no entry by that name in any letter case, and never into a folder that's there. It says "Not moved" rather than nest one folder inside another:
 
 ```bash
 aside=public/assets/photos.legacy-derivatives-<YYYY-MM-DD>; library=public/assets/photos; name=thumbnails
-[ ! -e "$library/$name" ] && ! ls -a "$library" | grep -ixq -- "$name" && mv -n "$aside/$name" "$library/$name"
+[ ! -e "$library/$name" ] && ! ls -a "$library" | grep -Fixq -- "$name" && mv -n "$aside/$name" "$library/$name" || echo "Not moved: $name is taken or the check failed"
 ```
 
-`[ ! -e ]` already matches a name in another case on macOS's disks, and `grep -ix` catches it on Linux's. On a Linux host, GNU `mv -nT` is a second guard against nesting, for the same line:
+`[ ! -e ]` already matches a name in another case on macOS's disks, and `grep -Fix` catches it on Linux's. On a Linux host, GNU `mv -nT` is a second guard against nesting, for the same line:
 
 ```bash
-[ ! -e "$library/$name" ] && ! ls -a "$library" | grep -ixq -- "$name" && mv -nT "$aside/$name" "$library/$name"
+[ ! -e "$library/$name" ] && ! ls -a "$library" | grep -Fixq -- "$name" && mv -nT "$aside/$name" "$library/$name" || echo "Not moved: $name is taken or the check failed"
 ```
 
 Put `sudo` in front of `mv` only if the folder belongs to uid 1001 and `mv` says permission denied.
