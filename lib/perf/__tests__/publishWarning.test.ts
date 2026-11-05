@@ -95,7 +95,7 @@ describe('budgetLines()', () => {
         const lines = budgetLines(measurement);
         expect(lines).toContain('[photos] BUDGET_WARNING: Work is 120.0 KiB, over its 100 KiB budget. A warning, not a rule: publish still takes it. lib/perf/budgets.ts says what to try first.');
         expect(lines).toContain('[photos] BUDGET_WARNING: The first response of big-one is 101.0 KiB, over its 100 KiB budget. A warning, not a rule: publish still takes it. lib/perf/budgets.ts says what to try first.');
-        expect(lines.filter((line) => line.includes('BUDGET_WARNING'))).toHaveLength(20);
+        expect(lines.filter((line) => line.includes('budget. A warning, not a rule'))).toHaveLength(20);
         expect(lines.at(-1)).toBe('[photos] BUDGET_WARNING: and 7 more models over budget.');
     });
 });

@@ -496,6 +496,8 @@ export interface ValidateResult {
     outcome: ValidateOutcome;
     message: string;
     candidateId: string | null;
+    /** The compiled candidate, for #6's budget sizes. Null when nothing compiled. */
+    content: CompileResult['content'] | null;
     issues: Issue[];
     errors: number;
     warnings: number;
@@ -510,7 +512,7 @@ export interface ValidateResult {
  */
 export async function validateWorkingLayer(options: { dataRoot: string; reprofile?: boolean; profileId?: string }): Promise<ValidateResult> {
     const root = path.resolve(options.dataRoot);
-    const result: ValidateResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, issues: [], errors: 0, warnings: 0 };
+    const result: ValidateResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, content: null, issues: [], errors: 0, warnings: 0 };
     const status = dataRootStatus({ root });
     if (status.state !== 'ready') return { ...result, outcome: 'DATA_ROOT_NOT_READY', message: `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.` };
     try {
@@ -523,6 +525,7 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
             outcome: errors > 0 ? 'VALIDATION_FAILED' : 'VALID',
             message: errors > 0 ? `The working layer has ${counts}.` : `The working layer passes, with ${counts}.`,
             candidateId: snapshot.compiled.candidateId,
+            content: snapshot.compiled.content,
             issues,
             errors,
             warnings,

@@ -113,7 +113,10 @@
  *     writing nothing, so it runs on a read-only data root too. Prints the
  *     candidate ID and the first 200 issues. Exits 0 when only warnings
  *     remain, 1 on any error, 2 on a usage error, 4 when a catalog file is
- *     damaged or can't be read, and 3 when the data root isn't ready.
+ *     damaged or can't be read, and 3 when the data root isn't ready. Then
+ *     prints each screen's read-model size for the candidate beside its
+ *     budget in lib/perf/budgets.ts, and a BUDGET_WARNING line for each model
+ *     over one (#6). A warning, not a rule: it never changes the exit code.
  *
  *   npx tsx scripts/photos.ts publish [--actor <name>] [--reason <text>] [--expect <candidateId>]
  *                                     [--dry-run] [--confirm-launch] [--reprofile]
@@ -336,6 +339,7 @@ import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
 import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
+import { budgetLines, measureInChild } from '../lib/perf/catalog-budgets';
 import { configuredLibraryRoot, dataRoot, dataRootStatus, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { isInside } from '../lib/storage/fsx';
 
@@ -566,6 +570,10 @@ async function validate(args: string[]): Promise<number> {
     print(`[photos] ${result.outcome}: ${result.message}`);
     if (result.candidateId) print(`Candidate: ${result.candidateId}`);
     for (const line of issueLines(result.issues, 'publish --dry-run writes them all to the diagnostics file.')) print(line);
+    if (result.content && result.candidateId) {
+        const measured = await measureInChild(result.content, { revisionId: result.candidateId, revisionNumber: null }).catch((error: Error) => error);
+        for (const line of budgetLines(measured)) print(line);
+    }
     return exitCode;
 }
 
