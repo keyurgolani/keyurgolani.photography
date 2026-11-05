@@ -237,6 +237,8 @@ export interface DiffJsonRow {
     before: CatalogChange['before'];
     after: CatalogChange['after'];
     fields?: string[];
+    /** A series' derived row: the photographs a move shifts (A9). */
+    positions?: CatalogChange['positions'];
     causedBy?: string;
     visible: boolean;
     surfaces: CatalogChange['surfaces'];
@@ -264,6 +266,7 @@ function jsonRow(change: CatalogChange, assessment: Assessment, sharedWith: stri
         before: change.before,
         after: change.after,
         ...(change.fields ? { fields: change.fields } : {}),
+        ...(change.positions ? { positions: change.positions } : {}),
         ...(change.causedBy ? { causedBy: change.causedBy } : {}),
         visible: change.visible,
         surfaces: change.surfaces,

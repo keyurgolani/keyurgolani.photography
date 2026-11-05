@@ -1,5 +1,5 @@
 import type { CatalogChange } from './diff';
-import { hashValue, inboxReviewOf, publishedValue, recordOf, type FieldReviewState, type PublishedIndex, type ReviewContext } from './review';
+import { ASSET_DEPENDENT_FIELDS, coverAssetOf, hashValue, inboxReviewOf, publishedValue, recordOf, stampsOf, type FieldReviewState, type PublishedIndex, type ReviewBackfill, type ReviewContext } from './review';
 import { INBOX_REASONS, inConflict } from './review-reasons';
 import type { AuthoredKind } from './schema';
 import type { AuthoredRecord, IssueRecord, RevisionContent, WorkingLayer } from './types';
@@ -59,6 +59,13 @@ export function authoredFromPublished(record: AuthoredRecord, field: string, pub
         if (alt?.kind === 'decorative') return { ok: true, value: { kind: 'decorative' } };
         return { ok: false, why: 'The live revision names this photograph by its place, so there is no published description to put back.' };
     }
+    // A9 review: what the series points at must be one of its own photographs in the draft.
+    if (record.kind === 'series' && published !== null && published !== undefined) {
+        const missing = referencedPhotos(field, published).find((photoId) => !record.photoIds.includes(photoId));
+        if (missing !== undefined) {
+            return { ok: false, why: `The published ${field === 'openingPhotoId' ? 'opening photograph' : field} ${field === 'chapters' ? 'start at' : 'is'} ${missing}, which this series doesn't hold in the draft, so putting it back would point at a photograph that isn't there. Put the photograph back first, or change it with photos sequence.` };
+        }
+    }
     if (record.kind === 'series' && field === 'photoIds') {
         if (!Array.isArray(published) || !sameMembers(published as string[], record.photoIds)) {
             return { ok: false, why: 'The draft holds other photographs in this series than the live revision does, so putting back the published order would add or take some away. Order it with photos sequence.' };
@@ -70,6 +77,56 @@ export function authoredFromPublished(record: AuthoredRecord, field: string, pub
         return record.kind === 'series' && ['title', 'statement', 'shortStatement', 'chapters', 'cover'].includes(field) ? { ok: false, why: 'The live revision has no value here to put back.' } : { ok: true, value: undefined };
     }
     return { ok: true, value: structuredClone(published) };
+}
+
+/** The photographs a series' chapters, cover or opening photograph names. */
+function referencedPhotos(field: string, published: unknown): string[] {
+    if (field === 'chapters' && Array.isArray(published)) return (published as { startPhotoId?: unknown }[]).map((chapter) => String(chapter.startPhotoId));
+    if (field === 'cover' && published && typeof published === 'object') return [String((published as { photoId?: unknown }).photoId)];
+    if (field === 'openingPhotoId' && typeof published === 'string') return [published];
+    return [];
+}
+
+const NEW_IMAGE = 'The photograph has a new image since this was reviewed, so the published value was written for the old one. Review it against the new image first: check it, then mark it reviewed, or change it with photos edit.';
+
+/**
+ * A9 review: no published value for a field that describes the image once
+ * the photograph has new bytes, since that value describes the old ones and
+ * would clear the asset-replaced gate. For a photo's alt, title, caption,
+ * focal point, crop and accent: the live photo pins other bytes than the
+ * draft, or the field's review was of other bytes than the draft pins. For a
+ * series cover: the same, of its cover photograph.
+ */
+export function assetGuard(record: AuthoredRecord, field: string, layer: WorkingLayer, active: RevisionContent | null, backfill?: ReviewBackfill | null): { ok: true } | { ok: false; why: string } {
+    const livePhoto = (photoId: string) => active?.photos.find((photo) => photo.id === photoId)?.assetRevision;
+    if (record.kind === 'photo' && ASSET_DEPENDENT_FIELDS.includes(field)) {
+        const live = livePhoto(record.id);
+        const stamp = stampsOf(record, null, undefined, backfill)[field];
+        if ((live !== undefined && live !== record.assetRevision) || (stamp?.assetRevision !== undefined && stamp.assetRevision !== record.assetRevision)) return { ok: false, why: NEW_IMAGE };
+    }
+    if (record.kind === 'series' && field === 'cover' && record.cover) {
+        const draft = coverAssetOf(layer, record);
+        const live = livePhoto(record.cover.photoId);
+        const stamp = stampsOf(record, draft, undefined, backfill)[field];
+        if (draft !== null && ((live !== undefined && live !== draft) || (stamp?.assetRevision !== undefined && stamp.assetRevision !== draft))) return { ok: false, why: NEW_IMAGE };
+    }
+    return { ok: true };
+}
+
+/**
+ * Everything but the version and value check, for the view, the CLI and
+ * the writer alike: the field's state (stale against the live revision or
+ * in conflict, no Inbox item first), the new-image guard, and the authored
+ * value from the published one.
+ */
+export function publishedValueCheck(input: { record: AuthoredRecord; field: string; state: FieldReviewState; inbox: FieldReviewState | null; layer: WorkingLayer; active: RevisionContent; review?: ReviewContext; published?: PublishedIndex }): FromPublished & { code?: 'inbox' | 'not-clearable' } {
+    const { record, field } = input;
+    const allowed = publishedValueState(record, field, input.state, input.inbox);
+    if (!allowed.ok) return allowed;
+    const image = assetGuard(record, field, input.layer, input.active, input.review?.backfill);
+    if (!image.ok) return { ...image, code: 'not-clearable' };
+    const value = authoredFromPublished(record, field, publishedValue(input.active, { record: { kind: record.kind, id: record.kind === 'site' ? 'site' : record.id }, field }, input.published));
+    return value.ok ? value : { ...value, code: 'not-clearable' };
 }
 
 /** The base field a ledger row is about: `photoIds` for `photoIds[<id>]`, `chapters` for `chapters[<id>]`, null for a row about the record or a derived row. */
@@ -123,10 +180,8 @@ export function publishedValueOffer(change: CatalogChange, env: UsePublishedEnv)
     const state = change.review.fields.find((entry) => entry.record.kind === change.record.kind && entry.record.id === change.record.id && entry.field === field);
     if (!state) return { ok: false, why: 'This row rests on another record, so its own value is not what changed.' };
     const inbox = inboxReviewOf(state, { layer: env.layer, active: null, review: env.review });
-    const allowed = publishedValueState(record, field, state, inbox);
-    if (!allowed.ok) return allowed;
-    const value = authoredFromPublished(record, field, publishedValue(env.active, { record: change.record, field }, env.published));
-    if (!value.ok) return value;
+    const checked = publishedValueCheck({ record, field, state, inbox, layer: env.layer, active: env.active, review: env.review, published: env.published });
+    if (!checked.ok) return { ok: false, why: checked.why };
     const own = (record as unknown as Record<string, unknown>)[field];
     return { ok: true, target: { record: { kind: record.kind, id: change.record.id }, field, version: record.version, valueHash: hashValue(own) } };
 }

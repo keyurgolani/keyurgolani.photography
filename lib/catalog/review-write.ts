@@ -3,7 +3,7 @@ import { readReviewContext } from './review-context';
 import { fieldReview, hashValue, inboxReviewOf, type FieldReviewState, type ReviewEnv } from './review';
 import { INBOX_REASONS, inConflict, restampReason } from './review-reasons';
 import type { AuthoredKind } from './schema';
-import type { AuthoredRecord, IssueRecord } from './types';
+import type { ActivePointer, AuthoredRecord, IssueRecord, RevisionFile, WorkingLayer } from './types';
 import { LockTimeoutError, withLock } from '../storage/lock';
 import { readActivePointer, readAuthoredRecord, readWorkingLayer } from './working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
@@ -26,10 +26,16 @@ export { INBOX_REASONS, isGeneratedAlt, restampReason, RESTAMP_REASONS, type Res
  * fieldReview()'s state, and what the inbox item its stamp names says on its
  * own, which a stale base would hide behind its own reason.
  */
-export async function reviewNow(root: string, record: IssueRecord, fields: readonly string[]): Promise<{ field: string; state: FieldReviewState; inbox: FieldReviewState | null }[]> {
-    const pointer = await readActivePointer(root);
-    const layer = await readWorkingLayer(root);
-    const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
+export async function reviewNow(
+    root: string,
+    record: IssueRecord,
+    fields: readonly string[],
+    known: { pointer?: ActivePointer | null; active?: RevisionFile | null; layer?: WorkingLayer } = {},
+): Promise<{ field: string; state: FieldReviewState; inbox: FieldReviewState | null }[]> {
+    // A caller holding the lock passes what it already read (A9 review), so one check sees one pointer.
+    const pointer = known.pointer !== undefined ? known.pointer : await readActivePointer(root);
+    const layer = known.layer ?? (await readWorkingLayer(root));
+    const active = known.active !== undefined ? known.active : pointer ? await readRevisionFile(root, pointer.revisionId) : null;
     if (pointer && active === null) throw new Error('The active pointer names a revision with no file.');
     const review = await readReviewContext(root, layer, active?.revisionId ?? null);
     const env: ReviewEnv = { layer, active: active ? { revisionId: active.revisionId, content: active.content } : null, review };

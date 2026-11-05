@@ -1,11 +1,12 @@
 import { readRevisionFile } from './repository';
-import { hashValue, publishedValue } from './review';
+import { hashValue } from './review';
+import { readReviewContext } from './review-context';
 import { ReviewRefusedError, reviewNow } from './review-write';
 import type { AuthoredKind } from './schema';
 import type { AuthoredRecord } from './types';
-import { authoredFromPublished, canUsePublished, publishedValueState } from './use-published-rules';
+import { canUsePublished, publishedValueCheck } from './use-published-rules';
 import { LockTimeoutError, withLock } from '../storage/lock';
-import { readActivePointer, readAuthoredRecord } from './working-layer';
+import { readActivePointer, readAuthoredRecord, readWorkingLayer } from './working-layer';
 import { AUTHORED_LEASE_MS, AUTHORED_LOCK, AUTHORED_WAIT_MS, AuthoredWriteError, writeAuthoredRecord } from './working-layer-writer';
 
 /**
@@ -56,13 +57,14 @@ export async function writePublishedValue(input: UsePublishedInput, options: { w
             if (record === null || record.version !== input.version || hashValue((record as unknown as Record<string, unknown>)[field]) !== input.valueHash) {
                 throw new AuthoredWriteError('VERSION_CONFLICT', ref, 'The value moved.');
             }
-            const [{ state, inbox }] = await reviewNow(root, ref, [field]);
-            const allowed = publishedValueState(record, field, state, inbox);
-            if (!allowed.ok) throw new ReviewRefusedError(allowed.code, allowed.why);
             const active = await readRevisionFile(root, pointer.revisionId);
             if (active === null) throw new Error('The active pointer names a revision with no file.');
-            const value = authoredFromPublished(record, field, publishedValue(active.content, { record: ref, field }));
-            if (!value.ok) throw new ReviewRefusedError('not-clearable', value.why);
+            const layer = await readWorkingLayer(root);
+            const [{ state, inbox }] = await reviewNow(root, ref, [field], { pointer, active, layer });
+            // The same check the screen and photos diff offer by, the new-image guard included (A9 review).
+            const review = await readReviewContext(root, layer, active.revisionId);
+            const value = publishedValueCheck({ record, field, state, inbox, layer, active: active.content, review });
+            if (!value.ok) throw new ReviewRefusedError(value.code ?? 'not-clearable', value.why);
             const next = { ...record } as Record<string, unknown>;
             if (value.value === undefined) delete next[field];
             else next[field] = value.value;
