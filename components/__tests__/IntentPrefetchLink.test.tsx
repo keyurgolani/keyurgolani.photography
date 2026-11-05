@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import type { FocusEvent, ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import IntentPrefetchLink from '../IntentPrefetchLink';
@@ -63,6 +63,21 @@ describe('IntentPrefetchLink', () => {
         fireEvent.pointerLeave(link());
         fireEvent.blur(link());
         expect(router.prefetch).not.toHaveBeenCalled();
+    });
+
+    it('runs the caller\'s own onFocus too, after the prefetch, with the focus event', () => {
+        // React clears currentTarget once the handler returns, so it's read inside.
+        const onFocus = vi.fn((event: FocusEvent<HTMLAnchorElement>) => ({ type: event.type, target: event.currentTarget }));
+        render(
+            <IntentPrefetchLink href={HREF} onFocus={onFocus}>
+                Fixture harbor
+            </IntentPrefetchLink>,
+        );
+        fireEvent.focus(link());
+        expect(router.prefetch).toHaveBeenCalledWith(HREF);
+        expect(onFocus).toHaveBeenCalledTimes(1);
+        expect(onFocus.mock.results[0].value).toEqual({ type: 'focus', target: link() });
+        expect(router.prefetch.mock.invocationCallOrder[0]).toBeLessThan(onFocus.mock.invocationCallOrder[0]);
     });
 
     it('prefetches the href it has now, after a render that changed it', () => {

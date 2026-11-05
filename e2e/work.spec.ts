@@ -386,6 +386,37 @@ test('Tab reaches the entries right after SiteNav, in order, and Enter opens the
     await expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[1].slug}`);
 });
 
+// B3's body, item 93, in B10: Shift+Tab scrolled only the title link into view, so going back up could leave a cover's
+// top above the screen. Keyboard focus on an entry brings the whole entry into view.
+test.describe('Shift+Tab back up Work', () => {
+    test.skip(({ isMobile }) => isMobile, 'It sets its own sizes. The desktop project covers it.');
+
+    for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 812 }]) {
+        test(`at ${size.width} by ${size.height}, each entry's cover is on screen, top and all, when its link has focus`, async ({ page }) => {
+            await page.setViewportSize(size);
+            await openWork(page);
+            const last = `/work/${PUBLISHED[PUBLISHED.length - 1].slug}`;
+            // By the keyboard to the last entry, so focus is keyboard focus, then to the foot of the page.
+            for (let press = 0; press < 20; press++) {
+                await page.keyboard.press('Tab');
+                if ((await page.evaluate(() => document.activeElement?.getAttribute('href'))) === last) break;
+            }
+            await expect(entry(page, PUBLISHED[PUBLISHED.length - 1].slug)).toBeFocused();
+            await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+            for (let index = PUBLISHED.length - 2; index >= 0; index--) {
+                const series = PUBLISHED[index];
+                await page.keyboard.press('Shift+Tab');
+                await expect(entry(page, series.slug)).toBeFocused();
+                // Read after a frame, with no wait for a scroll to finish: the scroll is instant.
+                const top = await item(page, series.slug)
+                    .locator('[data-cover]')
+                    .evaluate((cover) => new Promise<number>((done) => requestAnimationFrame(() => done(cover.getBoundingClientRect().top))));
+                expect(top, `${series.slug}'s cover top, with its link focused`).toBeGreaterThanOrEqual(-0.5);
+            }
+        });
+    }
+});
+
 test('one tap on an entry opens its series', async ({ page }, testInfo) => {
     test.skip(!testInfo.project.use.hasTouch, 'Touch runs on the mobile project.');
     await openWork(page);
