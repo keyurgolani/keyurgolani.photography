@@ -56,7 +56,7 @@ test.describe('a directly loaded Viewer is a page', () => {
         await expect(page.locator('[inert]')).toHaveCount(0);
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(['Fixture harbor']);
         await expect(viewer(page).getByRole('link', { name: 'Close' })).toBeVisible();
-        await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', '/work/harbor');
+        await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', `/work/harbor?photo=${P[1]}`);
         // A page moves no focus on load.
         expect(await focusPlace(page)).toBe('body');
         // The region is there and empty, so the first move is a change it announces.

@@ -53,7 +53,7 @@ export default async function PreviewViewer({ params, searchParams }: PreviewVie
             return (
                 <StoryViewer
                     viewer={viewer}
-                    closeHref={routes.seriesHref(viewer.series.slug)}
+                    closeHref={routes.seriesHref(viewer.series.slug, { focusPhotoId: viewer.photo.id })}
                     previousHref={step(viewer.previousPhotoId)}
                     nextHref={step(viewer.nextPhotoId)}
                     pendingCopy={viewer.photo.descriptionPending ? DESCRIPTION_PENDING_COPY : null}

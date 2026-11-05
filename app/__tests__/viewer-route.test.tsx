@@ -158,13 +158,19 @@ describe('the Viewer route', () => {
         expect(page).toMatch(/<h2[^>]*>Route title one<\/h2>/);
         expect(page).toContain('Route caption one.');
         expect(page).toContain('Route description one.');
-        expect(page).toContain('href="/work/route-a"');
+        // Close goes back to this photograph in its series (B5): seriesHref(slug, { focusPhotoId }).
+        expect(page).toContain(`href="/work/route-a?photo=${P[0]}"`);
+        expect(page).not.toContain('href="/work/route-a"');
         expect(page).toContain(`href="/work/route-a/photo/${P[1]}"`);
         expect(page).toContain('--cc-accent:#c08040');
         // The camera facts ship collapsed.
         expect(page).toMatch(/aria-expanded="false"[^>]*>.*Show technical details/);
         expect(page).toMatch(/<div[^>]*hidden=""[^>]*>.*Route Model/);
         expect(page).toMatch(/<img[^>]*src="\/media\/[^"]+\/w1200\.webp"/);
+    });
+
+    it('names the photograph shown in Close\'s link at every position (B5)', async () => {
+        for (const photoId of [P[1], P[2]]) expect(html(await answer('route-a', photoId)), photoId).toContain(`href="/work/route-a?photo=${photoId}"`);
     });
 
     it('passes the pending copy only for a pending description, never for a decorative photo', async () => {

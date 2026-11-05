@@ -4,7 +4,7 @@ import 'server-only';
 import type { PublicAssetProjection } from '../identity/metadata';
 import { workCatalogOf, type WorkCatalog } from './projections/work';
 import { viewerPhotoOf, type ViewerPhotoResult } from './projections/viewer';
-import { seriesContinuationOf, seriesPageOf, type SeriesContinuationResult, type SeriesPageResult } from './projections/series';
+import { seriesContinuationOf, seriesPageOf, type SeriesContinuationResult, type SeriesPageQuery, type SeriesPageResult } from './projections/series';
 import { createRouteBuilder, type RouteBuilder } from './routes';
 import type { CandidateContent, RevisionContent, SeriesRecord, SiteRecord } from './types';
 
@@ -38,8 +38,12 @@ export interface CatalogReader<Photo = CatalogContent['photos'][number]> {
     getWorkSummaries(routes?: Pick<RouteBuilder, 'seriesHref'>): WorkCatalog;
     /** #7's Viewer read model for `/work/<slug>/photo/<photoId>`, from this reader's content alone. */
     getViewerPhoto(slug: string, photoId: string): ViewerPhotoResult;
-    /** #5's series page read model for `/work/<slug>`, from this reader's content alone. Hrefs from `routes`, the public ones by default. */
-    getSeriesPage(slug: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref' | 'catalogApiHref'>): SeriesPageResult;
+    /**
+     * #5's series page read model for `/work/<slug>`, from this reader's
+     * content alone. Hrefs from `routes`, the public ones by default. With
+     * `query.photoId` (`?photo=`, B5), the page that holds that photograph.
+     */
+    getSeriesPage(slug: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref' | 'catalogApiHref'>, query?: SeriesPageQuery): SeriesPageResult;
     /** #6's continuation page of `/work/<slug>` after its first, from this reader's content alone, when `cursor` names this revision. */
     getSeriesContinuation(slug: string, cursor: string, routes?: Pick<RouteBuilder, 'seriesHref' | 'photoHref' | 'workHref' | 'catalogApiHref'>): SeriesContinuationResult;
 }
@@ -98,7 +102,7 @@ export function createCatalogReader<C extends CatalogContent>(content: C, meta: 
         },
         getWorkSummaries: (routes = publicRoutes) => workCatalogOf(source, routes),
         getViewerPhoto: (slug, photoId) => viewerPhotoOf(source, slug, photoId),
-        getSeriesPage: (slug, routes = publicRoutes) => seriesPageOf(source, slug, routes),
+        getSeriesPage: (slug, routes = publicRoutes, query = {}) => seriesPageOf(source, slug, routes, query),
         getSeriesContinuation: (slug, cursor, routes = publicRoutes) => seriesContinuationOf(source, slug, cursor, routes),
     };
     // The reader itself is every projection's source (WorkSource, SeriesSource, ViewerSource), with the revision ID beside its lookups.

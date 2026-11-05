@@ -72,12 +72,14 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
  * apart, then the authored sequence, cut into its chapters without
  * reordering. An All work link sits above the title and another at the end,
  * so the way back is there at both ends of a long sequence. The sequence is
- * SeriesSequence, which shows the first page and appends the rest on Show
- * more (#6); every prop it takes comes from the projection's allowlist.
+ * SeriesSequence, which shows the server's page and loads the rest on Show
+ * more and, after a deep entry (`?photo=`, B5), Show earlier (#6); every
+ * prop it takes comes from the projection's allowlist.
  * The cover and each entry link to their canonical Viewer URL. Entries carry
  * `id="photo-<photoId>"` and the cover `id="series-cover"`, so SeriesReturn
- * (whose props are the series path, slug, revision, and total) and #9 can
- * put focus back on the one that opened the Viewer. `main` carries the
+ * (whose props are the series path, slug, revision, total, the server
+ * page's first position, and the photograph `?photo=` resolved to) and #9 can put focus back on the one
+ * that opened the Viewer, or on the one a deep link names. `main` carries the
  * revision the page came from (`data-catalog-revision`), as Work's list and
  * Home's main do, for #12's freshness checks; generateMetadata puts the same
  * one in a `catalog-revision` meta tag.
@@ -138,20 +140,29 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                     </figure>
                 )}
 
-                {/* Keyed by revision and series, so a new revision's page starts its own sequence and drops the old one's pages. */}
+                {/* Keyed by revision, series, and the server's page, so a new revision's page, or another page after a refresh for
+                    ?photo= (B5), starts its own sequence and drops the old one's pages. */}
                 <SeriesSequence
-                    key={`${page.catalogRevision}:${page.slug}`}
+                    key={`${page.catalogRevision}:${page.slug}:${page.entries[0]?.position ?? 1}`}
                     revisionId={page.catalogRevision}
                     slug={page.slug}
                     href={page.href}
                     entries={page.entries}
                     total={total}
+                    prevHref={page.prevHref}
                     nextHref={page.nextHref}
                     chapters={page.chapters}
                 />
 
                 {/* Outside the sequence section, which SeriesSequence renders. */}
-                <SeriesReturn path={page.href} slug={page.slug} revisionId={page.catalogRevision} total={total} />
+                <SeriesReturn
+                    path={page.href}
+                    slug={page.slug}
+                    revisionId={page.catalogRevision}
+                    total={total}
+                    firstPosition={page.entries[0]?.position ?? 1}
+                    focusPhotoId={page.focusPhotoId}
+                />
 
                 <p className={styles.end}>
                     <Link href={page.workHref} className={styles.allWork}>

@@ -161,6 +161,19 @@ async function screens(routes: RouteBuilder): Promise<Record<string, unknown[]>>
                 next = continued.kind === 'ok' ? continued.page.nextHref : null;
             }
             for (const photoId of photoIdsOf(content)) out.viewer.push([name, slug, photoId, reader.getViewerPhoto(slug, photoId)]);
+            // B5's deep entry: ?photo= of the last photograph (the second page), of the first, of another series', and of an
+            // unknown one, then Show earlier's walk back through each page's prevHref.
+            for (const photoId of [LONG[102], LONG[0], SHORT[0], id(999)]) {
+                const deep = reader.getSeriesPage(slug, routes, { photoId });
+                out.series.push([name, slug, photoId, deep]);
+                let prev = deep.kind === 'ok' ? deep.page.prevHref : null;
+                while (prev !== null) {
+                    const cursor = prev.slice(prev.lastIndexOf('/') + 1);
+                    const earlier = reader.getSeriesContinuation(slug, cursor, routes);
+                    out.continuation.push([name, slug, cursor, earlier]);
+                    prev = earlier.kind === 'ok' ? earlier.page.prevHref : null;
+                }
+            }
         }
     }
     // Home's empty state: no featured series resolves. Only Home reads the site record's featured list.
@@ -180,8 +193,11 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
             // v2.0.0 B4: the cover carries its photograph's title, and 'Pinned-Long' answers a 308, not a not-found.
-            series: 'd62c56cbac32baac591a10975e989833e4d62394c7dd477c8b7eccc476f7f61a',
-            continuation: '85b8afb6bc10a95477fff9b2cbb7c938de4b1a1ab793d2dc402754f4ddb237b0',
+            // v2.0.0 B5: each page carries prevHref (null on the first) and focusPhotoId (null without ?photo=), and the walk
+            // adds ?photo= pages for the second page, the first, another series' photograph and an unknown one.
+            series: 'f4cfd8e0809890f7f17c022b265c42d294754cb8749026202378f9c2af9bab32',
+            // v2.0.0 B5: each continuation page carries prevHref for Show earlier, and the walk follows it back from each ?photo= page.
+            continuation: 'c8f02ce9b90081531687a0ab60de26ac2c4f8da4850b8d7460675feea409b745',
             // v2.0.0 B4: a letter-case variant, and a published photo under any other slug in shape, answer a 308 to its one home.
             viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
         });
@@ -195,8 +211,9 @@ describe('every screen projection serializes byte for byte as pinned', () => {
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
             // v2.0.0 B4: as on the public routes.
-            series: '68663b1aabc78c1b6679fd09c8d6e9f45796f7ead991f9b693189bf5b1c7281e',
-            continuation: '6abcadfe8b9f3d40f2e35a6aa155a069cee65838c5447d499904cbc68bf09b6f',
+            // v2.0.0 B5: as on the public routes.
+            series: '7235da9a3d3743dc477c492c2724519a07f75715b7646559651994e24bf0365f',
+            continuation: '56d7d4843808b495898b1191075510f651fce889eefee7a265d2829e8d7e19a3',
             viewer: 'd36fdd5e00dab1308221d85db6cc32df38df4e8fa0eac253cbd56c460646836a',
         });
     });
@@ -221,6 +238,10 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         expect(kinds(out.continuation)).toEqual(new Set(['ok']));
         expect(kinds(out.viewer)).toEqual(new Set(['ok', 'redirect', 'not-found']));
         const json = JSON.stringify(out);
+        // B5: a deep page names its photograph and the page before it, and the walk back reaches the first page.
+        expect(out.series.some((entry) => ((entry as unknown[]).at(-1) as { page?: { focusPhotoId: string | null; prevHref: string | null } }).page?.focusPhotoId === LONG[102])).toBe(true);
+        expect(out.series.some((entry) => typeof ((entry as unknown[]).at(-1) as { page?: { prevHref: string | null } }).page?.prevHref === 'string')).toBe(true);
+        expect(out.continuation.some((entry) => ((entry as unknown[]).at(-1) as { page?: { entries: { position: number }[] } }).page?.entries[0].position === 1)).toBe(true);
         for (const fragment of ['"image":null', '"cover":null', '"lqip":"data:image/webp', '"descriptionPending":true', '"startPosition":102', '"featuredSeries":null', '"followingSeries":[']) {
             expect(json, fragment).toContain(fragment);
         }

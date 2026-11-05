@@ -308,7 +308,8 @@ test.describe('signed in', () => {
             await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(4)}`);
             await page.getByRole('button', { name: 'Next photograph' }).click();
             await expect(page).toHaveURL(`${origin()}${base()}/work/${NEW.slug}/photo/${id(5)}`);
-            await expect(page.getByRole('link', { name: 'Close' })).toHaveAttribute('href', `${base()}/work/${NEW.slug}`);
+            // Close names the photograph shown, inside the preview too (B5).
+            await expect(page.getByRole('link', { name: 'Close' })).toHaveAttribute('href', `${base()}/work/${NEW.slug}?photo=${id(5)}`);
             for (const path of await linkPaths(page)) expect(path.startsWith(base()), path).toBe(true);
             // The photograph comes from the preview's media route, never /_next/image. The current one: #89's stage can
             // still hold the photograph it left while it moves.

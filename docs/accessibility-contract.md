@@ -13,7 +13,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 7. Touch. One tap activates, with no hover, long press, double tap, drag, or multi-finger gesture, except the first tap on idle Home, which #18 consumes as reveal intent.
 8. Contrast. Over the bright fixture, over the dark one wherever text or icons are dark, and through any scrim, text on photographs keeps 4.5:1, and control boundaries and icons 3:1.
 9. Reflow. At 320 CSS px wide with a 200% root font size, revealed controls stay inside the viewport without overlap or clipping.
-10. Focus return. Closing a Viewer returns focus to the entry that opened it. #9 owns the route Viewer.
+10. Focus return. Closing a Viewer returns focus to the entry that opened it. #9 owns the route Viewer. Close on a directly loaded photograph goes to `/work/<slug>?photo=<photoId>`, which opens the series on the page that holds it with focus on its entry. When the series' saved pages can't bring that photograph back, the page asks the server for the page that holds it, and only when the server's page doesn't hold it either (it left the revision) does focus go to the series heading. Opening a photograph never changes the series URL. After Show more, focus moves to the first new entry. After Show earlier, it moves to the last new entry, the one nearest the entries already shown. Neither moves focus from anywhere but its own control or the page itself (#5, #6).
 11. Curator routes. #14, #16, and #15 follow every rule, and every reorder has a non-drag alternative such as move buttons or a position field (WCAG 2.5.7).
 12. Exceptions. Any axe rule disabled for a third-party widget is listed once in `e2e/support/a11y.ts`, with the reason and the issue that removes it.
 

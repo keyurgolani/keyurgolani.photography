@@ -130,7 +130,9 @@ describe('GET /api/catalog/series/[slug]/pages/[cursor]', () => {
         expect(response.headers.get('x-catalog-revision')).toBe(fixture.revisionId);
         expect(response.headers.get('cache-control')).not.toMatch(/s-maxage|stale-while-revalidate|max-age/);
         const body = await response.json();
-        expect(Object.keys(body).sort()).toEqual(['entries', 'nextHref', 'revisionId']);
+        expect(Object.keys(body).sort()).toEqual(['entries', 'nextHref', 'prevHref', 'revisionId']);
+        // The page before it, for Show earlier after a deep entry (B5).
+        expect(body.prevHref).toBe(`/api/catalog/series/fixture-long/pages/${cursor(0)}`);
         expect(body.revisionId).toBe(fixture.revisionId);
         expect(body.entries.map((entry: { position: number }) => entry.position)).toEqual(Array.from({ length: 100 }, (_, n) => n + 101));
         expect(body.nextHref).toBe(`/api/catalog/series/fixture-long/pages/${cursor(200)}`);

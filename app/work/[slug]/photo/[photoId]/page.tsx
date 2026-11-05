@@ -67,7 +67,8 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
  * requested ones; and everything else (malformed, unknown, unpublished) is
  * the one public not-found. While the catalog is unavailable, nothing
  * published included, it throws, so #21's error page answers with Try again,
- * never a 404. No SiteNav: the Viewer's own header holds Close.
+ * never a 404. No SiteNav: the Viewer's own header holds Close, which goes
+ * to the series on this photograph's entry (`?photo=`, B5).
  */
 export default async function ViewerRoute({ params, searchParams }: ViewerRouteProps) {
     const { slug, photoId } = await params;
@@ -85,7 +86,7 @@ export default async function ViewerRoute({ params, searchParams }: ViewerRouteP
             return (
                 <StoryViewer
                     viewer={viewer}
-                    closeHref={publicRoutes.seriesHref(viewer.series.slug)}
+                    closeHref={publicRoutes.seriesHref(viewer.series.slug, { focusPhotoId: viewer.photo.id })}
                     previousHref={step(viewer.previousPhotoId)}
                     nextHref={step(viewer.nextPhotoId)}
                     pendingCopy={viewer.photo.descriptionPending ? DESCRIPTION_PENDING_COPY : null}
