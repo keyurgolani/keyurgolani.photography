@@ -12,6 +12,7 @@ import {
     fileParts,
     hasPublishedStatement,
     identityLine,
+    itemName,
     referencedByText,
     seriesMembershipText,
     seriesName,
@@ -141,9 +142,24 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
                     Identity question
                 </h3>
                 <p>
-                    Bind it to one of the candidates or make it a new photograph: <code>photos identity bind</code> or <code>photos identity new</code> records the
-                    decision, and the watcher&apos;s next pass applies it and closes this item. It stays open while the same bytes are still in doubt at another
+                    Bind it to one of the candidates or make it a new photograph: <code>curation bind --to</code> or <code>curation resolve --as new</code> records
+                    the decision, and the watcher&apos;s next pass applies it and closes this item. It stays open while the same bytes are still in doubt at another
                     path.
+                </p>
+            </section>
+        );
+    }
+    // A6's library item (#14, A8): what it holds back, and the two ways it ends.
+    if (detail.type === 'library-unavailable' && detail.group !== 'settled') {
+        return (
+            <section className={styles.box} aria-labelledby="type-box">
+                <h3 className={styles.boxTitle} id="type-box">
+                    Library unavailable
+                </h3>
+                <p>
+                    While the watcher can&apos;t see the library, it changes nothing, and the missing items it found since the outage began wait here
+                    instead of counting as missing. A pass that finds the library again closes this item and releases them. To release one that&apos;s
+                    really gone, run <code>curation confirm-missing</code> on it.
                 </p>
             </section>
         );
@@ -194,7 +210,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         );
     }
     const labelOf = (seriesId: string) => seriesName(view.series, seriesId);
-    const file = fileParts(detail.sourcePath);
+    const file = { ...fileParts(detail.sourcePath), name: itemName(detail) };
     const status = statusLabel(detail);
     const failure = failureNotice(detail);
     return (
@@ -226,7 +242,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         <h2 id="item-heading" tabIndex={-1}>
                             {file.name}
                         </h2>
-                        <p className={styles.identityLine}>{identityLine(detail.sourcePath, detail.capturedDate)}</p>
+                        <p className={styles.identityLine}>{detail.type === 'library-unavailable' ? 'The whole library, as the watcher reads it' : identityLine(detail.sourcePath, detail.capturedDate)}</p>
                     </div>
                     {status.text === null ? null : (
                         <span className={styles.status} data-tone={status.tone ?? undefined}>
