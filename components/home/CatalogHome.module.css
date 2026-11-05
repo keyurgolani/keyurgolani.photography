@@ -107,6 +107,30 @@
   }
 }
 
+/* "All bodies of work", the secondary action under it (#4): the controls' own scrim and ink, as Retry and Skip have,
+   so it holds 4.5:1 over any photograph without competing with Enter's fill. */
+.work {
+  display: inline-flex;
+  align-self: flex-start;
+  min-height: 44px;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
+  color: var(--gah-control-ink, #fff);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  text-decoration: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .work:hover {
+    border-color: var(--gah-control-ink, #fff);
+  }
+}
+
 /* The sequence region: a failure notice, its actions, then #2's controls, at the bottom right. */
 .sequence {
   display: flex;
