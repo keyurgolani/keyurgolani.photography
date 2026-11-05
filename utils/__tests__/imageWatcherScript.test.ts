@@ -244,9 +244,15 @@ describe('imageWatcher --watch', { timeout: 120_000 }, () => {
         await watcher.waitFor('Initial scan complete');
         await waitUntil(() => readySets(root).length === 3, 90_000, 'No sets for the three photos', () => watcher.output);
 
-        fs.rmSync(lib.root, { recursive: true, force: true });
-
-        expect(await within(watcher.exited, 30_000, 'Exiting after the root disappeared'), watcher.output).toBe(1);
+        // One rename takes the whole root away at once, as an unmount does, so no pass can see it half gone. It goes
+        // back after the exit, for the temp library's own cleanup.
+        const aside = `${lib.root}-unmounted`;
+        fs.renameSync(lib.root, aside);
+        try {
+            expect(await within(watcher.exited, 30_000, 'Exiting after the root disappeared'), watcher.output).toBe(1);
+        } finally {
+            fs.renameSync(aside, lib.root);
+        }
         expect(await readLibraryItem(root)).toMatchObject({ type: 'library-unavailable', status: 'open', derivedFacts: { library: { cause: 'missing' } } });
         // Nothing went missing in the registry: the pass never ran against the gone root.
         expect(Object.values(readRegistryFile(root).photos).map((photo) => photo.sourceHealth)).toEqual(['present', 'present', 'present']);
