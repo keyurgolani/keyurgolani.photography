@@ -107,7 +107,8 @@ const REACH = 3_000;
 function entrySelectors(screen: 'work' | 'series'): Map<string, string> {
     if (!catalog) throw new Error('No catalog');
     if (screen === 'series') return new Map(featured().photoIds.map((photoId) => [photoId, `#photo-${photoId}`]));
-    return new Map(catalog.series.flatMap((series) => (series.cover ? [[series.cover.photoId, `a[href="/work/${series.slug}"]`] as const] : [])));
+    // The entry's list item, cover and copy, since its link is the title under the cover (#171, B3).
+    return new Map(catalog.series.flatMap((series) => (series.cover ? [[series.cover.photoId, `main li:has(a[href="/work/${series.slug}"])`] as const] : [])));
 }
 
 interface MediaRequest {

@@ -70,29 +70,82 @@ describe('SeriesCatalog', () => {
         expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual(['Entry 3', 'Entry 1', 'Entry 2']);
     });
 
-    it('names each link by its visible text, title first, so every name is unique and starts with the label', () => {
+    // #171 (B3): the title alone names the link, so a screen reader's list of links reads the series, and the
+    // statement and count follow it as the link's description.
+    it('names each link by its series title alone, inside the h2, with the statement and count as its description', () => {
         render(<SeriesCatalog work={work([series(1), series(2)])} />);
-        const names = screen.getAllByRole('link').map((link) => link.textContent);
-        expect(names).toEqual(['Entry 1Short statement 1.1 photograph', 'Entry 2Short statement 2.2 photographs']);
+        const links = screen.getAllByRole('link');
+        expect(links.map((link) => link.textContent)).toEqual(['Entry 1', 'Entry 2']);
+        expect(links[0]).toHaveAccessibleName('Entry 1');
+        expect(links[1]).toHaveAccessibleName('Entry 2');
+        expect(links[0]).toHaveAccessibleDescription('Short statement 1. 1 photograph');
+        expect(links[1]).toHaveAccessibleDescription('Short statement 2. 2 photographs');
+        const headings = screen.getAllByRole('heading', { level: 2 });
+        for (const [index, link] of links.entries()) {
+            expect(link.parentElement).toBe(headings[index]);
+            expect(headings[index].children).toHaveLength(1);
+        }
+    });
+
+    it('describes each link by its own entry, with ids no other entry shares', () => {
+        render(<SeriesCatalog work={work([series(1), series(2), series(3)])} />);
+        const ids = screen.getAllByRole('link').flatMap((link) => (link.getAttribute('aria-describedby') ?? '').split(' '));
+        expect(ids).toHaveLength(6);
+        expect(new Set(ids).size).toBe(6);
+        for (const id of ids) expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+        // Each link's description comes from its own list item.
+        for (const item of within(screen.getByRole('list')).getAllByRole('listitem')) {
+            const link = within(item).getByRole('link');
+            for (const id of (link.getAttribute('aria-describedby') ?? '').split(' ')) expect(item).toContainElement(document.getElementById(id));
+        }
+    });
+
+    it('keeps the cover outside the link, with an empty alt, so the cover adds nothing to its name', () => {
+        render(<SeriesCatalog work={work([series(1)])} />);
+        const item = within(screen.getByRole('list')).getByRole('listitem');
+        const link = within(item).getByRole('link');
+        const image = item.querySelector('img');
+        expect(image).toHaveAttribute('alt', '');
+        expect(link).not.toContainElement(image);
+        expect(link.querySelector('[data-cover]')).toBeNull();
     });
 
     it('keeps the derived count in its own element, apart from the authored title and statement', () => {
         render(<SeriesCatalog work={work([series(7)])} />);
-        const link = screen.getByRole('link');
-        const count = within(link).getByText('7 photographs');
-        const title = within(link).getByRole('heading', { level: 2 });
-        const statement = within(link).getByText('Short statement 7.');
+        const item = within(screen.getByRole('list')).getByRole('listitem');
+        const count = within(item).getByText('7 photographs');
+        const title = within(item).getByRole('heading', { level: 2 });
+        const statement = within(item).getByText('Short statement 7.');
         expect(count.tagName).toBe('P');
         expect(count.className).not.toBe(statement.className);
         expect(count).not.toContainElement(title);
         expect(statement).not.toContainElement(count);
+        expect(title).not.toContainElement(count);
+        expect(title).not.toContainElement(statement);
     });
 
-    it('leaves the statement out when it is null, and keeps the title and count', () => {
+    it('leaves the statement out when it is null, and keeps the title and count, the count alone describing the link', () => {
         render(<SeriesCatalog work={work([series(1, { shortStatement: null })])} />);
+        const item = within(screen.getByRole('list')).getByRole('listitem');
+        expect(item.querySelectorAll('p')).toHaveLength(1);
+        expect(item).toHaveTextContent('Entry 11 photograph');
         const link = screen.getByRole('link');
-        expect(link.querySelectorAll('p')).toHaveLength(1);
-        expect(link).toHaveTextContent('Entry 11 photograph');
+        expect(link).toHaveAccessibleName('Entry 1');
+        expect(link).toHaveAccessibleDescription('1 photograph');
+        expect((link.getAttribute('aria-describedby') ?? '').split(' ')).toHaveLength(1);
+    });
+
+    // Work's revision marker (#171, B3), as Home's main (B6) and the series page's main (B4) carry theirs: the
+    // revision every entry came from, for B12's freshness rows.
+    it('marks the series list with the revision its entries came from', () => {
+        render(<SeriesCatalog work={work([series(1), series(2)])} />);
+        expect(screen.getByRole('list')).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
+        expect(screen.getByRole('main').querySelectorAll('[data-catalog-revision]')).toHaveLength(1);
+    });
+
+    it('marks the empty state with the revision too, so the marker is there whatever the revision holds', () => {
+        render(<SeriesCatalog work={work([])} />);
+        expect(screen.getByText('No series are published right now.')).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
     });
 
     it('shows the empty state with no list and no links when nothing is published', () => {
@@ -120,8 +173,9 @@ describe('SeriesCatalog', () => {
 
     it('renders a series with no cover text-led, with its link intact and no image', () => {
         render(<SeriesCatalog work={work([series(1, { cover: null }), series(2)])} />);
-        const [first, second] = screen.getAllByRole('link');
-        expect(first).toHaveAttribute('href', '/work/entry-1');
+        const [first, second] = within(screen.getByRole('list')).getAllByRole('listitem');
+        expect(within(first).getByRole('link')).toHaveAttribute('href', '/work/entry-1');
+        expect(within(first).getByRole('link')).toHaveAccessibleName('Entry 1');
         expect(first.querySelector('img')).toBeNull();
         expect(first.querySelector('[data-cover="unavailable"]')).not.toBeNull();
         expect(second.querySelector('img')).not.toBeNull();

@@ -511,6 +511,71 @@ test.describe('checkSurface', () => {
     }
 });
 
+// A heading link whose ::after stretches over its whole card, the target and the ring both (#171, B3): the helpers
+// measure the ::after when they're given { pseudo: '::after' }.
+test.describe('a stretched link, measured through { pseudo: "::after" }', () => {
+    const CARD_STYLE = `
+        .cards { display: grid; grid-template-columns: repeat(2, 200px); gap: 24px; align-items: start; padding: 24px; }
+        .card { position: relative; padding: 8px; }
+        .card .cover { height: 120px; background: #888; }
+        .card.tall .cover { height: 200px; }
+        .card h2 { margin: 8px 0 0; font-size: 12px; line-height: 1; }
+        .card a { color: inherit; text-decoration: none; }
+        .card a::after { content: ''; position: absolute; inset: 0; z-index: 1; }
+        .card a:focus-visible { outline: none; box-shadow: none; }
+        .card a:focus-visible::after { outline: 3px solid var(--focus-ring-light); outline-offset: -3px; box-shadow: inset 0 0 0 6px var(--focus-ring-dark); }
+    `;
+    const card = (name: string, tall = false) => `<div class="card${tall ? ' tall' : ''}"><div class="cover"></div><h2><a href="#${name}">${name}</a></h2><p>About ${name}.</p></div>`;
+    const AFTER = { pseudo: '::after' } as const;
+
+    test('expectFocusRingVisible passes the token ring drawn inset on the ::after, and fails the bare link', async ({ page }) => {
+        await load(page, `<div class="cards">${card('One')}</div>`, CARD_STYLE);
+        const link = page.getByRole('link');
+        await expectFocusRingVisible(link, AFTER);
+        await expect(expectFocusRingVisible(link)).rejects.toThrow(/outline-style is none/);
+    });
+
+    test('expectFocusRingVisible fails an inset band that shows less than 3 px inside the outline', async ({ page }) => {
+        await load(page, `<div class="cards">${card('One')}</div>`, `${CARD_STYLE} .card a:focus-visible::after { box-shadow: inset 0 0 0 4px var(--focus-ring-dark); }`);
+        await expect(expectFocusRingVisible(page.getByRole('link'), AFTER)).rejects.toThrow(/the inset band spreads 4px, short of the 6px past the outline/);
+    });
+
+    test('expectFocusRingVisible fails an inset outline with an outward band', async ({ page }) => {
+        await load(page, `<div class="cards">${card('One')}</div>`, `${CARD_STYLE} .card a:focus-visible::after { box-shadow: 0 0 0 6px var(--focus-ring-dark); }`);
+        await expect(expectFocusRingVisible(page.getByRole('link'), AFTER)).rejects.toThrow(/doesn't start with the token's rgb\(0, 0, 0\) band, inset/);
+    });
+
+    test('a ::after that renders nothing fails, rather than measuring the link', async ({ page }) => {
+        await load(page, `<div class="cards">${card('One')}</div>`, `${CARD_STYLE} .card a::after { content: none; }`);
+        await expect(expectFocusRingVisible(page.getByRole('link'), AFTER)).rejects.toThrow(/::after renders nothing/);
+    });
+
+    test('expectMinTargetSize takes the ::after\'s box, where the link\'s own is 12 px tall', async ({ page }) => {
+        await load(page, `<div class="cards">${card('One')}</div>`, CARD_STYLE);
+        const link = page.getByRole('link');
+        await expectMinTargetSize(link, 44, AFTER);
+        await expect(expectMinTargetSize(link, 44)).rejects.toThrow(/by 12\.0/);
+    });
+
+    test('expectRingNotClipped fails a ::after an overflow: hidden ancestor cuts', async ({ page }) => {
+        await load(page, `<div id="clip" style="overflow: hidden; width: 150px"><div class="cards">${card('One')}</div></div>`, CARD_STYLE);
+        await expect(expectRingNotClipped(page.getByRole('link'), AFTER)).rejects.toThrow(/div#clip cuts [\d.]+px off the right/);
+    });
+
+    test('expectTabOrderMatchesVisualOrder orders the cards by their targets, where the titles alone sit out of row order', async ({ page }) => {
+        // The first card's cover is taller, so its title sits under the second's: by the links alone the row reads backwards.
+        await load(page, `<div class="cards">${card('One', true)}${card('Two')}</div>`, CARD_STYLE);
+        const links = page.getByRole('link');
+        await expectTabOrderMatchesVisualOrder(page, links, AFTER);
+        await expect(expectTabOrderMatchesVisualOrder(page, links)).rejects.toThrow(/Row-major visual order/);
+    });
+
+    test('checkSurface passes stretched entries with { pseudo: "::after" }', async ({ page }) => {
+        await load(page, `<div class="cards">${card('One', true)}${card('Two')}${card('Three')}</div>`, CARD_STYLE);
+        await checkSurface(page, { entries: page.getByRole('link'), pseudo: '::after' });
+    });
+});
+
 test.describe('recordDispatchedEvents', () => {
     // A stand-in for React DOM's queue. While `queueing`, it keeps the latest native hover of each type and stops it, as
     // queueIfContinuousEvent does, and replays it as attemptReplayContinuousQueuedEvent does: `new event.constructor(type,

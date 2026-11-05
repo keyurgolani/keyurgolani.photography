@@ -534,13 +534,16 @@ const VISITOR: Pair[] = [
         },
     },
     { name: 'cover-fallback', url: series, act: (page) => failCover(page) },
-    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Dark as today.
+    // A focused Work entry. Today's ring is the entry link's own, outside it at [data-ring-room]'s 3 px in Dark; since
+    // #171 (B3) it's the title link's, inset on its ::after over the whole entry (WORK_ENTRY_FOCUS). The first link
+    // in the first entry, in either build.
     {
         name: 'work-focus',
         url: '/work',
+        stateOf: 'work',
         act: async (page) => {
             await page.keyboard.press('Shift');
-            await focusInPlace(page.getByRole('main').locator('ul > li > a').first());
+            await focusInPlace(page.getByRole('main').locator('ul > li a').first());
         },
     },
     {
@@ -632,8 +635,8 @@ const VISITOR: Pair[] = [
     { name: 'about', url: '/about' },
     { name: '404', url: '/no-such-page', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] },
     // Hover and focus (the review's Delta 2, item 3), walked by the gate only.
-    { name: 'nav-link-hover', url: '/work', gateOnly: true, act: (page) => hoverOn(navLink(page)) },
-    { name: 'nav-link-focus', url: '/work', gateOnly: true, act: (page) => keyboardFocus(page, navLink(page)) },
+    { name: 'nav-link-hover', url: '/work', gateOnly: true, stateOf: 'work', act: (page) => hoverOn(navLink(page)) },
+    { name: 'nav-link-focus', url: '/work', gateOnly: true, stateOf: 'work', act: (page) => keyboardFocus(page, navLink(page)) },
     { name: 'about-nav-link-hover', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => hoverOn(navLink(page)) },
     { name: 'about-link-hover', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => hoverOn(aboutLink(page)) },
     { name: 'about-link-focus', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => keyboardFocus(page, aboutLink(page)) },
@@ -788,6 +791,44 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
 ];
 
 /**
+ * #171 (B3): Work's entries are heading links. Today each entry is one link round the cover, the h2, the statement and
+ * the count. In the head the entry is a box, and its link is the title, the h2's one child, whose ::after stretches
+ * over the whole entry as its target and draws its ring. Two rules keep the rest of the entry compared exactly, both
+ * on /work only:
+ * - RETAGGED: the head's entry box is walked as the `a` it replaces, so the cover, the copy and everything under them
+ *   keep today's paths, and their styles and boxes are compared as before;
+ * - FOLDED: the title link is left out of both walks, with no layout change, since it adds no element the base had.
+ *   Its own paint must equal its h2's (computed.ts's FOLD_PAINT): the same ink and type, and no fill, line, outline,
+ *   band or decoration of its own. Its ::after is the target and the ring, which work.spec.ts checks in every theme.
+ */
+const WORK_ENTRY = 'main > ul > li > div:has(> div > h2 > a)';
+const RETAGGED: { url: string; selector: string; as: string; why: string }[] = [
+    { url: '/work', selector: WORK_ENTRY, as: 'a', why: "#171 (B3): Work's entry box, the stretched link's, where today's entry link was" },
+];
+const FOLDED: { url: string; selector: string; why: string }[] = [
+    { url: '/work', selector: `${WORK_ENTRY} > div > h2 > a`, why: "#171 (B3): Work's title link, its h2's one child, painting as the h2" },
+];
+const retagFor = (pair: Pair) => RETAGGED.filter((entry) => entry.url === pair.url).map(({ selector, as }) => ({ selector, as }));
+const foldFor = (pair: Pair) => FOLDED.filter((entry) => entry.url === pair.url).map(({ selector }) => selector);
+
+/**
+ * #171 (B3), the two sanctioned departures on Work's entries, each named per entry (the visitor fixture has two
+ * series, e2e/support/homeFixture.ts): the entry box is `position: relative`, the containing block its title link's
+ * ::after stretches over, where today's static link was; and a focused entry's ring is no longer the entry box's own,
+ * outside it, but the title link's, inset on its ::after (the issue's "with the focus ring inset", in every theme).
+ * Nothing moves: every box, and every other style, is compared exactly.
+ */
+const WORK_ENTRIES: Allowance[] = [1, 2].flatMap((n) => {
+    const selector = `main > ul > li:nth-of-type(${n}) > :first-child`;
+    return [
+        { page: 'work', selector, properties: ['position'], why: "#171 (B3): Work's entry box holds its title link's stretched target" },
+        ...(n === 1
+            ? [{ page: 'work-focus', selector, properties: ['outline-color', 'outline-style', 'outline-width', 'outline-offset', 'box-shadow'], why: "#171 (B3): a focused Work entry's ring is inset on its title link's ::after" }]
+            : []),
+    ];
+});
+
+/**
  * #179, the portrait's frame (B1): 4:3 stacked under a cap of min(45svh, 28rem), and 4:5 side by side, from the
  * refined #12's mockup, where today's About sets a height (clamp(250px, 42svh, 380px) stacked, 420 px wide). Every
  * paint, type and style in About stays exact; only boxes in main move, and the page's height with them. At 390 the
@@ -830,6 +871,7 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
 })();
 
 const ALLOWANCES: Allowance[] = [
+    ...WORK_ENTRIES,
     ...ABOUT_FRAME,
     ...ABOUT_LINK_SCROLL,
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
@@ -893,7 +935,7 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector)), timedOut, ...painted };
+        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
     } finally {
         await context.close();
     }
@@ -1045,6 +1087,10 @@ test.afterAll(async () => {
             "Every element under body (and in the curator's preview frame), matched by tag and nth-of-type, its ::before and ::after, and the custom properties on :root and body, in the head's Dark against the base, at 1440, 1024 and 390, in Dark's three routes, with Home's intro also in its loading phase with motion allowed, and hover and focus on the nav links, Home's controls, About's links and the Inbox's rows and buttons. The theme control and today's toggle are left out with their subtrees; the curator's head takes its control out of the layout, as no JavaScript does. Structure, styles, base tokens, any box that moved (beyond the one named allowance) and any wait that timed out fail; every box delta and the tokens new in the head are listed below.",
             '',
             `Left out as new in the head, taken out of its layout and of both walks: ${HEAD_ONLY.map((entry) => `\`${entry.selector}\` (${entry.why})`).join('; ')}.`,
+            '',
+            `Walked under the tag it replaces, so its subtree keeps the base's paths: ${RETAGGED.map((entry) => `\`${entry.selector}\` as \`${entry.as}\` on ${entry.url} (${entry.why})`).join('; ')}.`,
+            '',
+            `Left out of both walks in place, its own paint checked against its parent's: ${FOLDED.map((entry) => `\`${entry.selector}\` on ${entry.url} (${entry.why})`).join('; ')}.`,
             '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',

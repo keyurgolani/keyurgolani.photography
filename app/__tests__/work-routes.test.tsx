@@ -159,11 +159,19 @@ describe('Work on a served revision', () => {
         const html = await workHtml();
         const links = [...html.matchAll(/<a [^>]*href="([^"]+)"/g)].map(([, href]) => href);
         expect(links).toEqual(['/work/route-b', '/work/route-a']);
-        const titles = [...html.matchAll(/<h2[^>]*>([^<]*)<\/h2>/g)].map(([, title]) => title);
+        // Each link is its h2's only child, named by the title (#171, B3).
+        const titles = [...html.matchAll(/<h2[^>]*><a [^>]*>([^<]*)<\/a><\/h2>/g)].map(([, title]) => title);
         expect(titles).toEqual(['Route B', 'Route A']);
         expect(html).toContain('Short statement A.');
         expect(html).toContain('Short statement B.');
         expect(html.match(/>2 photographs</g)).toHaveLength(2);
+    });
+
+    // Work's revision marker (#171, B3), as Home's main and the series page's main carry theirs, for B12's freshness rows.
+    it('marks the series list with the served revision', async () => {
+        const html = await workHtml();
+        expect(html.match(/data-catalog-revision="[^"]*"/g)).toEqual([`data-catalog-revision="${catalog.revisionId}"`]);
+        expect(html).toMatch(new RegExp(`<ul [^>]*data-catalog-revision="${catalog.revisionId}"`));
     });
 
     it('leaves every unpublished and non-allowlisted string out of the server HTML', async () => {
