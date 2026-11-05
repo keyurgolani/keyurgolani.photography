@@ -1,0 +1,307 @@
+// @vitest-environment node
+/**
+ * #12's freshness rows in production mode (B12). `npm run test:prod` builds,
+ * then this serves a copy of .next/standalone on a temp data root, with
+ * SITE_URL set, and reads the pages' raw HTML as a browser and as Twitterbot
+ * (test/helpers/standaloneServer.ts says why both). Plain `npm test` skips it
+ * unless RUN_PROD_TESTS=1.
+ *
+ * In order, on one server started before the launch, so its pid only changes
+ * where a row says it restarts:
+ * - E1: before anything is published, the series and Viewer error pages are
+ *   Next's bare error shell, with no title or hidden segment in the body,
+ *   tag for tag the shell /work sends. Then the same on a second server whose
+ *   first request meets a damaged active pointer.
+ * - F6: a publish that changes the series statement shows in the series
+ *   page's meta tag, its main, its statement, and /api/ready alike.
+ * - H1, H2: the series head (title, description, canonical, og:image,
+ *   catalog-revision) is all inside <head>, for Twitterbot and a browser.
+ * - S1, the series half: the canonical URL, an alias and a case variant, an
+ *   unknown slug and a draft, with the same status, Location and
+ *   Cache-Control for both agents, and every 404 the not-found page.
+ * - F7, the series half: a rollback through the photos CLI, in a child
+ *   process, shows on the first GET.
+ *
+ * The rows that wait on other PRs are todos at the end, each naming the PR.
+ */
+import fs from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { VARIANT_BYTES } from '../../lib/catalog/__tests__/catalogFixtures';
+import { publish, type PublishResult } from '../../lib/catalog/publish';
+import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../../lib/catalog/testing';
+import { catalogPaths, readActivePointer } from '../../lib/catalog/working-layer';
+import { versionFile } from '../../lib/storage/document';
+import { runTsx } from '../helpers/runTsx';
+import {
+    bodyOf,
+    copyStandalone,
+    DYNAMIC_CACHE_CONTROL,
+    editSeries,
+    get,
+    headOf,
+    links,
+    markers,
+    meta,
+    skeleton,
+    startStandalone,
+    withoutScripts,
+    type Agent,
+    type StandaloneCopy,
+    type StandaloneServer,
+} from '../helpers/standaloneServer';
+
+const SITE_URL = 'https://photos.example.test';
+const AGENTS: Agent[] = ['bot', 'browser'];
+const SLUG = 'harbor-light';
+const ALIAS = 'old-harbor-light';
+const DRAFT_SLUG = 'quiet-rooms';
+const TITLE = 'Harbor light';
+const SHORT = 'Harbor light, in short.';
+/** The statement revision `n` publishes, so the page shows which revision it came from. */
+const statement = (n: number) => `Harbor light, as revision ${n} has it.`;
+const quiet = { log: () => undefined };
+
+/**
+ * A featured three-photo series with an alias, a second series (B8's moved
+ * photo goes there), and a draft. Sparse variants, so the profile is ready
+ * and the cover has a share image without writing image files.
+ */
+const fixture = (seed: number): TestCatalogOptions => ({
+    seed,
+    photos: 6,
+    variantBytes: VARIANT_BYTES,
+    series: [
+        { slug: SLUG, slugAliases: [ALIAS], title: TITLE, statement: statement(1), shortStatement: SHORT, photos: 3 },
+        { slug: 'salt-flats', title: 'Salt flats', statement: 'Salt flats.', shortStatement: 'Salt flats, in short.', photos: 2 },
+        { slug: DRAFT_SLUG, title: 'Quiet rooms', visibility: 'draft', photos: 1 },
+    ],
+});
+
+describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mode follow the served revision', () => {
+    let copy: StandaloneCopy | undefined;
+    let catalog: TestCatalog | undefined;
+    let server: StandaloneServer | undefined;
+    /** The server every row but E1's damaged pointer uses, and its pid, which no row here changes. */
+    let pid = 0;
+    let seriesId = '';
+    let viewerPath = '';
+    /** F6's two revisions, for the rows after it. */
+    let r1 = '';
+    let r2 = '';
+    const extra: (() => Promise<void> | void)[] = [];
+
+    beforeAll(async () => {
+        copy = copyStandalone('freshness');
+        catalog = await createTestCatalog(fixture(61));
+        const series = catalog.series.find((entry) => entry.slug === SLUG)!;
+        seriesId = series.id;
+        viewerPath = `/work/${SLUG}/photo/${series.photoIds[1]}`;
+        server = await startStandalone({ cwd: copy.dir, dataRoot: catalog.root, library: copy.library, siteUrl: SITE_URL });
+        pid = server.pid;
+    }, 180_000);
+
+    afterAll(async () => {
+        await server?.stop();
+        for (const cleanup of extra.splice(0).reverse()) await cleanup();
+        await catalog?.cleanup();
+        copy?.cleanup();
+    });
+
+    const base = () => server!.base;
+
+    async function published(confirmLaunch = false): Promise<PublishResult> {
+        const result = await publish({ dataRoot: catalog!.root, actor: 'test', confirmLaunch, logger: quiet });
+        expect(result.outcome, result.message).toBe('PUBLISHED');
+        return result;
+    }
+
+    /** /api/ready's revision, from its header and its body, which must agree. */
+    async function readyRevision(at = base()): Promise<string | null> {
+        const ready = await get(at, '/api/ready', 'browser');
+        const header = ready.headers.get('x-catalog-revision');
+        expect(header, ready.html).toBe((JSON.parse(ready.html) as { revisionId: string | null }).revisionId);
+        return header;
+    }
+
+    /** The server answered every row from one process. */
+    function expectSameProcess(): void {
+        expect(server!.process.exitCode, server!.output()).toBeNull();
+        expect(server!.pid).toBe(pid);
+    }
+
+    /**
+     * `pathname` as `agent` is Next's bare error shell with a 500: no title
+     * and no hidden segment after </head>, and `reference`'s tags.
+     */
+    async function expectErrorShell(at: string, pathname: string, agent: Agent, reference?: string[]): Promise<string[]> {
+        const page = await get(at, pathname, agent);
+        const where = `${pathname} as ${agent}`;
+        expect(page.status, where).toBe(500);
+        expect(page.headers.get('content-type'), where).toContain('text/html');
+        expect(page.html, where).toMatch(/<html\b[^>]*\bid="__next_error__"/);
+        const body = withoutScripts(bodyOf(page.html));
+        expect(body, `${where}: a title after </head>`).not.toMatch(/<title[\s>]/i);
+        expect(body, `${where}: a hidden segment after </head>`).not.toMatch(/<div\s+hidden/i);
+        const tags = skeleton(page.html);
+        if (reference) expect(tags, `${where} has /work's error shell`).toEqual(reference);
+        return tags;
+    }
+
+    /** The series and Viewer error pages on `at`, as both agents, each tag for tag what /work sends that agent. */
+    async function expectErrorPages(at: string, viewer: string): Promise<void> {
+        for (const agent of AGENTS) {
+            const work = await expectErrorShell(at, '/work', agent);
+            await expectErrorShell(at, `/work/${SLUG}`, agent, work);
+            await expectErrorShell(at, viewer, agent, work);
+        }
+    }
+
+    /** The series page as each agent comes from `revision`: its meta tag, its main, every rev_ in it, and its statement. */
+    async function expectSeriesAt(revision: string, shown: string, gone: string[]): Promise<void> {
+        for (const agent of AGENTS) {
+            const page = await get(base(), `/work/${SLUG}`, agent);
+            const where = `/work/${SLUG} as ${agent}`;
+            expect(page.status, where).toBe(200);
+            const found = markers(page.html);
+            expect(found.meta, `${where}: <meta name="catalog-revision">`).toEqual([revision]);
+            expect(found.main, `${where}: main[data-catalog-revision]`).toEqual([revision]);
+            expect(found.revisions, `${where}: every rev_ in it`).toEqual([revision]);
+            expect(withoutScripts(page.html), where).toContain(`<p>${shown}</p>`);
+            for (const text of gone) expect(page.html.includes(text), `${where} still shows "${text}"`).toBe(false);
+        }
+    }
+
+    it('E1: answers the series and Viewer pages with /work\'s bare error shell before the launch', async () => {
+        const ready = await get(base(), '/api/ready', 'browser');
+        expect(ready.status).toBe(503);
+        expect(JSON.parse(ready.html)).toMatchObject({ state: 'unavailable', reason: 'not-published' });
+        await expectErrorPages(base(), viewerPath);
+        expectSameProcess();
+    }, 60_000);
+
+    it('E1: answers them with the same shell when a new server\'s first read meets a damaged pointer', async () => {
+        const damaged = await createTestCatalog(fixture(67));
+        extra.push(() => damaged.cleanup());
+        const result = await publish({ dataRoot: damaged.root, actor: 'test', confirmLaunch: true, logger: quiet });
+        expect(result.outcome, result.message).toBe('PUBLISHED');
+        // The newest pointer version, the one readActivePointer() reads, before any server has loaded the revision.
+        const pointer = await readActivePointer(damaged.root);
+        fs.writeFileSync(versionFile(catalogPaths(damaged.root).active, pointer!.version), 'not json');
+        const started = await startStandalone({ cwd: copy!.dir, dataRoot: damaged.root, library: copy!.library, siteUrl: SITE_URL });
+        extra.push(() => started.stop());
+        const ready = await get(started.base, '/api/ready', 'browser');
+        expect(ready.status, started.output()).toBe(503);
+        expect(JSON.parse(ready.html)).toMatchObject({ state: 'unavailable', revisionId: null });
+        // The slug comes from the spec; the photo IDs from the seed, so the Viewer path is this root's own.
+        const series = damaged.series.find((entry) => entry.slug === SLUG)!;
+        await expectErrorPages(started.base, `/work/${SLUG}/photo/${series.photoIds[1]}`);
+        expect(started.output()).not.toContain(damaged.root);
+    }, 120_000);
+
+    it('F6: shows a publish that changes the statement in the meta tag, main, the statement and /api/ready alike', async () => {
+        // The launch, on a server that was up before it.
+        r1 = (await published(true)).revisionId!;
+        await expectSeriesAt(r1, statement(1), [statement(2)]);
+        expect(await readyRevision()).toBe(r1);
+
+        await editSeries(catalog!.root, seriesId, { statement: statement(2) });
+        r2 = (await published()).revisionId!;
+        expect(r2).not.toBe(r1);
+        // The page first, so nothing else warmed the reader for it.
+        await expectSeriesAt(r2, statement(2), [statement(1)]);
+        expect(await readyRevision()).toBe(r2);
+        expectSameProcess();
+    }, 120_000);
+
+    it('H1, H2: keeps the series head in <head>, for Twitterbot and a browser alike', async () => {
+        expect(r2, 'F6 published').not.toBe('');
+        for (const agent of AGENTS) {
+            const page = await get(base(), `/work/${SLUG}`, agent);
+            const where = `/work/${SLUG} as ${agent}`;
+            expect(page.status, where).toBe(200);
+            const head = headOf(page.html);
+            const body = bodyOf(page.html);
+            const titles = [...withoutScripts(head).matchAll(/<title>([^<]*)<\/title>/g)].map((match) => match[1]);
+            expect(titles, `${where}: the title`).toHaveLength(1);
+            expect(titles[0], where).toContain(TITLE);
+            expect(meta(head, 'description'), where).toEqual([SHORT]);
+            expect(links(head, 'canonical'), where).toEqual([`${SITE_URL}/work/${SLUG}`]);
+            const images = meta(head, 'og:image');
+            expect(images, `${where}: og:image`).toHaveLength(1);
+            expect(images[0], where).toMatch(new RegExp(`^${SITE_URL.replace(/\./g, '\\.')}/media/`));
+            expect(meta(head, 'catalog-revision'), where).toEqual([r2]);
+            // Nothing of it streamed in after </head>.
+            expect(withoutScripts(body), `${where}: a title after </head>`).not.toMatch(/<title[\s>]/i);
+            for (const name of ['description', 'og:image', 'catalog-revision']) expect(meta(body, name), `${where}: ${name} after </head>`).toEqual([]);
+            expect(links(body, 'canonical'), `${where}: canonical after </head>`).toEqual([]);
+        }
+        expectSameProcess();
+    }, 60_000);
+
+    it('S1: answers the series URLs with the same status, Location and Cache-Control for both agents', async () => {
+        expect(r2, 'F6 published').not.toBe('');
+        const canonical = `/work/${SLUG}`;
+        const rows: { path: string; status: number; location?: string }[] = [
+            { path: canonical, status: 200 },
+            { path: `/work/${ALIAS}?from=card&photo=2`, status: 308, location: `${canonical}?from=card&photo=2` },
+            { path: '/work/Harbor-Light', status: 308, location: canonical },
+            { path: '/work/HARBOR-LIGHT?from=card', status: 308, location: `${canonical}?from=card` },
+            { path: '/work/no-such-series', status: 404 },
+            { path: `/work/${DRAFT_SLUG}`, status: 404 },
+        ];
+        for (const row of rows) {
+            const answers: { status: number; location: string | null; cacheControl: string | null }[] = [];
+            for (const agent of AGENTS) {
+                const page = await get(base(), row.path, agent);
+                const where = `${row.path} as ${agent}`;
+                expect(page.status, where).toBe(row.status);
+                expect(page.headers.get('cache-control'), where).toBe(DYNAMIC_CACHE_CONTROL);
+                const location = page.headers.get('location');
+                if (row.location === undefined) {
+                    expect(location, where).toBeNull();
+                } else {
+                    // Next may send the path alone or against the request's origin; either way it's this one.
+                    const target = new URL(location!, base());
+                    expect(target.origin, where).toBe(base());
+                    expect(`${target.pathname}${target.search}`, where).toBe(row.location);
+                }
+                if (row.status === 404) {
+                    expect(withoutScripts(page.html), where).toContain('Page not found');
+                    expect(meta(headOf(page.html), 'robots').some((value) => value.includes('noindex')), `${where}: noindex in <head>`).toBe(true);
+                }
+                answers.push({ status: page.status, location, cacheControl: page.headers.get('cache-control') });
+            }
+            expect(answers[1], `${row.path}: the browser's answer is Twitterbot's`).toEqual(answers[0]);
+        }
+        expectSameProcess();
+    }, 60_000);
+
+    it('F7, the series half: shows a rollback by the photos CLI on the first GET', async () => {
+        expect(r2, 'F6 published').not.toBe('');
+        // #15's rollback, in its own process, as the curator runs it.
+        const rolled = await runTsx('scripts/photos.ts', ['rollback', '--to', r1, '--reason', 'F7', '--actor', 'test', '--yes', '--expect-active', r2], {
+            env: { PHOTOGRAPHY_DATA_DIR: catalog!.root, PHOTOS_ACTOR: undefined },
+        });
+        expect(rolled.code, rolled.stderr).toBe(0);
+        expect(rolled.stdout).toContain(`ROLLED_BACK: Rolled back to revision 1 (${r1})`);
+        // The series page before anything else asks, as both agents, then /api/ready.
+        await expectSeriesAt(r1, statement(1), [statement(2)]);
+        expect(await readyRevision()).toBe(r1);
+        expectSameProcess();
+        expect(server!.output()).not.toContain('catalog.read.failed');
+        expect(server!.output()).not.toContain(catalog!.root);
+    }, 120_000);
+
+    // Waiting on other PRs: each lands with the markers or routes it needs.
+    it.todo("F1 (waits on B3): Work's ul marker equals /api/ready's X-Catalog-Revision, exactly once, from the launch through a second publish");
+    it.todo("F2 (waits on B3): Work's ul marker is R1 on the next GET after a CLI rollback");
+    it.todo("F3 (waits on B6): Home's marker is new and ready after a publish, and every rev_ in the body is the marker");
+    it.todo("F4 (waits on B6): Home's marker is the target after an in-process rollback");
+    it.todo("F5 (waits on B6): Home's marker is still the target after a restart");
+    it.todo('F7, Work (waits on B3): the CLI rollback shows on the first GET of /work');
+    it.todo('F7, Home (waits on B6): the CLI rollback shows on the first GET of /');
+    it.todo("F8 (waits on B8): on a copied root, the Viewer's meta tag follows a caption publish and a rollback, and the original root is byte-identical");
+    it.todo("F9 (waits on B3, B6 and B8): Home, Work, the series page and the Viewer all show F7's target after a restart");
+    it.todo("H3 (waits on B8): the Viewer's h1 with its sr-only position, the aria-hidden counter, caption, alt, AVIF and WebP srcsets and the full head, for both agents");
+    it.todo('S1, the Viewer half (waits on B8): 200, 308s from an alias, a case variant and a moved photo, and 404s for an unknown id and a draft, alike for both agents');
+});
