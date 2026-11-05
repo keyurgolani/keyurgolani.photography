@@ -77,6 +77,14 @@ const absolute = () => [fixture.root, fs.realpathSync(fixture.root)];
 const versionOf = async (kind: 'series' | 'photo', id: string) => (await readAuthoredRecord(fixture.root, kind, id))?.version;
 
 describe('photos diff', () => {
+    // A9's review (should-fix 5): the JSON carries a series' positions as the text does.
+    it("carries a series' derived row's positions in --json", async () => {
+        const data = await json();
+        const derived = data.rows.find((row) => row.record.kind === 'series' && row.record.id === SALT_ROADS && row.field === 'derived');
+        expect(derived?.positions).toEqual({ shifted: 5, by: 1 });
+        expect(derived?.fields).toContain('positions');
+    });
+
     it('prints the grouped ledger with the candidate, the live revision, and what each row waits on', async () => {
         const candidate = await candidateId();
         const result = await runDiffCommand(fixture.root, { json: false });

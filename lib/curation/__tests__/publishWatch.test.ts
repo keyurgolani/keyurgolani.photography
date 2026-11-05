@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LedgerRow, ScreenView, WatchAnswer } from '../publish-facts';
 import { createWatch, watchNews, WATCH_INTERVAL_MS, WATCH_MAX_CHECKS, WATCH_MAX_ERRORS, WATCH_MIN_GAP_MS } from '../publish-watch';
-import { textDiff, TEXT_DIFF_MAX_CELLS } from '../text-diff';
+import { shownText, textDiff, TEXT_DIFF_MAX_CELLS } from '../text-diff';
 
 /**
  * A9's Publish screen extras, pure: the word diff behind `<del>` and
@@ -36,6 +36,15 @@ describe('textDiff()', () => {
         const started = performance.now();
         expect(textDiff(long('a'), long('b'))).toEqual([{ type: 'removed', text: long('a') }, { type: 'added', text: long('b') }]);
         expect(performance.now() - started).toBeLessThan(200);
+    });
+});
+
+describe('shownText() (A9 review)', () => {
+    it('says a change of spacing alone in words, never as an empty mark', () => {
+        expect(shownText({ type: 'removed', text: '  ' })).toBe('whitespace changed');
+        expect(shownText({ type: 'added', text: '\n' })).toBe('whitespace changed');
+        expect(shownText({ type: 'added', text: ' west' })).toBe(' west');
+        expect(shownText({ type: 'same', text: ' ' })).toBe(' ');
     });
 });
 
@@ -193,6 +202,38 @@ describe('createWatch()', () => {
         u.watch.start();
         await u.advance(2 * WATCH_INTERVAL_MS);
         expect(u.calls()).toBe(1);
+    });
+
+    // A9 review nits.
+    it('counts the start as its last check, so a focus straight after it sends nothing', async () => {
+        const h = harness([OK]);
+        h.watch.start();
+        h.watch.wake();
+        await h.settle();
+        expect(h.calls()).toBe(0);
+    });
+
+    it('keeps to its backoff on refocus after an error', async () => {
+        const h = harness([new Error('offline'), OK]);
+        h.watch.start();
+        await h.advance(WATCH_INTERVAL_MS);
+        expect(h.calls()).toBe(1);
+        // Long past the refocus gap, but inside the doubled wait.
+        await h.advance(WATCH_INTERVAL_MS);
+        h.watch.wake();
+        await h.settle();
+        expect(h.calls()).toBe(1);
+        await h.advance(WATCH_INTERVAL_MS);
+        expect(h.calls()).toBe(2);
+    });
+
+    it('stops quietly once the session is gone', async () => {
+        const h = harness([{ kind: 'signed-out' }]);
+        h.watch.start();
+        await h.advance(10 * WATCH_INTERVAL_MS);
+        expect(h.calls()).toBe(1);
+        expect(h.timers()).toBe(0);
+        expect(h.seen).toEqual([]);
     });
 
     it('is bounded: it stops after its last check, and stop() ends it at once', async () => {

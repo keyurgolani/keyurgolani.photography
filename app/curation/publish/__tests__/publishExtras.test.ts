@@ -23,7 +23,25 @@ import { createPublishFixture, fixBoth, LOW_TIDE, publishFromCli, reopenBreakwat
 
 const revalidated: string[] = [];
 const session = { anonymous: false };
-class Refused extends Error {}
+/** The boundary's refusal: notFound(), whose digest Next reads. */
+class Refused extends Error {
+    readonly digest = 'NEXT_HTTP_ERROR_FALLBACK;404';
+}
+/** A9 review nit: the next shared-writer call fails as an I/O error would. */
+const writer = { fail: false };
+vi.mock('@/lib/catalog/use-published', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/lib/catalog/use-published')>();
+    return {
+        ...actual,
+        writePublishedValue: (...args: Parameters<typeof actual.writePublishedValue>) => {
+            if (writer.fail) {
+                writer.fail = false;
+                return Promise.reject(new Error('Test: the disk is full.'));
+            }
+            return actual.writePublishedValue(...args);
+        },
+    };
+});
 vi.mock('@/lib/curation/auth', async (importOriginal) => ({
     ...(await importOriginal<object>()),
     requireCurator: async () => {
@@ -132,7 +150,8 @@ describe('Use the published value (A9)', () => {
         const junks: Record<string, string>[] = [{ field: 'slug' }, { field: 'photoIds[x]' }, { valueHash: 'not-a-hash' }, { id: 'x'.repeat(300) }, { kind: 'activation' }, { rowId: '<script>' }];
         for (const junk of junks) {
             const state = await publishAction(IDLE_STATE, publishedForm(screen, row, junk));
-            expect(state.answer?.kind, JSON.stringify(junk)).toBe('fix-refused');
+            // A9 review should-fix 8: refused by the action's own checks, not by the writer further on.
+            expect(state.answer, JSON.stringify(junk)).toMatchObject({ kind: 'fix-refused', text: "The page sent a change it didn't show, so nothing was written. Load the updated ledger." });
         }
         expect(folderBytes(fixture.root)).toEqual(before);
     });
@@ -152,6 +171,15 @@ describe('Use the published value (A9)', () => {
         session.anonymous = true;
         await expect(publishAction(IDLE_STATE, publishedForm(screen, rowAbout(screen, MOVED)))).rejects.toBeInstanceOf(Refused);
         expect(folderBytes(fixture.root)).toEqual(before);
+    });
+});
+
+describe('the failure wording (A9 review)', () => {
+    it('names Use the published value when its write fails part way', async () => {
+        const screen = await view();
+        writer.fail = true;
+        const state = await publishAction(IDLE_STATE, publishedForm(screen, rowAbout(screen, MOVED)));
+        expect(state.answer).toMatchObject({ kind: 'fix-refused', text: "The published value couldn't be written, so nothing changed. The server log names what failed." });
     });
 });
 
@@ -188,10 +216,12 @@ describe('the watch (A9)', () => {
         expect(folderBytes(fixture.root)).toEqual(before);
     });
 
-    it('runs requireCurator() first', async () => {
+    it('runs requireCurator() first, and a refused session answers signed-out quietly rather than a not-found the page would show (A9 review)', async () => {
         const screen = await view();
         session.anonymous = true;
-        await expect(watchPublish({ draftId: screen.draftId, active: screen.active.revisionId })).rejects.toBeInstanceOf(Refused);
+        const before = folderBytes(fixture.root);
+        expect(await watchPublish({ draftId: screen.draftId, active: screen.active.revisionId })).toEqual({ kind: 'signed-out' });
+        expect(folderBytes(fixture.root)).toEqual(before);
     });
 
     it('shows Base moved: the ledger goes out of date and the bar offers only Load the updated ledger', async () => {

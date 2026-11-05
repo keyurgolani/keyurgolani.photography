@@ -10,12 +10,12 @@ import { readRevisionFile } from '../repository';
 import { hashValue } from '../review';
 import { readReviewContext } from '../review-context';
 import { ReviewRefusedError } from '../review-write';
-import { authoredFromPublished, publishedValueOffer, USE_PUBLISHED_FIELDS } from '../use-published-rules';
+import { assetGuard, authoredFromPublished, publishedValueOffer, USE_PUBLISHED_FIELDS } from '../use-published-rules';
 import { writePublishedValue } from '../use-published';
 import { readActivePointer, readAuthoredRecord, readWorkingLayer } from '../working-layer';
 import { AuthoredWriteError, writeAuthoredRecord } from '../working-layer-writer';
 import { readRegistry } from '../../identity/registry';
-import type { AuthoredPhoto, AuthoredSeries } from '../types';
+import type { AuthoredPhoto, AuthoredSeries, RevisionContent, WorkingLayer } from '../types';
 
 /**
  * A9's "Use the published value" (#182): one writer in lib/catalog that the
@@ -98,6 +98,47 @@ describe('which rows offer it', () => {
         expect(authoredFromPublished(record, 'photoIds', [...record.photoIds].reverse())).toMatchObject({ ok: true });
         expect(authoredFromPublished(record, 'photoIds', record.photoIds.slice(1))).toMatchObject({ ok: false });
         expect(authoredFromPublished(record, 'slug', 'other')).toMatchObject({ ok: false });
+    });
+});
+
+describe('the review fixes (A9 review)', () => {
+    const A = `sha256-${'a'.repeat(64)}`;
+    const B = `sha256-${'b'.repeat(64)}`;
+    const P = 'ph_00000000-0000-4000-8000-000000000001';
+    const Q = 'ph_00000000-0000-4000-8000-000000000002';
+    const R = 'ph_00000000-0000-4000-8000-000000000003';
+    const stamp = (assetRevision?: string) => ({ valueHash: hashValue('Old caption'), origin: 'curator' as const, baseRevisionId: null, ...(assetRevision ? { assetRevision } : {}), actor: 'keyur', reviewedAt: '2026-10-01T00:00:00.000Z' });
+    const photo = (assetRevision: string, stamped?: string) => ({ kind: 'photo', id: P, assetRevision, caption: 'Old caption', alt: null, review: { fields: { caption: stamp(stamped) } } }) as unknown as AuthoredPhoto;
+    const live = (assetRevision: string): RevisionContent => ({ site: { featuredSeriesIds: [] }, series: [], photos: [{ id: P, assetRevision } as never] });
+    const layerWith = (...records: object[]): WorkingLayer => ({ site: null, series: records.filter((record) => (record as { kind: string }).kind === 'series') as never, photos: records.filter((record) => (record as { kind: string }).kind === 'photo') as never, problems: [] });
+
+    it('refuses to put back a field that describes the image once the photograph has new bytes, live or since its review (should-fix 6)', () => {
+        const replaced = photo(B, A);
+        expect(assetGuard(replaced, 'caption', layerWith(replaced), live(A))).toMatchObject({ ok: false, why: expect.stringMatching(/new image/) });
+        // The live revision has the draft's bytes, but the review was of others.
+        expect(assetGuard(replaced, 'caption', layerWith(replaced), live(B))).toMatchObject({ ok: false });
+        const same = photo(A, A);
+        expect(assetGuard(same, 'caption', layerWith(same), live(A))).toEqual({ ok: true });
+        // A field that doesn't describe the image isn't held back.
+        expect(assetGuard(replaced, 'credit', layerWith(replaced), live(A))).toEqual({ ok: true });
+    });
+
+    it("refuses a series cover whose photograph has new bytes (should-fix 6)", () => {
+        const coverPhoto = { kind: 'photo', id: P, assetRevision: B, alt: null } as unknown as AuthoredPhoto;
+        const series = { kind: 'series', id: 'ser_x', photoIds: [P], cover: { photoId: P }, chapters: [], review: { fields: { cover: { ...stamp(A), valueHash: hashValue({ photoId: P }) } } } } as unknown as AuthoredSeries;
+        expect(assetGuard(series, 'cover', layerWith(series, coverPhoto), live(A))).toMatchObject({ ok: false, why: expect.stringMatching(/new image/) });
+        const settled = { ...coverPhoto, assetRevision: A } as AuthoredPhoto;
+        expect(assetGuard(series, 'cover', layerWith(series, settled), live(A))).toEqual({ ok: true });
+    });
+
+    it("refuses chapters, a cover or an opening photograph naming a photograph the draft's series doesn't hold, and names it (should-fix 7)", () => {
+        const series = { kind: 'series', id: 'ser_x', photoIds: [P, Q], chapters: [], cover: { photoId: P } } as unknown as AuthoredSeries;
+        expect(authoredFromPublished(series, 'chapters', [{ id: 'ch', title: 'Dawn', startPhotoId: R }])).toMatchObject({ ok: false, why: expect.stringContaining(R) });
+        expect(authoredFromPublished(series, 'cover', { photoId: R })).toMatchObject({ ok: false, why: expect.stringContaining(R) });
+        expect(authoredFromPublished(series, 'openingPhotoId', R)).toMatchObject({ ok: false, why: expect.stringContaining(R) });
+        expect(authoredFromPublished(series, 'chapters', [{ id: 'ch', title: 'Dawn', startPhotoId: Q }])).toMatchObject({ ok: true });
+        expect(authoredFromPublished(series, 'cover', { photoId: Q })).toMatchObject({ ok: true });
+        expect(authoredFromPublished(series, 'openingPhotoId', Q)).toMatchObject({ ok: true });
     });
 });
 
