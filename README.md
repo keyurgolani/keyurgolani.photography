@@ -193,17 +193,21 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 
 ### Moving the legacy derivatives aside
 
-`scripts/host/legacy-move-aside.sh` moves the eight legacy folders out of the library, into a dated folder beside it on the same filesystem. It runs on the host, not in a container: the stack mounts the library read-only, so no container can move them. Fetch it from the release, read it, and run the dry run first. Give it the folder the host binds at `/data/library`, which is `public/assets/photos` unless an override binds another:
+`scripts/host/legacy-move-aside.sh` moves the eight legacy folders out of the library, into a dated folder beside it on the same filesystem. It runs on the host, not in a container: the stack mounts the library read-only, so no container can move them. It needs `bash` and `perl`, which most hosts have. A host with a checkout of this repository can run `scripts/host/legacy-move-aside.sh` from it. Otherwise fetch it from the release the host runs, `v2.0.0` or later, read it, and run the dry run first. Give it the folder the host binds at `/data/library`, which is `public/assets/photos` unless an override binds another:
 
 ```bash
-curl -fsSL -o legacy-move-aside.sh https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/v2.0.0/scripts/host/legacy-move-aside.sh
+curl -fsSL -o legacy-move-aside.sh https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/scripts/host/legacy-move-aside.sh
 bash legacy-move-aside.sh public/assets/photos
-sudo bash legacy-move-aside.sh public/assets/photos --apply
+sudo bash legacy-move-aside.sh --apply public/assets/photos
 ```
 
-- **The dry run** lists each move as an `mv` line with its size, then the total, then the lines that move the folders back, and moves nothing. `--apply` prints the same list and makes exactly those moves. `sudo` is there because the folders often belong to uid 1001. A library you own yourself needs no `sudo`.
-- **What it moves:** the eight names only, `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip` and `cache`, each only when it's a real folder at the top of the library. A file or a symlink by one of those names, a folder of that name further down, and every other file stay where they are.
-- **Where it moves them:** to `public/assets/photos.legacy-derivatives-<YYYY-MM-DD>/`, beside the library, or to the folder `--to <dir>` names. It refuses, exits 1 and moves nothing when that folder is the library or inside it, symlinks resolved, when it already holds any of the eight names, or when it's on another filesystem or mount than the library. Inside the library, the scan would take every WebP in them for a new photo, since it skips the eight names at the top only. On another filesystem, `mv` would copy them rather than rename them. If the library is a disk of its own, there's nowhere it can go, so leave the folders in place.
+- **The dry run** lists each move as an `mv` line with its size, then the total, then the lines that move the folders back, and moves nothing. A folder it can't read into shows "size unknown, run with sudo". It warns about any file in the folders without that folder's extension, since that one may not be a derivative, but still moves it. `--apply` prints the same list, writes the lines that move the folders back to `move-back.sh` in the dated folder, and only then makes exactly those moves. `sudo` is there because the folders often belong to uid 1001. A library you own yourself needs no `sudo`.
+- **What it moves:** the eight names only, `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip` and `cache`, each only when it's a real folder at the top of the library. A file or a symlink by one of those names, a folder of that name further down, and every other file stay where they are. Each move is one rename, so it never copies anything, and it can't land inside a folder that's already there.
+- **Where it moves them:** to `photos.legacy-derivatives-<YYYY-MM-DD>/` beside the library, `public/assets/photos.legacy-derivatives-<YYYY-MM-DD>/` on a host laid out as above, or to the folder `--to <dir>` names. It refuses, exits 1 and moves nothing when that folder:
+  - is the library or inside it, which it checks by the folders' device and inode, so a different letter case, a symlink or a second mount of the library can't hide it. Inside the library, the scan would take every WebP in them for a new photo, since it skips the eight names at the top only;
+  - is under the `public/` folder of a checkout of this repository, one beside a `package.json` or `next.config.*`, which an image build copies. On a checkout, the default folder is there, so pass `--to` a folder outside the checkout on the same filesystem;
+  - already holds any of the eight names, or a `move-back.sh`;
+  - is on another filesystem or mount than the library, where a move would have to copy them. If the library is a disk of its own, there's nowhere it can go, so leave the folders in place.
 - **What it costs:** a rename frees no disk space, since the folders stay on the same filesystem. The watcher keeps running meanwhile, since it never looked inside them. Once they're moved, `photos carry-over` and a `v1.6.x` rollback can't find them, and a backup of `public/assets/photos` no longer holds them, so keep the dated folder with your backups if you want them back after a restore.
 
 Move them back first before any of these:
@@ -211,18 +215,19 @@ Move them back first before any of these:
 - rolling back to `v1.6.x`, whose watcher otherwise writes every one of them again;
 - rerunning `photos carry-over`, which reads them.
 
-The script prints the lines that move them back, with its own paths. For the default folder, this does the same, from the folder `docker-compose.prod.yml` is in. Each folder goes back only while the library doesn't hold that name again, as it may after restoring an older backup. Compare the two first if it says so:
+To move them back, run the `move-back.sh` the script wrote, with `sh`, or `sudo sh` if you moved them with `sudo`. It also printed the same lines. Each folder goes back only while the library doesn't hold that name again, as it may after restoring an older backup, and it's safe to run after a move that stopped partway. Without it, this does the same. Set `aside` to the folder the script printed as the destination, and `library` to the library, from the folder `docker-compose.prod.yml` is in. Compare the two folders first if it says one exists:
 
 ```bash
 (
-  cd public/assets || exit 1
-  aside=photos.legacy-derivatives-<YYYY-MM-DD>
+  aside=public/assets/photos.legacy-derivatives-<YYYY-MM-DD>
+  library=public/assets/photos
+  [ -d "$aside" ] || { echo "No $aside here" >&2; exit 1; }
   for name in thumbnails medium optimized thumbnails-avif medium-avif optimized-avif lqip cache; do
     [ -d "$aside/$name" ] || continue
-    if [ -e "photos/$name" ] || [ -L "photos/$name" ]; then
-      echo "photos/$name exists. Compare it with $aside/$name first." >&2
+    if [ -e "$library/$name" ] || [ -L "$library/$name" ]; then
+      echo "$library/$name exists. Compare it with $aside/$name first." >&2
     else
-      sudo mv "$aside/$name" "photos/$name"
+      sudo mv "$aside/$name" "$library/$name"
     fi
   done
 )
