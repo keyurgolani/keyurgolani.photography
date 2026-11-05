@@ -447,11 +447,17 @@ describe('the watcher never authors order', () => {
                     await waitUntil(() => landscape() !== before && advanced(since)(), 60_000, 'No pass took the edit in', output);
                 },
             },
+            {
+                // Review nit: and once more after it shuts down, since a pass or build under way finishes then.
+                name: 'SIGTERM under --watch',
+                run: async () => {
+                    const running = watcher as ReturnType<typeof spawnWatcher> | null;
+                    if (running === null) throw new Error('The watcher never started.');
+                    running.child.kill('SIGTERM');
+                    expect(await running.exited, running.output).toBe(0);
+                },
+            },
         ]);
-        const running = watcher as ReturnType<typeof spawnWatcher> | null;
-        if (running === null) throw new Error('The watcher never started.');
-        running.child.kill('SIGTERM');
-        expect(await running.exited, running.output).toBe(0);
     }, 180_000);
 
     it('leaves them alone at startup against an uninitialized data root too', async () => {

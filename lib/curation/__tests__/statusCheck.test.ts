@@ -243,12 +243,12 @@ describe('photos status --check, after the review (v2.0.0 A2)', () => {
         expect((await status(f, { check: true })).output).toContain('the pass under way started 35 min ago');
     });
 
-    it("doesn't fail on a last pass that refused an empty library: A6's library-unavailable item does", async () => {
+    it('fails on a last pass that refused an empty library, even with no library-unavailable item to say so (A6 review)', async () => {
         const f = await fixture();
         await beat(f, 30_000, 'library-empty');
         const result = await status(f, { check: true });
-        expect(result.exitCode).toBe(0);
-        expect(result.output).toMatch(/\nCheck: passed\.\n$/);
+        expect(result.exitCode).toBe(1);
+        expect(result.output).toContain("  - The watcher's last pass, at 2026-02-01T02:59:30.000Z, found the library empty while the registry has present photos, so it changed nothing.");
     });
 
     it("names no host path when the heartbeat can't be used, in the text or the JSON", async () => {
