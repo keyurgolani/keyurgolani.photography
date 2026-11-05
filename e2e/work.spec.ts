@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Locator, Page, Route } from '@playwright/test';
+import type { Locator, Page, Request, Route } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { catalogPaths } from '../lib/catalog/working-layer';
@@ -456,6 +456,143 @@ test('covers load from /media, and a cover /media can\'t serve gives the text fa
         await expect.poll(() => coverLoaded(entryItem)).toBe(true);
         expect(await entryItem.locator('img').getAttribute('src')).toMatch(/^\/media\/ph_[^/]+\/sha256-[0-9a-f]{64}\/p_[0-9a-f]+\/w1200\.webp$/);
     }
+});
+
+/** The photograph a published series' cover shows, from the published content. */
+const coverPhotoOf = (slug: string) => {
+    const photoId = catalog?.content.series.find((series) => series.slug === slug)?.cover?.photoId;
+    if (!photoId) throw new Error(`${slug} has no cover in the published content`);
+    return photoId;
+};
+/** The photograph a /media path serves: /media/<photoId>/<assetRevision>/<profileId>/<variant>. */
+const mediaPhotoOf = (pathname: string) => pathname.split('/')[2] ?? '';
+/** A series page, or anything under it: its RSC payload, a prefetch of it, its Viewer. */
+const underSeries = (pathname: string) => pathname.startsWith('/work/');
+/**
+ * Resolves once `count` has held still for a second, so a request something starts late, a prefetch after hydration
+ * or an image after a scroll, is seen before the test reads what was asked for. Playwright's networkidle fires once
+ * per load, so after a scroll it wouldn't wait at all.
+ */
+async function settled(count: () => number): Promise<void> {
+    let last = -1;
+    await expect
+        .poll(
+            () => {
+                const same = count() === last;
+                last = count();
+                return same;
+            },
+            { message: 'the page stopped asking for things', intervals: [1_000], timeout: 15_000 },
+        )
+        .toBe(true);
+}
+
+// #6 item 9 (B10): an entry's link prefetches its series only on intent, through IntentPrefetchLink. Coming into view
+// prefetches nothing.
+test('pointing at or focusing an entry prefetches that series, and only once the visitor does', async ({ page, isMobile }) => {
+    const asked: string[] = [];
+    page.on('request', (request) => {
+        const { pathname } = new URL(request.url());
+        if (underSeries(pathname)) asked.push(pathname);
+    });
+    const all: string[] = [];
+    page.on('request', (request) => void all.push(request.url()));
+    await openWork(page);
+    await settled(() => all.length);
+    expect(asked, 'nothing prefetched a series before the visitor pointed at or focused one').toEqual([]);
+    await entry(page, PUBLISHED[1].slug).focus();
+    await expect.poll(() => asked, 'focus prefetched the focused series').toContain(`/work/${PUBLISHED[1].slug}`);
+    expect(new Set(asked), 'and no other').toEqual(new Set([`/work/${PUBLISHED[1].slug}`]));
+    if (isMobile) return;
+    // The stretched ::after takes the pointer anywhere on the entry, cover included. By the mouse, since a hover on the
+    // cover's locator would refuse the link's ::after over it.
+    const cover = item(page, PUBLISHED[2].slug).locator('[data-cover]');
+    await cover.scrollIntoViewIfNeeded();
+    const box = await cover.boundingBox();
+    if (!box) throw new Error('The cover is not rendered');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await expect.poll(() => asked, 'a pointer on the cover prefetched its series').toContain(`/work/${PUBLISHED[2].slug}`);
+    expect(new Set(asked)).toEqual(new Set([`/work/${PUBLISHED[1].slug}`, `/work/${PUBLISHED[2].slug}`]));
+});
+
+// #171's request check, moved from B1 to B10: it can't pass while each entry's Link prefetches its series as it
+// comes into view, since this build prefetches force-dynamic pages.
+test.describe('at 375 by 812', () => {
+    test.skip(({ isMobile }) => isMobile, 'It sets its own size. The desktop project covers it.');
+    test.use({ viewport: { width: 375, height: 812 } });
+
+    test('Work makes no /api, series page or sequence request, and loads one cover per series', async ({ page }) => {
+        const requests: string[] = [];
+        /** Each /media request, and the status it was answered with, once it is. */
+        const media = new Map<Request, number | null>();
+        page.on('request', (request) => {
+            const url = new URL(request.url());
+            if (!url.protocol.startsWith('http')) return;
+            requests.push(url.pathname);
+            if (url.pathname.startsWith('/media/')) media.set(request, null);
+        });
+        page.on('response', (response) => {
+            if (media.has(response.request())) media.set(response.request(), response.status());
+        });
+        await openWork(page);
+        // Every entry comes into view, as a visitor scrolling through would bring it, with nothing pointed at, focused
+        // or touched. Each cover settles: the image paints, or the box takes its text fallback.
+        for (const series of PUBLISHED) {
+            const entryItem = item(page, series.slug);
+            await entryItem.scrollIntoViewIfNeeded();
+            if (series.slug === BROKEN_COVER) await expect(entryItem.locator('[data-cover="unavailable"]')).toBeVisible();
+            else await expect.poll(() => coverLoaded(entryItem), `${series.slug}'s cover paints`).toBe(true);
+        }
+        await settled(() => requests.length);
+
+        expect(requests.filter((pathname) => pathname.startsWith('/api/')), 'no /api request').toEqual([]);
+        // A series page, its payload or a prefetch of it, and its Viewer (the sequence) all sit under /work/<slug>.
+        expect(requests.filter(underSeries), 'no series page or sequence request').toEqual([]);
+        // Every image is a cover, and every cover is asked for. Each one that loads is asked for once, and answered.
+        const covers = new Map(PUBLISHED.map((series) => [coverPhotoOf(series.slug), series.slug]));
+        const bySeries = new Map<string, number[]>();
+        for (const [request, status] of media) {
+            const { pathname } = new URL(request.url());
+            const slug = covers.get(mediaPhotoOf(pathname));
+            expect(slug, `${pathname} is a series' cover`).toBeDefined();
+            if (slug) bySeries.set(slug, [...(bySeries.get(slug) ?? []), status ?? 0]);
+        }
+        for (const series of PUBLISHED) {
+            const statuses = bySeries.get(series.slug) ?? [];
+            // The broken cover's files are gone, so whatever asks for it gets a 404 and nothing paints.
+            if (series.slug === BROKEN_COVER) expect(statuses.length > 0 && statuses.every((status) => status === 404), `${series.slug}: ${statuses}`).toBe(true);
+            else expect(statuses, `${series.slug} loads its cover once`).toEqual([200]);
+        }
+    });
+});
+
+// #6 gap 31: an image Work started stops when Work unmounts on a route change. The second cover is eager and not
+// preloaded from the head, so it starts at once and only its own element holds it. Its /media response is held, so
+// it's still on its way when the visitor opens a series. Chromium reports a stopped request as ERR_ABORTED.
+test('a cover still loading when a visitor opens a series stops loading', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'The abort is read from Chromium\'s network events.');
+    const slow = coverPhotoOf(PUBLISHED[1].slug);
+    const held: Route[] = [];
+    await page.route((url) => url.pathname.startsWith(`/media/${slow}/`), (route) => void held.push(route));
+    const failed: { pathname: string; error: string }[] = [];
+    page.on('requestfailed', (request) => failed.push({ pathname: new URL(request.url()).pathname, error: request.failure()?.errorText ?? '' }));
+    // The held cover would keep the load event from firing.
+    await page.goto(`${origin()}/work`, { waitUntil: 'domcontentloaded' });
+    await waitForHydration(page);
+    await expect(entries(page)).toHaveCount(PUBLISHED.length);
+    await expect.poll(() => held.length, 'the second cover was asked for and is held').toBeGreaterThan(0);
+    expect(await coverLoaded(item(page, PUBLISHED[1].slug)), 'nothing painted yet').toBe(false);
+    const asked = held.map((route) => new URL(route.request().url()).pathname);
+
+    await entry(page, PUBLISHED[0].slug).click();
+    await expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[0].slug}`);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(PUBLISHED[0].title);
+    await expect
+        .poll(() => failed.filter((request) => asked.includes(request.pathname)).map((request) => request.error), 'the held cover was stopped')
+        .toContainEqual(expect.stringMatching(/ERR_ABORTED/));
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    for (const route of held) await route.continue().catch(() => undefined);
 });
 
 /** Each published series' short statement, from the published content, in Work order. */
