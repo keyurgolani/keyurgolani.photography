@@ -8,10 +8,10 @@ import { authoredRecordDir } from '../../lib/catalog/working-layer';
 import { eventIdOf, eventKey } from '../../lib/curation/events';
 import { readEvent } from '../../lib/curation/repository';
 import { createCurationSink } from '../../lib/curation/sink';
-import { writeWatcherHeartbeat } from '../../lib/identity/heartbeat';
 import { readRegistry, writeRegistry } from '../../lib/identity/registry';
 import type { IdentityFact, IdentityFactType } from '../../lib/identity/types';
 import { assetDir } from '../../lib/media/path';
+import { keepWatcherAlive, type WatcherBeat } from './watcher';
 
 /**
  * The Inbox e2e's data: a published catalog (one published series, one
@@ -53,20 +53,9 @@ export interface InboxFixture {
     library: string;
     /** Each photograph's asset revision, from the registry. */
     revisionOf(photoId: string): string;
+    /** The watcher's heartbeat, kept fresh (#14). A spec stops it to see the Inbox's warning. */
+    watcher: WatcherBeat;
     cleanup(): Promise<void>;
-}
-
-/**
- * The watcher's heartbeat, every 30 s as the watcher writes it, so the Inbox shows no watcher warning (#14) through a
- * run longer than its 5 minutes. Unref'd, so it never holds the worker open; cleanup() stops it.
- */
-async function keepWatcherAlive(root: string): Promise<() => void> {
-    const beat = () => writeWatcherHeartbeat(root, { pid: process.pid, hostname: 'e2e', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: new Date().toISOString(), legacyDerivatives: false });
-    await beat();
-    // A later beat that fails leaves the last one, which the Inbox then warns about once it's 5 minutes old.
-    const timer = setInterval(() => void beat().catch(() => undefined), 30_000);
-    timer.unref();
-    return () => clearInterval(timer);
 }
 
 export async function createInboxFixture(): Promise<InboxFixture> {
@@ -93,7 +82,7 @@ export async function createInboxFixture(): Promise<InboxFixture> {
         fs.mkdirSync(path.dirname(path.join(library, sourcePath)), { recursive: true });
         fs.writeFileSync(path.join(library, sourcePath), 'fixture source bytes');
     }
-    const stopBeating = await keepWatcherAlive(root);
+    const watcher = await keepWatcherAlive(root);
     return {
         catalog,
         root,
@@ -103,8 +92,9 @@ export async function createInboxFixture(): Promise<InboxFixture> {
             if (!record) throw new Error(`No fixture photo ${photoId}`);
             return record.source.observedRevision;
         },
+        watcher,
         cleanup: async () => {
-            stopBeating();
+            watcher.stop();
             fs.rmSync(temp, { recursive: true, force: true });
         },
     };

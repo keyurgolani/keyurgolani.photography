@@ -804,6 +804,11 @@ p.fieldError {
   color: var(--curator-tone-alert-ink);
 }
 
+/* Its pointer inside the item, for a phone that a deep link landed past the strip. A wide screen shows the strip itself. */
+.watcherPointer {
+  display: none;
+}
+
 /* The answer an approval or Decide later brought to the page it opened: the
    done tone, its check, one sentence and the way back, in one row when it
    fits. In the list it needs the list's own inset. */
@@ -1096,6 +1101,19 @@ main.state {
     background: var(--gah-surface);
     font-size: var(--gah-type-ui);
     text-decoration: none;
+  }
+
+  .watcherPointer {
+    display: block;
+    margin: 0;
+    padding: 0.625rem 1.125rem;
+    border-bottom: 1px solid var(--curator-rule);
+    color: var(--curator-tone-alert-ink);
+    background: var(--curator-tone-alert-bg);
+  }
+
+  .watcherPointer a {
+    color: inherit;
   }
 
   /* No rule under it here: Back to inbox's rule is just above, the notice has its own box, and the photo's ground below already separates it. */
