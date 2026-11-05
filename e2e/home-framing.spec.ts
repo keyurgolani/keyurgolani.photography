@@ -71,6 +71,8 @@ for (const theme of Object.keys(MATS) as (keyof typeof MATS)[]) {
         await expect(page.locator('[data-home-carousel]')).toHaveCSS('background-color', MATS[theme]);
         const opening = shownSlide(page);
         await expect(opening).toHaveAttribute('data-crop', 'contain');
+        // The opening photograph is the one with an LQIP, so the background checks below are about a real one.
+        expect(await opening.locator('img').evaluate((el) => getComputedStyle(el).backgroundImage)).toMatch(/^url\("data:image\/webp;base64,/);
         expect(await style(opening.locator('img'), 'object-fit', 'object-position', 'background-size', 'background-repeat', 'background-position')).toEqual({
             'object-fit': 'contain',
             'object-position': '50% 50%',
