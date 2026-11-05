@@ -6,7 +6,8 @@
  * C1's window rule. These run in the unit suite, with no build or server.
  */
 import { describe, expect, it } from 'vitest';
-import { bodyOf, headOf, markers, meta, servableRevisions, skeleton, type PublishTimes } from './helpers/standaloneServer';
+import { WORK_ERROR_BODY } from './fixtures/errorShell';
+import { bodyOf, errorShellProblems, headOf, markers, meta, servableRevisions, skeleton, type PublishTimes } from './helpers/standaloneServer';
 
 const A = `rev_${'a'.repeat(64)}`;
 const B = `rev_${'b'.repeat(64)}`;
@@ -74,6 +75,38 @@ describe("the error shell's skeleton", () => {
 
     it('differs once the title or a hidden segment streams into the body', () => {
         expect(skeleton(shell(2, '<div hidden id="S:0"><title>Work · Site</title></div>'))).not.toEqual(skeleton(shell(2)));
+    });
+});
+
+describe("E1's bare error shell, after </head>", () => {
+    /** The real body with `extra` streamed into its hidden div, as a late metadata segment lands. */
+    const streamed = (extra: string) => WORK_ERROR_BODY.replace('<!--$--><!--/$--></div>', `<!--$--><!--/$-->${extra}</div>`);
+
+    it("passes /work's real body: one hidden div holding an empty Suspense boundary, then the scripts", () => {
+        expect(errorShellProblems(WORK_ERROR_BODY)).toEqual([]);
+        // Whitespace and boundary comments only, however many, are still empty.
+        expect(errorShellProblems('<body><div hidden="">\n  <!--$-->\n<!--/$--><!--$--><!--/$--></div></body>')).toEqual([]);
+        expect(errorShellProblems('<body><div hidden></div></body>')).toEqual([]);
+    });
+
+    it('fails a title streamed into the hidden div', () => {
+        const body = streamed('<title>Work · Keyur Golani Photography</title>');
+        expect(errorShellProblems(body)).toEqual(['a <title> after </head>', 'a hidden div holding more than an empty boundary: <!--$--><!--/$--><title>Work · Keyur Golani Photography</title>']);
+        // And its tags aren't the real shell's.
+        expect(skeleton(body)).not.toEqual(skeleton(WORK_ERROR_BODY));
+    });
+
+    it('fails a meta tag after </head>, inside the hidden div or out', () => {
+        expect(errorShellProblems(streamed('<meta name="description" content="Photographic series by Keyur Golani."/>'))).toEqual([
+            'a <meta> after </head>',
+            'a hidden div holding more than an empty boundary: <!--$--><!--/$--><meta name="description" content="Photographic series by Keyur Golani."/>',
+        ]);
+        expect(errorShellProblems(WORK_ERROR_BODY.replace('</body>', '<meta name="robots" content="noindex"/></body>'))).toEqual(['a <meta> after </head>']);
+    });
+
+    it('reads markup only, never a script', () => {
+        const scripted = WORK_ERROR_BODY.replace('<script id="_R_"></script>', '<script id="_R_">document.title="<title>x</title><meta name=x>"</script>');
+        expect(errorShellProblems(scripted)).toEqual([]);
     });
 });
 
