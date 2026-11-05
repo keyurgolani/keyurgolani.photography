@@ -43,9 +43,11 @@
  *     stale items, each listed, a missing one with its age), and the
  *     watcher's heartbeat. Exits 1 unless the data root is ready and
  *     everything reads. --check is for a monitor: it also exits 1 on an open
- *     missing, failed or ambiguous item, on a failed last watcher pass, or on
- *     a heartbeat over 5 minutes old, and prints why; --json then adds a
- *     `check` object with a code for each.
+ *     missing, failed or ambiguous item, an inbox item it can't read, a
+ *     failed last watcher pass, a watcher that has got no pass through for
+ *     over 30 minutes, or a heartbeat over 5 minutes old, and prints why;
+ *     --json then adds a `check` object with a code for each, and stays JSON
+ *     if status itself fails.
  *
  *   npx tsx scripts/photos.ts list [--unassigned] [--json]
  *     Every photo the registry holds, but not archived ones, with its library
