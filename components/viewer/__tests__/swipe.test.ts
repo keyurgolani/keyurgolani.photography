@@ -20,6 +20,7 @@ import {
     claimsTouch,
     followOffset,
     followTravel,
+    gesturePhase,
     isPinched,
     keepSamples,
     liftVelocity,
@@ -470,5 +471,23 @@ describe('reduceSwipe, with motion (9a)', () => {
         expect([claimed?.claimedAt, claimed?.vertical]).toEqual([185, false]);
         const vertical = run([down(1, 200, 300), move(198, 0, 320), move(100, 16, 320)]).state.start;
         expect([vertical?.claimedAt, vertical?.vertical]).toEqual([null, true]);
+    });
+});
+
+describe('gesturePhase (#178)', () => {
+    const down = (state = SWIPE_IDLE, eligible = true) => reduceSwipe(state, { type: 'down', pointerId: 1, x: 200, y: 300, t: 0, primary: true, eligible }).state;
+    const move = (state: ReturnType<typeof down>, dx: number, dy: number) => reduceSwipe(state, { type: 'move', pointerId: 1, x: 200 + dx, y: 300 + dy, t: 16 }).state;
+
+    it('names what the recognizer holds, for the root\'s data-gesture: idle, pressed, swiping, or scrolling', () => {
+        expect(gesturePhase(SWIPE_IDLE)).toBe('idle');
+        // A finger down on something the swipe doesn't take holds no gesture.
+        expect(gesturePhase(down(SWIPE_IDLE, false))).toBe('idle');
+        const pressed = down();
+        expect(gesturePhase(pressed)).toBe('pressed');
+        expect(gesturePhase(move(pressed, CLAIM_SLOP - 1, 0))).toBe('pressed');
+        expect(gesturePhase(move(pressed, CLAIM_SLOP + 2, 0))).toBe('swiping');
+        expect(gesturePhase(move(pressed, 0, CLAIM_SLOP + 2))).toBe('scrolling');
+        expect(gesturePhase(reduceSwipe(move(pressed, 60, 0), { type: 'up', pointerId: 1, x: 260, y: 300, t: 32 }).state)).toBe('idle');
+        expect(gesturePhase(reduceSwipe(move(pressed, 60, 0), { type: 'reset' }).state)).toBe('idle');
     });
 });
