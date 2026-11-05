@@ -217,6 +217,12 @@ jobs:
           IMAGE: ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke
         run: bash ci/smoke-watcher-once.sh
 
+      # The owner's commands on a migrated library: the launch publish, the
+      # inbox's new item, then a replacement and a deletion of landscape.jpg
+      # against the sets, the pointer and photos status --check.
+      - name: Smoke test ingestion in the image
+        run: ci/smoke-ingest.sh ci-smoke
+
       # ci/smoke-catalog.sh publishes its test catalog on the runner with
       # ci/publish-fixture.ts, so it needs Node and the dev dependencies.
       - uses: actions/setup-node@v7
