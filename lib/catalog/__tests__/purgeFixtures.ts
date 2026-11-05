@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -54,25 +55,30 @@ async function published(root: string, confirmLaunch = false): Promise<string> {
     return result.revisionId;
 }
 
-/** Give `photoId` a second asset revision, B2, with a ready set copied from its first, and pin it in its record. */
-async function secondRevision(root: string, photoId: string, firstRevision: string, profileId: string): Promise<void> {
+/**
+ * Give `photoId` another asset revision, `assetRevision`, with a ready set
+ * copied from its first. With `pin`, its record pins the new one, as a
+ * replacement the owner accepted would.
+ */
+export async function addAssetRevision(root: string, photoId: string, firstRevision: string, profileId: string, assetRevision: string, { pin = false }: { pin?: boolean } = {}): Promise<void> {
     const stored = await readStoredRegistry(root);
     if (!stored) throw new Error('The fixture has no registry.');
     const registry = structuredClone(stored.registry);
     const photo = registry.photos[photoId];
-    photo.revisions[B2] = { ...structuredClone(photo.revisions[firstRevision]), assetRevision: B2 };
-    photo.source.observedRevision = B2;
+    photo.revisions[assetRevision] = { ...structuredClone(photo.revisions[firstRevision]), assetRevision };
+    if (pin) photo.source.observedRevision = assetRevision;
     await writeRegistry(root, registry, stored.registry.version);
     const from = path.join(root, 'assets', photoId, firstRevision, profileId);
-    const to = path.join(root, 'assets', photoId, B2, profileId);
+    const to = path.join(root, 'assets', photoId, assetRevision, profileId);
     fs.cpSync(from, to, { recursive: true });
     const manifestFile = path.join(to, 'manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as { assetRevision: string };
-    manifest.assetRevision = B2;
+    manifest.assetRevision = assetRevision;
     fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+    if (!pin) return;
     const record = (await readWorkingLayer(root)).photos.find((each) => each.id === photoId);
     if (!record) throw new Error(`No record for ${photoId}.`);
-    await writeAuthoredRecord({ ...record, assetRevision: B2 }, { expectedVersion: record.version, root });
+    await writeAuthoredRecord({ ...record, assetRevision }, { expectedVersion: record.version, root });
 }
 
 /**
@@ -88,7 +94,7 @@ export async function buildPurgeFixture(seed: number, root: string): Promise<Omi
     await check(await runSequenceCommand({ dataRoot: root }, { command: 'remove', seriesId, photoId: d }));
     await check(await runSequenceCommand({ dataRoot: root }, { command: 'remove', seriesId, photoId: c }));
     const two = await published(root);
-    await secondRevision(root, b, first[b], catalog.profileId);
+    await addAssetRevision(root, b, first[b], catalog.profileId, B2, { pin: true });
     const three = await published(root);
     await check(await runSequenceCommand({ dataRoot: root }, { command: 'insert', seriesId, photoId: c, at: 'end' }));
     return { catalog, root, seriesId, profileId: catalog.profileId, a, b, c, d, first, revisions: { 1: one, 2: two, 3: three } };
@@ -173,7 +179,10 @@ export function writeStaging(root: string, id: string, ref: { photoId: string; a
     return dir;
 }
 
-/** Every path under `dir`, with its size, so a change anywhere shows. Leaves out locks/. */
+/**
+ * Every path under `dir`, with its size and, for a file, the sha256 of its
+ * bytes, so any change to any byte shows. Leaves out locks/.
+ */
 export function snapshot(dir: string): Map<string, string> {
     const found = new Map<string, string>();
     const walk = (current: string) => {
@@ -182,10 +191,35 @@ export function snapshot(dir: string): Map<string, string> {
             const relative = path.relative(dir, full).split(path.sep).join('/');
             if (relative === 'locks') continue;
             const stat = fs.lstatSync(full);
-            found.set(relative, entry.isDirectory() ? 'dir' : `${entry.isSymbolicLink() ? 'link' : 'file'} ${stat.size}`);
+            if (entry.isDirectory()) found.set(relative, 'dir');
+            else if (entry.isSymbolicLink()) found.set(relative, `link ${fs.readlinkSync(full)}`);
+            else found.set(relative, `file ${stat.size} ${createHash('sha256').update(fs.readFileSync(full)).digest('hex')}`);
             if (entry.isDirectory()) walk(full);
         }
     };
     walk(dir);
     return found;
+}
+
+/** Every path under `dir` with its mtime, outside locks/, so a dry run that writes anything shows. */
+export function stamps(dir: string): Map<string, number> {
+    const found = new Map<string, number>();
+    const walk = (current: string) => {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            const full = path.join(current, entry.name);
+            const relative = path.relative(dir, full).split(path.sep).join('/');
+            if (relative === 'locks') continue;
+            found.set(relative, fs.lstatSync(full).mtimeMs);
+            if (entry.isDirectory()) walk(full);
+        }
+    };
+    walk(dir);
+    return found;
+}
+
+/** An empty library folder beside the data root, for PHOTOGRAPHY_LIBRARY_DIR, so no test reaches a real one. */
+export function tempLibrary(root: string): string {
+    const library = path.join(path.dirname(root), 'library');
+    fs.mkdirSync(library, { recursive: true });
+    return library;
 }

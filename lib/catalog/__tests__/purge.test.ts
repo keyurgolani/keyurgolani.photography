@@ -1,7 +1,8 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readStoredRegistry, writeRegistry } from '../../identity/registry';
 import { withLock } from '../../storage/lock';
 import { UsageError } from '../owner-cli';
@@ -23,13 +24,26 @@ const clock = () => NOW;
 const UUID = '0f0f0f0f-0000-4000-8000-00000000a10a';
 
 const cleanups: (() => void)[] = [];
+let library = '';
+
+beforeAll(() => {
+    library = fs.mkdtempSync(path.join(os.tmpdir(), 'purge-test-library-'));
+});
+
+// No test here reaches a real library: PHOTOGRAPHY_LIBRARY_DIR is an empty temp folder unless a test sets another.
+beforeEach(() => {
+    vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', library);
+});
 
 afterEach(() => {
     vi.unstubAllEnvs();
     for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
-afterAll(() => cleanupPurgeTemplates());
+afterAll(() => {
+    cleanupPurgeTemplates();
+    fs.rmSync(library, { recursive: true, force: true });
+});
 
 /** Another asset revision of `photoId` in the registry, as a replacement adds one. No set is built for it. */
 async function addRevision(root: string, photoId: string, assetRevision: string): Promise<void> {

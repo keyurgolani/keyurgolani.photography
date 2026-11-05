@@ -65,3 +65,11 @@ export function importGraph(entry: string, { source }: { source?: string } = {})
     }
     return { files: [...seen].map(relative).sort(), packages };
 }
+
+/** The repository modules `entry` imports itself, statically or dynamically, relative to the repository root and sorted. */
+export function directImports(entry: string): string[] {
+    const file = path.resolve(REPO_ROOT, entry);
+    const { importedFiles } = ts.preProcessFile(fs.readFileSync(file, 'utf8'), true, true);
+    const found = importedFiles.map(({ fileName }) => resolveLocal(file, fileName)).filter((each): each is string => each !== null);
+    return [...new Set(found.map(relative))].sort();
+}

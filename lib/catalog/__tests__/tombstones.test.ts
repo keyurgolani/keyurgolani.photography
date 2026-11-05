@@ -1,7 +1,8 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { blockingReasons } from '../../curation/publish-history';
 import { publish } from '../publish';
 import { runPurge, runRevoke } from '../purge';
@@ -19,12 +20,26 @@ import { cleanupPurgeTemplates, purgeFixture, quiet, writeRevoke, writeTombstone
  */
 
 const cleanups: (() => void)[] = [];
+let library = '';
+
+beforeAll(() => {
+    library = fs.mkdtempSync(path.join(os.tmpdir(), 'tombstones-test-library-'));
+});
+
+// No test here reaches a real library.
+beforeEach(() => {
+    vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', library);
+});
 
 afterEach(() => {
+    vi.unstubAllEnvs();
     for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
-afterAll(() => cleanupPurgeTemplates());
+afterAll(() => {
+    cleanupPurgeTemplates();
+    fs.rmSync(library, { recursive: true, force: true });
+});
 
 async function fixture(): Promise<PurgeFixture> {
     const built = await purgeFixture(117);
@@ -60,6 +75,43 @@ describe('readTombstones()', { timeout: 120_000 }, () => {
         ]);
     });
 
+    it("reads a GC marker's paths only in the asset folder shape, and only folders its tombstone lists (N2)", async () => {
+        const built = await fixture();
+        const one = writeTombstone(built.root, { photoId: built.d, assetRevisions: [built.first[built.d]] }, 1);
+        const digest = `gc_${'a'.repeat(64)}`;
+        const marker = (paths: unknown[], prefix = digest.slice(3, 19)) => {
+            const file = path.join(tombstonesDir(built.root), `${one.tombstoneId}.collected.${prefix}.json`);
+            fs.writeFileSync(file, JSON.stringify({ tombstoneId: one.tombstoneId, planDigest: digest, startedAt: '2026-10-09T00:00:00.000Z', paths }));
+            return path.relative(built.root, file).split(path.sep).join('/');
+        };
+        const good = { path: `assets/${built.d}/${built.first[built.d]}`, bytes: 10, newestMs: 1 };
+        marker([good]);
+        expect((await readTombstones(built.root)).tombstones[0].collected.map((each) => each.paths)).toEqual([[good]]);
+        for (const bad of [
+            [{ ...good, path: '../../identity' }],
+            [{ ...good, path: 'identity/registry' }],
+            [{ ...good, path: `assets/${built.d}/${built.first[built.d]}/${built.profileId}` }],
+            [{ ...good, path: `assets/${built.c}/${built.first[built.c]}` }],
+            [good.path],
+            [],
+        ]) {
+            const file = marker(bad);
+            const read = await readTombstones(built.root);
+            expect(read.problems, JSON.stringify(bad)).toEqual([expect.objectContaining({ file, reason: 'invalid' })]);
+            expect(readTombstonesSync(built.root)).toEqual(read);
+        }
+        const misnamed = marker([good], 'b'.repeat(16));
+        expect((await readTombstones(built.root)).problems).toContainEqual(expect.objectContaining({ file: misnamed, reason: 'invalid' }));
+    });
+
+    it("carries each tombstone file's ctime, the same sync and async", async () => {
+        const built = await fixture();
+        const one = writeTombstone(built.root, { photoId: built.d, assetRevisions: [built.first[built.d]] }, 1);
+        const [entry] = (await readTombstones(built.root)).tombstones;
+        expect(entry.ctimeMs).toBe(fs.lstatSync(path.join(tombstonesDir(built.root), `${one.tombstoneId}.json`)).ctimeMs);
+        expect(readTombstonesSync(built.root).tombstones[0].ctimeMs).toBe(entry.ctimeMs);
+    });
+
     it('reads a missing folder as no tombstones, and a symlinked one as a problem', async () => {
         const built = await fixture();
         expect(await readTombstones(built.root)).toEqual({ tombstones: [], problems: [] });
@@ -70,7 +122,7 @@ describe('readTombstones()', { timeout: 120_000 }, () => {
 });
 
 describe("isTombstoned(), /media's index", { timeout: 120_000 }, () => {
-    it('sees a purge and a revoke from another process on the next call, and ignores a revoked tombstone', async () => {
+    it('sees a purge and a revoke written by another command on the next call, and ignores a revoked tombstone', async () => {
         const built = await fixture();
         let now = Date.now();
         const isTombstoned = createTombstoneIndex({ root: () => built.root, clock: () => now, logger: { warn: () => undefined } });
