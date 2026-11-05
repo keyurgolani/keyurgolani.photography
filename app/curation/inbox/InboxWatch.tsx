@@ -57,7 +57,7 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
             } else if (news.offline) setOffline(true);
             if (news.line) {
                 serial += 1;
-                setLine({ text: news.line, refresh: /Refresh the inbox/.test(news.line), serial });
+                setLine({ text: news.line, refresh: news.refresh, serial });
             }
             // With the version the page showed, so the item raises its alert only while it still shows that one (S4).
             if (news.itemChanged && page.current.item) window.dispatchEvent(new CustomEvent(ITEM_CHANGED_EVENT, { detail: { id: page.current.item.id, version: news.changedFrom } }));
