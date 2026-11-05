@@ -139,6 +139,8 @@ describe('SeriesSequence', () => {
         more().focus();
         fireEvent.click(more());
         await flush();
+        // Focus went to the first new entry; a keyboard visitor comes back to the control for the next page.
+        more().focus();
         fireEvent.click(more());
         await flush();
         expect(positions().at(-1)).toBe(250);
@@ -384,16 +386,15 @@ describe('SeriesSequence on a deep entry (?photo=, B5)', () => {
     /** The server's page for ?photo= of photograph 150: 101 to 200, with the pages on either side. */
     const deep = (overrides: Partial<SeriesSequenceProps> = {}) => show({ entries: range(101, 200), prevHref: PAGE_1, nextHref: PAGE_3, ...overrides });
     const earlier = () => screen.getByRole('button', { name: SHOW_EARLIER });
-    let tops: Map<string, number>;
-
     beforeEach(() => {
-        // Each entry's top in the view: the further down the list, the lower, so a prepend pushes the old ones down by 5000.
-        tops = new Map();
+        // Each entry's top in the view follows its place in the list, 50 px apart from 120, so 100 entries put in above push the old ones down by 5000.
         vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-            const top = tops.get(this.id) ?? 0;
-            return { top, bottom: top + 100, left: 0, right: 100, width: 100, height: 100, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+            const index = [...document.querySelectorAll('[id^="photo-"]')].indexOf(this);
+            const top = index === -1 ? 0 : 120 + 50 * index;
+            return { top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
         });
         window.scrollBy = vi.fn() as unknown as typeof window.scrollBy;
+        Element.prototype.scrollIntoView = vi.fn();
     });
 
     it('shows Show earlier above the entries and Show more below, with the range it shows', () => {
@@ -420,13 +421,10 @@ describe('SeriesSequence on a deep entry (?photo=, B5)', () => {
 
     it('loads the page before, keeping the old first entry where it was in the view, and moves focus to the last new entry', async () => {
         deep();
-        tops.set(`photo-${id(101)}`, 120);
         earlier().focus();
         fireEvent.click(earlier());
         expect(earlier()).toHaveAttribute('aria-disabled', 'true');
         expect(screen.getByText('Loading photographs 1 to 100')).toBeInTheDocument();
-        // Once the page is in, the old first entry sits 100 entries lower.
-        tops.set(`photo-${id(101)}`, 5120);
         await flush();
         expect(liveCalls()).toEqual([PAGE_1]);
         expect(positions()).toEqual(range(1, 200).map((item) => item.position));

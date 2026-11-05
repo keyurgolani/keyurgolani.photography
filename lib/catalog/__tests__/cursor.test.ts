@@ -33,7 +33,13 @@ describe('the series cursor', () => {
     it('refuses to encode a position it could never decode', () => {
         expect(() => encodeSeriesCursor({ ...CURSOR, revisionId: 'rev_a' })).toThrow(TypeError);
         expect(() => encodeSeriesCursor({ ...CURSOR, seriesId: 'fixture-a' })).toThrow(TypeError);
-        for (const offset of [0, -1, 1.5, 10_000_000, Number.NaN]) expect(() => encodeSeriesCursor({ ...CURSOR, offset })).toThrow(RangeError);
+        for (const offset of [-1, 1.5, 10_000_000, Number.NaN]) expect(() => encodeSeriesCursor({ ...CURSOR, offset })).toThrow(RangeError);
+    });
+
+    it('names the first page too, offset 0, which Show earlier reaches after a deep entry (B5)', () => {
+        const first = encodeSeriesCursor({ ...CURSOR, offset: 0 });
+        expect(decodeSeriesCursor(first)).toEqual({ ...CURSOR, offset: 0 });
+        expect(Buffer.from(first, 'base64url').toString('latin1')).toBe(`1.${REVISION}.ser_fixture-a.0`);
     });
 
     it.each([
@@ -48,8 +54,9 @@ describe('the series cursor', () => {
         ['a short revision ID', b64('1.rev_aaaa.ser_fixture-a.100')],
         ['an uppercase revision ID', b64(`1.rev_${'A'.repeat(64)}.ser_fixture-a.100`)],
         ['a series ID without its prefix', b64(`1.${REVISION}.fixture-a.100`)],
-        ['offset 0', b64(`1.${REVISION}.ser_fixture-a.0`)],
         ['a leading zero', b64(`1.${REVISION}.ser_fixture-a.0100`)],
+        ['two zeros', b64(`1.${REVISION}.ser_fixture-a.00`)],
+        ['a negative zero', b64(`1.${REVISION}.ser_fixture-a.-0`)],
         ['a negative offset', b64(`1.${REVISION}.ser_fixture-a.-100`)],
         ['eight digits', b64(`1.${REVISION}.ser_fixture-a.10000000`)],
         ['a fractional offset', b64(`1.${REVISION}.ser_fixture-a.100.5`)],
