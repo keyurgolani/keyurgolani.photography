@@ -907,6 +907,22 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       }
     });
 
+    it('names a folder above both the library and the destination once', async () => {
+      const root = tempRoot();
+      const shared = path.join(root, 'shared');
+      const library = fullLibrary(path.join(shared, 'library-parent'));
+      const manifest = await manifestFor(library);
+      fs.chmodSync(shared, 0o775);
+      try {
+        const { status, stderr } = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library]);
+        expect(status).toBe(1);
+        expect(stderr).toContain(`${shared} is writable by its group or others`);
+        expect(stderr.split('\n').find((line) => line.startsWith('chmod g-w,o-w '))).toBe(`chmod g-w,o-w ${shq(shared)}`);
+      } finally {
+        fs.chmodSync(shared, 0o755);
+      }
+    });
+
     it("quotes each path in the chmod way out, so one with a space and a ' pastes as is", async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
@@ -977,7 +993,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
         const { status, stderr } = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library], env);
         expect(status).toBe(1);
         expect(stderr).toMatch(/test account files in use/);
-        expect(stderr).toMatch(/the account databases couldn't be read in full/);
+        expect(stderr).toMatch(/the account databases couldn't be read in full \(the test passwd file can't be read\)/i);
       } finally {
         fs.chmodSync(shared, 0o755);
       }
@@ -1664,6 +1680,21 @@ BEGIN {
       expect(result.stdout).toMatch(/Not moved: thumbnails is taken or the check failed/);
       expect(snapshot(root)).toEqual(before);
     });
+  });
+
+  it('reads the account databases once, and keeps that result even when the read failed', () => {
+    const root = tempRoot();
+    const gid = process.getgid();
+    const env = accounts(root, gid);
+    const staged = `${env.PHOTOS_TEST_PASSWD}.staged`;
+    fs.renameSync(env.PHOTOS_TEST_PASSWD, staged);
+    const program = `${COMMON}\nprint private_group($ARGV[0], $ARGV[1]) ? 1 : 0; rename($ARGV[2], $ENV{PHOTOS_TEST_PASSWD}) or die; print private_group($ARGV[0], $ARGV[1]) ? 1 : 0;`;
+    const result = spawnSync(realBin('perl'), ['-e', program, '--', String(gid), String(process.getuid()), staged], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('00');
+    // With the file back, a fresh run finds the private group, so the 0 above was the cached failure.
+    const fresh = spawnSync(realBin('perl'), ['-e', `${COMMON}\nprint private_group($ARGV[0], $ARGV[1]) ? 1 : 0;`, '--', String(gid), String(process.getuid())], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
+    expect(fresh.stdout).toBe('1');
   });
 
   describe('the nsswitch gate', () => {

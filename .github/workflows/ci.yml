@@ -57,10 +57,11 @@ jobs:
       - name: Check legacy-move-aside.sh refuses a read-only library
         run: |
           base="$HOME/.cache/legacy-ro-mount-check"
-          mkdir -p -m 0700 "$base"
+          mkdir -p "$base"
           chmod 0700 "$base"
           mkdir -p "$base/library/thumbnails" "$base/ro"
           sudo mount --bind "$base/library" "$base/ro"
+          trap 'sudo umount "$base/ro" 2>/dev/null || true' EXIT
           sudo mount -o remount,bind,ro "$base/ro"
           set +e
           out=$(bash scripts/host/legacy-move-aside.sh --to "$base/aside" "$base/ro" 2>&1)

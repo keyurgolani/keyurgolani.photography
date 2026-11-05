@@ -45,9 +45,12 @@
 # - is inside a checkout of this repository (a folder above it holds
 #   package.json or next.config.*), which a build copies into the image;
 # - is inside a data root (a folder above it holds data-root.json);
-# - sits under a folder (or above the library one) that another user owns,
-#   that others can write, or that a group can write unless it's your own
-#   private group, sticky or not, or, on macOS, whose ACL allows others in;
+# - sits under a folder, or has the library under one, that another user
+#   owns, that others can write, or that a group can write unless it's your
+#   own private group, sticky or not, or, on macOS, whose ACL allows others
+#   in (macOS can't list its accounts in full, so there group write is
+#   always refused);
+# - already exists and is someone else's, or writable by its group or others;
 # - already holds any of the eight names, a move-back.sh or a used record;
 # - sits on another device or mount than the library;
 # - or whose path, or the library's or the manifest's, holds a newline.
@@ -126,6 +129,35 @@ refuse_inside_library() {
   done
 }
 
+# Why the passwd and group databases nsswitch.conf $1 names can't be read in
+# full with getpwent and getgrent, or ''. Each must be listed exactly once,
+# and name only files and systemd, once its [action] blocks are dropped.
+# Anything else (compat's +/- lines, ldap, sss, nis, a block left open)
+# could hold an account they don't list.
+read -r -d '' NSSWITCH <<'NSSWITCH' || true
+sub nss_problem {
+  my ($file) = @_;
+  open(my $fh, '<', $file) or return "$file can't be read";
+  my %lines;
+  while (my $line = <$fh>) {
+    $line =~ s/#.*//s;
+    push @{ $lines{$1} }, $2 if $line =~ /\A\s*(passwd|group)\s*:(.*)\z/s;
+  }
+  close $fh;
+  for my $db ('passwd', 'group') {
+    my @all = @{ $lines{$db} || [] };
+    return "$file has no $db line" unless @all;
+    return "$file lists $db more than once" if @all > 1;
+    (my $sources = $all[0]) =~ s/\[[^\]]*\]//g;
+    return "$file has an action block on its $db line that isn't closed" if $sources =~ /[\[\]]/;
+    my @names = grep { length } split /\s+/, $sources;
+    return "$file names no source for $db" unless @names;
+    for (@names) { return "$file reads $db from $_, which may hold accounts getpwent doesn't list" unless /\A(?:files|systemd)\z/ }
+  }
+  return '';
+}
+NSSWITCH
+
 # The checks the host and the forward helper share: the manifest, its age and
 # use, the library, the rules for what the v1.x pipeline wrote, and a folder's
 # live listing against the manifest. A refusal prints to stderr and exits
@@ -154,6 +186,8 @@ sub clean {
   $text =~ s/[\x00-\x1f\x7f-\x9f]/?/g;
   return encode_utf8($text);
 }
+# $_[0] in single quotes, for a line the owner can paste into a shell, as the host's quote() writes it.
+sub shq { my $text = shift; $text =~ s/'/'\\''/g; return "'$text'" }
 # A message's lines cleaned one at a time, so a line break the message means survives.
 sub refuse { print STDERR join("\n", map { clean($_) } split /\n/, $_[0] . $TAIL), "\n"; exit($_[1] // $REFUSED) }
 
@@ -208,33 +242,23 @@ sub manifest_library { my ($m) = @_; return ($m->{library}{dev} // '') . ':' . (
 
 sub parent_of { my ($dir) = @_; $dir =~ s{/[^/]+/?\z}{}; return $dir eq '' ? '/' : $dir }
 
-# The passwd and group databases, read in full, as ([name, uid, gid]...,
-# [name, gid, [members]]...), or nothing when they can't be. Tests give
-# fixture files in /etc's format through PHOTOS_TEST_PASSWD and
-# PHOTOS_TEST_GROUP; --rename-as-root's clean environment never carries
-# them. Otherwise only Linux, and only when nsswitch.conf names nothing
-# beyond files, compat and systemd, whose entries getpwent and getgrent
-# list in full.
+# The passwd and group databases, read in full, as ([name, uid, gid]...),
+# ([name, gid, [members]]...), or (undef, undef, why not). Tests give fixture
+# files in /etc's format through PHOTOS_TEST_PASSWD and PHOTOS_TEST_GROUP;
+# the forward helper always runs without them. Otherwise only Linux, and
+# only when nss_problem finds nothing in /etc/nsswitch.conf.
 sub accounts {
   my (@passwd, @group);
   if (length($ENV{PHOTOS_TEST_PASSWD} // '') && length($ENV{PHOTOS_TEST_GROUP} // '')) {
-    open(my $p, '<', $ENV{PHOTOS_TEST_PASSWD}) or return;
+    open(my $p, '<', $ENV{PHOTOS_TEST_PASSWD}) or return (undef, undef, "the test passwd file can't be read");
     while (my $line = <$p>) { chomp $line; next if $line =~ /\A\s*(?:#|\z)/; my @f = split /:/, $line, -1; push @passwd, [@f[0, 2, 3]] }
-    open(my $g, '<', $ENV{PHOTOS_TEST_GROUP}) or return;
+    open(my $g, '<', $ENV{PHOTOS_TEST_GROUP}) or return (undef, undef, "the test group file can't be read");
     while (my $line = <$g>) { chomp $line; next if $line =~ /\A\s*(?:#|\z)/; my @f = split /:/, $line, -1; push @group, [$f[0], $f[2], [grep { length } split /,/, $f[3] // '']] }
   } else {
-    return unless $^O eq 'linux';
-    open(my $ns, '<', '/etc/nsswitch.conf') or return;
-    my %sources;
-    while (my $line = <$ns>) {
-      $line =~ s/#.*//;
-      $sources{$1} = [grep { length } split /\s+/, $2] if $line =~ /\A\s*(passwd|group)\s*:\s*(.*?)\s*\z/;
-    }
-    for my $db ('passwd', 'group') {
-      my @names = grep { !/\A\[/ } @{ $sources{$db} // [] };
-      return unless @names;
-      for (@names) { return unless /\A(?:files|compat|systemd)\z/ }
-    }
+    return (undef, undef, "on macOS they never can be, so group write is always refused there") if $^O eq 'darwin';
+    return (undef, undef, "they can be only on Linux") unless $^O eq 'linux';
+    my $problem = nss_problem('/etc/nsswitch.conf');
+    return (undef, undef, $problem) if length $problem;
     setpwent();
     while (my @pw = getpwent()) { push @passwd, [$pw[0], $pw[2], $pw[3]] }
     endpwent();
@@ -242,17 +266,18 @@ sub accounts {
     while (my @gr = getgrent()) { push @group, [$gr[0], $gr[2], [grep { length } split / /, $gr[3] // '']] }
     endgrent();
   }
-  return unless @passwd && @group;
-  return (\@passwd, \@group);
+  return (undef, undef, 'they list no accounts') unless @passwd && @group;
+  return (\@passwd, \@group, undef);
 }
 
 # Ruling 2a: a folder's group may write it only when that group is $uid's
 # own private one. It must be $uid's primary group, name no other member,
-# and be no one else's primary group.
-our ($PASSWD, $GROUP, $READ_ACCOUNTS);
+# and be no one else's primary group. The databases are read once, whether
+# or not that works.
+our ($PASSWD, $GROUP, $NO_ACCOUNTS, $READ_ACCOUNTS);
 sub private_group {
   my ($gid, $uid) = @_;
-  ($PASSWD, $GROUP, $READ_ACCOUNTS) = (accounts(), 1) unless $READ_ACCOUNTS;
+  if (!$READ_ACCOUNTS) { ($PASSWD, $GROUP, $NO_ACCOUNTS) = accounts(); $READ_ACCOUNTS = 1 }
   return 0 unless $PASSWD && $GROUP;
   my ($me) = grep { $_->[1] eq $uid } @$PASSWD;
   return 0 unless $me && $me->[2] eq $gid;
@@ -263,27 +288,33 @@ sub private_group {
   return 1;
 }
 
-# Every folder from $dir up to / that's at fault, in one message, or '':
-# owned by anyone but root or $uid; writable by others, or by a group that
-# isn't $uid's private one, sticky or not; or, on macOS, with an ACL entry
-# that allows others anything. $whom names $uid in the message.
+# Every folder from each of @$starts up to / that's at fault, each once, in
+# one message, or '': owned by anyone but root or $uid; writable by others,
+# or by a group that isn't $uid's private one, sticky or not; or, on macOS,
+# with an ACL entry that allows others anything. $whom names $uid in the
+# message.
 sub above_problems {
-  my ($dir, $uid, $whom) = @_;
-  my (%owned, @writable, @acl);
-  while (1) {
-    my @s = lstat $dir;
-    return "Can't read $dir, above the library or the aside folder." unless @s;
-    if (!-l _) {
-      push @{ $owned{ $s[4] } }, $dir unless $s[4] == 0 || $s[4] == $uid;
-      push @writable, $dir if ($s[2] & 002) || (($s[2] & 020) && !private_group($s[5], $uid));
-      if ($^O eq 'darwin' && open(my $ls, '-|', '/bin/ls', '-led', '--', $dir)) {
-        my @lines = <$ls>;
-        close $ls;
-        push @acl, $dir if grep { / allow / } @lines[1 .. $#lines];
+  my ($starts, $uid, $whom) = @_;
+  my (%owned, @writable, @acl, %seen, $group_only);
+  for my $start (@$starts) {
+    for (my $dir = $start; ; $dir = parent_of($dir)) {
+      last if $seen{$dir}++;
+      my @s = lstat $dir;
+      return "Can't read $dir, above the library or the aside folder." unless @s;
+      if (!-l _) {
+        push @{ $owned{ $s[4] } }, $dir unless $s[4] == 0 || $s[4] == $uid;
+        if (($s[2] & 002) || (($s[2] & 020) && !private_group($s[5], $uid))) {
+          push @writable, $dir;
+          $group_only = 1 unless $s[2] & 002;
+        }
+        if ($^O eq 'darwin' && open(my $ls, '-|', '/bin/ls', '-led', '--', $dir)) {
+          my @lines = <$ls>;
+          close $ls;
+          push @acl, $dir if grep { / allow / } @lines[1 .. $#lines];
+        }
       }
+      last if $dir eq '/';
     }
-    last if $dir eq '/';
-    $dir = parent_of($dir);
   }
   my @parts;
   for my $owner (sort { $a <=> $b } keys %owned) {
@@ -292,13 +323,13 @@ sub above_problems {
   }
   push @parts, join(', ', @acl) . (@acl == 1 ? ' has an ACL' : ' have ACLs') . ' that allows others to change ' . (@acl == 1 ? 'it' : 'them') . '.' if @acl;
   if (@writable) {
-    push @parts, join(', ', @writable) . (@writable == 1 ? ' is writable by its group or others' : ' are writable by their group or others') . ", so what's in " . (@writable == 1 ? 'it' : 'them') . " could be swapped between the checks and the renames. Group write is fine only for your own private group. Make " . (@writable == 1 ? 'it' : 'them') . " yours alone with:\nchmod g-w,o-w " . join(' ', @writable) . "\n";
+    push @parts, join(', ', @writable) . (@writable == 1 ? ' is writable by its group or others' : ' are writable by their group or others') . ", so what's in " . (@writable == 1 ? 'it' : 'them') . " could be swapped between the checks and the renames. Group write is fine only for your own private group." . ($group_only && $NO_ACCOUNTS ? " The account databases couldn't be read in full ($NO_ACCOUNTS), so no group counts as private here." : '') . " Make " . (@writable == 1 ? 'it' : 'them') . " yours alone with:\nchmod g-w,o-w " . join(' ', map { shq($_) } @writable) . "\n";
   }
   return join(' ', @parts);
 }
 sub guard_above {
   my ($dir, $uid) = @_;
-  my $problems = above_problems($dir, $uid, "uid $uid");
+  my $problems = above_problems([$dir], $uid, "uid $uid");
   refuse($problems) if length $problems;
 }
 
@@ -396,15 +427,19 @@ sub check_folder {
   return ("$st[0]:$st[1]", [sort keys %$files]);
 }
 COMMON
+COMMON="$NSSWITCH"$'\n'"$COMMON"
 
 # Whether a path sits on a read-only mount, from a mountinfo file
-# (/proc/self/mountinfo in production): the deepest mount above it, ro in
-# its own options or in the filesystem's super options after the " - "
-# separator. Prints that mount point, or nothing.
+# (/proc/self/mountinfo in production, in the order the mounts were made):
+# the deepest mount above it that no later mount covers, ro in its own
+# options or in the filesystem's super options after the " - " separator.
+# A later mount on the same point or above a mount hides it. Prints that
+# mount point, or nothing.
 read -r -d '' MOUNTINFO <<'MOUNTINFO' || true
 my ($file, $path) = @ARGV;
 open(my $fh, '<', $file) or exit 0;
-my ($best, $ro) = ('', 0);
+sub under { my ($inner, $outer) = @_; return $inner eq $outer || index($inner, $outer eq '/' ? '/' : "$outer/") == 0 }
+my @mounts;
 while (my $line = <$fh>) {
   chomp $line;
   my ($left, $right) = split / - /, $line, 2;
@@ -413,10 +448,13 @@ while (my $line = <$fh>) {
   my @r = split / /, $right;
   next unless @f >= 6 && @r >= 3;
   (my $point = $f[4]) =~ s/\\([0-7]{3})/chr(oct $1)/ge;
-  next unless $path eq $point || index($path, $point eq '/' ? '/' : "$point/") == 0;
-  next if length $point < length $best;
-  $best = $point;
-  $ro = (grep { $_ eq 'ro' } split(/,/, $f[5]), split(/,/, $r[2])) ? 1 : 0;
+  @mounts = grep { !under($_->[0], $point) } @mounts;
+  push @mounts, [$point, (grep { $_ eq 'ro' } split(/,/, $f[5]), split(/,/, $r[2])) ? 1 : 0];
+}
+my ($best, $ro) = ('', 0);
+for my $mount (@mounts) {
+  next unless under($path, $mount->[0]) && length $mount->[0] >= length $best;
+  ($best, $ro) = @$mount;
 }
 print $best if $ro;
 MOUNTINFO
@@ -466,6 +504,10 @@ if [ "$as_root" -eq 1 ]; then
   [ -x /usr/bin/perl ] && [ -x /usr/bin/env ] || refuse "--rename-as-root runs the helper as /usr/bin/env -i /usr/bin/perl, which this host doesn't have."
 fi
 
+if [ -n "${PHOTOS_TEST_PASSWD:-}" ] && [ -n "${PHOTOS_TEST_GROUP:-}" ]; then
+  echo "Note: test account files in use: $PHOTOS_TEST_PASSWD and $PHOTOS_TEST_GROUP stand in for passwd and group in the checks run as you. The forward helper never uses them." >&2
+fi
+
 if has_newline "$library" || has_newline "$dest" || has_newline "$manifest"; then
   refuse "A path given holds a newline, which the printed and saved lines can't carry safely."
 fi
@@ -480,6 +522,17 @@ if [ -r /proc/self/mountinfo ]; then
   [ -z "$ro" ] || refuse "The library $lib is on $ro, mounted read-only, so nothing in it can be moved."
 fi
 
+# The aside folder must be yours and writable only by you, as the forward
+# helper requires, whatever its group: checked on an existing --to before the
+# dry run says --apply would work, and again once --apply makes the folder.
+check_aside_mode() {
+  aside_mode=$(perl -e 'my @s = lstat $ARGV[0] or exit 1; printf "%o", $s[2] & 07777' -- "$to") || aside_mode=''
+  [ -n "$aside_mode" ] || refuse "Can't read the mode of $to. The manifest is still unused."
+  if [ "$(stat_of %u "$to")" != "$(id -u)" ] || [ $((8#$aside_mode & 8#022)) -ne 0 ]; then
+    refuse "The aside folder $to must be yours and writable only by you (it's mode $aside_mode). Make it so with:"$'\n'"chmod g-w,o-w $(quote "$to")"$'\n'"The manifest is still unused."
+  fi
+}
+
 if [ "$to_given" -eq 0 ]; then
   parent=$(dirname -- "$lib")
   dest="${parent%/}/$(basename -- "$lib").legacy-derivatives-$(date +%Y-%m-%d)"
@@ -491,6 +544,7 @@ if [ -e "$dest" ] || [ -L "$dest" ]; then
   dest_exists=1
   [ "$(stat_of %u "$to")" = "$(id -u)" ] || refuse "The destination $to isn't yours. Pass a --to folder you own."
   [ -w "$to" ] || refuse "The destination $to isn't writable by you. Pass a --to folder you can write."
+  check_aside_mode
 else
   parent=$(dirname -- "$dest")
   [ -d "$parent" ] || refuse "The destination's parent $parent isn't a folder. Make it first, outside the library."
@@ -542,14 +596,11 @@ done
 # above it, must be root's or yours, writable by no one else (group write
 # only for your own private group, sticky or not), and on macOS carry no ACL
 # that allows others anything: such a folder could swap what's in it
-# between the checks and the renames. One message lists every one at fault.
-guard_ancestors() {
-  local found
-  found=$(perl -e "$COMMON"$'\n''print above_problems($ARGV[0], $ARGV[1], "you")' -- "$1" "$(id -u)") || refuse "Can't read the folders above $1."
-  [ -z "$found" ] || refuse "$found"$'\n'
-}
-guard_ancestors "$(dirname -- "$lib")"
-guard_ancestors "$anchor"
+# between the checks and the renames. One walk from both, and one message
+# that lists every folder at fault, each once.
+found=$(perl -e "$COMMON"$'\n''print above_problems([@ARGV[1 .. $#ARGV]], $ARGV[0], "you")' -- "$(id -u)" "$(dirname -- "$lib")" "$anchor") ||
+  refuse "Can't read the folders above $lib or $anchor."
+[ -z "$found" ] || refuse "$found"$'\n'
 
 lib_device=$(stat_of %d "$lib") || lib_device=''
 anchor_device=$(stat_of %d "$anchor") || anchor_device=''
@@ -680,7 +731,7 @@ for (my $dir = $real; ; $dir = parent_of($dir)) {
 }
 guard_above(parent_of($real), $uid);
 refuse("The aside folder $aside isn't yours: it belongs to uid $a[4], not $uid.") unless $a[4] == $uid;
-refuse("The aside folder $aside is writable by its group or others. Make it yours alone with:\nchmod g-w,o-w $aside\n") if $a[2] & 022;
+refuse("The aside folder $aside is writable by its group or others. Make it yours alone with:\nchmod g-w,o-w " . shq($aside) . "\n") if $a[2] & 022;
 my @r = lstat $real or refuse("Can't read the aside folder $real.");
 refuse("The aside folder $aside resolves to $real, which isn't the folder that was checked.") unless -d _ && !-l _ && "$r[0]:$r[1]" eq $aside_id;
 for my $own ('move-back.sh', 'legacy-derivatives.used') {
@@ -924,11 +975,7 @@ if [ "$dest_exists" -eq 0 ]; then
 fi
 aside_id=$(stat_of %d:%i "$to") || aside_id=''
 [ -n "$aside_id" ] || refuse "Can't read the device and inode of $to. The manifest is still unused."
-aside_mode=$(perl -e 'my @s = lstat $ARGV[0] or exit 1; printf "%o", $s[2] & 07777' -- "$to") || aside_mode=''
-[ -n "$aside_mode" ] || refuse "Can't read the mode of $to. The manifest is still unused."
-if [ "$(stat_of %u "$to")" != "$(id -u)" ] || [ $((8#$aside_mode & 8#022)) -ne 0 ]; then
-  refuse "The aside folder $to must be yours and writable only by you (it's mode $aside_mode). Make it so with: chmod g-w,o-w $to. The manifest is still unused."
-fi
+check_aside_mode
 
 # Then the single-use record, in the owner's state folder, so a failure
 # after it leaves the manifest spent rather than reusable. Then move-back.sh
@@ -957,7 +1004,7 @@ for name in "${moves[@]}"; do
   if [ "$as_root" -eq 1 ]; then
     sudo /usr/bin/env -i PATH=/usr/bin:/bin "SUDO_UID=$(id -u)" /usr/bin/perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
   else
-    SUDO_UID='' perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
+    env -u PHOTOS_TEST_PASSWD -u PHOTOS_TEST_GROUP SUDO_UID='' perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
   fi
   code=$?
   set -e
