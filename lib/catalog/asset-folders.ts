@@ -138,7 +138,13 @@ export async function manifestContent(dir: string, relative: string, photoId: st
 
 /** What is in the data root's `trash/`: its entries with their bytes, or, over TRASH_LISTED of them, only how many. Or that it is a symlink or a file. */
 export type TrashSummary =
-    | { kind: 'folder'; folders: { name: string; bytes: number }[]; count: number; bytes: number | null }
+    | {
+          kind: 'folder';
+          /** Each entry; `held` when the always-protected set names the asset folder it was, which photos status says (item 40a). */
+          folders: { name: string; bytes: number; held?: { text: string; origin: string } }[];
+          count: number;
+          bytes: number | null;
+      }
     | { kind: 'symlink' | 'file' };
 
 /** How many `trash/` entries status lists one by one. Over this, it gives the count and walks nothing. */

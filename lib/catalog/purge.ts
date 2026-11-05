@@ -452,9 +452,10 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         const listed = entry.assetRevisions.map((assetRevision) => `assets/${entry.photoId}/${assetRevision}`);
         const wholeText = (folder: { path: string; original: string }, then?: string) => {
             const found = leftovers.find((each) => each.path === folder.path);
-            // The same sentence status and the plan give, its "then" weighed across every tombstone the folder's run recorded (item 38).
+            // The same sentence status and the plan give, its "then" weighed across every tombstone the folder's run recorded (item 38). A folder
+            // setAsideFolders() read but didn't find whole keeps what it found in the folder's place (item 42).
             if (found?.state === 'whole') return found.text;
-            return setAsideText({ path: folder.path, original: folder.original, state: 'whole', occupied: false, originalHolds: false }, then);
+            return setAsideText({ path: folder.path, original: folder.original, state: 'whole', occupied: found?.occupied ?? false, originalHolds: false }, then);
         };
         if (reached.length > 0) {
             const it = reached.length === 1 ? 'it' : 'them';

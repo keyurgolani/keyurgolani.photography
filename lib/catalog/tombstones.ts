@@ -491,9 +491,23 @@ export const setAsideStep = (relative: string) => `photos gc --set-aside ${relat
 /**
  * The rename back as a line the owner can run as it stands: in
  * docker-compose.prod.yml's image-watcher service, from the data root it
- * mounts at /data/portfolio (item 38).
+ * mounts at /data/portfolio (item 38). It checks the place is free first,
+ * and busybox's `mv -n` never overwrites what got there since (item 42).
  */
-export const renameBack = (from: string, to: string) => `docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher mv ${from} ${to}`;
+export const renameBack = (from: string, to: string) => `docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher sh -c '[ ! -e ${to} ] && mv -n ${from} ${to}'`;
+
+/** The folder name in `trash/` for `photoId`'s `name` set aside at `ms`: `<p>-<r>-<date-time>`, the dots taken off a `.gc-` name. */
+export function trashName(photoId: string, name: string, ms: number): string {
+    return `${photoId}-${name.replace(/^\.+/, '')}-${new Date(ms).toISOString().replace(/[:.]/g, '-')}`;
+}
+
+const TRASH_NAME_RE = /^(ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-(sha256-[0-9a-f]{64})-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
+
+/** The asset folder a `trash/` entry was, `assets/<photoId>/<assetRevision>`, by its name; null for a `.gc-` folder or a name `photos gc --set-aside` didn't give. */
+export function trashOrigin(name: string): { photoId: string; assetRevision: string } | null {
+    const match = TRASH_NAME_RE.exec(name);
+    return match ? { photoId: match[1], assetRevision: match[2] } : null;
+}
 
 /** `then` for a whole folder: revoke, or rerun gc; only rerun gc once another folder of its tombstone was reached (item 30). */
 export const WHOLE_THEN = { revoke: 'then revoke, or rerun photos gc', gc: 'then rerun photos gc' } as const;

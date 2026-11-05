@@ -109,7 +109,8 @@ function grouped(calls: readonly DeleteCall[]): Map<string, DeleteCall[]> {
     return groups;
 }
 
-describe('the delete-call rail', () => {
+// Each test parses the whole shipped tree, some several times, which takes longer than vitest's 5 s default on a loaded runner.
+describe('the delete-call rail', { timeout: 60_000 }, () => {
     it('scans the source tree', () => {
         expect(SCANNED).toEqual(expect.arrayContaining(['lib/catalog/retention.ts', 'scripts/photos.ts', 'utils/imageOptimizer.ts', 'proxy.ts']));
         expect(SCANNED.some((file) => file.startsWith('app/'))).toBe(true);

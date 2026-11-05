@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { STAGING_ID, stagingLockName, stagingRoot } from '../identity/derivatives';
+import { assetLockName, STAGING_ID, stagingLockName, stagingRoot } from '../identity/derivatives';
+import { CURATION_LOCK } from '../curation/repository';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import { atomicCreateJson } from '../storage/atomicWrite';
 import { canonicalJson } from '../storage/canonical';
@@ -10,8 +11,8 @@ import { hasErrorCode, isInside, PRIVATE_DIR_MODE, realpathLoose } from '../stor
 import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '../storage/lock';
 import { folderFacts, manifestContent, sizeText, type SetFile } from './asset-folders';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
-import { ALWAYS_PROTECTED, liveReferences, references, ReferenceScanError, type AssetReference, type ReferenceSource } from './references';
-import { collectedFile, graceEndsMs, holdsRecorded, WHOLE_THEN, TRASH_DIR, wholeThen, problemText, readTombstones, setAsideFolders, setAsideFrom, setAsideName, setAsideText, standingFor, TOMBSTONES_DIR, type CollectedPath, type SetAsideFolder, type TombstoneRead } from './tombstones';
+import { ALWAYS_PROTECTED, alwaysHolder, liveReferences, protectedText, references, ReferenceScanError, type AssetReference, type ReferenceSource } from './references';
+import { collectedFile, graceEndsMs, holdsRecorded, renameBack, SET_ASIDE_PREFIX, trashName, WHOLE_THEN, TRASH_DIR, wholeThen, problemText, readTombstones, setAsideFolders, setAsideFrom, setAsideName, setAsideText, standingFor, TOMBSTONES_DIR, type CollectedPath, type SetAsideFolder, type TombstoneRead } from './tombstones';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish } from './repository';
 import { errorText as sharedErrorText } from './error-text';
 import { holderText } from './rollback';
@@ -619,33 +620,13 @@ async function nowProtected(root: string, entry: GcEntry, now: number): Promise<
     if (!match) throw new UnsafePathError(entry.path, 'is not a path GC deletes');
     const [, photoId, assetRevision] = match;
     const refs = await references(root, { live: true });
-    const holder = PROTECTION_ORDER.map((source) => refs.find((ref) => ref.source === source && ref.photoId === photoId && (ref.assetRevision === null || ref.assetRevision === assetRevision))).find((ref) => ref !== undefined);
+    const holder = alwaysHolder(refs, photoId, assetRevision);
     if (holder) return `${entry.path} is protected now: ${protectedText(holder)}.`;
     const tombstones = await readTombstones(root);
     assertTombstonesRead(tombstones);
     const past = standingFor(tombstones, photoId, assetRevision).filter((each) => graceEndsMs(each) < now).map((each) => each.tombstoneId).sort();
     if (past.join() !== (entry.tombstoneIds ?? []).join()) throw new EntryChangedError(`${entry.path}'s tombstones changed since the plan.`);
     return null;
-}
-
-/** Who protects an asset, in words. */
-export function protectedText(ref: Pick<AssetReference, 'source' | 'holder'>): string {
-    switch (ref.source) {
-        case 'active-revision':
-            return `the live revision, ${ref.holder}, shows it`;
-        case 'working-layer-series':
-            return `the draft's series ${ref.holder} lists it`;
-        case 'open-inbox':
-            return `the open Inbox item ${ref.holder} names it`;
-        case 'live-staging':
-            return `the build in staging/${ref.holder} may be writing it`;
-        case 'revision':
-            return `revision ${ref.holder} shows it`;
-        case 'candidate':
-            return `candidate ${ref.holder} shows it`;
-        case 'working-layer-photo':
-            return 'its own photo record pins it';
-    }
 }
 
 const sameFile = (a: fs.Stats, b: fs.Stats) => a.dev === b.dev && a.ino === b.ino;
@@ -1063,13 +1044,18 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
  * `photos gc --set-aside <assets/p/r>` (#181's A10 review, item 29a): the
  * owner's way to move a taken-down asset folder, or a `.gc-` aside, out of
  * the way without deleting it. It renames the folder into the data root's
- * own `trash/<p>-<r>-<date-time>/`, on the same filesystem, under the catalog
- * lock, so it stays on the persisted data-root volume, never a container's
- * disk. It never deletes. Nothing reads or collects `trash/`; emptying it is
- * the owner's own step.
+ * own `trash/<p>-<r>-<date-time>/`, on the same filesystem, so it stays on
+ * the persisted data-root volume, never a container's disk. It never deletes.
+ * Nothing reads or collects `trash/`; emptying it is the owner's own step.
+ *
+ * It holds the catalog, authored and curation locks and the asset's own lock
+ * (items 40 and 40a), so no publish, record write, Inbox item or build for
+ * that asset lands between its checks and the rename. After the rename it
+ * asks the always-protected set again, as a second guard, and puts the folder
+ * back if anything names it now.
  */
 
-export type SetAsideOutcome = 'SET_ASIDE_DONE' | 'NOT_AN_ASSET_PATH' | 'NOT_FOUND' | 'NOT_TAKEN_DOWN' | 'PROTECTED' | 'SET_ASIDE_WHOLE' | 'EXISTS' | 'CROSS_DEVICE' | 'UNSAFE_PATH' | 'CATALOG_LOCKED' | 'AUTHORED_LOCKED' | 'LOCK_LOST' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
+export type SetAsideOutcome = 'SET_ASIDE_DONE' | 'NOT_AN_ASSET_PATH' | 'NOT_FOUND' | 'NOT_TAKEN_DOWN' | 'PROTECTED' | 'SET_ASIDE_WHOLE' | 'EXISTS' | 'CROSS_DEVICE' | 'UNSAFE_PATH' | 'CATALOG_LOCKED' | 'AUTHORED_LOCKED' | 'CURATION_LOCKED' | 'ASSET_LOCKED' | 'LOCK_LOST' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'PUT_BACK_BLOCKED' | 'STORAGE_ERROR';
 
 export const SET_ASIDE_EXIT_CODES: Record<SetAsideOutcome, 0 | 1 | 3 | 4> = {
     SET_ASIDE_DONE: 0,
@@ -1083,9 +1069,12 @@ export const SET_ASIDE_EXIT_CODES: Record<SetAsideOutcome, 0 | 1 | 3 | 4> = {
     UNSAFE_PATH: 1,
     CATALOG_LOCKED: 3,
     AUTHORED_LOCKED: 3,
+    CURATION_LOCKED: 3,
+    ASSET_LOCKED: 3,
     LOCK_LOST: 3,
     DATA_ROOT_NOT_READY: 3,
     INTEGRITY_MISMATCH: 4,
+    PUT_BACK_BLOCKED: 4,
     STORAGE_ERROR: 4,
 };
 
@@ -1107,50 +1096,70 @@ export interface SetAsideOptions {
     hooks?: {
         /** Runs after every check, just before the last re-checks and the rename. A test swaps something here. */
         beforeRename?(): void | Promise<void>;
+        /** Runs just after the rename, before the holders are asked again. A test makes a holder here. */
+        afterRename?(): void | Promise<void>;
     };
 }
 
-/** `assets/<photoId>/<assetRevision>` or `assets/<photoId>/.gc-<…>`: the only paths --set-aside moves. */
-const SET_ASIDE_TARGET_RE = /^assets\/(ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/((?:sha256-[0-9a-f]{64})|(?:\.gc-[A-Za-z0-9._-]+))$/;
+/** `assets/<photoId>/<assetRevision>` or `assets/<photoId>/.gc-<assetRevision>-…`: the only paths --set-aside moves. */
+const SET_ASIDE_TARGET_RE = /^assets\/(ph_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/((?:sha256-[0-9a-f]{64})|(?:\.gc-(sha256-[0-9a-f]{64})-[A-Za-z0-9._-]+))$/;
 
-/** The folder name in `trash/` for `photoId`'s `name` set aside at `ms`: `<p>-<r>-<date-time>`. */
-export function trashName(photoId: string, name: string, ms: number): string {
-    return `${photoId}-${name.replace(/^\.+/, '')}-${iso(ms).replace(/[:.]/g, '-')}`;
+export { trashName };
+
+/**
+ * Why `name` isn't a folder of the photo folder `photoDir`, or null: `.` or
+ * `..`, which would move the photo's folder or all of `assets/` (`dot`), or a
+ * name that reaches another folder (`dirname`). The target regex rules these
+ * out too; this guard holds on its own (item 42).
+ */
+export function setAsideTargetProblem(photoDir: string, name: string): 'dot' | 'dirname' | null {
+    if (name === '.' || name === '..') return 'dot';
+    if (name.includes('/') || name.includes(path.sep) || path.dirname(path.join(photoDir, name)) !== photoDir) return 'dirname';
+    return null;
 }
 
 export async function runSetAside(options: SetAsideOptions): Promise<SetAsideResult> {
     const root = path.resolve(options.dataRoot);
     const { clock = Date.now, logger = jsonLogger, hooks = {} } = options;
     const nothing = ' Nothing was moved, and nothing was deleted.';
-    const refuse = (outcome: SetAsideOutcome, message: string): SetAsideResult => {
+    const refuse = (outcome: SetAsideOutcome, message: string, suffix = nothing): SetAsideResult => {
         logEvent(logger, 'catalog.gc.set-aside.refused', { outcome, path: options.path });
-        return { outcome, message: `${message}${nothing}` };
+        return { outcome, message: `${message}${suffix}` };
     };
+    const notAsset = () => refuse('NOT_AN_ASSET_PATH', `${options.path} is not a taken-down asset folder, assets/<photoId>/<assetRevision>, or the .gc- folder a stopped photos gc --apply left beside one, so photos gc --set-aside won't move it.`);
     const match = SET_ASIDE_TARGET_RE.exec(options.path);
-    const name = match?.[2];
-    // The regex and a direct guard: never `.` or `..`, which would move a photo's folder, or all of assets/.
-    if (!match || !name || path.isAbsolute(options.path) || name === '.' || name === '..' || name.includes('/')) {
-        return refuse('NOT_AN_ASSET_PATH', `${options.path} is not a taken-down asset folder, assets/<photoId>/<assetRevision>, or the .gc- folder a stopped photos gc --apply left beside one, so photos gc --set-aside won't move it.`);
-    }
-    const photoId = match[1];
+    if (!match || path.isAbsolute(options.path)) return notAsset();
+    const [, photoId, name] = match;
+    if (setAsideTargetProblem(path.join(root, 'assets', photoId), name) !== null) return notAsset();
+    const isAside = name.startsWith(SET_ASIDE_PREFIX);
+    // The asset revision whose lock it holds: the folder's own, or the one a .gc- folder was set aside from.
+    const assetRevision = isAside ? match[3] : name;
     const status = dataRootStatus({ write: true, root });
     if (status.state !== 'ready') return refuse('DATA_ROOT_NOT_READY', `The data root is ${status.state}.`);
     const leaseMs = options.leaseMs ?? CATALOG_LEASE_MS;
     const waitMs = options.waitMs ?? GC_WAIT_MS;
+    // The locks, outermost first: the catalog and authored ones as GC takes them, then the curation lock an Inbox writer takes, then the asset's, which a build takes.
+    const LOCKS: readonly { name: string; outcome: SetAsideOutcome; what: string }[] = [
+        { name: CATALOG_LOCK, outcome: 'CATALOG_LOCKED', what: 'the catalog lock' },
+        { name: AUTHORED_LOCK, outcome: 'AUTHORED_LOCKED', what: 'the authored lock' },
+        { name: CURATION_LOCK, outcome: 'CURATION_LOCKED', what: 'the curation lock' },
+        { name: assetLockName(photoId, assetRevision), outcome: 'ASSET_LOCKED', what: `the lock for ${photoId}'s ${assetRevision}, which a build of it holds` },
+    ];
+    const under = async (at: number, locks: readonly LockContext[]): Promise<SetAsideResult> => {
+        if (at === LOCKS.length) return held(locks);
+        const lock = LOCKS[at];
+        try {
+            return await withLock(lock.name, { root, leaseMs, waitMs }, (context) => under(at + 1, [...locks, context]));
+        } catch (error) {
+            if (error instanceof LockTimeoutError && error.lockName === lock.name) return refuse(lock.outcome, `Another command holds ${lock.what}: ${holderText(error.holder)}.`);
+            throw error;
+        }
+    };
     try {
-        // Both locks, as GC takes them, so no publish, rollback or record write lands while it checks and moves.
-        return await withLock(CATALOG_LOCK, { root, leaseMs, waitMs }, async (catalogLock) => {
-            try {
-                return await withLock(AUTHORED_LOCK, { root, leaseMs, waitMs }, (authoredLock) => held([catalogLock, authoredLock]));
-            } catch (error) {
-                if (error instanceof LockTimeoutError) return refuse('AUTHORED_LOCKED', `Another command holds the authored lock: ${holderText(error.holder)}.`);
-                throw error;
-            }
-        });
+        return await under(0, []);
     } catch (error) {
-        if (error instanceof LockTimeoutError) return refuse('CATALOG_LOCKED', `Another command holds the catalog lock: ${holderText(error.holder)}.`);
         // GC's words for a delete, said for a move.
-        if (error instanceof UnsafePathError) return refuse('UNSAFE_PATH', `${error.file} ${error.detail.replace(/the delete$/, 'the move')}, so photos gc --set-aside can't be sure what it would move.`);
+        if (error instanceof UnsafePathError) return refuse('UNSAFE_PATH', `${error.file} ${error.detail.replace(/the delete$/, 'the move').replace(/\bGC\b/g, 'photos gc --set-aside')}, so photos gc --set-aside can't be sure what it would move.`);
         if (error instanceof ReferenceScanError) return refuse('INTEGRITY_MISMATCH', error.message.replace(/ Nothing was deleted\.$/, ''));
         if (error instanceof CatalogIntegrityError) return refuse('INTEGRITY_MISMATCH', sentence(error.message));
         return refuse('STORAGE_ERROR', sentence(errorText(error, [root])));
@@ -1161,8 +1170,8 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
         // The photo folder must be a real folder in the real data root, reached through no symlink.
         const photoDir = await classDir(realRoot, ['assets', photoId]);
         if (photoDir === null) return refuse('NOT_FOUND', `${options.path} is not there.`);
-        const target = path.join(photoDir.dir, name as string);
-        if (path.dirname(target) !== photoDir.dir) return refuse('NOT_AN_ASSET_PATH', `${options.path} is not a folder in ${photoId}'s folder.`);
+        if (setAsideTargetProblem(photoDir.dir, name) !== null) return refuse('NOT_AN_ASSET_PATH', `${options.path} is not a folder in ${photoId}'s folder.`);
+        const target = path.join(photoDir.dir, name);
         let stat: fs.Stats;
         try {
             stat = fs.lstatSync(target);
@@ -1174,20 +1183,22 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
         assertOutsideLibrary(realRoot, { path: options.path });
         const tombstones = await readTombstones(root);
         assertTombstonesRead(tombstones);
-        if (!(name as string).startsWith('.')) {
-            // Only what a standing tombstone takes down, and nothing #15's always-protected set names, so the live site never loses a set.
-            if (standingFor(tombstones, photoId, name as string).length === 0) return refuse('NOT_TAKEN_DOWN', `No standing tombstone takes down ${options.path}, so photos gc --set-aside won't move it: it may be a set the site serves.`);
-            const refs = await references(root, { live: true });
-            const holder = PROTECTION_ORDER.map((source) => refs.find((ref) => ref.source === source && ref.photoId === photoId && (ref.assetRevision === null || ref.assetRevision === name))).find((ref) => ref !== undefined);
-            if (holder) return refuse('PROTECTED', `${options.path} is kept: ${protectedText(holder)}, so photos gc --set-aside won't move it.`);
-        } else {
+        /** What holds the folder now, of the always-protected set; null for a .gc- folder, which nothing references. */
+        const holderNow = async () => (isAside ? null : alwaysHolder(await references(root, { live: true }), photoId, name));
+        const retry = 'Settle that, or wait for it, then run photos gc --set-aside again.';
+        if (isAside) {
             // A whole .gc- folder goes back where it was, not into trash/.
             const whole = (await setAsideFolders(realRoot, tombstones)).find((each) => each.path === options.path && each.state === 'whole');
             if (whole) return refuse('SET_ASIDE_WHOLE', `${options.path} holds everything its run recorded, so it goes back, not into ${TRASH_DIR}/: ${whole.text}.`);
+        } else {
+            // Only what a standing tombstone takes down, and nothing #15's always-protected set names, so the live site never loses a set.
+            if (standingFor(tombstones, photoId, name).length === 0) return refuse('NOT_TAKEN_DOWN', `No standing tombstone takes down ${options.path}, so photos gc --set-aside won't move it: it may be a set the site serves.`);
+            const holder = await holderNow();
+            if (holder) return refuse('PROTECTED', `${options.path} is kept: ${protectedText(holder)}, so photos gc --set-aside won't move it. ${retry}`);
         }
         const trashDir = path.join(realRoot, TRASH_DIR);
         const rootStat = fs.lstatSync(realRoot);
-        // On the data root's own device: a rename never copies, so nothing is ever lost on the way. Checked before trash/ is made, so a refusal changes nothing.
+        // On the data root's own device: a rename never copies, so nothing is ever lost on the way.
         if (stat.dev !== rootStat.dev) return refuse('CROSS_DEVICE', `${options.path} is on another device than the data root, so a rename into ${TRASH_DIR}/ would become a copy.`);
         let trash: fs.Stats | null = null;
         try {
@@ -1197,7 +1208,7 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
         }
         if (trash !== null && (trash.isSymbolicLink() || !trash.isDirectory())) return refuse('UNSAFE_PATH', `${TRASH_DIR}/ in the data root is a symlink or not a folder.`);
         if (trash !== null && trash.dev !== rootStat.dev) return refuse('CROSS_DEVICE', `${TRASH_DIR}/ is on another device than the data root, so a rename into it would become a copy.`);
-        const to = trashName(photoId, name as string, clock());
+        const to = trashName(photoId, name, clock());
         const destination = path.join(trashDir, to);
         try {
             fs.lstatSync(destination);
@@ -1206,26 +1217,27 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
             if (!hasErrorCode(error, 'ENOENT')) throw error;
         }
         await hooks.beforeRename?.();
+        for (const lock of locks) {
+            if (lock.signal.aborted || !(await lock.isHeld().catch(() => false))) return refuse('LOCK_LOST', 'photos gc --set-aside lost one of its locks: the catalog, authored, curation or asset lock.');
+        }
+        // The last checks, in the same tick as the rename: the target is the folder checked, by inode, and so is every folder above it, and trash/ too when it was there.
+        const sameAs = (file: string, was: fs.Stats) => {
+            const now = fs.lstatSync(file);
+            return !now.isSymbolicLink() && now.isDirectory() && now.dev === was.dev && now.ino === was.ino;
+        };
+        if (!sameAs(target, stat)) return refuse('UNSAFE_PATH', `${options.path} changed just before the move.`);
+        assertSameFolders(realRoot, { target, chain: photoDir.chain, dev: stat.dev, ino: stat.ino });
+        if (trash !== null && !sameAs(trashDir, trash)) return refuse('UNSAFE_PATH', `${TRASH_DIR}/ changed just before the move.`);
+        // trash/ is made only once every check has passed, so a refusal leaves none behind (item 42).
         if (trash === null) {
             try {
                 await fs.promises.mkdir(trashDir, { mode: PRIVATE_DIR_MODE });
             } catch (error) {
                 if (!hasErrorCode(error, 'EEXIST')) throw error;
             }
-            trash = fs.lstatSync(trashDir);
-            if (trash.isSymbolicLink() || !trash.isDirectory() || trash.dev !== rootStat.dev) return refuse('UNSAFE_PATH', `${TRASH_DIR}/ in the data root is not a folder on the data root's device.`);
+            const made = fs.lstatSync(trashDir);
+            if (made.isSymbolicLink() || !made.isDirectory() || made.dev !== rootStat.dev) return refuse('UNSAFE_PATH', `${TRASH_DIR}/ in the data root is not a folder on the data root's device.`);
         }
-        for (const lock of locks) {
-            if (lock.signal.aborted || !(await lock.isHeld().catch(() => false))) return refuse('LOCK_LOST', 'photos gc --set-aside lost the catalog or authored lock.');
-        }
-        // The last checks, in the same tick as the rename: trash/ and the target are the folders checked, by inode, and so is every folder above it.
-        const sameAs = (file: string, was: fs.Stats) => {
-            const now = fs.lstatSync(file);
-            return !now.isSymbolicLink() && now.isDirectory() && now.dev === was.dev && now.ino === was.ino;
-        };
-        if (!sameAs(trashDir, trash)) return refuse('UNSAFE_PATH', `${TRASH_DIR}/ changed just before the move.`);
-        if (!sameAs(target, stat)) return refuse('UNSAFE_PATH', `${options.path} changed just before the move.`);
-        assertSameFolders(realRoot, { target, chain: photoDir.chain, dev: stat.dev, ino: stat.ino });
         try {
             fs.renameSync(target, destination);
         } catch (error) {
@@ -1234,7 +1246,54 @@ export async function runSetAside(options: SetAsideOptions): Promise<SetAsideRes
             throw error;
         }
         const moved = { from: options.path, to: `${TRASH_DIR}/${to}` };
+        await hooks.afterRename?.();
+        // The second guard (item 40): ask the always-protected set again, and put the folder back if anything names it now.
+        let holder: AssetReference | null = null;
+        let unread: unknown = null;
+        try {
+            holder = await holderNow();
+        } catch (error) {
+            unread = error;
+        }
+        if (holder !== null || unread !== null) {
+            const why = holder !== null ? `${options.path} is held now: ${protectedText(holder)}` : `photos gc --set-aside couldn't read what holds ${options.path} after the move (${errorText(unread, [realRoot, root])})`;
+            const blocked = putBack(destination, target, stat);
+            if (blocked === null) {
+                logEvent(logger, 'catalog.gc.set-aside.put-back', moved);
+                return holder !== null
+                    ? refuse('PROTECTED', `${why}, so photos gc --set-aside put it back. ${retry}`, ' It is where it was, and nothing was deleted.')
+                    : refuse('INTEGRITY_MISMATCH', `${why}, so it put it back.`, ' It is where it was, and nothing was deleted.');
+            }
+            logEvent(logger, 'catalog.gc.set-aside.put-back-blocked', { ...moved, reason: blocked });
+            return {
+                outcome: 'PUT_BACK_BLOCKED',
+                message: `${why}, and photos gc --set-aside couldn't put it back: ${blocked}. It is in ${moved.to}, in the data root, whole, and nothing was deleted; photos status names it with its holder. Once ${options.path} is free, put it back with ${renameBack(moved.to, options.path)}.`,
+                moved,
+            };
+        }
         logEvent(logger, 'catalog.gc.set-aside', moved);
         return { outcome: 'SET_ASIDE_DONE', message: `Set ${options.path} aside at ${moved.to}, in the data root. Nothing was deleted. Emptying trash/ is your own step.`, moved };
+
+        /** Rename the folder back from trash/, only when it is the folder moved and nothing has taken its place. Null when it's back, else why not. */
+        function putBack(from: string, to: string, was: fs.Stats): string | null {
+            try {
+                const now = fs.lstatSync(from);
+                if (now.isSymbolicLink() || !now.isDirectory() || now.dev !== was.dev || now.ino !== was.ino) return `${moved.to} is not the folder it moved`;
+            } catch (error) {
+                return `${moved.to} can't be read (${errorText(error, [realRoot, root])})`;
+            }
+            try {
+                fs.lstatSync(to);
+                return `something is at ${options.path} now`;
+            } catch (error) {
+                if (!hasErrorCode(error, 'ENOENT')) return `${options.path} can't be read (${errorText(error, [realRoot, root])})`;
+            }
+            try {
+                fs.renameSync(from, to);
+                return null;
+            } catch (error) {
+                return `the rename back failed (${errorText(error, [realRoot, root])})`;
+            }
+        }
     }
 }

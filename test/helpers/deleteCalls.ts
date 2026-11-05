@@ -12,21 +12,20 @@
  *   - any import, re-export, `require()`, `import()`,
  *     `process.getBuiltinModule()`, `module.require()` or `createRequire()`
  *     load of `rimraf`, `del`, `fs-extra` or `trash`, or a subpath of one;
- *   - a child_process call, however child_process is reached, that runs
- *     `rm`, `rmdir`, `unlink`, `shred`, `rimraf`, `git clean`, `git rm`,
- *     `git worktree remove` or `find -delete`, after `env`, `sudo`, `xargs`,
- *     `nice`, `timeout` and `npx`, in any argument, or a `node -e` script
- *     that does;
- *   - and, failing closed: a command, argument list or shell script that
- *     isn't a literal; a shell or interpreter with no literal script, which
- *     may read one on stdin; any other interpreter's script; options it
- *     can't read beside arguments that aren't literals; `eval`,
- *     `new Function` and a `Worker` with `eval`; `require()` or `import()`
- *     of a name that isn't a literal; computed access or destructuring on
- *     fs or child_process; and any other use of an fs or child_process
- *     module object, or `fs.promises`, than `.name` access or destructuring
- *     with literal keys, such as passing, assigning, spreading or exporting
- *     it, or `.then()` on its `import()`.
+ *   - every child_process call, however child_process is reached (#181's A10
+ *     review, item 39): it reads no command line, so a process call is a
+ *     finding whatever it runs, and only the allowlist, by its exact call
+ *     text, gets one past;
+ *   - all dynamic code: `eval` in any form, `Function` and `new Function`,
+ *     any load or use of `node:vm`, and a `worker_threads` Worker, however
+ *     it's bound, given code, eval or options the rail can't read;
+ *   - and, failing closed: `require()` or `import()` of a name that isn't a
+ *     literal; computed access or destructuring on fs or child_process, or
+ *     on the global object, a member chain ending in one, or a variable
+ *     given one, which is itself a finding; and any other use of an fs or
+ *     child_process module object, or `fs.promises`, than `.name` access or
+ *     destructuring with literal keys, such as passing, assigning, spreading
+ *     or exporting it, or `.then()` on its `import()`.
  *
  * It scans the shipped directories only. Overwriting renames and copies onto
  * existing paths, and `ci/*.sh`, are out of its scope.
@@ -53,40 +52,14 @@ const DELETE_MODULE_RE = /^(?:rimraf|del|fs-extra|trash)(?:\/|$)/;
 const PROCESS_MODULES = new Set(['child_process', 'node:child_process']);
 const FS_MODULES = new Set(['fs', 'node:fs', 'fs/promises', 'node:fs/promises']);
 const PROCESS_NAMES = new Set(['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']);
-/** child_process functions that take one shell command string. */
-const SHELL_STRING = new Set(['exec', 'execSync']);
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish']);
-/** Interpreters by family, matched by pattern (`python3.12`, `node22`), and the flags that take a script to run. */
-const INTERPRETER_RE = /^(node|nodejs|perl|python|ruby|bun|deno)(?:\d+(?:\.\d+)*)?$/;
-const SCRIPT_FLAGS: Record<string, readonly string[]> = { node: ['-e', '--eval', '-p', '--print'], nodejs: ['-e', '--eval', '-p', '--print'], perl: ['-e', '-E'], python: ['-c'], ruby: ['-e'], bun: ['-e', '--eval'], deno: ['eval'] };
-/** Commands that run another, and their options that take a value. */
-const WRAPPERS: Record<string, readonly string[]> = {
-    env: ['-u', '-C', '--unset', '--chdir'],
-    sudo: ['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-U', '--user', '--group'],
-    doas: ['-u', '-C'],
-    xargs: ['-n', '-I', '-L', '-P', '-s', '-d', '-E', '-a', '--max-args', '--replace', '--arg-file', '--delimiter'],
-    nice: ['-n', '--adjustment'],
-    nohup: [],
-    timeout: ['-k', '-s', '--kill-after', '--signal'],
-    npx: ['-p', '--package'],
-    busybox: [],
-};
-/** A wrapper's own flags that run a script or a shell the rail can't read: they fail it closed. */
-const WRAPPER_SCRIPTS: Record<string, readonly string[]> = { npx: ['-c', '--call'], env: ['-S', '--split-string'], sudo: ['-s', '-i', '--shell', '--login'] };
 /** node:vm's ways to run a string as code. */
 const VM_NAMES = new Set(['runInContext', 'runInNewContext', 'runInThisContext', 'compileFunction']);
-/** Where `eval` hangs off the global object. */
+/** The global object's names. A member chain ending in one, such as `globalThis.globalThis`, is the global object too. */
 const GLOBALS = new Set(['globalThis', 'window', 'self', 'global']);
-/** Commands that delete what they're given. */
-const DELETE_COMMANDS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'rimraf', 'del-cli', 'trash']);
 /** Where a shell word can start: the start, a separator, or right after an opening quote or backtick. */
 const WORD = '(?:^|[\\s;&|(`"\'!])';
-/** `rm`, `rmdir`, `unlink` or `shred` as a shell command: bare, by path, escaped with `\`, quoted, or right after a quote. */
+/** `rm`, `rmdir`, `unlink` or `shred` as a shell command, for a `.sh` file: bare, by path, escaped with `\`, quoted, or right after a quote. */
 const SHELL_DELETE = new RegExp(`${WORD}\\\\?(["']?)(?:(?:/[\\w.+-]+)+/)?(rm|rmdir|unlink|shred)\\1(?=$|[\\s;&|)"'\`])`);
-/** `git`, with any options, then `clean`, `rm` or `worktree remove`. */
-const GIT_DELETE = new RegExp(`${WORD}git\\b[^;&|\\n]*?\\s(clean|rm|worktree\\s+(?:remove|prune))\\b`);
-/** `rimraf`, `del-cli` or `trash` as a command, through `npx` or not. */
-const DELETE_TOOL = new RegExp(`${WORD}(rimraf|del-cli|trash)(?=$|[\\s;&|)"'\`])`);
 /** `find ... -delete`. */
 const FIND_DELETE = /(?:^|\s)-delete\b/;
 const SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
@@ -131,22 +104,10 @@ function stringText(node: ts.Node): string | null {
 
 const isLiteral = (node: ts.Node | undefined): node is ts.StringLiteralLike => node !== undefined && ts.isStringLiteralLike(node);
 
-/** Every string text anywhere in `nodes`: literals, templates, array elements, object values, nested. */
-function allStrings(nodes: readonly ts.Node[]): string[] {
-    const found: string[] = [];
-    const visit = (node: ts.Node) => {
-        const text = stringText(node);
-        if (text !== null) found.push(text);
-        ts.forEachChild(node, visit);
-    };
-    nodes.forEach(visit);
-    return found;
-}
-
-/** `node` without what wraps it: parentheses, `await`, `as` and `!`. */
+/** `node` without what wraps it: parentheses, `await`, `as`, `satisfies`, `<T>` and `!`. */
 function bare(node: ts.Expression): ts.Expression {
     let current = node;
-    while (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current) || ts.isAsExpression(current) || ts.isNonNullExpression(current)) current = current.expression;
+    while (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current) || ts.isAsExpression(current) || ts.isSatisfiesExpression(current) || ts.isTypeAssertionExpression(current) || ts.isNonNullExpression(current)) current = current.expression;
     return current;
 }
 
@@ -165,9 +126,15 @@ interface Bindings {
     /** node:vm's module objects, and the classes bound from it by name. */
     vmObjects: Set<string>;
     vmClasses: Set<string>;
+    /** worker_threads' module objects, and its Worker however it's bound (item 41). */
+    workerObjects: Set<string>;
+    workerClasses: Set<string>;
+    /** Variables given the global object, by declaration or assignment. */
+    globalAliases: Set<string>;
 }
 
 const VM_MODULES = new Set(['vm', 'node:vm']);
+const WORKER_MODULES = new Set(['worker_threads', 'node:worker_threads']);
 const VM_CLASSES = new Set(['Script', 'SourceTextModule', 'SyntheticModule']);
 
 /** A member's name, by `.name` or a literal key: `getBuiltinModule` for `process.getBuiltinModule` and `process['getBuiltinModule']`. */
@@ -222,6 +189,38 @@ function isProcessObject(node: ts.Expression, known: Bindings): boolean {
     return PROCESS_MODULES.has(loadedModule(expression, known) ?? '');
 }
 
+/** Whether `node` is node:vm, `.default` of it, an alias, or a load of it. */
+function isVmObject(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return known.vmObjects.has(expression.text);
+    if (ts.isPropertyAccessExpression(expression) && expression.name.text === 'default') return isVmObject(expression.expression, known);
+    return VM_MODULES.has(loadedModule(expression, known) ?? '');
+}
+
+/** Whether `node` is worker_threads, `.default` of it, an alias, or a load of it. */
+function isWorkerObject(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return known.workerObjects.has(expression.text);
+    if (ts.isPropertyAccessExpression(expression) && expression.name.text === 'default') return isWorkerObject(expression.expression, known);
+    return WORKER_MODULES.has(loadedModule(expression, known) ?? '');
+}
+
+/** Whether `node` is a Worker: bound from worker_threads by any name, `.Worker` of anything, or named Worker. */
+function isWorkerClass(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return expression.text === 'Worker' || known.workerClasses.has(expression.text);
+    const member = memberName(expression);
+    return member !== null && member.name === 'Worker';
+}
+
+/** Whether `node` is the global object: `globalThis`, `window`, `self` or `global`, a member chain ending in one, or a variable given one. */
+function isGlobal(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return GLOBALS.has(expression.text) || known.globalAliases.has(expression.text);
+    const member = memberName(expression);
+    return member !== null && GLOBALS.has(member.name);
+}
+
 /** The child_process function `node` names, such as `exec` for `cp.exec`, `cp['exec']` or one bound from either, or null. */
 function processFunction(node: ts.Expression, known: Bindings): string | null {
     const expression = bare(node);
@@ -253,8 +252,8 @@ function bindingKey(element: ts.BindingElement, source: ts.SourceFile): string |
  * also an escape the rail fails on.
  */
 function bindings(source: ts.SourceFile): Bindings {
-    const known: Bindings = { processNames: new Map(), processObjects: new Set(), fsObjects: new Set(), requireNames: new Set(), vmObjects: new Set(), vmClasses: new Set() };
-    const size = () => known.processNames.size + known.processObjects.size + known.fsObjects.size + known.requireNames.size + known.vmObjects.size + known.vmClasses.size;
+    const known: Bindings = { processNames: new Map(), processObjects: new Set(), fsObjects: new Set(), requireNames: new Set(), vmObjects: new Set(), vmClasses: new Set(), workerObjects: new Set(), workerClasses: new Set(), globalAliases: new Set() };
+    const size = () => known.processNames.size + known.processObjects.size + known.fsObjects.size + known.requireNames.size + known.vmObjects.size + known.vmClasses.size + known.workerObjects.size + known.workerClasses.size + known.globalAliases.size;
     const bindObject = (objects: Set<string>, named: { local: string; imported: string }[], isProcess: boolean) => {
         for (const { local, imported } of named) {
             if (imported === 'default') objects.add(local);
@@ -267,6 +266,15 @@ function bindings(source: ts.SourceFile): Bindings {
             if (name && ts.isIdentifier(name)) known.vmObjects.add(name.text);
             if (namespace) known.vmObjects.add(namespace);
             for (const { local, imported } of named) if (VM_CLASSES.has(imported)) known.vmClasses.add(local);
+            return;
+        }
+        if (WORKER_MODULES.has(module)) {
+            if (name && ts.isIdentifier(name)) known.workerObjects.add(name.text);
+            if (namespace) known.workerObjects.add(namespace);
+            for (const { local, imported } of named) {
+                if (imported === 'Worker') known.workerClasses.add(local);
+                if (imported === 'default') known.workerObjects.add(local);
+            }
             return;
         }
         const isProcess = PROCESS_MODULES.has(module);
@@ -310,7 +318,15 @@ function bindings(source: ts.SourceFile): Bindings {
                 if (ts.isIdentifier(node.name)) known.fsObjects.add(node.name.text);
                 bindObject(known.fsObjects, destructured(node.name), false);
             }
+            // node:vm and worker_threads by alias, destructuring or `.Name`, as `const W = workers.Worker`.
+            if (module === null && isVmObject(init, known)) bindModule('node:vm', node.name, destructured(node.name));
+            if (module === null && isWorkerObject(init, known)) bindModule('node:worker_threads', node.name, destructured(node.name));
+            const member = memberName(init);
+            if (ts.isIdentifier(node.name) && member && VM_CLASSES.has(member.name) && isVmObject(member.owner, known)) known.vmClasses.add(node.name.text);
+            if (ts.isIdentifier(node.name) && member && member.name === 'Worker' && isWorkerObject(member.owner, known)) known.workerClasses.add(node.name.text);
+            if (ts.isIdentifier(node.name) && isGlobal(init, known)) known.globalAliases.add(node.name.text);
         }
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && isGlobal(node.right, known)) known.globalAliases.add(node.left.text);
         ts.forEachChild(node, visit);
     };
     for (let before = -1; before !== size();) {
@@ -363,239 +379,6 @@ function isDeclarationName(node: ts.Identifier): boolean {
     return false;
 }
 
-/** A process call's options: the argument after the list for spawn and its kin, after the command for exec, when there is one. Null when it has none, or a callback stands there. */
-function optionsOf(node: ts.CallExpression, shellString: boolean): ts.Expression | null {
-    const args = node.arguments;
-    const at = shellString ? 1 : args[1] !== undefined && (ts.isArrayLiteralExpression(args[1]) || !ts.isObjectLiteralExpression(args[1])) ? 2 : 1;
-    const options = args[at];
-    if (options === undefined || ts.isArrowFunction(options) || ts.isFunctionExpression(options)) return null;
-    return options;
-}
-
-/** Whether options run no shell as far as the rail can read: an object literal with no spread, and `shell`, quoted or not, absent or literally `false`. */
-function shellRead(options: ts.Expression | null): 'none' | 'true' | 'unreadable' {
-    if (options === null) return 'none';
-    if (!ts.isObjectLiteralExpression(options)) return 'unreadable';
-    for (const property of options.properties) {
-        if (ts.isSpreadAssignment(property)) return 'unreadable';
-        const key = keyText(property.name);
-        if (key === null) return 'unreadable';
-        if (key !== 'shell') continue;
-        if (!ts.isPropertyAssignment(property)) return 'unreadable';
-        if (property.initializer.kind === ts.SyntaxKind.FalseKeyword) continue;
-        return property.initializer.kind === ts.SyntaxKind.TrueKeyword ? 'true' : 'unreadable';
-    }
-    return 'none';
-}
-
-/** Why a command line given as strings deletes: `rm` and its family, `git` deleting, a delete tool, or `find -delete`. */
-function stringsReason(strings: readonly string[]): string | null {
-    for (const text of strings) {
-        const git = GIT_DELETE.exec(text);
-        if (git) return `runs git ${git[1].replace(/\s+/g, ' ').replace('prune', 'remove')}`;
-    }
-    for (const text of strings) {
-        const deleting = SHELL_DELETE.exec(text);
-        if (deleting) return `runs ${deleting[2]}`;
-    }
-    for (const text of strings) {
-        const tool = DELETE_TOOL.exec(text);
-        if (tool) return `runs ${tool[1]}`;
-    }
-    return strings.some((text) => FIND_DELETE.test(text)) ? 'runs find -delete' : null;
-}
-
-/** A word of a command line: its text, or null when it isn't a literal. */
-type Word = string | null;
-
-const base = (command: string) => path.posix.basename(command.replace(/^\\/, ''));
-
-/**
- * A shell command string as the commands in it, each split into words, with
- * quotes taken off: `a 'b c'; d` is `[['a', 'b c'], ['d']]`. Separators are
- * `;`, `&`, `|` and newlines outside quotes.
- */
-function shellCommands(text: string): string[][] {
-    const commands: string[][] = [];
-    let words: string[] = [];
-    let word: string | null = null;
-    let quote: '"' | "'" | null = null;
-    const end = () => {
-        if (word !== null) words.push(word);
-        word = null;
-    };
-    for (let at = 0; at < text.length; at += 1) {
-        const char = text[at];
-        if (quote) {
-            if (char === quote) quote = null;
-            else if (char === '\\' && quote === '"' && at + 1 < text.length) word = `${word ?? ''}${text[(at += 1)]}`;
-            else word = `${word ?? ''}${char}`;
-            continue;
-        }
-        if (char === '"' || char === "'") {
-            quote = char;
-            word ??= '';
-        } else if (char === '\\' && at + 1 < text.length) {
-            word = `${word ?? ''}${text[(at += 1)]}`;
-        } else if (/\s/.test(char) && char !== '\n') {
-            end();
-        } else if (char === ';' || char === '&' || char === '|' || char === '\n') {
-            end();
-            if (words.length > 0) commands.push(words);
-            words = [];
-        } else {
-            word = `${word ?? ''}${char}`;
-        }
-    }
-    end();
-    if (words.length > 0) commands.push(words);
-    return commands;
-}
-
-/**
- * `command` and `rest` past `env`, `sudo`, `doas`, `xargs`, `nice`, `nohup`,
- * `timeout`, `npx` and `busybox`, with their options. A stop when what they
- * run isn't a literal, or a wrapper's own script flag (`npx -c`, `env -S`,
- * `sudo -s` or `-i`) runs something the rail can't read. Null when they run
- * no command.
- */
-function unwrap(command: string, words: readonly Word[]): { runs: string; rest: readonly Word[] } | { stop: string } | null {
-    let runs = base(command);
-    let rest = words;
-    while (runs in WRAPPERS) {
-        const wrapper = runs;
-        const valued = WRAPPERS[wrapper];
-        let at = 0;
-        let duration = wrapper !== 'timeout';
-        for (; at < rest.length; at += 1) {
-            const each = rest[at];
-            if (each === null) return { stop: `runs ${wrapper} with a command that isn't a literal` };
-            if (each.startsWith('-')) {
-                const scripts = WRAPPER_SCRIPTS[wrapper] ?? [];
-                // `--split-string=…` by its name, and combined short flags such as `-si` by each letter.
-                const flag = each.startsWith('--') ? each.split('=')[0] : each;
-                if (scripts.includes(flag)) return { stop: `runs ${wrapper} ${flag}, which the rail can't read` };
-                if (!each.startsWith('--') && each.length > 2 && [...each.slice(1)].some((letter) => scripts.includes(`-${letter}`))) return { stop: `runs ${wrapper} ${each}, which the rail can't read` };
-                if (valued.includes(each)) at += 1;
-                continue;
-            }
-            if (wrapper === 'env' && each.includes('=')) continue;
-            if (!duration) {
-                duration = true;
-                continue;
-            }
-            break;
-        }
-        const next = rest[at];
-        if (next === undefined || next === null) return null;
-        runs = base(next);
-        rest = rest.slice(at + 1);
-    }
-    return { runs, rest };
-}
-
-/** What `git` with these arguments deletes, or a stop when its subcommand isn't a literal. */
-function gitReason(rest: readonly Word[]): string | null {
-    for (let at = 0; at < rest.length; at += 1) {
-        const each = rest[at];
-        if (each === null) return "runs git with arguments that aren't literals";
-        if (each.startsWith('-')) {
-            if (['-C', '-c', '--git-dir', '--work-tree', '--namespace'].includes(each)) at += 1;
-            continue;
-        }
-        if (each === 'clean' || each === 'rm') return `runs git ${each}`;
-        const next = rest[at + 1];
-        if (each === 'worktree' && (next === 'remove' || next === 'prune')) return 'runs git worktree remove';
-        return null;
-    }
-    return null;
-}
-
-/**
- * Why one command, as words, deletes, or might, or can't be read. `strings`
- * is every string the call holds, for what words alone don't show. Null when
- * it plainly doesn't.
- */
-function wordsReason(command: string, words: readonly Word[], listLiteral: boolean, strings: readonly string[]): string | null {
-    const first = base(command);
-    if (!listLiteral && (first in WRAPPERS || first === 'git' || SHELLS.has(first) || INTERPRETER_RE.test(first))) return `runs ${first} with arguments that aren't a literal list`;
-    const resolved = unwrap(command, words);
-    if (resolved === null) return stringsReason(strings);
-    if ('stop' in resolved) return resolved.stop;
-    const { runs, rest } = resolved;
-    if (runs === 'git') {
-        const git = gitReason(rest);
-        if (git) return git;
-    }
-    if (DELETE_COMMANDS.has(runs)) return `runs ${runs}`;
-    if (runs === 'find' && rest.includes('-delete')) return 'runs find -delete';
-    const family = INTERPRETER_RE.exec(runs)?.[1];
-    if (family) {
-        const flag = rest.findIndex((each) => each !== null && SCRIPT_FLAGS[family].includes(each));
-        const script = flag >= 0 ? rest[flag + 1] : undefined;
-        const isNode = family === 'node' || family === 'nodejs';
-        // node with only literal arguments and no script, such as `node --version`, runs a file the rail scans, or nothing.
-        if (flag < 0 && isNode && rest.every((each) => each !== null)) return stringsReason(strings);
-        if (flag < 0 && isNode) return `runs ${runs} with arguments that aren't literals`;
-        if (flag < 0) return `runs ${runs} with no literal script, so it may read one from stdin or a file`;
-        if (script === null || script === undefined) return `runs a ${runs} script that isn't a literal`;
-        if (family !== 'node' && family !== 'nodejs') return `runs a ${runs} script, which the rail can't read`;
-        // A node script is JavaScript: the rail reads it as it reads a file.
-        const [inner] = scanSource(`${runs} -e`, script);
-        if (inner) return `runs ${runs} -e with ${inner.call}`;
-    }
-    if (SHELLS.has(runs)) {
-        const flag = rest.findIndex((each) => each !== null && /^-\w*c\w*$/.test(each));
-        if (flag < 0) return `runs ${runs} with no literal script, so it may read one from stdin or a file`;
-        const script = rest[flag + 1];
-        if (script === null || script === undefined) return "runs a shell script that isn't a literal";
-        // The script is read as a command line, so what it runs is judged as a list would be: a nested node -e, python -c or sh -s included.
-        for (const words of shellCommands(script)) {
-            const nested = wordsReason(words[0], words.slice(1), true, words);
-            if (nested) return nested;
-        }
-    }
-    const said = stringsReason(strings);
-    if (said) return said;
-    if (SHELLS.has(runs) && rest.some((each) => each === null)) return `runs ${runs} with arguments that aren't literals`;
-    return null;
-}
-
-/**
- * Why a child_process call deletes, or might, or can't be read. Null when
- * it plainly doesn't. A form it can't resolve fails the rail closed (#181's
- * A10 review, items 24, 27 and 31). An exec string is split into its
- * commands and words and judged as a list would be.
- */
-function processReason(node: ts.CallExpression, fn: string): string | null {
-    const shellString = SHELL_STRING.has(fn);
-    const options = optionsOf(node, shellString);
-    const args = node.arguments.filter((each) => each !== options && !ts.isArrowFunction(each) && !ts.isFunctionExpression(each));
-    // What the options feed the command on stdin counts as its text too.
-    const input = options && ts.isObjectLiteralExpression(options) ? options.properties.filter((each) => ts.isPropertyAssignment(each) && keyText(each.name) === 'input').map((each) => (each as ts.PropertyAssignment).initializer) : [];
-    const strings = [...allStrings(args), ...allStrings(input)];
-    const [command, list] = args;
-    const listLiteral = shellString || list === undefined || ts.isArrayLiteralExpression(list);
-    const elements: readonly ts.Expression[] = !shellString && list && ts.isArrayLiteralExpression(list) ? list.elements : [];
-    const nonLiteral = !isLiteral(command) || !listLiteral || elements.some((each) => !isLiteral(each));
-    const unread = (): string | null => {
-        const shell = shellRead(options);
-        if (!nonLiteral || shell === 'none') return null;
-        return shell === 'true' ? "with shell: true and arguments that aren't literals" : "with options the rail can't read, and arguments that aren't literals";
-    };
-    if (!isLiteral(command)) return stringsReason(strings) ?? "with a command that isn't a literal";
-    if (shellString) {
-        const said = stringsReason(strings);
-        if (said) return said;
-        for (const words of shellCommands(command.text)) {
-            const reason = wordsReason(words[0], words.slice(1), true, words);
-            if (reason) return reason;
-        }
-        return unread();
-    }
-    return wordsReason(command.text, elements.map((each) => (isLiteral(each) ? each.text : null)), listLiteral, strings) ?? unread();
-}
-
 /** Every delete call in one source text. `file` is how findings name it. */
 export function scanSource(file: string, text: string): DeleteCall[] {
     const source = parse(file, text);
@@ -607,12 +390,23 @@ export function scanSource(file: string, text: string): DeleteCall[] {
     /** Strings a process call's arguments hold are judged there, once. */
     const inProcessArgs = new Set<ts.Node>();
     const isCallee = (node: ts.Node) => (ts.isCallExpression(node.parent) || ts.isNewExpression(node.parent)) && node.parent.expression === node;
+    /** Classes this file declares itself: `new Script()` is node:vm's unless one of them is named Script. */
+    const ownClasses = new Set<string>();
+    const collect = (node: ts.Node) => {
+        if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) ownClasses.add(node.name.text);
+        ts.forEachChild(node, collect);
+    };
+    collect(source);
     const visit = (node: ts.Node) => {
         let module: string | null = null;
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && isLiteral(node.moduleSpecifier)) module = node.moduleSpecifier.text;
         else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && isLiteral(node.moduleReference.expression)) module = node.moduleReference.expression.text;
-        else module = loadedModule(node, known);
+        // The load itself, once: not again for the parentheses or the await around it.
+        else if (ts.isCallExpression(node)) module = loadedModule(node, known);
+        const typeOnly = (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly === true) || (ts.isExportDeclaration(node) && node.isTypeOnly);
         if (module !== null && DELETE_MODULE_RE.test(module)) add(node, `module ${module}`);
+        // node:vm runs strings as code, so any load of it is a finding (item 39).
+        if (module !== null && VM_MODULES.has(module) && !typeOnly) add(node, `module ${module}, which the rail can't read`);
         // A re-export hands fs or child_process to modules the rail doesn't follow.
         if (ts.isExportDeclaration(node) && module !== null && (FS_MODULES.has(module) || PROCESS_MODULES.has(module))) add(node, `re-exports ${module}`);
         const loading = loader(node, known);
@@ -624,10 +418,9 @@ export function scanSource(file: string, text: string): DeleteCall[] {
             const name = calleeName(node.expression);
             if (name !== null && DELETE_NAMES.has(name)) add(node, node.expression.getText(source));
             if (name !== null && VM_NAMES.has(name)) add(node, `${node.expression.getText(source)}, which the rail can't read`);
-            const fn = processFunction(node.expression, known);
-            if (fn) {
-                const reason = processReason(node, fn);
-                if (reason) add(node, `${node.expression.getText(source)} ${reason}`);
+            // Every process call, whatever it runs: the rail reads no command line (item 39).
+            if (processFunction(node.expression, known)) {
+                add(node, `${node.expression.getText(source)} runs a process`);
                 node.arguments.forEach((argument) => inProcessArgs.add(argument));
             }
             const callee = node.expression;
@@ -636,27 +429,29 @@ export function scanSource(file: string, text: string): DeleteCall[] {
             }
             // Reflect.get on the global object reaches eval and everything else on it.
             const first = node.arguments[0] ? bare(node.arguments[0]) : undefined;
-            if (ts.isPropertyAccessExpression(callee) && callee.getText(source) === 'Reflect.get' && first && ts.isIdentifier(first) && GLOBALS.has(first.text)) {
-                add(node, `${callee.getText(source)}(${first.text}, …), which the rail can't read`);
+            if (ts.isPropertyAccessExpression(callee) && callee.getText(source) === 'Reflect.get' && first && isGlobal(first, known)) {
+                add(node, `${callee.getText(source)}(${first.getText(source)}, …), which the rail can't read`);
             }
             if (ts.isIdentifier(callee) && callee.text === 'Function') add(node, "Function, which the rail can't read");
         } else if (ts.isNewExpression(node)) {
             const created = bare(node.expression);
             const named = ts.isIdentifier(created) ? created.text : ts.isPropertyAccessExpression(created) ? created.name.text : null;
             if (named === 'Function') add(node, `new ${node.expression.getText(source)}, which the rail can't read`);
-            // node:vm's Script and modules, only when node:vm's: a class of one's own named Script is nothing.
-            const fromVm = (ts.isIdentifier(created) && known.vmClasses.has(created.text)) || (ts.isPropertyAccessExpression(created) && VM_CLASSES.has(created.name.text) && ts.isIdentifier(created.expression) && known.vmObjects.has(created.expression.text));
+            // node:vm's Script and modules, however bound; a bare Script is node:vm's unless this file declares a class of that name (item 41).
+            const fromVm = (ts.isIdentifier(created) && (known.vmClasses.has(created.text) || (VM_CLASSES.has(created.text) && !ownClasses.has(created.text)))) || (ts.isPropertyAccessExpression(created) && VM_CLASSES.has(created.name.text) && isVmObject(created.expression, known));
             if (fromVm) add(node, `new ${node.expression.getText(source)}, which the rail can't read`);
-            // Anything made with eval in its options, a Worker however it's reached or aliased; and a Worker whose options the rail can't read.
-            const options = node.arguments?.[1];
-            const evaluated = options !== undefined && ts.isObjectLiteralExpression(options) && options.properties.some((each) => (named === 'Worker' && (ts.isSpreadAssignment(each) || keyText(each.name) === null)) || (!ts.isSpreadAssignment(each) && keyText(each.name) === 'eval' && !(ts.isPropertyAssignment(each) && each.initializer.kind === ts.SyntaxKind.FalseKeyword)));
-            if (evaluated || (named === 'Worker' && options !== undefined && !ts.isObjectLiteralExpression(options))) add(node, `new ${node.expression.getText(source)} with eval, which the rail can't read`);
+            // Anything made with eval in its options; a Worker, however it's bound, whose options the rail can't read, or given code or a path that isn't a literal.
+            const worker = isWorkerClass(node.expression, known);
+            const [code, options] = node.arguments ?? [];
+            const evaluated = options !== undefined && ts.isObjectLiteralExpression(options) && options.properties.some((each) => (worker && (ts.isSpreadAssignment(each) || keyText(each.name) === null)) || (!ts.isSpreadAssignment(each) && keyText(each.name) === 'eval' && !(ts.isPropertyAssignment(each) && each.initializer.kind === ts.SyntaxKind.FalseKeyword)));
+            if (evaluated || (worker && options !== undefined && !ts.isObjectLiteralExpression(options))) add(node, `new ${node.expression.getText(source)} with eval, which the rail can't read`);
+            else if (worker && !isLiteral(code)) add(node, `new ${node.expression.getText(source)} with code or a path that isn't a literal, which the rail can't read`);
         } else if (ts.isPropertyAccessExpression(node) && DELETE_NAMES.has(node.name.text)) {
             // Passed on as a value, such as `.then(fs.promises.rm)`, rather than called here.
             if (!isCallee(node)) add(node, node.getText(source));
-        } else if (ts.isPropertyAccessExpression(node) && node.name.text === 'eval' && ts.isIdentifier(node.expression) && GLOBALS.has(node.expression.text)) {
+        } else if (ts.isPropertyAccessExpression(node) && node.name.text === 'eval' && isGlobal(node.expression, known)) {
             add(node, `${node.getText(source)}, which the rail can't read`);
-        } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(bare(node.expression)) && GLOBALS.has((bare(node.expression) as ts.Identifier).text) && (!isLiteral(node.argumentExpression) || node.argumentExpression.text === 'eval')) {
+        } else if (ts.isElementAccessExpression(node) && isGlobal(node.expression, known) && (!isLiteral(node.argumentExpression) || node.argumentExpression.text === 'eval')) {
             // A computed key on the global object can reach eval or anything else, so it fails closed; only the allowlist gets one past.
             add(node, `${node.getText(source)}, which the rail can't read`);
         } else if (ts.isElementAccessExpression(node)) {
@@ -669,7 +464,8 @@ export function scanSource(file: string, text: string): DeleteCall[] {
             const key = bindingKey(node, source);
             const from = ts.isVariableDeclaration(node.parent.parent) ? node.parent.parent.initializer : undefined;
             if (key !== null && DELETE_NAMES.has(key)) add(node, `destructure ${node.getText(source)}`);
-            else if (key === null && from && (isFsObject(from, known) || isProcessObject(from, known))) add(node, `computed destructure ${node.getText(source)}`);
+            else if (key === null && from && (isFsObject(from, known) || isProcessObject(from, known) || isGlobal(from, known))) add(node, `computed destructure ${node.getText(source)}`);
+            else if (key === 'eval' && from && isGlobal(from, known)) add(node, `destructure ${node.getText(source)}, which the rail can't read`);
         } else if (ts.isIdentifier(node) && node.text === 'eval' && !isDeclarationName(node) && !inType(node)) {
             // eval in any form, direct or indirect, such as (0, eval)(…).
             add(node, "eval, which the rail can't read");
@@ -677,6 +473,9 @@ export function scanSource(file: string, text: string): DeleteCall[] {
             const text = stringText(node);
             if (text !== null && FIND_DELETE.test(text)) add(node, '-delete');
         }
+        // A variable given the global object: its computed keys are followed, and it fails closed itself (item 41).
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isGlobal(node.initializer, known)) add(node, `${node.name.text} = ${bare(node.initializer).getText(source)}, which the rail can't read`);
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && isGlobal(node.right, known)) add(node, `${node.left.getText(source)} = ${bare(node.right).getText(source)}, which the rail can't read`);
         // The escape rule, for fs, child_process, fs.promises and .default by name.
         const named = ts.isIdentifier(node) && (known.fsObjects.has(node.text) || known.processObjects.has(node.text)) && !isDeclarationName(node);
         const member = ts.isPropertyAccessExpression(node) && ((node.name.text === 'promises' && isFsObject(node.expression, known)) || (node.name.text === 'default' && (isFsObject(node.expression, known) || isProcessObject(node.expression, known))));

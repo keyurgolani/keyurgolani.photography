@@ -24,7 +24,10 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth 
  * file matches its size and SHA-256. The manifest is written last, so a set
  * without one was never finished. A build holds stagingLockName(<id>) for as
  * long as its `staging/<id>` folder exists, so a starting worker can remove
- * the folders of killed builds without touching a live one's.
+ * the folders of killed builds without touching a live one's. It also holds
+ * assetLockName(<photoId>, <assetRevision>) from before that folder exists
+ * through the publish, and `photos gc --set-aside` takes the same lock, so
+ * "build a set for X" and "set X aside" never run at once.
  *
  * resolveAsset() and the manifest reader live in lib/media/manifest.ts, so
  * the web process can read sets without loading the encoder.
@@ -96,6 +99,16 @@ export function stagingRoot(root: string): string {
 /** The lock a build holds while `staging/<id>` exists. */
 export function stagingLockName(id: string): string {
     return `build-${id}`;
+}
+
+/**
+ * The lock a build holds for one asset revision, from before its staging
+ * folder exists through the publish, and `photos gc --set-aside` holds for
+ * the folder it moves (#181's A10 review, item 40a). Photo IDs hold `_`, which
+ * a lock name can't, so it is a digest of the pair.
+ */
+export function assetLockName(photoId: string, assetRevision: string): string {
+    return `asset-${createHash('sha256').update(`${photoId}\n${assetRevision}`).digest('hex').slice(0, 32)}`;
 }
 
 /** A name a build's staging folder can have: one that makes a valid lock name. #15's GC considers only these too. */
@@ -378,45 +391,53 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     const id = idGen();
     const staging = path.join(stagingRoot(root), id);
     const writeFile = faults.writeFile ?? ((file: string, data: Uint8Array) => fs.promises.writeFile(file, data, { mode: PRIVATE_FILE_MODE, flag: 'wx' }));
+    // The asset's lock, then the folder's: --set-aside can't move this asset while the build stages or publishes it.
+    let assetLocked = false;
     try {
-        // Taken before the folder exists and let go only once it is published or removed.
-        await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
-            try {
-                await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
-                const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
-                for (const width of VARIANT_WIDTHS) {
-                    variants[width] = {} as Record<VariantFormat, VariantFile>;
-                    for (const format of VARIANT_FORMATS) {
-                        const name = `${width}.${format}`;
-                        const encoded = await decoding(() => encodeVariant(source, width, format, { limitInputPixels: maxPixels }));
-                        const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
-                        const size = await validated(name, data, format, variantWidthFor(orientedWidth, orientedHeight, PROFILE_1.variants[width].width));
-                        await writeFile(path.join(staging, name), data);
-                        variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
-                        await faults.afterVariant?.(name);
+        await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async (assetLock) => {
+            assetLocked = true;
+            // Taken before the folder exists and let go only once it is published or removed.
+            await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
+                try {
+                    await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
+                    const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
+                    for (const width of VARIANT_WIDTHS) {
+                        variants[width] = {} as Record<VariantFormat, VariantFile>;
+                        for (const format of VARIANT_FORMATS) {
+                            const name = `${width}.${format}`;
+                            const encoded = await decoding(() => encodeVariant(source, width, format, { limitInputPixels: maxPixels }));
+                            const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
+                            const size = await validated(name, data, format, variantWidthFor(orientedWidth, orientedHeight, PROFILE_1.variants[width].width));
+                            await writeFile(path.join(staging, name), data);
+                            variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+                            await faults.afterVariant?.(name);
+                        }
                     }
+                    const manifest: AssetManifest = {
+                        schemaVersion: 1,
+                        photoId: job.photoId,
+                        assetRevision: job.assetRevision,
+                        profileId: job.profileId,
+                        variants,
+                        lqip: await lqipOf(source, maxPixels),
+                        createdAt: iso(clock()),
+                    };
+                    await faults.beforeManifest?.();
+                    await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+                    await faults.beforePublish?.();
+                    // A build that stalled past its lease may have lost the folder to a starting worker, or the asset to --set-aside.
+                    signal.throwIfAborted();
+                    assetLock.signal.throwIfAborted();
+                    await publishDirectory(staging, finalDir);
+                } catch (error) {
+                    await fs.promises.rm(staging, { recursive: true, force: true });
+                    throw error;
                 }
-                const manifest: AssetManifest = {
-                    schemaVersion: 1,
-                    photoId: job.photoId,
-                    assetRevision: job.assetRevision,
-                    profileId: job.profileId,
-                    variants,
-                    lqip: await lqipOf(source, maxPixels),
-                    createdAt: iso(clock()),
-                };
-                await faults.beforeManifest?.();
-                await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
-                await faults.beforePublish?.();
-                // A build that stalled past its lease may have lost the folder to a starting worker.
-                signal.throwIfAborted();
-                await publishDirectory(staging, finalDir);
-            } catch (error) {
-                await fs.promises.rm(staging, { recursive: true, force: true });
-                throw error;
-            }
+            });
         });
     } catch (error) {
+        // Another command holds the asset: --set-aside, most likely. The entry stays pending for the next pass.
+        if (!assetLocked && error instanceof LockTimeoutError) return { status: 'pending', reason: 'locked' };
         return recordFailed(buildFailureText(error, finalDir), error);
     }
     return recordReady(false);

@@ -11,7 +11,8 @@ import { dataRootStatus } from '../storage/config';
 import { usualProfile } from './compile';
 import { checkPublished, type PublishState } from './mode';
 import { lastCommitted, listActivations, readLastPublish, readRevisionFile, type LastPublishFile } from './repository';
-import { setAsideFolders } from './tombstones';
+import { alwaysHolder, protectedText, references } from './references';
+import { renameBack, setAsideFolders, TRASH_DIR, trashOrigin } from './tombstones';
 import { sizeText, trashSummary, type TrashSummary } from './asset-folders';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { Activation, AuthoredPhoto, AuthoredSeries, WorkingLayer } from './types';
@@ -229,6 +230,15 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     try {
         const trash = await trashSummary(root);
         if (trash) status.trash = trash;
+        // A folder in trash/ that something holds again, as a put-back photos gc --set-aside couldn't make leaves one: named with its holder.
+        const origins = trash?.kind === 'folder' ? trash.folders.map((entry) => ({ entry, origin: trashOrigin(entry.name) })) : [];
+        if (origins.some(({ origin }) => origin !== null)) {
+            const refs = await references(root, { live: true }).catch(() => null);
+            for (const { entry, origin } of origins) {
+                const holder = refs && origin ? alwaysHolder(refs, origin.photoId, origin.assetRevision) : null;
+                if (holder && origin) entry.held = { text: protectedText(holder), origin: `assets/${origin.photoId}/${origin.assetRevision}` };
+            }
+        }
     } catch (error) {
         status.trash = { error: message(error) };
     }
@@ -310,7 +320,10 @@ function formatStatus(status: OwnerStatus, now: number): string {
         else if (trash.kind !== 'folder') lines.push(`Trash: trash/ in the data root is a ${trash.kind}, which nothing reads or empties.`);
         else {
             lines.push(`Trash: ${count(trash.count, 'folder')} in trash/, ${trash.bytes === null ? 'size unknown' : sizeText(trash.bytes)}. Emptying trash/ is your own step.`);
-            for (const entry of trash.folders) lines.push(`  ${entry.name}, ${sizeText(entry.bytes)}`);
+            for (const entry of trash.folders) {
+                const held = entry.held ? `; ${entry.held.text}, so it belongs back at ${entry.held.origin}: ${renameBack(`${TRASH_DIR}/${entry.name}`, entry.held.origin)}` : '';
+                lines.push(`  ${entry.name}, ${sizeText(entry.bytes)}${held}`);
+            }
         }
     }
     lines.push(heartbeatLine(identity.watcher, now));

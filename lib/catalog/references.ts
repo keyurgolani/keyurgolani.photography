@@ -33,6 +33,40 @@ const SOURCE_ORDER: readonly ReferenceSource[] = ['active-revision', 'revision',
  */
 export const ALWAYS_PROTECTED: readonly ReferenceSource[] = ['active-revision', 'working-layer-series', 'open-inbox', 'live-staging'];
 
+/**
+ * The first of the always-protected set, in its order, that holds
+ * `photoId`'s `assetRevision`: a reference naming that revision, or every
+ * revision of the photo. Null when none does. GC, `photos gc --set-aside` and
+ * `photos status` ask it the same way.
+ */
+export function alwaysHolder(refs: readonly AssetReference[], photoId: string, assetRevision: string): AssetReference | null {
+    for (const source of ALWAYS_PROTECTED) {
+        const found = refs.find((ref) => ref.source === source && ref.photoId === photoId && (ref.assetRevision === null || ref.assetRevision === assetRevision));
+        if (found) return found;
+    }
+    return null;
+}
+
+/** Who protects an asset, in words. */
+export function protectedText(ref: Pick<AssetReference, 'source' | 'holder'>): string {
+    switch (ref.source) {
+        case 'active-revision':
+            return `the live revision, ${ref.holder}, shows it`;
+        case 'working-layer-series':
+            return `the draft's series ${ref.holder} lists it`;
+        case 'open-inbox':
+            return `the open Inbox item ${ref.holder} names it`;
+        case 'live-staging':
+            return `the build in staging/${ref.holder} may be writing it`;
+        case 'revision':
+            return `revision ${ref.holder} shows it`;
+        case 'candidate':
+            return `candidate ${ref.holder} shows it`;
+        case 'working-layer-photo':
+            return 'its own photo record pins it';
+    }
+}
+
 /** The Inbox states #14 still shows as open: an item not yet settled. */
 const OPEN_EVENT_STATUSES = new Set(['open', 'deferred', 'failed']);
 
