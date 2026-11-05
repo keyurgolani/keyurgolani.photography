@@ -216,7 +216,7 @@ describe('the insertion suggestion the watcher writes', () => {
 describe('loadInboxSummary', () => {
     it('counts as the page counts, with the watcher, and names one item only by its ID, version and status', async () => {
         const f = await served({ fresh: 3 });
-        await writeWatcherHeartbeat(f.root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: new Date(NOW - 30_000).toISOString(), legacyDerivatives: false });
+        await writeWatcherHeartbeat(f.root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: new Date(Date.now() - 30_000).toISOString(), legacyDerivatives: false });
         await createCurationSink({ root: f.root, logger: quiet })([f.fact('new', f.fresh[0]), f.fact('new', f.fresh[1]), f.fact('missing', f.catalog.series[0].photoIds[0])]);
         const page = ready(await loadInbox(null, { now: () => NOW }));
         const id = newId(f, f.fresh[0]);

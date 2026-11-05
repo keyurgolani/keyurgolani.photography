@@ -51,10 +51,10 @@ describe('the public routes', () => {
         const preview = curator.filter((file) => file.startsWith('app/curation/preview/'));
         expect(preview).toEqual(expect.arrayContaining(['app/curation/preview/[draftId]/page.tsx', 'app/curation/preview/[draftId]/site/page.tsx']));
         expect(curator.filter((file) => !preview.includes(file))).toEqual([
-            'app/api/curation/login/route.ts',
-            'app/api/curation/logout/route.ts',
             // #14 (v2.0.0 A8): the summary the Inbox's poll reads, behind requireCurator().
             'app/api/curation/inbox/summary/route.ts',
+            'app/api/curation/login/route.ts',
+            'app/api/curation/logout/route.ts',
             'app/api/curation/media/[photoId]/[assetRevision]/[profileId]/[variant]/route.ts',
             'app/curation/CuratorHeader.tsx',
             'app/curation/inbox/ArrivalStrip.tsx',
