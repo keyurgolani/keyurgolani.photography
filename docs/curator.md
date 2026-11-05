@@ -26,14 +26,14 @@ Every one of these writes the draft only, under the version the page loaded, as 
 
 ### Changing a slug
 
-A series' slug is its address, `/work/<slug>`. Retitling a series never changes it, and nothing on the Series screen does: `photos edit ser_<name>` does ([README](../README.md#curating-the-catalog)). Links people saved or shared point at the old address, so a change keeps it. Put the old slug in `slugAliases` in the same edit:
+A series' slug is its address, `/work/<slug>`. Retitling a series never changes it, and nothing on the Series screen does: `photos edit ser_<name>` does ([README](../README.md#curating-the-catalog)). Links people saved or shared point at the old address, so a change keeps it. Add the old slug to `slugAliases` in the same edit, beside any old slugs already there. Say Harbor Nights was renamed once from `harbor` to `harbor-nights`, and now becomes `harbor-at-night`:
 
 ```json
-"slug": "harbor-nights",
-"slugAliases": ["harbor"]
+"slug": "harbor-at-night",
+"slugAliases": ["harbor", "harbor-nights"]
 ```
 
-After the publish, `/work/harbor` answers 308 to `/work/harbor-nights`. A publish that changes a slug without keeping the old one stops on `route.slug-change`, and Publish's blocker names the alias to add.
+After the publish, `/work/harbor` and `/work/harbor-nights` both answer 308 to `/work/harbor-at-night`. A publish that changes a slug without keeping the old one, or drops an older one in the same edit, stops on `route.slug-change`, and Publish's blocker names the alias to keep.
 
 An address stays with its series. While `/work/harbor` is live on Harbor Nights, no publish can give it to another series, as its slug or as an old address (`route.alias-reassigned`), since every link to Harbor Nights would land on that series instead. To move an address, take it off its series first, publish, then give it to the other series and publish again. A live slug comes off only through an alias, so for a slug that's three publishes: the rename with the old slug kept, then the old slug out of `slugAliases`, then the other series' edit. Between the last two, `/work/harbor` answers 404. Taking an old slug out of `slugAliases` breaks its links, and no check stops that, so do it on purpose.
 
