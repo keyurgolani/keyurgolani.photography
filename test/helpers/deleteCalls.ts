@@ -7,8 +7,10 @@
  *
  * It finds:
  *   - `rm`, `rmSync`, `rmdir`, `unlink`, `rimraf`, `remove`, `emptyDir`,
- *     `mkdtempDisposable` and their kin however they're reached: called,
- *     passed on, imported, destructured, or by a literal key;
+ *     `mkdtempDisposable` and their kin however they're reached: called
+ *     (named by the whole call, its target and options included, whitespace
+ *     normalised, item 52), passed on, imported, destructured, or by a
+ *     literal key;
  *   - any import, re-export, `require()`, `import()`,
  *     `process.getBuiltinModule()`, `module.require()` or `createRequire()`
  *     load of `rimraf`, `del`, `fs-extra` or `trash`, or a subpath of one;
@@ -420,6 +422,9 @@ function isDeclarationName(node: ts.Identifier): boolean {
     return false;
 }
 
+/** A call as the rail names it: its whole text, whitespace normalised. */
+const callText = (node: ts.CallExpression, source: ts.SourceFile) => node.getText(source).replace(/\s+/g, ' ').trim();
+
 /** How a process call's finding starts: the whole call follows, its whitespace normalised (item 43). */
 export const PROCESS_CALL = 'runs a process: ';
 
@@ -460,11 +465,12 @@ export function scanSource(file: string, text: string): DeleteCall[] {
         if (loading && module !== null && (FS_MODULES.has(module) || PROCESS_MODULES.has(module)) && !allowedUse(node as ts.Expression, true, loading.kind === 'import()')) add(node, `escapes ${node.getText(source)}`);
         if (ts.isCallExpression(node)) {
             const name = calleeName(node.expression);
-            if (name !== null && DELETE_NAMES.has(name)) add(node, node.expression.getText(source));
+            // A delete call is named by the whole call too, its target and options included, so changing what it deletes fails the rail (item 52).
+            if (name !== null && DELETE_NAMES.has(name)) add(node, callText(node, source));
             if (name !== null && VM_NAMES.has(name)) add(node, `${node.expression.getText(source)}, which the rail can't read`);
             // Every process call, whatever it runs: the rail reads no command line (item 39), and pins the whole call, arguments and options included (item 43).
             if (processFunction(node.expression, known)) {
-                add(node, `${PROCESS_CALL}${node.getText(source).replace(/\s+/g, ' ').trim()}`);
+                add(node, `${PROCESS_CALL}${callText(node, source)}`);
                 node.arguments.forEach((argument) => inProcessArgs.add(argument));
             }
             const callee = node.expression;
@@ -577,17 +583,17 @@ export const RAIL_EXCLUSIONS: readonly { pattern: RegExp; reason: string }[] = [
 const RAIL_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|sh)$/;
 
 /** Every source file in the repository, tracked or new and not ignored, relative to its root and sorted, before the exclusions. */
-export function repositorySources(): string[] {
-    const listed = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-    return [...new Set(listed.split('\0').filter((file) => RAIL_EXTENSIONS.test(file) && fs.existsSync(path.join(REPO_ROOT, file))))].sort();
+export function repositorySources(root: string = REPO_ROOT): string[] {
+    const listed = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    return [...new Set(listed.split('\0').filter((file) => RAIL_EXTENSIONS.test(file) && fs.existsSync(path.join(root, file))))].sort();
 }
 
 /** The exclusion that leaves `file` out of the rail, or null when it's scanned. */
 export const exclusionOf = (file: string) => RAIL_EXCLUSIONS.find((each) => each.pattern.test(file)) ?? null;
 
 /** Every source file the rail scans: every one in the repository but what RAIL_EXCLUSIONS leaves out. */
-export function shippedFiles(): string[] {
-    return repositorySources().filter((file) => exclusionOf(file) === null);
+export function shippedFiles(root: string = REPO_ROOT): string[] {
+    return repositorySources(root).filter((file) => exclusionOf(file) === null);
 }
 
 /** Every delete call in `files`. */

@@ -13,7 +13,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
-    // e2e/ is Playwright's. Standalone output tracing copies test files into .next/standalone.
+    // e2e/ is Playwright's, and .next/ is Next's build output, which may hold copies of the sources.
     exclude: [...configDefaults.exclude, 'e2e/**', '.next/**'],
   },
 });
