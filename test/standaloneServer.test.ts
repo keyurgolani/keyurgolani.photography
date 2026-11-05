@@ -1,0 +1,113 @@
+// @vitest-environment node
+/**
+ * The pure parts of test/helpers/standaloneServer.ts, which the production
+ * rows (test/prod/pageFreshness.test.ts, test/prod/publishBurst.test.ts)
+ * read every page through: the HTML readers, the error-shell skeleton, and
+ * C1's window rule. These run in the unit suite, with no build or server.
+ */
+import { describe, expect, it } from 'vitest';
+import { bodyOf, headOf, markers, meta, servableRevisions, skeleton, type PublishTimes } from './helpers/standaloneServer';
+
+const A = `rev_${'a'.repeat(64)}`;
+const B = `rev_${'b'.repeat(64)}`;
+
+/** A series page as React and Next send it: the tags, then the Flight payload, whose JSON names the same props. */
+const SERIES = [
+    '<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/>',
+    // The theme script compares, so a `<` inside a script must not open a tag.
+    '<script>if(a<b){document.documentElement.dataset.x="<main data-catalog-revision=\\"' + B + '\\">"}</script>',
+    '<title>Harbor · Keyur Golani Photography</title>',
+    '<meta name="description" content="Fish &amp; chips."/>',
+    `<meta name="catalog-revision" content="${A}"/>`,
+    '<link rel="canonical" href="https://example.test/work/harbor"/>',
+    '<meta property="og:image" content="https://example.test/media/x/w1200.webp"/>',
+    '</head><body class="font-sans">',
+    `<main class="page" data-catalog-revision="${A}"><h1 id="series-title">Harbor</h1><p>A statement.</p></main>`,
+    `<script>self.__next_f.push([1,"[\\"$\\",\\"main\\",null,{\\"data-catalog-revision\\":\\"${A}\\"}]"])</script>`,
+    '</body></html>',
+].join('');
+
+describe('the HTML readers', () => {
+    it('splits the document at </head>', () => {
+        expect(headOf(SERIES)).toContain('<title>Harbor');
+        expect(headOf(SERIES)).not.toContain('<h1');
+        expect(bodyOf(SERIES)).toContain('<main');
+        expect(bodyOf(SERIES)).not.toContain('<title>');
+        // No head at all: everything is body.
+        expect(headOf('<p>x</p>')).toBe('');
+        expect(bodyOf('<p>x</p>')).toBe('<p>x</p>');
+    });
+
+    it('reads meta tags by name or property, with entities decoded', () => {
+        expect(meta(SERIES, 'description')).toEqual(['Fish & chips.']);
+        expect(meta(SERIES, 'og:image')).toEqual(['https://example.test/media/x/w1200.webp']);
+        expect(meta(SERIES, 'catalog-revision')).toEqual([A]);
+        expect(meta(SERIES, 'robots')).toEqual([]);
+    });
+
+    it('reads markers from tags only, never from a script or the Flight payload', () => {
+        expect(markers(SERIES)).toEqual({ meta: [A], main: [A], list: [], homeState: [], revisions: [A, B] });
+    });
+
+    it("counts each marker every time it's there, wherever it is", () => {
+        const twice = SERIES.replace('</body>', `<meta name="catalog-revision" content="${B}"/><main data-catalog-revision="${B}"></main></body>`);
+        expect(markers(twice)).toMatchObject({ meta: [A, B], main: [A, B] });
+        // The second meta streamed into the body, so the head holds only the first.
+        expect(meta(headOf(twice), 'catalog-revision')).toEqual([A]);
+        expect(meta(bodyOf(twice), 'catalog-revision')).toEqual([B]);
+    });
+
+    it("reads Work's list and Home's state", () => {
+        const html = `<html><head></head><body><main data-home-state='ready' data-catalog-revision=${A}><ul class="list" data-catalog-revision="${A}"><li>x</li></ul></main></body></html>`;
+        expect(markers(html)).toEqual({ meta: [], main: [A], list: [A], homeState: ['ready'], revisions: [A] });
+    });
+});
+
+describe("the error shell's skeleton", () => {
+    const shell = (scripts: number, inBody = '') =>
+        `<!DOCTYPE html><html id="__next_error__"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>${'<link rel="preload" as="script" href="/c.js"/>'.repeat(scripts)}${'<script src="/c.js" async=""></script>'.repeat(scripts)}</head><body>${inBody}${'<script>self.__next_f.push([1,"x"])</script>'.repeat(scripts)}</body></html>`;
+
+    it('is the same with any number of chunks', () => {
+        expect(skeleton(shell(2))).toEqual(skeleton(shell(5)));
+        expect(skeleton(shell(2))).toEqual(['html', 'head', 'meta', 'meta', 'body']);
+    });
+
+    it('differs once the title or a hidden segment streams into the body', () => {
+        expect(skeleton(shell(2, '<div hidden id="S:0"><title>Work · Site</title></div>'))).not.toEqual(skeleton(shell(2)));
+    });
+});
+
+describe("C1's window rule", () => {
+    // Publish 1 wrote its pending activation at 10 and its pointer by 12; publish 2 at 20 and 22.
+    const publishes: PublishTimes[] = [
+        { afterStep10: 10, afterStep11: 12 },
+        { afterStep10: 20, afterStep11: 22 },
+    ];
+
+    it('allows only R0 before the first publish starts its pointer', () => {
+        expect(servableRevisions(publishes, 0, 5)).toEqual([0]);
+        // Up to the moment publish 1's pending activation is written, R1 can't be there yet.
+        expect(servableRevisions(publishes, 0, 9.9)).toEqual([0]);
+        expect(servableRevisions(publishes, 0, 10)).toEqual([0, 1]);
+    });
+
+    it('allows both sides of a pointer write the fetch overlaps', () => {
+        expect(servableRevisions(publishes, 11, 11.5)).toEqual([0, 1]);
+        expect(servableRevisions(publishes, 21, 21)).toEqual([1, 2]);
+    });
+
+    it('allows only R1 between the publishes', () => {
+        expect(servableRevisions(publishes, 13, 15)).toEqual([1]);
+        // At exactly afterStep11 the old pointer may just have been replaced.
+        expect(servableRevisions(publishes, 12, 15)).toEqual([0, 1]);
+    });
+
+    it('leaves the last revision open-ended, and allows every revision to a fetch spanning the burst', () => {
+        expect(servableRevisions(publishes, 25, 30)).toEqual([2]);
+        expect(servableRevisions(publishes, 5, 30)).toEqual([0, 1, 2]);
+    });
+
+    it('allows R0 alone when nothing was published', () => {
+        expect(servableRevisions([], 0, 100)).toEqual([0]);
+    });
+});
