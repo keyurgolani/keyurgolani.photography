@@ -46,7 +46,7 @@ On `/about`, #1 checks the navigation links and theme control in full, and Tab r
 
 `app/globals.css` defines it right after the Tailwind directives, so it wins ties with the base utilities. A 3 px `--focus-ring-light` (`#ffffff`) outline sits outside a 3 px `--focus-ring-dark` (`#000000`) band that fills the offset. The outline survives forced colors. Tailwind appends its variants, such as `dark:` and `hover:`, to the end of the file, so a shadow variant would replace the band at the same specificity. The band's `box-shadow` is `!important` for that reason, and `--tw-shadow` keeps the element's own shadow under it. `expectFocusRingVisible()` fails when the band is missing. Keep the two colors at least 9:1 apart, so one of them reaches at least 3:1 on any background (4.58:1 for the current white and black). #21 may retune them within that rule, but not to the review shell's Focus Ice (`#d5f0ef`, about 1.15:1 on `#FAFAFA`).
 
-A stretched target draws the token inset instead: Work's entry (#171) is its title link, whose `::after` covers the whole entry, out to the cover's surround, a layer above the print. The `::after` carries the light outline at its edge, at `outline-offset: calc(-1 * var(--focus-ring-width))`, over an inset `--focus-ring-dark` band of the width plus the offset, and the link itself draws no ring. That's the same two colors the other way in, so the screen's edge, a neighbour or the print never covers it, in every theme, and the outline still survives forced colors. `expectFocusRingVisible()` takes an inset band when the offset is negative, and fails one that shows less than 3 px inside the outline.
+A stretched target draws the token inset instead: Work's entry (#171) is its title link, whose `::after` covers the whole entry, a layer above the print. It reaches past the entry by the cover's surround, or by the ring's width plus offset where that's more, so the ring never paints over the copy. Black's covers meet the screen's edge, so there it reaches past the copy below only. The `::after` carries the light outline at its edge, at `outline-offset: calc(-1 * var(--focus-ring-width))`, over an inset `--focus-ring-dark` band of the width plus the offset, and the link itself draws no ring. That's the same two colors the other way in, so the screen's edge, a neighbour or the print never covers it, in every theme, and the outline still survives forced colors. `expectFocusRingVisible()` takes an inset band when the offset is negative, and fails one that shows less than 3 px inside the outline.
 
 `html` has `scroll-padding-top: 6rem` and `scroll-padding-bottom: 8rem`, so a focused element that fits between them scrolls into view with room around it. Outside Home, `SiteNav` sits in normal flow, so no chrome covers a focused element. On Home it's part of the chrome, which keyboard focus reveals at full opacity with no fade and holds open, and settled Home's portrait badge sits under it and takes no pointer.
 
@@ -84,10 +84,10 @@ Playwright builds the site and serves it on port 3100, or on `E2E_PORT` when tha
 | 4 | `expectFocusRingVisible()`, `expectNoFadeOnBlur()`, `expectRingNotClipped()`, `expectNotObscured()` |
 | 5 | `expectMinTargetSize()` |
 | 6 | `expectTabOrderMatchesVisualOrder()`, `expectReachableWithin()` |
-
-The rule 4, 5 and 6 helpers but `expectReachableWithin()` take `{ pseudo: '::after' }` (or `'::before'`) for a target drawn on a positioned pseudo-element, as a stretched link's is: they measure its box, outline, band and clips, and focus stays the element's own. `measure()` in `e2e/support/measure.ts` does the measuring.
 | 7 | `expectSingleTapActivates()` |
 | 8 | `expectContrastOverImage()` |
 | 9 | `expectReflow()` |
+
+The rule 4, 5 and 6 helpers but `expectReachableWithin()` take `{ pseudo: '::after' }` (or `'::before'`) for a target drawn on a positioned pseudo-element, as a stretched link's is: they measure its box, outline, band and clips, and focus stays the element's own. `measure()` in `e2e/support/measure.ts` does the measuring.
 
 `e2e/support/helpers.spec.ts` shows each helper failing on a known-bad page. A new helper adds its case there.
