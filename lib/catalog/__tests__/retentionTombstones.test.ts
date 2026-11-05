@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stagingLockName } from '../../identity/derivatives';
 import { readStoredRegistry, writeRegistry } from '../../identity/registry';
 import { readDirectoryManifest, manifestFiles } from '../../storage/publish';
 import { withLock } from '../../storage/lock';
@@ -15,9 +14,10 @@ import { CATALOG_LOCK } from '../repository';
 import { AUTHORED_LOCK } from '../working-layer-writer';
 import { runPurgeCommand, purgeArgs } from '../purge-cli';
 import { references } from '../references';
-import { GC_EXIT_CODES, planDigest, runGc, trashName, type GcEntry, type GcOptions, type GcResult } from '../retention';
+import { GC_EXIT_CODES, planDigest, runGc, setAsideTargetProblem, trashName, type GcEntry, type GcOptions, type GcResult } from '../retention';
+import { CURATION_LOCK } from '../../curation/repository';
 import { gcArgs, runGcCommand } from '../retention-cli';
-import { removeAbandonedStaging } from '../../identity/derivatives';
+import { assetLockName, removeAbandonedStaging, stagingLockName } from '../../identity/derivatives';
 import { dataRootStatus } from '../../storage/config';
 import { runVerifyCommand } from '../verify-cli';
 import { readTombstones, TOMBSTONE_GRACE_MS, tombstonesDir } from '../tombstones';
@@ -96,7 +96,8 @@ const assetsOf = (root: string) => new Map([...snapshot(root)].filter(([file]) =
  */
 function wholeText(aside: string, original: string, occupied: boolean, then = 'then revoke, or rerun photos gc'): string {
     // A line the owner can run as it stands, from the compose file's own service and data-root path (item 38).
-    const back = `rename it back with docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher mv ${aside} ${original}; ${then}`;
+    // It checks the place is free first, and mv -n never overwrites (item 42).
+    const back = `rename it back with docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher sh -c '[ ! -e ${original} ] && mv -n ${aside} ${original}'; ${then}`;
     return occupied
         ? `set aside whole at ${aside}, and something else is at ${original}: set that aside with photos gc --set-aside ${original}, then ${back}`
         : `set aside whole at ${aside}: ${back}`;
@@ -1449,14 +1450,14 @@ describe('photos gc --set-aside, the data root trash/ (item 29a)', { timeout: 12
 describe("--set-aside keeps what GC keeps, and refuses what it can't move safely (items 34 to 36)", { timeout: 120_000 }, () => {
     afterEach(() => vi.restoreAllMocks());
 
-    async function setAside(built: PurgeFixture, target: string, hooks?: { beforeRename?(): void }) {
+    async function setAside(built: PurgeFixture, target: string, hooks?: { beforeRename?(): void; afterRename?(): void }) {
         const out: string[] = [];
         const exitCode = await runGcCommand(built.root, gcArgs(['--set-aside', target]), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet, waitMs: 200, setAsideHooks: hooks });
         return { exitCode, text: out.join('\n') };
     }
 
     /** Refused with `pattern`, the exit code `code`, and the data root byte for byte as it was. */
-    async function refused(built: PurgeFixture, target: string, pattern: RegExp, code = 1, hooks?: { beforeRename?(): void }) {
+    async function refused(built: PurgeFixture, target: string, pattern: RegExp, code = 1, hooks?: { beforeRename?(): void; afterRename?(): void }) {
         const before = snapshot(built.root);
         const { exitCode, text } = await setAside(built, target, hooks);
         vi.restoreAllMocks();
@@ -1480,7 +1481,9 @@ describe("--set-aside keeps what GC keeps, and refuses what it can't move safely
     it('34: refuses a tombstoned folder the live revision shows, naming it', async () => {
         const built = await fixture();
         writeTombstone(built.root, { photoId: built.a, assetRevisions: [built.first[built.a]], createdAt: new Date(T0).toISOString() });
-        await refused(built, folderOf(built, built.a), /PROTECTED: .*the live revision, rev_[0-9a-f]{64}, shows it/);
+        const text = await refused(built, folderOf(built, built.a), /PROTECTED: .*the live revision, rev_[0-9a-f]{64}, shows it/);
+        // Item 42: what to do about it.
+        expect(text).toContain('Settle that, or wait for it, then run photos gc --set-aside again.');
     });
 
     it('34: refuses a tombstoned folder a draft series lists, naming it', async () => {
@@ -1623,5 +1626,176 @@ describe("--set-aside keeps what GC keeps, and refuses what it can't move safely
             const now = new Date().toISOString();
             fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
         } });
+    });
+});
+
+describe('--set-aside against the writers that make holders (items 40, 40a and 42)', { timeout: 120_000 }, () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    async function setAside(built: PurgeFixture, target: string, hooks?: { beforeRename?(): void | Promise<void>; afterRename?(): void | Promise<void> }) {
+        const out: string[] = [];
+        const exitCode = await runGcCommand(built.root, gcArgs(['--set-aside', target]), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet, waitMs: 200, setAsideHooks: hooks });
+        return { exitCode, text: out.join('\n') };
+    }
+
+    /** Every path but curation/, staging/ and trash/, which a test writes there or the run may make. */
+    const kept = (root: string) => new Map([...snapshot(root)].filter(([file]) => !/^(?:curation|staging|trash)(?:\/|$)/.test(file)));
+
+    it('40a: holds the curation lock and the asset lock while it moves, so neither an Inbox writer nor a build can start', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const tries: string[] = [];
+        const { exitCode } = await setAside(built, folderOf(built, built.d), { beforeRename: async () => {
+            for (const name of [CURATION_LOCK, assetLockName(built.d, built.first[built.d])]) {
+                tries.push(await withLock(name, { root: built.root, waitMs: 0 }, async () => `${name} free`).catch(() => `${name} held`));
+            }
+        } });
+        expect(exitCode).toBe(0);
+        expect(tries).toEqual([`${CURATION_LOCK} held`, `${assetLockName(built.d, built.first[built.d])} held`]);
+    });
+
+    it.each([
+        ['the asset lock, as a build in flight holds it', 'ASSET_LOCKED', (built: PurgeFixture) => assetLockName(built.d, built.first[built.d])],
+        ['the curation lock, as an Inbox writer holds it', 'CURATION_LOCKED', () => CURATION_LOCK],
+    ])('40a: waits for, then refuses under, %s, moving nothing', async (_what, outcome, lock) => {
+        const built = await fixture();
+        await purgeD(built);
+        const before = snapshot(built.root);
+        const result = await withLock(lock(built), { root: built.root, waitMs: 0 }, () => setAside(built, folderOf(built, built.d)));
+        expect(result.exitCode).toBe(3);
+        expect(result.text).toContain(outcome);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it.each([
+        ['an open Inbox item', (built: PurgeFixture) => void writeOpenEvent(built.root, built.d, built.first[built.d])],
+        ['a staging build in flight', (built: PurgeFixture) => void writeStaging(built.root, 'late-build', { photoId: built.d, assetRevision: built.first[built.d], profileId: built.profileId })],
+    ])('40: checks the holders again after the rename, and puts the folder back when %s came to name it', async (_what, write) => {
+        const built = await fixture();
+        await purgeD(built);
+        const before = kept(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { beforeRename: () => write(built) });
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/PROTECTED: .*so photos gc --set-aside put it back/);
+        expect(kept(built.root)).toEqual(before);
+        expect(fs.readdirSync(path.join(built.root, 'trash'))).toEqual([]);
+    });
+
+    it('40a: exits 4 when the put-back is blocked, leaves the folder in trash/, and photos status names it with its holder', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        let event = '';
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { afterRename: () => {
+            event = writeOpenEvent(built.root, built.d, built.first[built.d]).id;
+            fs.mkdirSync(path.join(built.root, folderOf(built, built.d), 'in-the-way'), { recursive: true });
+        } });
+        const name = trashName(built.d, built.first[built.d], PAST_GRACE);
+        expect(exitCode).toBe(4);
+        expect(text).toContain(`trash/${name}`);
+        expect(text).toMatch(/couldn't put it back/);
+        expect(fs.existsSync(path.join(built.root, 'trash', name))).toBe(true);
+        const { output } = await runStatusCommand({ dataRoot: built.root });
+        expect(output).toMatch(new RegExp(`  ${name}, [^;\\n]+; the open Inbox item ${event} names it, so it belongs back at ${folderOf(built, built.d)}`));
+    });
+
+    it('42: refuses for a holder that names every asset revision of the photo (assetRevision null)', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        writeAmbiguousEvent(built.root, [built.d], `sha256-${'f'.repeat(64)}`);
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/PROTECTED: .*the open Inbox item evt_[0-9a-f]+ names it/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('42: refuses a trash/ on another device than the data root', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash'));
+        const trash = fs.realpathSync(path.join(built.root, 'trash'));
+        const real = fs.lstatSync;
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+            if (typeof each !== 'string' || path.resolve(each) !== trash || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { dev: stat.dev + 1 });
+        }) as typeof fs.lstatSync);
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        vi.restoreAllMocks();
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/CROSS_DEVICE: trash\//);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('42: checks a newly made trash/ is a real folder before the rename', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const trash = path.join(fs.realpathSync(built.root), 'trash');
+        const real = fs.lstatSync;
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+            if (typeof each !== 'string' || path.resolve(each) !== trash || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { isSymbolicLink: () => true });
+        }) as typeof fs.lstatSync);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        vi.restoreAllMocks();
+        expect(exitCode).toBe(1);
+        expect(text).toMatch(/UNSAFE_PATH: trash\/ in the data root is not a folder on the data root's device/);
+        expect(fs.existsSync(path.join(built.root, folderOf(built, built.d)))).toBe(true);
+    });
+
+    it('42: exits 4 with INTEGRITY_MISMATCH when the holders scan finds a damaged Inbox item', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const dir = path.join(built.root, 'curation', 'events', `evt_${'0'.repeat(23)}9`);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'v1.json'), '{');
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d));
+        expect(exitCode).toBe(4);
+        expect(text).toMatch(/INTEGRITY_MISMATCH/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('42: makes trash/ only after every check, so a refusal leaves none behind', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const { exitCode, text } = await setAside(built, folderOf(built, built.d), { beforeRename: () => {
+            const lockFile = path.join(built.root, 'locks', `${CATALOG_LOCK}.lock`);
+            fs.renameSync(lockFile, `${lockFile}.broken`);
+            const now = new Date().toISOString();
+            fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
+        } });
+        expect(exitCode).toBe(3);
+        expect(text).toMatch(/LOCK_LOST/);
+        expect(fs.existsSync(path.join(built.root, 'trash'))).toBe(false);
+    });
+
+    it('42: names "GC" nowhere in a refusal of a move', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const realRoot = fs.realpathSync(built.root);
+        const { text } = await setAside(built, folderOf(built, built.d), { beforeRename: () => {
+            const real = fs.realpathSync;
+            vi.spyOn(fs, 'realpathSync').mockImplementation(((each: fs.PathLike) => (each === realRoot ? `${realRoot}-elsewhere` : real(each))) as typeof fs.realpathSync);
+        } });
+        vi.restoreAllMocks();
+        expect(text).toMatch(/UNSAFE_PATH: The data root no longer resolves/);
+        expect(text).not.toMatch(/\bGC\b/);
+    });
+});
+
+describe("--set-aside's dot and dirname guard, each half on its own (item 42)", () => {
+    const photoDir = path.join(path.sep, 'data', 'assets', 'ph_00000000-0000-4000-8000-000000000001');
+    it.each([
+        ['.', 'dot'],
+        ['..', 'dot'],
+        ['a/b', 'dirname'],
+        [`.gc-x/../..`, 'dirname'],
+        [`sha256-${'a'.repeat(64)}`, null],
+        ['.gc-anything', null],
+    ])('%s is %s', (name, problem) => {
+        expect(setAsideTargetProblem(photoDir, name)).toBe(problem);
     });
 });

@@ -12,7 +12,8 @@ import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import * as vm from 'node:vm';
 import * as workers from 'node:worker_threads';
-import { Worker } from 'node:worker_threads';
+import { Worker, Worker as NamedWorker } from 'node:worker_threads';
+import { Script as VmScript } from 'node:vm';
 
 declare const fse: { remove(dir: string): Promise<void>; removeSync(dir: string): void; emptyDir(dir: string): Promise<void>; emptyDirSync(dir: string): void };
 
@@ -300,8 +301,57 @@ export function viaMoreEval(code: string): void {
 export function notFindings(): void {
     class Script {}
     void new Script();
+}
+
+// Round 8 (#181's A10 review, item 39): every process call is a finding, so what node --version reopened is closed by rule.
+export function nowFindings(): void {
     cp.execSync('node --version');
     spawnSync('node', ['--version']);
+}
+
+export function viaNodeB1(x: string): void {
+    spawnSync('node', [], { input: "require('fs').rmSync('x')" });
+    spawnSync('node', ['--eval=require("fs").rmSync("x")']);
+    spawnSync('node', ['-pe', 'require("fs").rmSync("x")']);
+    spawnSync('node', ['--import', 'data:text/javascript,1']);
+    spawnSync('node', ['-r', '/opt/other/wipe.js', '-e', '1']);
+    spawnSync('node', ['/opt/other/wipe.js']);
+    spawnSync('node', [x]);
+}
+
+// Round 8 (item 41): global, Worker and Script forms.
+let g: unknown;
+
+export function viaGlobalForms(n: string): unknown {
+    g = globalThis;
+    const alias = globalThis;
+    return [
+        globalThis.globalThis[n as keyof typeof globalThis],
+        (globalThis satisfies typeof globalThis)[n as keyof typeof globalThis],
+        (<Record<string, unknown>>(globalThis as unknown))[n],
+        alias[n as keyof typeof globalThis],
+        g,
+    ];
+}
+
+export function viaWorkerForms(code: string, opts: { eval: boolean }): void {
+    const W = workers.Worker;
+    void new W(code, opts);
+    void new NamedWorker(code);
+}
+
+export async function viaVmForms(code: string): Promise<void> {
+    void new (await import('node:vm')).Script(code);
+    void new (vm as unknown as { default: typeof vm }).default.Script(code);
+    void new VmScript(code);
+}
+
+/** preview-reader.ts's sharedState, its local renamed, so the entry can't depend on the name `global`. */
+const RENAMED_STATE_KEY = Symbol.for('kg.catalog.previewReader');
+export function renamedSharedState(): unknown {
+    const store = globalThis as typeof globalThis & { [RENAMED_STATE_KEY]?: unknown };
+    store[RENAMED_STATE_KEY] ??= {};
+    return store[RENAMED_STATE_KEY];
 }
 
 export function viaComputedGlobal(name: string): unknown {

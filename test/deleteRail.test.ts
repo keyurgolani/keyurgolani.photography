@@ -19,6 +19,15 @@ import { REPO_ROOT } from './helpers/runTsx';
  */
 
 interface Allowed {
+    /**
+     * What the entry lets past: a delete (the default); a process call, which
+     * must say in `runs` what it runs, and in its reason why that can't
+     * delete; or a read the rail can't resolve, the only kind whose reason
+     * may say it reaches no delete (#181's A10 review, items 39 and 39a).
+     */
+    kind?: 'delete' | 'process' | 'unresolvable-read';
+    /** For a process call: what it runs. */
+    runs?: string;
     file: string;
     /** The named functions the calls sit in, outermost first, as the scan names them. */
     fn: string;
@@ -56,9 +65,34 @@ const ALLOWLIST: readonly Allowed[] = [
     { file: 'lib/identity/decisions.ts', fn: 'settleDecisions', calls: ['fs.promises.rm'], reason: 'on each identity pass that rejects a decision: removes the decision file from identity/decisions/ once its contents are written to rejected/' },
     { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: ['fs.promises.rm'], reason: "when photos edit's editor fails: removes photos edit's own working copy" },
     { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: ['fs.promises.rm'], reason: "when photos edit saves: removes photos edit's own working copy" },
-    { file: 'lib/catalog/edit-record.ts', fn: 'shellEditor', calls: ["spawn runs a shell script that isn't a literal"], reason: "the owner's own program, run at his request, not an app delete" },
-    // Not a delete: a computed key on the global object, which the rail can't resolve, so it fails closed and is let past here only.
-    { file: 'lib/catalog/preview-reader.ts', fn: 'sharedState', calls: ["global[PREVIEW_READER_STATE_KEY], which the rail can't read", "global[PREVIEW_READER_STATE_KEY], which the rail can't read"], reason: "the preview reader's own state slot on globalThis; reaches no delete" },
+    // Process calls: every one is on this list by its exact call text, with what it runs and why that can't delete.
+    {
+        kind: 'process',
+        file: 'lib/catalog/edit-record.ts',
+        fn: 'shellEditor',
+        calls: ['spawn runs a process'],
+        runs: "sh -c '$VISUAL \"$1\"' (or $EDITOR, or vi) on photos edit's own working copy, with the path as its one argument",
+        reason: "only on the owner's photos edit, at his request: it opens his own editor, a program he chose, on a copy photos edit made. The app adds no command of its own, so nothing the app wrote runs a delete",
+    },
+    // Not deletes: a module's own state slot on globalThis, keyed by its Symbol.for(), which the rail can't resolve, so it fails closed and is let past here only.
+    ...(
+        [
+            // file, function, the local given globalThis, its key, how many times it's read by that key, and whose slot it is.
+            ['lib/catalog/preview-reader.ts', 'sharedState', 'global', 'PREVIEW_READER_STATE_KEY', 2, "the preview reader's"],
+            ['lib/catalog/homePick.ts', 'cursors', 'holder', 'CURSORS', 2, "the test Home pick's"],
+            ['lib/catalog/mode.ts', 'cutOver', 'store', 'CUTOVER_KEY', 1, "the catalog cut-over's"],
+            ['lib/curation/auth/login.ts', 'state', 'holder', 'LOCK_KEY', 2, "the curator login lockout's"],
+            ['lib/curation/auth/sessions.ts', 'store', 'holder', 'STORE_KEY', 2, "the curator sessions'"],
+            ['lib/siteConfig/aboutPortrait.ts', 'memory', 'holder', 'MEMORY', 2, "the About portrait reader's"],
+            ['lib/siteConfig/portraitVariants.ts', 'kept', 'holder', 'SETS', 2, "the About portrait sets'"],
+        ] as const
+    ).map(([file, fn, local, slot, reads, whose]): Allowed => ({
+        kind: 'unresolvable-read',
+        file,
+        fn,
+        calls: [`${local} = globalThis, which the rail can't read`, ...Array.from({ length: reads }, () => `${local}[${slot}], which the rail can't read`)],
+        reason: `${whose} own state slot on globalThis; reaches no delete`,
+    })),
     { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
     // Legacy derivatives, until A12 fences or removes them.
     { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm'], reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
@@ -101,11 +135,52 @@ describe('the delete-call rail', () => {
     });
 
     it('gives every entry a reason that says when it runs, and allows the legacy imageOptimizer deletes only inside the photo library until A12', () => {
-        // A delete says when it runs; an entry that isn't one says so instead.
-        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)|run at his request|reaches no delete$/;
-        for (const entry of ALLOWLIST) expect(entry.reason, key(entry)).toMatch(WHEN);
+        // A delete or a process call says when it runs; a read the rail can't resolve says it reaches no delete, and only that kind may.
+        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)/;
+        for (const entry of ALLOWLIST) {
+            if (entry.kind === 'unresolvable-read') expect(entry.reason, key(entry)).toMatch(/reaches no delete$/);
+            else expect(entry.reason, key(entry)).toMatch(WHEN);
+            expect(/reaches no delete/.test(entry.reason), key(entry)).toBe(entry.kind === 'unresolvable-read');
+        }
         expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').every((entry) => entry.until === 'A12' && entry.reason.startsWith('inside the photo library, until A12'))).toBe(true);
         expect(ALLOWLIST.filter((entry) => entry.until !== undefined).every((entry) => entry.file === 'utils/imageOptimizer.ts')).toBe(true);
+    });
+
+    it('lets a process call past only on an entry of kind process that says what it runs and why that can\'t delete (item 39a)', () => {
+        for (const entry of ALLOWLIST) {
+            const process = entry.calls.some((call) => / runs a process$/.test(call));
+            expect(entry.kind === 'process', key(entry)).toBe(process);
+            if (process) {
+                expect(entry.calls.every((call) => / runs a process$/.test(call)), key(entry)).toBe(true);
+                expect(entry.runs, key(entry)).toMatch(/\S/);
+                expect(entry.reason, key(entry)).toMatch(/nothing the app wrote runs a delete|can't delete/);
+            } else {
+                expect(entry.runs, key(entry)).toBeUndefined();
+            }
+        }
+        // Today that is only the owner's editor.
+        expect(ALLOWLIST.filter((entry) => entry.kind === 'process').map(key)).toEqual(['lib/catalog/edit-record.ts shellEditor']);
+    });
+
+    it('fails on a new process call anywhere in the shipped tree, whatever it runs (item 39a\'s positive control)', () => {
+        const allowed = new Map(ALLOWLIST.map((entry) => [key(entry), entry]));
+        const spawning = [
+            "import { spawn } from 'node:child_process';\nexport function later(): void {\n    spawn('ls', ['-l']);\n}\n",
+            "import { execFileSync } from 'node:child_process';\nexport const version = () => execFileSync('node', ['--version']);\n",
+        ];
+        // In every shipped directory, and under the name of a function the allowlist already lets a process call past in.
+        for (const file of ['lib/later.ts', 'app/later.ts', 'components/later.tsx', 'utils/later.ts', 'scripts/later.ts', 'proxy.ts', 'lib/catalog/edit-record.ts']) {
+            for (const text of [...spawning, "import { spawn } from 'node:child_process';\nexport function shellEditor(): void {\n    spawn('sh', ['-c', 'true']);\n    spawn('ls', []);\n}\n"]) {
+                const found = scanSource(file, text);
+                expect(found.length, `${file}: ${text}`).toBeGreaterThan(0);
+                const groups = grouped(found);
+                const passes = [...groups].every(([name, calls]) => {
+                    const entry = allowed.get(name);
+                    return entry !== undefined && JSON.stringify(calls.map((call) => call.call).sort()) === JSON.stringify([...entry.calls].sort());
+                });
+                expect(passes, `${file}: ${text}`).toBe(false);
+            }
+        }
     });
 
     it('pins who calls each wrapper a delete sits in (item 17)', () => {
@@ -140,9 +215,9 @@ describe('the delete-call rail', () => {
             ['tidyUpSync', 'fs.unlinkSync'],
             ['tidyUpSync', "fs['rmSync']"],
             ['viaImport', 'rm'],
-            ['viaShell', 'execSync runs rm'],
-            ['viaShell', 'spawn runs rm'],
-            ['viaShell', 'spawn runs find -delete'],
+            ['viaShell', 'execSync runs a process'],
+            ['viaShell', 'spawn runs a process'],
+            ['viaShell', 'spawn runs a process'],
             ['passedOn', 'fs.promises.unlink'],
         ]);
         // And the rail fails on it, as it would on any file in the tree.
@@ -154,14 +229,17 @@ describe('the delete-call rail', () => {
         const fixture = 'test/fixtures/deleteRail/strayForms.ts';
         const found = scanSource(fixture, fs.readFileSync(path.join(REPO_ROOT, fixture), 'utf8'));
         expect(found.map((call) => [call.fn, call.call])).toEqual([
-            ['viaArrayElement', 'spawnSync runs rm'],
-            ['viaArrayElement', 'execFileSync runs rm'],
-            ['viaComputedCommand', "cp.spawn with a command that isn't a literal"],
-            ['viaComputedCommand', "cp.exec with a command that isn't a literal"],
-            ['viaShellScript', "spawnSync runs a shell script that isn't a literal"],
-            ['viaGitAndFind', 'execFileSync runs git clean'],
-            ['viaGitAndFind', 'cp.execSync runs git clean'],
-            ['viaGitAndFind', 'spawnSync runs find -delete'],
+            // Round 8 (item 39): any load of node:vm.
+            ['<module>', "module node:vm, which the rail can't read"],
+            ['<module>', "module node:vm, which the rail can't read"],
+            ['viaArrayElement', 'spawnSync runs a process'],
+            ['viaArrayElement', 'execFileSync runs a process'],
+            ['viaComputedCommand', 'cp.spawn runs a process'],
+            ['viaComputedCommand', 'cp.exec runs a process'],
+            ['viaShellScript', 'spawnSync runs a process'],
+            ['viaGitAndFind', 'execFileSync runs a process'],
+            ['viaGitAndFind', 'cp.execSync runs a process'],
+            ['viaGitAndFind', 'spawnSync runs a process'],
             ['viaComputedAccess', "fs.promises['unlink']"],
             ['viaComputedAccess', 'computed access fsp[name]'],
             ['viaComputedAccess', 'Reflect.get(fs, …)'],
@@ -171,25 +249,25 @@ describe('the delete-call rail', () => {
             ['viaExtraNames', 'fse.emptyDirSync'],
             ['Janitor.sweep', 'fs.rmSync'],
             // Round 4: git clean with options, and git with a list it can't read.
-            ['viaGitOptions', 'cp.execSync runs git clean'],
-            ['viaGitOptions', 'execFileSync runs git clean'],
-            ['viaGitOptions', "execFileSync runs git with arguments that aren't a literal list"],
-            // Shells and interpreters it can't read fail it closed (item 24).
-            ['viaInterpreters', "spawnSync runs bash with arguments that aren't a literal list"],
-            ['viaInterpreters', "spawnSync runs a shell script that isn't a literal"],
-            ['viaInterpreters', "spawnSync runs a node script that isn't a literal"],
-            ['viaInterpreters', "spawnSync runs a perl script that isn't a literal"],
-            ['viaInterpreters', "spawnSync runs a python3 script that isn't a literal"],
-            ['viaInterpreters', "spawnSync with shell: true and arguments that aren't literals"],
+            ['viaGitOptions', 'cp.execSync runs a process'],
+            ['viaGitOptions', 'execFileSync runs a process'],
+            ['viaGitOptions', 'execFileSync runs a process'],
+            // Shells and interpreters (item 24).
+            ['viaInterpreters', 'spawnSync runs a process'],
+            ['viaInterpreters', 'spawnSync runs a process'],
+            ['viaInterpreters', 'spawnSync runs a process'],
+            ['viaInterpreters', 'spawnSync runs a process'],
+            ['viaInterpreters', 'spawnSync runs a process'],
+            ['viaInterpreters', 'spawnSync runs a process'],
             // The rm family as commands.
-            ['viaRmFamily', 'cp.execSync runs rm'],
-            ['viaRmFamily', 'cp.execSync runs rm'],
-            ['viaRmFamily', 'execFileSync runs rmdir'],
-            ['viaRmFamily', 'execFileSync runs unlink'],
+            ['viaRmFamily', 'cp.execSync runs a process'],
+            ['viaRmFamily', 'cp.execSync runs a process'],
+            ['viaRmFamily', 'execFileSync runs a process'],
+            ['viaRmFamily', 'execFileSync runs a process'],
             // child_process reached indirectly.
-            ['viaIndirectProcess', "exec with a command that isn't a literal"],
-            ['viaIndirectProcess', 'loaded.execSync runs rm'],
-            ['viaIndirectProcess', 'run runs rm'],
+            ['viaIndirectProcess', 'exec runs a process'],
+            ['viaIndirectProcess', 'loaded.execSync runs a process'],
+            ['viaIndirectProcess', 'run runs a process'],
             // fs reached through an alias.
             ['viaFsAliases', 'escapes fs.promises'],
             ['viaFsAliases', "computed access p[name as 'rm']"],
@@ -204,16 +282,16 @@ describe('the delete-call rail', () => {
             // A child_process function handed on, which it can't follow.
             ['viaHandOff', 'passes on cp.execSync'],
             // Round 5 (item 27): rm right after a quote.
-            ['viaQuotedRm', 'cp.execSync runs rm'],
-            ['viaQuotedRm', 'cp.execSync runs rm'],
-            ['viaQuotedRm', 'cp.execSync runs rm'],
+            ['viaQuotedRm', 'cp.execSync runs a process'],
+            ['viaQuotedRm', 'cp.execSync runs a process'],
+            ['viaQuotedRm', 'cp.execSync runs a process'],
             // Element access on a process object, like fs.
-            ['viaProcessElement', "cp['execSync'] runs rm"],
+            ['viaProcessElement', "cp['execSync'] runs a process"],
             ['viaProcessElement', 'computed access cp[name]'],
             // getBuiltinModule, module.require and a require alias.
-            ['viaBuiltinLoaders', "process.getBuiltinModule('node:child_process').execSync runs rm"],
-            ['viaBuiltinLoaders', "module.require('node:child_process').execSync runs rm"],
-            ['viaBuiltinLoaders', "load('node:child_process').execSync runs rm"],
+            ['viaBuiltinLoaders', "process.getBuiltinModule('node:child_process').execSync runs a process"],
+            ['viaBuiltinLoaders', "module.require('node:child_process').execSync runs a process"],
+            ['viaBuiltinLoaders', "load('node:child_process').execSync runs a process"],
             // The escape rule: anything but .name access or literal-key destructuring fails closed.
             ['viaEscapes', 'escapes fs'],
             ['viaEscapes', "escapes import('node:fs')"],
@@ -224,55 +302,56 @@ describe('the delete-call rail', () => {
             ['viaEscapes', 'escapes alias'],
             ['viaEscapes', 'escapes fs.promises'],
             ['<module>', 'escapes fsp'],
-            // A shell or interpreter with no literal script may read one on stdin.
-            ['viaStdin', 'spawnSync runs sh with no literal script, so it may read one from stdin or a file'],
-            ['viaStdin', 'spawnSync runs python3 with no literal script, so it may read one from stdin or a file'],
+            // A shell or interpreter with no literal script, which may read one on stdin.
+            ['viaStdin', 'spawnSync runs a process'],
+            ['viaStdin', 'spawnSync runs a process'],
             // Options it can't read, with arguments that aren't literals.
-            ['viaOptions', "spawnSync with options the rail can't read, and arguments that aren't literals"],
-            ['viaOptions', "spawnSync with options the rail can't read, and arguments that aren't literals"],
-            ['viaOptions', "spawnSync with options the rail can't read, and arguments that aren't literals"],
-            // node -e scripts are scanned; other interpreters' scripts fail closed.
-            ['viaNodeScript', "spawnSync runs node -e with require('fs').rmSync"],
-            ['viaNodeScript', 'spawnSync runs node22 -e with require("fs").rmSync'],
-            ['viaInterpreterScripts', "spawnSync runs a perl script, which the rail can't read"],
-            ['viaInterpreterScripts', "spawnSync runs a python script, which the rail can't read"],
-            ['viaInterpreterScripts', "spawnSync runs a python3.12 script, which the rail can't read"],
-            ['viaInterpreterScripts', "spawnSync runs a ruby script, which the rail can't read"],
-            ['viaInterpreterScripts', "spawnSync runs a bun script, which the rail can't read"],
-            ['viaInterpreterScripts', "spawnSync runs a deno script, which the rail can't read"],
+            ['viaOptions', 'spawnSync runs a process'],
+            ['viaOptions', 'spawnSync runs a process'],
+            ['viaOptions', 'spawnSync runs a process'],
+            // node -e scripts, a harmless one included, and other interpreters' scripts.
+            ['viaNodeScript', 'spawnSync runs a process'],
+            ['viaNodeScript', 'spawnSync runs a process'],
+            ['viaNodeScript', 'spawnSync runs a process'],
+            ['viaInterpreterScripts', 'spawnSync runs a process'],
+            ['viaInterpreterScripts', 'spawnSync runs a process'],
+            ['viaInterpreterScripts', 'spawnSync runs a process'],
+            ['viaInterpreterScripts', 'spawnSync runs a process'],
+            ['viaInterpreterScripts', 'spawnSync runs a process'],
+            ['viaInterpreterScripts', 'spawnSync runs a process'],
             // eval, new Function and Worker eval.
             ['viaEval', "eval, which the rail can't read"],
             ['viaEval', "new Function, which the rail can't read"],
             ['viaEval', "new Worker with eval, which the rail can't read"],
             // The controls round 4 left out.
             ['viaMissingControls', 'computed destructure [name]: anything'],
-            ['viaMissingControls', "spawnSync runs sh with arguments that aren't literals"],
+            ['viaMissingControls', 'spawnSync runs a process'],
             // env, sudo, xargs, nice, timeout and npx, resolved first.
-            ['viaWrappers', 'execFileSync runs git clean'],
-            ['viaWrappers', 'execFileSync runs git clean'],
-            ['viaWrappers', 'execFileSync runs git rm'],
-            ['viaWrappers', 'execFileSync runs git worktree remove'],
-            ['viaWrappers', 'execFileSync runs rimraf'],
-            ['viaWrappers', "execFileSync runs env with arguments that aren't a literal list"],
-            ['viaWrappers', "execFileSync runs sudo with arguments that aren't a literal list"],
-            ['viaWrappers', 'cp.execSync runs rimraf'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'execFileSync runs a process'],
+            ['viaWrappers', 'cp.execSync runs a process'],
             // mkdtempDisposable removes its folder when disposed.
             ['viaDisposable', 'disposable.mkdtempDisposableSync'],
             ['viaDisposable', 'disposable.mkdtempDisposable'],
             // Round 6 (item 31): Reflect.get on child_process.
             ['viaReflectProcess', 'Reflect.get(cp, …)'],
-            // exec string commands, split into words.
-            ['viaExecWords', 'cp.execSync runs bash with no literal script, so it may read one from stdin or a file'],
-            ['viaExecWords', "cp.execSync runs node -e with require('fs').rmSync"],
-            ['viaExecWords', "cp.execSync runs a python script, which the rail can't read"],
+            // exec string commands.
+            ['viaExecWords', 'cp.execSync runs a process'],
+            ['viaExecWords', 'cp.execSync runs a process'],
+            ['viaExecWords', 'cp.execSync runs a process'],
             // A wrapper's own script flags, and a wrapper that names no command.
-            ['viaWrapperFlags', "execFileSync runs npx -c, which the rail can't read"],
-            ['viaWrapperFlags', "execFileSync runs env -S, which the rail can't read"],
-            ['viaWrapperFlags', "execFileSync runs sudo -s, which the rail can't read"],
-            ['viaWrapperFlags', "execFileSync runs sudo -i, which the rail can't read"],
-            ['viaWrapperFlags', 'execFileSync runs rm'],
+            ['viaWrapperFlags', 'execFileSync runs a process'],
+            ['viaWrapperFlags', 'execFileSync runs a process'],
+            ['viaWrapperFlags', 'execFileSync runs a process'],
+            ['viaWrapperFlags', 'execFileSync runs a process'],
+            ['viaWrapperFlags', 'execFileSync runs a process'],
             // Quoted keys.
-            ['viaQuotedKeys', "spawnSync with shell: true and arguments that aren't literals"],
+            ['viaQuotedKeys', 'spawnSync runs a process'],
             ['viaQuotedKeys', "new Worker with eval, which the rail can't read"],
             ['viaNamespacedWorker', "new workers.Worker with eval, which the rail can't read"],
             // Indirect eval.
@@ -280,48 +359,78 @@ describe('the delete-call rail', () => {
             ['viaIndirectEval', "globalThis.eval, which the rail can't read"],
             ['viaIndirectEval', "window.eval, which the rail can't read"],
             // More loaders.
-            ['viaMoreLoaders', "process['getBuiltinModule']('node:child_process').execSync runs rm"],
-            ['viaMoreLoaders', "globalThis.process.getBuiltinModule('node:child_process').execSync runs rm"],
-            ['viaMoreLoaders', "process.mainModule?.require('node:child_process').execSync runs rm"],
+            ['viaMoreLoaders', "process['getBuiltinModule']('node:child_process').execSync runs a process"],
+            ['viaMoreLoaders', "globalThis.process.getBuiltinModule('node:child_process').execSync runs a process"],
+            ['viaMoreLoaders', "process.mainModule?.require('node:child_process').execSync runs a process"],
             // An absolute rm, and a !rm git alias.
-            ['viaAbsoluteAndAlias', 'execFileSync runs rm'],
-            ['viaAbsoluteAndAlias', 'cp.execSync runs rm'],
-            ['viaAbsoluteAndAlias', 'execFileSync runs rm'],
+            ['viaAbsoluteAndAlias', 'execFileSync runs a process'],
+            ['viaAbsoluteAndAlias', 'cp.execSync runs a process'],
+            ['viaAbsoluteAndAlias', 'execFileSync runs a process'],
             // nohup, doas and busybox as wrappers, and npx running rm (M23).
-            ['viaMoreWrappers', 'execFileSync runs git clean'],
-            ['viaMoreWrappers', 'execFileSync runs git rm'],
-            ['viaMoreWrappers', 'execFileSync runs rm'],
-            ['viaMoreWrappers', 'execFileSync runs rm'],
+            ['viaMoreWrappers', 'execFileSync runs a process'],
+            ['viaMoreWrappers', 'execFileSync runs a process'],
+            ['viaMoreWrappers', 'execFileSync runs a process'],
+            ['viaMoreWrappers', 'execFileSync runs a process'],
             // node:vm.
             ['viaVm', "vm.runInNewContext, which the rail can't read"],
             ['viaVm', "vm.runInThisContext, which the rail can't read"],
             ['viaVm', "new vm.Script, which the rail can't read"],
-            // Round 7 (item 37): shell -c scripts read through words, nested interpreters and stdin shells included (X16 strengthened).
-            ['viaNestedShellScripts', "spawnSync runs node -e with require('fs').rmSync"],
-            ['viaNestedShellScripts', "spawnSync runs a python3 script, which the rail can't read"],
-            ['viaNestedShellScripts', 'spawnSync runs sh with no literal script, so it may read one from stdin or a file'],
-            ['viaNestedShellScripts', 'spawnSync runs rm'],
+            // Round 7 (item 37): shell -c scripts, nested interpreters and stdin shells (X16 strengthened).
+            ['viaNestedShellScripts', 'spawnSync runs a process'],
+            ['viaNestedShellScripts', 'spawnSync runs a process'],
+            ['viaNestedShellScripts', 'spawnSync runs a process'],
+            ['viaNestedShellScripts', 'spawnSync runs a process'],
             // The options' input strings.
-            ['viaInputStrings', 'spawnSync runs git clean'],
+            ['viaInputStrings', 'spawnSync runs a process'],
             // The loader's owner, bare.
-            ['viaBareOwner', "(process as NodeJS.Process).getBuiltinModule('node:child_process').execSync runs rm"],
+            ['viaBareOwner', "(process as NodeJS.Process).getBuiltinModule('node:child_process').execSync runs a process"],
             // Wrapper script flags combined, or as --flag=, and busybox sh (X19 strengthened).
-            ['viaWrapperFlagForms', "execFileSync runs sudo -si, which the rail can't read"],
-            ['viaWrapperFlagForms', "execFileSync runs env --split-string, which the rail can't read"],
-            ['viaWrapperFlagForms', "execFileSync runs npx --call, which the rail can't read"],
-            ['viaWrapperFlagForms', 'execFileSync runs sh with no literal script, so it may read one from stdin or a file'],
+            ['viaWrapperFlagForms', 'execFileSync runs a process'],
+            ['viaWrapperFlagForms', 'execFileSync runs a process'],
+            ['viaWrapperFlagForms', 'execFileSync runs a process'],
+            ['viaWrapperFlagForms', 'execFileSync runs a process'],
             // More eval and Worker forms.
             ['viaMoreEval', "globalThis['eval'], which the rail can't read"],
             ['viaMoreEval', "Reflect.get(globalThis, …), which the rail can't read"],
             ['viaMoreEval', "new (require('node:worker_threads').Worker) with eval, which the rail can't read"],
             ['viaMoreEval', "new Spawned with eval, which the rail can't read"],
+            // Round 8 (item 39): every process call is a finding, whatever it runs, node --version included.
+            ['nowFindings', 'cp.execSync runs a process'],
+            ['nowFindings', 'spawnSync runs a process'],
+            // The review's B1 forms: node reading stdin through input, --eval=, -pe, --import data:, -r and a script outside, and a list it can't read.
+            ['viaNodeB1', 'spawnSync runs a process'],
+            ['viaNodeB1', 'spawnSync runs a process'],
+            ['viaNodeB1', 'spawnSync runs a process'],
+            ['viaNodeB1', 'spawnSync runs a process'],
+            ['viaNodeB1', 'spawnSync runs a process'],
+            ['viaNodeB1', 'spawnSync runs a process'],
+            ['viaNodeB1', 'spawnSync runs a process'],
+            // Item 41: a variable given the global object, a member chain ending in one, and satisfies and <T> casts.
+            ['viaGlobalForms', "g = globalThis, which the rail can't read"],
+            ['viaGlobalForms', "alias = globalThis, which the rail can't read"],
+            ['viaGlobalForms', "globalThis.globalThis[n as keyof typeof globalThis], which the rail can't read"],
+            ['viaGlobalForms', "(globalThis satisfies typeof globalThis)[n as keyof typeof globalThis], which the rail can't read"],
+            ['viaGlobalForms', "(<Record<string, unknown>>(globalThis as unknown))[n], which the rail can't read"],
+            ['viaGlobalForms', "alias[n as keyof typeof globalThis], which the rail can't read"],
+            // A Worker bound from worker_threads by another name, given options it can't read or code.
+            ['viaWorkerForms', "new W with eval, which the rail can't read"],
+            ['viaWorkerForms', "new NamedWorker with code or a path that isn't a literal, which the rail can't read"],
+            // node:vm's Script through import(), .default and a named import.
+            ['viaVmForms', "new (await import('node:vm')).Script, which the rail can't read"],
+            ['viaVmForms', "module node:vm, which the rail can't read"],
+            ['viaVmForms', "new (vm as unknown as { default: typeof vm }).default.Script, which the rail can't read"],
+            ['viaVmForms', "new VmScript, which the rail can't read"],
+            // The preview reader's state slot under another local name: caught by what it is, not by the name global.
+            ['renamedSharedState', "store = globalThis, which the rail can't read"],
+            ['renamedSharedState', "store[RENAMED_STATE_KEY], which the rail can't read"],
+            ['renamedSharedState', "store[RENAMED_STATE_KEY], which the rail can't read"],
             // A computed key on the global object fails closed, however it's cast.
             ['viaComputedGlobal', "globalThis[name as keyof typeof globalThis], which the rail can't read"],
             ['viaComputedGlobal', "(globalThis as unknown as Record<string, unknown>)[name], which the rail can't read"],
         ]);
     });
 
-    it('finds nothing in a Script that is not node:vm\'s, or in node --version (item 37\'s false positives)', () => {
+    it('finds nothing in a Script class the same file declares (item 41)', () => {
         const fixture = 'test/fixtures/deleteRail/strayForms.ts';
         const found = scanSource(fixture, fs.readFileSync(path.join(REPO_ROOT, fixture), 'utf8'));
         expect(found.filter((call) => call.fn.startsWith('notFindings'))).toEqual([]);
@@ -343,7 +452,7 @@ describe('the delete-call rail', () => {
             ['dyn', 'computed access fsAlias[name]'],
             // Round 6: default, as the module object itself; re-exports; a data: URL.
             ['viaNamedDefault', 'computed access fsNamed[name]'],
-            ['viaDestructuredDefault', "whole.exec with a command that isn't a literal"],
+            ['viaDestructuredDefault', 'whole.exec runs a process'],
             ['viaDotDefault', "computed access (await import('node:fs')).default[name]"],
             ['<module>', 're-exports node:fs'],
             ['<module>', 're-exports node:child_process'],
