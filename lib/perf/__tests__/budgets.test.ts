@@ -304,22 +304,32 @@ describe('payloads on the 5,000-photo fixture', () => {
         }
     });
 
-    it('Home with ten featured series, the long one among them: every series\' order, but still three records, within its compressed budget', () => {
+    it('Home with ten featured series, 1,801 photographs among them: every series\' order, but still three records, within its compressed budget', () => {
+        // Every fixed series but the long one: within limit 25 (HOME_ID_LIST_PHOTOS).
         const content = structuredClone(fixture.content);
-        content.site.featuredSeriesIds = content.series.slice(0, 10).map((series) => series.id);
+        content.site.featuredSeriesIds = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((index) => content.series[index].id);
         const looping = readerOf(content, fixture.revisionId);
         const result = homeRouteOf({ state: 'ok', reader: looping }, routes, () => 0);
         if (result.kind !== 'home' || !result.home.featuredSeries) throw new Error('Expected a featured series');
         const model = result.home;
         const loop = [model.featuredSeries!, ...(model.followingSeries ?? [])];
         expect(loop.map((series) => series.id)).toEqual(content.site.featuredSeriesIds);
-        expect(loop.flatMap((series) => series.photoIds)).toHaveLength(content.series.slice(0, 10).reduce((sum, series) => sum + series.photoIds.length, 0));
+        expect(loop.flatMap((series) => series.photoIds)).toHaveLength(1_801);
         expect(model.featuredSeries!.records).toHaveLength(3);
         expect(imagesIn(model)).toHaveLength(3);
         const size = payloadSize(model);
         record('home', size, 3, `10 featured series, ${loop.flatMap((series) => series.photoIds).length} IDs, 3 records`);
         expect(size.gzipBytes).toBeLessThanOrEqual(SCREEN_BUDGETS.home.gzipBytes);
         expectGeometry(model);
+    });
+
+    it('Home past limit 25: the ten first series, the long one among them, list 3,000 photographs, and measureCatalogBudgets() names Home from each start', () => {
+        const content = structuredClone(fixture.content);
+        content.site.featuredSeriesIds = content.series.slice(0, 10).map((series) => series.id);
+        const result = measureCatalogBudgets(readerOf(content, fixture.revisionId));
+        expect(result.home?.featuredPhotos).toBe(3_000);
+        expect(result.home!.photosAtBudget).toBeLessThan(3_000);
+        expect(result.over.map((row) => [row.screen, row.subject])).toEqual(Array.from({ length: 10 }, () => ['home', '3,000 featured photographs']));
     });
 
     it('Work: every series as a summary with its cover, no photo sequence, within its compressed budget', () => {

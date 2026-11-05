@@ -74,7 +74,7 @@ describe('browserChecks()', () => {
 
     it('holds the series and the Viewer to the first image\'s gate, and the Viewer to its eager bytes per profile', () => {
         expect(browserChecks('seriesFirstPage', 'phone', { documentBytes: 1, eagerImageBytes: 1, eagerImages: 1, otherImageBytes: 0, firstImageMs: 1_200 }).find((entry) => entry.metric === 'firstImageMs')).toMatchObject({ over: true });
-        const viewer = browserChecks('viewer', 'desktop', { documentBytes: 1, eagerImageBytes: 760 * KIB, eagerImages: 1, otherImageBytes: 0, firstImageMs: null });
+        const viewer = browserChecks('viewer', 'desktop', { documentBytes: 1, eagerImageBytes: 740 * KIB, eagerImages: 1, otherImageBytes: 0, firstImageMs: null });
         expect(viewer.find((entry) => entry.metric === 'eagerImageBytes')).toMatchObject({ budget: BROWSER_BUDGETS.viewer.eagerImageBytes.desktop, over: false });
         // No image asked for is a failure of its own where a first image is gated.
         expect(viewer.find((entry) => entry.metric === 'firstImageMs')).toMatchObject({ value: null, over: true });
