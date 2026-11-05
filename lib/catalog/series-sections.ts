@@ -4,9 +4,10 @@ import type { SeriesChapter, SeriesEntry } from './projections/series';
 /**
  * Entries per page of a series (#6): the server-rendered one and each
  * continuation, on the same edges, so the page `?photo=` renders (B5) is a
- * page Show more and Show earlier would reach. Within #6's approved bound
- * (at most 100 photo records or 100 KiB compressed); lib/perf's budget
- * tests hold every page to both. Here, apart from the server-only
+ * page Show more and Show earlier would reach. Within #6's approved bounds:
+ * at most 100 photo records, and 100 KiB compressed for the first page,
+ * 60 KiB for a continuation page; lib/perf's budget tests hold every page
+ * to its two. Here, apart from the server-only
  * projection, so the client can name the range a control will load.
  */
 export const SERIES_PAGE_SIZE = 100;

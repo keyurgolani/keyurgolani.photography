@@ -94,7 +94,7 @@ describe('the catalog endpoint inventory', () => {
 
     it('holds the continuation pages, Home\'s later records, and the Viewer\'s peek to their screens\' budgets', () => {
         expect(Object.fromEntries(CATALOG_ENDPOINTS.filter((entry) => entry.audience === 'public').map((entry) => [entry.path, [entry.method, entry.query, entry.budget, entry.cache]]))).toEqual({
-            '/api/catalog/series/[slug]/pages/[cursor]': ['GET', [], 'seriesFirstPage', 'catalog-validators'],
+            '/api/catalog/series/[slug]/pages/[cursor]': ['GET', [], 'seriesContinuationPage', 'catalog-validators'],
             '/api/catalog/home/series/[seriesId]/photos/[photoId]': ['GET', ['revision'], 'home', 'catalog-validators'],
             '/api/catalog/series/[slug]/photos/[photoId]': ['GET', ['revision'], 'viewer', 'catalog-validators'],
         });

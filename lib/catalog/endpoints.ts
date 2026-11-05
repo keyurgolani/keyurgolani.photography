@@ -34,7 +34,7 @@ const PREVIEW = '/curation/preview/[draftId]/site';
 /** The public routes, as the preview mirrors them. */
 const PUBLIC: readonly CatalogEndpoint[] = [
     // #6's Show more: one page after the server-rendered first. The cursor is in the path, so the ETag covers it.
-    { path: '/api/catalog/series/[slug]/pages/[cursor]', method: 'GET', query: [], budget: 'seriesFirstPage', cache: 'catalog-validators', audience: 'public' },
+    { path: '/api/catalog/series/[slug]/pages/[cursor]', method: 'GET', query: [], budget: 'seriesContinuationPage', cache: 'catalog-validators', audience: 'public' },
     // Home's later records as it moves, from the revision it rendered.
     { path: '/api/catalog/home/series/[seriesId]/photos/[photoId]', method: 'GET', query: ['revision'], budget: 'home', cache: 'catalog-validators', audience: 'public' },
     // The Viewer's peek beside the photograph under the finger (9a), from the revision it rendered.

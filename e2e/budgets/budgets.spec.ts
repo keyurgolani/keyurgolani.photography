@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { expect, test, type BrowserContextOptions, type Request } from '@playwright/test';
-import type { BrowserProfile, Screen } from '../../lib/perf/budgets';
+import type { BrowserProfile, BrowserScreen } from '../../lib/perf/budgets';
 import { browserChecks, type BrowserMeasurement, type BrowserRow } from '../../lib/perf/report';
 
 // #6's browser budgets: each screen's first load at the refined table's two
@@ -16,7 +16,7 @@ import { browserChecks, type BrowserMeasurement, type BrowserRow } from '../../l
 
 interface Targets {
     mode: 'fixture' | 'report';
-    screens: { screen: Screen; path: string }[];
+    screens: { screen: BrowserScreen; path: string }[];
 }
 
 const targetsFile = process.env.BUDGETS_TARGETS;

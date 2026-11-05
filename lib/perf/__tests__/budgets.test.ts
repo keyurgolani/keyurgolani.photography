@@ -108,7 +108,7 @@ afterAll(() => {
         'largest: records': records,
         'raw KiB': (size.bytes / KIB).toFixed(1),
         'gzip KiB': (size.gzipBytes / KIB).toFixed(1),
-        'budget KiB': SCREEN_BUDGETS[screen === 'seriesContinuationPage' ? 'seriesFirstPage' : screen].gzipBytes / KIB,
+        'budget KiB': SCREEN_BUDGETS[screen].gzipBytes / KIB,
         note,
     }));
     console.info(`#6 budget fixture: ${fixture.content.photos.length} photos, ${fixture.content.series.length} series, built in ${buildMs} ms`);
@@ -248,6 +248,7 @@ describe('the budgets', () => {
             home: { gzipBytes: 51_200, eagerFullSizeDerivatives: 2 },
             work: { gzipBytes: 102_400, photoSequences: 0 },
             seriesFirstPage: { gzipBytes: 102_400, photoRecords: 100 },
+            seriesContinuationPage: { gzipBytes: 61_440, photoRecords: 100 },
             viewer: { gzipBytes: 10_240, photoRecords: 1 },
         });
     });
@@ -361,7 +362,7 @@ describe('payloads on the 5,000-photo fixture', () => {
     });
 
     it('Series: every continuation page stays within the same bounds, and each series\' pages add up to it', () => {
-        // The approved bound is per response, so a continuation page is held to the first page's numbers.
+        // A continuation page has a budget of its own, tighter than the first page's (owner, 2026-11-04).
         const pagesOf = (slug: string): number[] => {
             const first = seriesPage(slug);
             const lengths = [first.entries.length];
@@ -371,8 +372,8 @@ describe('payloads on the 5,000-photo fixture', () => {
                 if (result.kind !== 'ok') throw new Error(`Expected a page, got ${result.kind}`);
                 const size = payloadSize(result.page);
                 record('seriesContinuationPage', size, result.page.entries.length, 'largest continuation page');
-                expect(result.page.entries.length, slug).toBeLessThanOrEqual(SCREEN_BUDGETS.seriesFirstPage.photoRecords);
-                expect(size.gzipBytes, slug).toBeLessThanOrEqual(SCREEN_BUDGETS.seriesFirstPage.gzipBytes);
+                expect(result.page.entries.length, slug).toBeLessThanOrEqual(SCREEN_BUDGETS.seriesContinuationPage.photoRecords);
+                expect(size.gzipBytes, slug).toBeLessThanOrEqual(SCREEN_BUDGETS.seriesContinuationPage.gzipBytes);
                 expectGeometry(result.page);
                 lengths.push(result.page.entries.length);
                 nextHref = result.page.nextHref;
@@ -455,8 +456,7 @@ describe('measureCatalogBudgets()', () => {
         expect(measured.screens.home.largest).toMatchObject({ gzipBytes: payloadSize(home()).gzipBytes, budget: 'home', records: 3 });
         const largestFirst = Math.max(...fixture.content.series.map((series) => payloadSize(seriesPage(series.slug)).gzipBytes));
         expect(measured.screens.seriesFirstPage.largest?.gzipBytes).toBe(largestFirst);
-        // Until the continuation budget lands on its own, a continuation page answers to the first page's.
-        expect(measured.screens.seriesContinuationPage.largest?.budget).toBe('seriesFirstPage');
+        expect(measured.screens.seriesContinuationPage.largest).toMatchObject({ budget: 'seriesContinuationPage', limit: 60 * KIB });
         expect(measured.screens.seriesContinuationPage.largest?.subject).toMatch(/^fixture-\d\d, photographs \d+ to \d+$/);
         expect(measured.screens.viewer.largest?.subject).toMatch(PHOTO_ID_RE);
     });

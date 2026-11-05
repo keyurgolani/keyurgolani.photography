@@ -113,7 +113,7 @@ export function measureCatalogBudgets(reader: CatalogReader, options: { budgets?
             const page = reader.getSeriesContinuation(series.slug, nextHref.slice(nextHref.lastIndexOf('/') + 1), routes);
             if (page.kind !== 'ok') break;
             const { entries } = page.page;
-            measure('seriesContinuationPage', 'seriesFirstPage', `${series.slug}, photographs ${shown + 1} to ${shown + entries.length}`, page.page);
+            measure('seriesContinuationPage', 'seriesContinuationPage', `${series.slug}, photographs ${shown + 1} to ${shown + entries.length}`, page.page);
             shown += entries.length;
             nextHref = page.page.nextHref;
         }

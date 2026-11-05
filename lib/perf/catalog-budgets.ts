@@ -16,8 +16,8 @@ import { KIB, SCREEN_BUDGETS, type Screen } from './budgets';
  * bundled that way.
  */
 
-/** A model kind measureCatalogBudgets() reads: one per screen, and the series' continuation pages. */
-export type CatalogBudgetScreen = Screen | 'seriesContinuationPage';
+/** A model kind measureCatalogBudgets() reads: one per SCREEN_BUDGETS entry. */
+export type CatalogBudgetScreen = Screen;
 
 export interface CatalogBudgetRow {
     screen: CatalogBudgetScreen;

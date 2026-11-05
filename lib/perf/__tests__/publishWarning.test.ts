@@ -70,7 +70,7 @@ describe('photos validate', { timeout: 120_000 }, () => {
 describe('budgetLines()', () => {
     const row = (screen: CatalogBudgetMeasurement['over'][number]['screen'], subject: string, gzipKiB: number, limitKiB: number) => ({
         screen,
-        budget: screen === 'seriesContinuationPage' ? ('seriesFirstPage' as const) : screen,
+        budget: screen,
         subject,
         records: 1,
         bytes: gzipKiB * 4 * KIB,

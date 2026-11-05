@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { BROWSER_BUDGETS, FIRST_IMAGE_MS, KIB, SCREEN_BUDGETS, type BrowserProfile, type Screen } from './budgets';
+import { BROWSER_BUDGETS, FIRST_IMAGE_MS, KIB, SCREEN_BUDGETS, type BrowserProfile, type BrowserScreen } from './budgets';
 import type { CatalogBudgetMeasurement, CatalogBudgetScreen } from './catalog-budgets';
 import { BUDGET_PHOTOS } from './fixture';
 
@@ -61,7 +61,7 @@ export interface BrowserMeasurement {
 export type BrowserMetric = keyof BrowserMeasurement;
 
 export interface BrowserRow {
-    screen: Screen;
+    screen: BrowserScreen;
     profile: BrowserProfile;
     metric: BrowserMetric;
     value: number | null;
@@ -74,10 +74,10 @@ export interface BrowserRow {
 }
 
 /** Screens whose opening image the first-image gate holds: Work's covers are a list. */
-const FIRST_IMAGE_SCREENS: readonly Screen[] = ['home', 'seriesFirstPage', 'viewer'];
+const FIRST_IMAGE_SCREENS: readonly BrowserScreen[] = ['home', 'seriesFirstPage', 'viewer'];
 
 /** One screen's browser rows at one profile, each value beside its budget. */
-export function browserChecks(screen: Screen, profile: BrowserProfile, measured: BrowserMeasurement): BrowserRow[] {
+export function browserChecks(screen: BrowserScreen, profile: BrowserProfile, measured: BrowserMeasurement): BrowserRow[] {
     const budgets: { documentBytes: number; eagerImageBytes?: Record<BrowserProfile, number>; otherImageBytes?: number } = BROWSER_BUDGETS[screen];
     const held = (metric: BrowserMetric, budget: number | null): BrowserRow => {
         const value = measured[metric];

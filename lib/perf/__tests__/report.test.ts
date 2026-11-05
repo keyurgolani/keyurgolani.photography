@@ -17,7 +17,7 @@ afterEach(async () => {
 
 const row = (screen: CatalogBudgetMeasurement['over'][number]['screen'], gzipKiB: number, limitKiB: number, subject: string = screen) => ({
     screen,
-    budget: screen === 'seriesContinuationPage' ? ('seriesFirstPage' as const) : screen,
+    budget: screen,
     subject,
     records: 1,
     bytes: 4 * gzipKiB * KIB,

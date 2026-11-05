@@ -49,6 +49,18 @@ export const SCREEN_BUDGETS = {
         gzipBytes: 100 * KIB,
         photoRecords: 100,
     },
+    /**
+     * `/api/catalog/series/<slug>/pages/<cursor>`: one page of #6's Show
+     * more, 100 records. Tighter than the first page's 100 KiB on the owner's
+     * "Yes, tighten them" (2026-11-04): the refined 60 KiB was for 48-record
+     * pages, so this is 0.6 KiB a record. The fixture's largest page is about
+     * 16 KiB. budgets.test.ts's long-copy stress page, 78.8 KiB of 1,000-character
+     * descriptions, is a first page and stays on that page's 100 KiB.
+     */
+    seriesContinuationPage: {
+        gzipBytes: 60 * KIB,
+        photoRecords: 100,
+    },
     /** `/work/<slug>/photo/<photoId>`: #7's one photograph with its neighbors as IDs. */
     viewer: {
         gzipBytes: 10 * KIB,
@@ -57,6 +69,9 @@ export const SCREEN_BUDGETS = {
 } as const;
 
 export type Screen = keyof typeof SCREEN_BUDGETS;
+
+/** The screens a browser opens: a continuation page is only ever fetched. */
+export type BrowserScreen = Exclude<Screen, 'seriesContinuationPage'>;
 
 /**
  * Featured photographs, across every featured series, that Home's 50 KiB
@@ -92,7 +107,7 @@ export const BROWSER_BUDGETS = {
         documentBytes: 80 * KIB,
         eagerImageBytes: { phone: 400 * KIB, desktop: 750 * KIB },
     },
-} as const satisfies Record<Screen, { documentBytes: number; eagerImageBytes?: Record<BrowserProfile, number>; otherImageBytes?: number }>;
+} as const satisfies Record<BrowserScreen, { documentBytes: number; eagerImageBytes?: Record<BrowserProfile, number>; otherImageBytes?: number }>;
 
 /**
  * When the opening image on Home, a series, and the Viewer starts its

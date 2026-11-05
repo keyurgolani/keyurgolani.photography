@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCREEN_BUDGETS, type Screen } from '../../lib/perf/budgets';
+import { SCREEN_BUDGETS, type BrowserScreen } from '../../lib/perf/budgets';
 import { measureInChild } from '../../lib/perf/catalog-budgets';
 import { catalogSection, parseBudgetsArgs, writePerfReport, type BrowserRow, type PerfReport } from '../../lib/perf/report';
 import { activeRevision, publishBudgetLibrary } from './library';
@@ -74,7 +74,7 @@ try {
     const longest = [...content.series].sort((a, b) => b.photoIds.length - a.photoIds.length)[0];
     if (!longest) throw new Error(`${root} publishes no series.`);
     const middle = longest.photoIds[Math.floor(longest.photoIds.length / 2)];
-    const screens: { screen: Screen; path: string }[] = [
+    const screens: { screen: BrowserScreen; path: string }[] = [
         { screen: 'home', path: '/' },
         { screen: 'work', path: '/work' },
         { screen: 'seriesFirstPage', path: `/work/${longest.slug}` },
