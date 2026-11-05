@@ -233,6 +233,31 @@ function accounts(root, gid, { others = [], sharing = false } = {}) {
   return { PHOTOS_TEST_PASSWD: passwd, PHOTOS_TEST_GROUP: group };
 }
 
+/**
+ * Fixture accounts in which `dir`'s group names a second member, so it is
+ * never your private group. A test that pins how group write is refused
+ * needs this: with the real databases, a folder you make has your primary
+ * group, and on Linux that is often a private group the script rightly
+ * allows (CI's runner, run 42083640936). Only macOS refuses it regardless.
+ */
+const sharedGroup = (root, dir) => accounts(root, fs.statSync(dir).gid, { others: ['visitor'] });
+
+/**
+ * The facts a group-write decision rests on, for a failure message, so CI
+ * shows them: `id`, `getent group` for each of `dirs`' groups, their stat,
+ * and nsswitch.conf's passwd and group lines.
+ */
+function accountFacts(dirs) {
+  const out = (cmd, args) => {
+    const result = spawnSync(cmd, args, { encoding: 'utf8' });
+    return `$ ${[cmd, ...args].join(' ')}\n${(result.stdout || '') + (result.stderr || '') || `(exit ${result.status}${result.error ? `, ${result.error.code}` : ''})\n`}`;
+  };
+  const gids = [...new Set(dirs.map((dir) => String(fs.statSync(dir).gid)))];
+  let nss = '(no /etc/nsswitch.conf)\n';
+  if (fs.existsSync('/etc/nsswitch.conf')) nss = fs.readFileSync('/etc/nsswitch.conf', 'utf8').split('\n').filter((line) => /^\s*(passwd|group)\s*:/.test(line)).join('\n') + '\n';
+  return ['\n--- account facts ---', out('id', []), ...gids.map((gid) => out('getent', ['group', gid])), ...dirs.map((dir) => `${dir}: mode ${(fs.statSync(dir).mode & 0o7777).toString(8)}, uid ${fs.statSync(dir).uid}, gid ${fs.statSync(dir).gid}`), `nsswitch.conf:\n${nss}`].join('\n');
+}
+
 /** `text` in single quotes, as the script's quote() and the perl shq() write it. */
 const shq = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 
@@ -692,7 +717,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     function expectRefused(root, args, pattern, env) {
       const before = tree(root);
       const { status, stdout, stderr } = run(args, env);
-      expect(status, stdout + stderr).toBe(1);
+      expect(status, stdout + stderr + (status === 1 ? '' : accountFacts([root]))).toBe(1);
       expect(stderr).toMatch(pattern);
       expect(stderr).toMatch(/Nothing was moved/);
       expect(tree(root)).toEqual(before);
@@ -817,7 +842,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       fs.mkdirSync(shared);
       for (const mode of [0o777, 0o775, 0o757, 0o1777, 0o1775]) {
         fs.chmodSync(shared, mode);
-        expectRefused(root, ['--manifest', manifest, '--to', path.join(shared, 'aside'), library], new RegExp(`${literal(shared)} is writable by its group or others[\\s\\S]*chmod g-w,o-w ${literal(shq(shared))}`));
+        expectRefused(root, ['--manifest', manifest, '--to', path.join(shared, 'aside'), library], new RegExp(`${literal(shared)} is writable by its group or others[\\s\\S]*chmod g-w,o-w ${literal(shq(shared))}`), sharedGroup(root, shared));
       }
       fs.chmodSync(shared, 0o755);
       const fine = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library]);
@@ -834,7 +859,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       fs.chmodSync(outer, 0o775);
       fs.chmodSync(inner, 0o757);
       try {
-        expectRefused(root, ['--manifest', manifest, '--to', path.join(inner, 'aside'), library], new RegExp(`${literal(inner)}, ${literal(outer)} are writable by their group or others[\\s\\S]*chmod g-w,o-w ${literal(shq(inner))} ${literal(shq(outer))}$`, 'm'));
+        expectRefused(root, ['--manifest', manifest, '--to', path.join(inner, 'aside'), library], new RegExp(`${literal(inner)}, ${literal(outer)} are writable by their group or others[\\s\\S]*chmod g-w,o-w ${literal(shq(inner))} ${literal(shq(outer))}$`, 'm'), sharedGroup(root, outer));
       } finally {
         fs.chmodSync(outer, 0o755);
         fs.chmodSync(inner, 0o755);
@@ -900,7 +925,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       fs.chmodSync(libraryParent, 0o775);
       fs.chmodSync(asideParent, 0o775);
       try {
-        expectRefused(root, ['--manifest', manifest, '--to', path.join(asideParent, 'aside'), library], new RegExp(`${literal(libraryParent)}, ${literal(asideParent)} are writable by their group or others[\\s\\S]*^chmod g-w,o-w ${literal(shq(libraryParent))} ${literal(shq(asideParent))}$`, 'm'));
+        expectRefused(root, ['--manifest', manifest, '--to', path.join(asideParent, 'aside'), library], new RegExp(`${literal(libraryParent)}, ${literal(asideParent)} are writable by their group or others[\\s\\S]*^chmod g-w,o-w ${literal(shq(libraryParent))} ${literal(shq(asideParent))}$`, 'm'), sharedGroup(root, libraryParent));
       } finally {
         fs.chmodSync(libraryParent, 0o755);
         fs.chmodSync(asideParent, 0o755);
@@ -914,8 +939,8 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const manifest = await manifestFor(library);
       fs.chmodSync(shared, 0o775);
       try {
-        const { status, stderr } = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library]);
-        expect(status).toBe(1);
+        const { status, stderr } = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library], sharedGroup(root, shared));
+        expect(status, stderr + (status === 1 ? '' : accountFacts([shared]))).toBe(1);
         expect(stderr).toContain(`${shared} is writable by its group or others`);
         expect(stderr.split('\n').find((line) => line.startsWith('chmod g-w,o-w '))).toBe(`chmod g-w,o-w ${shq(shared)}`);
       } finally {
@@ -931,8 +956,8 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       fs.mkdirSync(odd);
       fs.chmodSync(odd, 0o775);
       try {
-        const { status, stderr } = run(['--manifest', manifest, '--to', path.join(odd, 'aside'), library]);
-        expect(status).toBe(1);
+        const { status, stderr } = run(['--manifest', manifest, '--to', path.join(odd, 'aside'), library], sharedGroup(root, odd));
+        expect(status, stderr + (status === 1 ? '' : accountFacts([odd]))).toBe(1);
         const line = stderr.split('\n').find((each) => each.startsWith('chmod g-w,o-w '));
         expect(line).toBe(`chmod g-w,o-w ${shq(odd)}`);
         // Pasted as printed, it fixes the folder.
@@ -1339,7 +1364,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     function expectHelperRefused(root, args, pattern, env) {
       const before = tree(root);
       const result = helper(args, env);
-      expect(result.status, result.stderr).toBe(3);
+      expect(result.status, result.stderr + (result.status === 3 ? '' : accountFacts([root]))).toBe(3);
       expect(result.stderr).toMatch(pattern);
       expect(result.stderr).toMatch(/Nothing further was moved/);
       expect(tree(root)).toEqual(before);
@@ -1429,7 +1454,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const { root, ok } = await apart();
       fs.chmodSync(path.join(root, 'library-parent'), 0o775);
       try {
-        expectHelperRefused(root, ok, new RegExp(`${literal(path.join(root, 'library-parent'))} is writable by its group or others`));
+        expectHelperRefused(root, ok, new RegExp(`${literal(path.join(root, 'library-parent'))} is writable by its group or others`), sharedGroup(root, path.join(root, 'library-parent')));
       } finally {
         fs.chmodSync(path.join(root, 'library-parent'), 0o755);
       }
@@ -1439,7 +1464,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const { root, ok } = await apart();
       fs.chmodSync(path.join(root, 'aside-parent'), 0o775);
       try {
-        expectHelperRefused(root, ok, new RegExp(`${literal(path.join(root, 'aside-parent'))} is writable by its group or others`));
+        expectHelperRefused(root, ok, new RegExp(`${literal(path.join(root, 'aside-parent'))} is writable by its group or others`), sharedGroup(root, path.join(root, 'aside-parent')));
       } finally {
         fs.chmodSync(path.join(root, 'aside-parent'), 0o755);
       }
@@ -1695,6 +1720,83 @@ BEGIN {
     // With the file back, a fresh run finds the private group, so the 0 above was the cached failure.
     const fresh = spawnSync(realBin('perl'), ['-e', `${COMMON}\nprint private_group($ARGV[0], $ARGV[1]) ? 1 : 0;`, '--', String(gid), String(process.getuid())], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
     expect(fresh.stdout).toBe('1');
+  });
+
+  describe('ruling 2a against the account databases', () => {
+    /** Lines in /etc's format, as split fields. */
+    const rows = (text) => text.split('\n').filter((line) => line && !/^\s*#/.test(line)).map((line) => line.split(':'));
+    /**
+     * Ruling 2a worked out here, apart from the script: `gid` is `uid`'s
+     * private group when it is `uid`'s primary group, no one else's primary
+     * group, has an entry, and no entry for it names anyone but `uid`.
+     */
+    const ruling2a = (passwd, group, uid, gid) => {
+      const me = passwd.find((f) => f[2] === String(uid));
+      if (!me || me[3] !== String(gid)) return false;
+      if (passwd.some((f) => f[2] !== String(uid) && f[3] === String(gid))) return false;
+      const entries = group.filter((f) => f[2] === String(gid));
+      return entries.length > 0 && entries.every((f) => (f[3] || '').split(',').filter(Boolean).every((name) => name === me[0]));
+    };
+    /** private_group() for each of `gids`, as 1s and 0s, with `env` and nothing else but PATH. */
+    const judged = (gids, env = {}) => spawnSync(realBin('perl'), ['-e', `${COMMON}\nprint join(',', map { private_group($_, $ARGV[0]) ? 1 : 0 } @ARGV[1 .. $#ARGV]);`, '--', String(process.getuid()), ...gids.map(String)], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
+
+    it.each([
+      ['your private group, memberless as useradd makes it', {}, true],
+      ['your private group, naming only you', { others: [os.userInfo().username] }, true],
+      ['a group with a second member', { others: ['visitor'] }, false],
+      ["a group that is another user's primary group", { sharing: true }, false],
+    ])('agrees with the script on fixtures for %s', (_label, fixture, expected) => {
+      const root = tempRoot();
+      const gid = process.getgid();
+      const env = accounts(root, gid, fixture);
+      const passwd = rows(fs.readFileSync(env.PHOTOS_TEST_PASSWD, 'utf8'));
+      const group = rows(fs.readFileSync(env.PHOTOS_TEST_GROUP, 'utf8'));
+      expect(ruling2a(passwd, group, process.getuid(), gid)).toBe(expected);
+      // A gid the files don't hold is never private.
+      expect(ruling2a(passwd, group, process.getuid(), gid + 1)).toBe(false);
+      const result = judged([gid, gid + 1], env);
+      expect(result.stdout, result.stderr).toBe(`${expected ? 1 : 0},0`);
+    });
+
+    // CI's Linux runner, where no fixture stands in: for each of your groups
+    // the script decides from getpwent and getgrent as ruling 2a does from
+    // getent, and end to end a folder in a group that isn't private is
+    // refused, and one in your private group allowed, with no test files.
+    it.skipIf(process.platform !== 'linux')('on Linux, judges each of your groups from the real databases as ruling 2a does, end to end', async () => {
+      const uid = process.getuid();
+      const gate = spawnSync(realBin('perl'), ['-e', `${NSSWITCH}\nprint nss_problem('/etc/nsswitch.conf');`], { encoding: 'utf8' }).stdout;
+      const passwd = rows(spawnSync('getent', ['passwd'], { encoding: 'utf8' }).stdout || '');
+      const group = rows(spawnSync('getent', ['group'], { encoding: 'utf8' }).stdout || '');
+      const gids = [...new Set([process.getegid(), process.getgid(), ...process.getgroups()])];
+      const root = tempRoot();
+      const facts = accountFacts([root]) + `\nnss_problem: ${gate || '(none)'}\nyour groups: ${gids.join(' ')}`;
+      const expected = gids.map((gid) => (gate === '' && ruling2a(passwd, group, uid, gid) ? 1 : 0)).join(',');
+      const result = judged(gids);
+      expect(result.stdout, result.stderr + facts).toBe(expected);
+
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const noFixtures = { PHOTOS_TEST_PASSWD: undefined, PHOTOS_TEST_GROUP: undefined };
+      const verdicts = Object.fromEntries(gids.map((gid, n) => [gid, expected.split(',')[n] === '1']));
+      const shared = path.join(root, 'shared');
+      fs.mkdirSync(shared);
+      try {
+        for (const gid of gids) {
+          fs.chownSync(shared, uid, gid);
+          fs.chmodSync(shared, 0o775);
+          const { status, stderr } = run(['--manifest', manifest, '--to', path.join(shared, 'aside'), library], noFixtures);
+          const why = `gid ${gid}, judged ${verdicts[gid] ? 'private' : 'not private'}\n${stderr}${accountFacts([shared])}`;
+          expect(stderr, why).not.toMatch(/test account files in use/);
+          if (verdicts[gid]) expect(status, why).toBe(0);
+          else {
+            expect(status, why).toBe(1);
+            expect(stderr, why).toContain(`${shared} is writable by its group or others`);
+          }
+        }
+      } finally {
+        fs.chmodSync(shared, 0o755);
+      }
+    });
   });
 
   describe('the nsswitch gate', () => {
