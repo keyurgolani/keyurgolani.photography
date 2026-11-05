@@ -21,6 +21,13 @@ function blackRules(file: string) {
     return found;
 }
 
+/** Every declaration in the file, by selector, whatever theme it names. */
+function allRules(file: string) {
+    const found: Record<string, Record<string, string>> = {};
+    parse(file).walkRules((rule: Rule) => rule.walkDecls((decl: Declaration) => void ((found[rule.selector] ??= {})[decl.prop] = decl.value)));
+    return found;
+}
+
 const tokens = () => Object.assign({}, ...Object.entries(blackRules('styles/themes.css')).filter(([selector]) => selector === "html[data-theme='black']").map(([, decls]) => decls));
 
 describe("Black's tokens", () => {
@@ -70,9 +77,18 @@ describe("Black's pages", () => {
     });
 
     it("draws the focus ring on Work and the series cover inside, above the print, with the outline kept for forced colours", () => {
+        // Work's is every theme's since #171 (B3): the token, inset on the title link's ::after over the whole entry, a
+        // layer above the print. Black adds no ring of its own there, and its room is none, so the target is the entry.
         const work = blackRules('components/work/SeriesCatalog.module.css');
-        expect(work[":global(html[data-theme='black']) .entry:focus-visible"]).toEqual({ 'outline-color': 'transparent', 'outline-offset': 'calc(-1 * var(--focus-ring-width))', 'box-shadow': 'none' });
-        expect(work[":global(html[data-theme='black']) .entry:focus-visible::after"]).toMatchObject({ position: 'absolute', 'z-index': '1', inset: '0' });
+        expect(Object.keys(work).filter((selector) => /focus|::after/.test(selector))).toEqual([]);
+        const shared = allRules('components/work/SeriesCatalog.module.css');
+        expect(shared['.link::after']).toMatchObject({ content: "''", position: 'absolute', 'z-index': '1', inset: 'calc(-1 * var(--work-room))' });
+        expect(shared['.entry .link:focus-visible']).toEqual({ outline: 'none', 'box-shadow': 'none' });
+        expect(shared['.entry .link:focus-visible::after']).toMatchObject({
+            outline: 'var(--focus-ring-width) solid var(--focus-ring-light)',
+            'outline-offset': 'calc(-1 * var(--focus-ring-width))',
+            'box-shadow': 'inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark)',
+        });
         const series = blackRules('components/series/SeriesPage.module.css');
         expect(series[":global(html[data-theme='black']) .coverLink:focus-visible"]).toEqual({ 'outline-color': 'transparent', 'outline-offset': 'calc(-1 * var(--focus-ring-width))' });
         expect(series[":global(html[data-theme='black']) .coverLink:focus-visible .coverFrame::after"]).toMatchObject({ position: 'absolute', 'z-index': '1' });
