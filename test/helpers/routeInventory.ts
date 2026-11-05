@@ -382,7 +382,8 @@ export function routeInventory(root: string): Inventory {
     const parsed = new Map<string, ts.SourceFile>();
     for (const file of files) {
         const text = fs.readFileSync(path.join(root, file), 'utf8');
-        const kind = /\.[cm]?tsx$|\.jsx$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+        // A .js file may hold JSX, as Next allows, so it parses as JS (JSX on), never as plain TS.
+        const kind = /\.[cm]?tsx$/.test(file) ? ts.ScriptKind.TSX : /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
         parsed.set(file, ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind));
     }
     const curatorActionFiles = new Set<string>();
