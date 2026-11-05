@@ -325,6 +325,19 @@ describe('the route inventory', () => {
             expect(violations).toEqual([expect.stringContaining("lib/x.ts has a 'use server' directive outside"), expect.stringContaining("can't be checked")]);
         });
 
+        it('fails on a namespace block holding a use server prologue in a library, since it can\'t be checked', () => {
+            write('lib/x.ts', "namespace N { 'use server'; save(); }\n");
+            const { violations } = routeInventory(tree);
+            expect(violations).toEqual([expect.stringContaining("lib/x.ts has a 'use server' directive outside"), expect.stringContaining("can't be checked")]);
+        });
+
+        // A .js page may hold JSX (Next accepts it). Parsed as plain TS, a backtick in its text swallows the file and hides the action.
+        it('fails on an unguarded inline action in a .js curator page with JSX text holding a backtick', () => {
+            write('app/curation/y/page.js', "export default function Page() {\n    return <form action={async () => { 'use server'; save(); }}><p>Press ` to open</p></form>;\n}\n");
+            const { violations } = routeInventory(tree);
+            expect(violations).toEqual([expect.stringContaining("app/curation/y/page.js")]);
+        });
+
         it('passes guarded inline actions written as object methods, object properties and static methods, and names them', () => {
             write(
                 'app/curation/x/page.tsx',
