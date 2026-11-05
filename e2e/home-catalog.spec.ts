@@ -21,11 +21,13 @@ const next = (page: Page) => page.getByRole('button', { name: 'Next photograph',
 const pause = (page: Page) => page.getByRole('button', { name: 'Pause slideshow', exact: true });
 const play = (page: Page) => page.getByRole('button', { name: 'Play slideshow', exact: true });
 const enter = (page: Page) => page.getByRole('link', { name: 'Enter the series', exact: true });
+/** #4's secondary link in the story (v2.0.0 B7). */
+const allWork = (page: Page) => page.getByRole('link', { name: 'All bodies of work', exact: true });
 const position = (page: Page) => page.getByRole('group', { name: 'Slideshow' }).getByText(/^\d{2,} \/ \d{2,}$/);
 /** The slide on screen: the one not hidden from assistive technology. */
 const shownSlide = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"]');
 const shownImage = (page: Page) => shownSlide(page).locator('img');
-const storyControls = (page: Page) => previous(page).or(next(page)).or(pause(page)).or(enter(page));
+const storyControls = (page: Page) => previous(page).or(next(page)).or(pause(page)).or(enter(page)).or(allWork(page));
 
 const runsOn = (testInfo: TestInfo, ...projects: string[]) =>
     test.skip(!projects.includes(testInfo.project.name), `Runs on ${projects.join(' and ')}.`);
@@ -109,6 +111,17 @@ test('Enter on Enter the series goes to the series page', async ({ page }) => {
     await tabTo(page, enter(page));
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`/work/${HOME_SERIES.slug}`);
+});
+
+test('All bodies of work follows Enter the series in the story, and Enter on it goes to Work (#4, v2.0.0 B7)', async ({ page }) => {
+    await openHome(page);
+    const story = page.locator('[data-chrome-region="story"]');
+    await expect(story.getByRole('link')).toHaveText(['Enter the series', 'All bodies of work']);
+    await tabTo(page, enter(page));
+    await page.keyboard.press('Tab');
+    await expect(allWork(page)).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL('/work');
 });
 
 test('a click on Next, after a move reveals the chrome, moves to the next authored photograph', async ({ page }, testInfo) => {
@@ -354,7 +367,7 @@ for (const width of [1440, 1024]) {
         const title = page.getByRole('heading', { level: 1 });
         const statement = page.locator('[data-chrome-region="story"] p');
         await expect(statement).toHaveText(HOME_SERIES.shortStatement);
-        for (const [name, target] of [['title', title], ['statement', statement]] as const) {
+        for (const [name, target] of [['title', title], ['statement', statement], ['Work link', allWork(page)]] as const) {
             expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the white photograph`).toBeGreaterThanOrEqual(4.5);
         }
     });

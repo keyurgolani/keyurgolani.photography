@@ -29,6 +29,16 @@ export const HOME_SERIES = {
     shortStatement: 'A fixture statement, in plain text.',
 } as const;
 
+/**
+ * #4's framing (v2.0.0 B7), for e2e/home-framing.spec.ts: the Home fixture with the opening photograph cropped to
+ * `contain`, and the one after it framed on a focal point. Only publishHomeFramingFixture() in homeFixture.ts
+ * publishes them, so every other Home spec, Dark parity's included, keeps centred cover crops.
+ */
+export const HOME_FRAMING = {
+    contain: HOME_OPENING,
+    focal: { photoId: HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + 1) % HOME_ORDER.length], focalPoint: { x: 0.25, y: 0.75 } },
+} as const;
+
 /** The reviewed alt createTestCatalog writes for the photograph at `index` in its photo list. */
 const fixtureAlt = (index: number) => `Fixture description of photograph ${String(index + 1).padStart(4, '0')}.`;
 

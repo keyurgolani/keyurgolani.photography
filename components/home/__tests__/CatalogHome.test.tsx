@@ -78,6 +78,7 @@ const photo = (n: number, overrides: Partial<HomePhoto> = {}): HomePhoto => ({
   id: id(n),
   alt: `Described photograph ${n}`,
   focalPoint: { x: 0.5, y: 0.5 },
+  crop: 'cover',
   image: image(n),
   ...overrides,
 });
@@ -1657,6 +1658,101 @@ describe('CatalogHome', () => {
         expect(host.querySelector('main')).toHaveAttribute('data-home-state', 'ready');
         expect(host.querySelector('main')).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
       });
+    });
+  });
+
+  describe('framing, the Work link and the padded position (#4, v2.0.0 B7)', () => {
+    const slideOf = (n: number) => document.querySelector<HTMLElement>(`[data-photo-id="${id(n)}"]`)!;
+    /** Home opening on 3 framed on (0.25, 0.75), and 0, the one after it, a contain crop. */
+    const framed = () =>
+      published({ photos: ORDER.map((n) => (n === 3 ? photo(n, { focalPoint: { x: 0.25, y: 0.75 } }) : n === 0 ? photo(n, { crop: 'contain' }) : photo(n))) });
+
+    it("frames a cover slide on its photograph's focal point, and a contain one on the mat", async () => {
+      await renderHome(framed());
+      expect(slideOf(3)).toHaveAttribute('data-crop', 'cover');
+      expect(slideOf(3).style.getPropertyValue('--focal-x')).toBe('25%');
+      expect(slideOf(3).style.getPropertyValue('--focal-y')).toBe('75%');
+      load(3);
+      expect(slideOf(0)).toHaveAttribute('data-crop', 'contain');
+      expect(slideOf(0).style.getPropertyValue('--focal-x')).toBe('50%');
+      expect(slideOf(0).style.getPropertyValue('--focal-y')).toBe('50%');
+      // The frame sits on the slide, never on the image, whose own style is ResponsivePhoto's LQIP.
+      expect(slideImage(3)?.style.getPropertyValue('--focal-x')).toBe('');
+    });
+
+    it('frames the opening photograph in the server HTML, so the first paint is cut where the client cuts it', async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const host = document.createElement('div');
+      host.innerHTML = renderToString(<CatalogHome home={framed()} />);
+      const slide = host.querySelector<HTMLElement>(`[data-photo-id="${id(3)}"]`)!;
+      expect(slide).toHaveAttribute('data-crop', 'cover');
+      expect([slide.style.getPropertyValue('--focal-x'), slide.style.getPropertyValue('--focal-y')]).toEqual(['25%', '75%']);
+    });
+
+    it('offers "All bodies of work" in the story, after Enter the series, to Work', async () => {
+      await renderHome();
+      const work = screen.getByRole('link', { name: 'All bodies of work' });
+      expect(work).toHaveAttribute('href', '/work');
+      expect(work.closest('[data-chrome-region]')).toHaveAttribute('data-chrome-region', 'story');
+      const links = [...document.querySelectorAll('[data-chrome-region="story"] a')].map((link) => link.textContent);
+      expect(links).toEqual(['Enter the series', 'All bodies of work']);
+    });
+
+    it("keeps the Work link inside #16's preview, from the site's route builder", async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const { default: SiteRoutesProvider } = await import('@/components/site/SiteRoutes');
+      render(
+        <SiteRoutesProvider basePath="/curation/preview/fixture/site">
+          <CatalogHome home={published()} />
+        </SiteRoutesProvider>,
+      );
+      expect(screen.getByRole('link', { name: 'All bodies of work' })).toHaveAttribute('href', '/curation/preview/fixture/site/work');
+    });
+
+    it('puts the Work link in the server HTML', async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const host = document.createElement('div');
+      host.innerHTML = renderToString(<CatalogHome home={published()} />);
+      expect([...host.querySelectorAll('[data-chrome-region="story"] a')].map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+        ['Enter the series', '/work/fixture-a'],
+        ['All bodies of work', '/work'],
+      ]);
+    });
+
+    it('leaves the empty state as it is, with no Work link of its own', async () => {
+      await renderHome(EMPTY);
+      expect(screen.queryByRole('link', { name: 'All bodies of work' })).toBeNull();
+    });
+
+    /** A series of `count` photographs in ID order, opening on the third. */
+    const ofSize = (count: number) => published({ order: Array.from({ length: count }, (_, n) => n), opening: 2 });
+
+    it.each([
+      [9, '03 / 09', 'Couldn’t load photograph 04 of 09'],
+      [10, '03 / 10', 'Couldn’t load photograph 04 of 10'],
+      [100, '003 / 100', 'Couldn’t load photograph 004 of 100'],
+      [120, '003 / 120', 'Couldn’t load photograph 004 of 120'],
+    ])('pads the counter and the failure line to the digits of %i photographs', async (count, counter, line) => {
+      await renderHome(ofSize(count));
+      expect(position()).toBe(counter);
+      load(2);
+      click('Next photograph');
+      fail(3);
+      expect(failure()).toBe(line);
+    });
+
+    it('pads the failure line in another series to that series\' own total', async () => {
+      // A one-photograph series A, so Next goes straight into B's 120.
+      const home = published({ order: [3], opening: 3 });
+      const large = { ...SERIES_B, photoIds: Array.from({ length: 120 }, (_, n) => id(200 + n)), openingPhotoId: id(200) };
+      home.followingSeries = [large];
+      home.featuredSeries!.records = [...home.featuredSeries!.records, ...large.photoIds.map((_, n) => photo(200 + n))];
+      await renderHome(home);
+      expect(position()).toBe('01 / 01');
+      load(3);
+      click('Next photograph');
+      fail(200);
+      expect(failure()).toBe('Couldn’t load photograph 001 of 120 in Fixture series B');
     });
   });
 });

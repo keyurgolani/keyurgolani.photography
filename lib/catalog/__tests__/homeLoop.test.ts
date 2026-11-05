@@ -182,7 +182,7 @@ describe('one featured series', () => {
                 openingPhotoId: Z[2],
             }),
         );
-        expect(series.records.map((photo) => Object.keys(photo))).toEqual(Array(3).fill(['id', 'alt', 'focalPoint', 'image']));
+        expect(series.records.map((photo) => Object.keys(photo))).toEqual(Array(3).fill(['id', 'alt', 'focalPoint', 'crop', 'image']));
         // Its windows stay inside the series, wrapping, as today.
         expect(windowOf('ser_loop-z', Z[3], held).photos.map((photo) => photo.id)).toEqual([Z[2], Z[3], Z[0]]);
         expect(windowOf('ser_loop-z', Z[0], held).photos.map((photo) => photo.id)).toEqual([Z[3], Z[0], Z[1]]);
