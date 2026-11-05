@@ -184,6 +184,7 @@ test('polls the summary every minute: says new items once, and raises a stale al
     expect(await deferEvent({ root: data().root, eventId: open, expectedVersion: shown.version, actor: 'curator:cli' })).toMatchObject({ ok: true });
     await page.clock.fastForward(60_000);
     await expect(updates).toHaveText(/1 new item needs judgment\. Refresh the inbox(?! to see)/);
+    expect((await updates.textContent())?.match(/Refresh the inbox/g)).toHaveLength(1);
     const alert = page.locator('#item [role="alert"][data-state="stale"]');
     await expect(alert).toContainText('changed since the page loaded');
     await expect(alert).toContainText('Your edits are still in the form');
