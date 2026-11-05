@@ -710,6 +710,21 @@ describe('the page', () => {
         expect(links.filter((link) => !link.getAttribute('href')?.startsWith('/work/fixture-a/photo/')).map((link) => link.getAttribute('href'))).toEqual(['/work', '/work']);
     });
 
+    it('names the two All work links apart, each name starting with its visible words (contract rule 2)', async () => {
+        const doc = await documentOf();
+        const links = [...doc.querySelectorAll('main a[href="/work"]')];
+        expect(links).toHaveLength(2);
+        // Neither link has an image or hidden text, so its name is its aria-label, or else its text.
+        const names = links.map((link) => link.getAttribute('aria-label') ?? link.textContent ?? '');
+        expect(new Set(names).size).toBe(2);
+        for (const [index, link] of links.entries()) {
+            expect(link.textContent).toBe('All work');
+            expect(names[index].startsWith('All work')).toBe(true);
+        }
+        // The top one is #5's new link, so it carries the longer name, and the end one keeps the one it had.
+        expect(names).toEqual(['All work, back to the series list', 'All work']);
+    });
+
     it('marks main with the served revision, as Work and Home do (#5)', async () => {
         const doc = await documentOf();
         expect(doc.querySelector('main')?.getAttribute('data-catalog-revision')).toBe(REVISION);
