@@ -354,6 +354,22 @@ describe('the impact list', () => {
             ]);
         });
 
+        it('names every address a restore drops when it drops more than the one it renames from', () => {
+            const twice: RestoreAddresses = {
+                live: [{ id: 'ser_h', slug: 'harbor-at-night', slugAliases: ['harbor-nights', 'harbor'] }],
+                target: [{ id: 'ser_h', slug: 'harbor', slugAliases: [] }],
+            };
+            expect(editorialWords([renamed], ['route.slug-change'], names.seriesName, twice)).toEqual(["Harbor Nights' address: it changes from /work/harbor-at-night to /work/harbor without keeping /work/harbor-at-night and /work/harbor-nights"]);
+        });
+
+        it('reads the final s in any case, and puts the apostrophe inside a closing quote or bracket', () => {
+            const named = (title: string) => editorialWords([renamed], ['route.slug-change'], () => title)[0].split(' address')[0];
+            expect(named('FILMS')).toBe("FILMS'");
+            expect(named('"Tides"')).toBe('"Tides\'"');
+            expect(named('(Dawn)')).toBe("(Dawn's)");
+            expect(named('Night [II]')).toBe("Night [II's]");
+        });
+
         it('says in History what a restore across a rename accepted', () => {
             expect(acceptedWords(['route.slug-change'])).toBe("an address change that doesn't keep the old address");
             expect(acceptedWords(['route.slug-change', 'route.alias-reassigned'])).toBe("an address change that doesn't keep the old address and an address taken from another series");

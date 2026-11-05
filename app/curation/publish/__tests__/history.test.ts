@@ -28,7 +28,7 @@ vi.mock('@/lib/catalog/rollback', async (importOriginal) => {
     return { ...actual, rollback: vi.fn(actual.rollback) };
 });
 
-const { rollback } = await import('@/lib/catalog/rollback');
+const { planRollback, rollback } = await import('@/lib/catalog/rollback');
 const { loadPublishPage } = await import('../load');
 const { publishAction, restoreAction } = await import('../actions');
 
@@ -418,6 +418,12 @@ describe('a restore that brings back editorial errors (#117)', () => {
             rules: [{ id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" }],
             note: 'Restoring brings it back as it was, and History records that you accepted it.',
         });
+    });
+
+    it("gives the flagged rule a rollback's hint, the accept, not the publish fix", async () => {
+        const plan = await planRollback({ dataRoot: fixture.root, to: { revisionNumber: 4 } });
+        const issue = plan.issues.find((entry) => entry.code === 'accent.contrast');
+        expect(issue?.hint).toBe('A rollback brings this back only once you accept it: --accept accent.contrast with photos rollback, or its box in Restore on the Publish screen.');
     });
 
     it('refuses a post without the accept, whatever the dialog did: ACCEPTANCE_REQUIRED, unlogged, and nothing written', async () => {

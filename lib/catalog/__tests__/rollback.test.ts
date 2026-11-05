@@ -869,12 +869,29 @@ describe('a slug rename (#5)', { timeout: 60_000 }, () => {
         const headless = io(null);
         const code = await runRollbackCommand(root, { to: { revisionNumber: 1 }, reason: 'undo the rename', actor: 'curator', accept: [], yes: true, expectActive: two }, headless);
         expect(code).toBe(1);
-        expect([...headless.lines, ...headless.errors].join('\n')).toContain('--accept route.slug-change');
+        const printed = [...headless.lines, ...headless.errors].join('\n');
+        expect(printed).toContain('--accept route.slug-change');
+        // A stored revision can't be edited, so the hint is the accept, not the publish fix.
+        expect(printed).toContain('    A rollback brings this back only once you accept it: --accept route.slug-change with photos rollback, or its box in Restore on the Publish screen.');
+        expect(printed).not.toContain('to slugAliases with photos edit');
         expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
 
         const back = await rollTo(one, two, { acceptedRules: ['route.slug-change'] });
         expect(back.outcome).toBe('ROLLED_BACK');
         expect(back.activation).toMatchObject({ revisionId: one, acceptedRules: ['route.slug-change'], validation: { errors: 1 } });
+    });
+
+    it('refuses a second rename that keeps only the newest old slug', async () => {
+        const { root, publishNow } = await setup({ seed: 263 });
+        await publishNow();
+        const first = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        expect((await publishNow()).outcome).toBe('PUBLISHED');
+        await readdress(root, 'fixture-renamed-again', () => ['fixture-renamed']);
+        const refused = await publishNow();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(refused.issues).toContainEqual(expect.objectContaining({ code: 'route.slug-change', field: 'slugAliases', message: expect.stringContaining(`drops /work/${first}`) }));
+        await readdress(root, 'fixture-renamed-again', () => [first, 'fixture-renamed']);
+        expect((await publishNow()).outcome).toBe('PUBLISHED');
     });
 
     it("doesn't flag a rollback whose target keeps every live slug", async () => {

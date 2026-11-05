@@ -416,6 +416,33 @@ describe("a slug change against the live site (#5)", () => {
         expect(routeIssues(ctx)).toEqual([]);
     });
 
+    it('route.slug-change: a second rename keeps every older alias too, and dropping one with no rename stays allowed', () => {
+        // Live: /work/fixture-01, with /work/fixture-old kept from an earlier rename.
+        const ctx = context();
+        goLive(ctx, (live) => {
+            live.content.series[0].slugAliases = ['fixture-old'];
+        });
+        const old = readdress(ctx, 0, 'fixture-renamed', ['fixture-01']);
+        expect(routeIssues(ctx)).toEqual([{
+            code: 'route.slug-change',
+            severity: 'error',
+            record: { kind: 'series', id: 'ser_fixture-01' },
+            field: 'slugAliases',
+            message: `The rename drops /work/fixture-old, an old address of this series, so every link to it would break.`,
+            hint: `Keep fixture-old in slugAliases beside ${old} with photos edit ser_fixture-01.`,
+        }]);
+        readdress(ctx, 0, 'fixture-renamed', ['fixture-old', old]);
+        expect(routeIssues(ctx)).toEqual([]);
+
+        // The same slug with the old alias gone: the first step of moving an address to another series.
+        const dropped = context();
+        goLive(dropped, (live) => {
+            live.content.series[0].slugAliases = ['fixture-old'];
+        });
+        readdress(dropped, 0, dropped.candidate.series[0].slug, []);
+        expect(routeIssues(dropped)).toEqual([]);
+    });
+
     it('route.slug-change: has nothing to say before the first publish, for a new series, or for a series the draft takes off the site', () => {
         const first = context();
         readdress(first, 0, 'fixture-renamed');

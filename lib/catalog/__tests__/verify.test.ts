@@ -243,6 +243,19 @@ describe('photos verify', { timeout: 60_000 }, () => {
         expect(recordOf(root).revisions.find((entry) => entry.revisionId === two)).toMatchObject({ ok: true, warnings: [expect.stringContaining('test.verify-editorial')] });
     });
 
+    it("runs no route rule across a rename, since which revision is live isn't the revision's own fault (#5)", async () => {
+        const { root } = await twoRevisions(118);
+        const series = (await readWorkingLayer(root)).series[0];
+        await writeAuthoredRecord({ ...series, slug: 'fixture-renamed', slugAliases: [series.slug] }, { expectedVersion: series.version, root });
+        const third = await publish({ dataRoot: root, actor: 'test', logger: quiet });
+        expect(third.outcome).toBe('PUBLISHED');
+        // Revisions 1 and 2 drop /work/fixture-renamed against the live revision 3, which a rollback would flag. Verify doesn't.
+        const result = await run(root);
+        expect(result.code).toBe(0);
+        expect(result.all()).not.toContain('route.');
+        for (const entry of recordOf(root).revisions) expect(JSON.stringify(entry)).not.toContain('route.');
+    });
+
     it('checks one revision with --revision and writes nothing, so it never replaces a recorded failure', async () => {
         const { root, one, two } = await twoRevisions();
         const { file } = await variantOf(root, two);
