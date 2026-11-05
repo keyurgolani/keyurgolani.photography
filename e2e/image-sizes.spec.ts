@@ -1,4 +1,4 @@
-import type { Browser, BrowserContextOptions, Page } from '@playwright/test';
+import { devices, type Browser, type BrowserContextOptions, type Page } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog, type TestPhotoSpec, type TestSeriesSpec } from '../lib/catalog/testing';
 import { BUDGET_VARIANT_BYTES } from '../lib/perf/fixture';
@@ -15,9 +15,9 @@ import { expect, test } from './support/test';
 // series, stays at or below 0.05 (#6's rule 8).
 //
 // One published fixture with decodable files: landscape, portrait and 3:1 panorama photographs, cropped to cover and
-// shown whole, on a second `next start`. Each viewport opens as its own context of the desktop project. Bytes are the
-// fixture's declared AVIF and WebP sizes for the rungs asked for (lib/perf/fixture.ts), as first-viewport.spec.ts
-// counts them, since the decodable files are flat colour.
+// shown whole, on a second `next start`. Each viewport opens as its own context of the desktop project, a phone's with
+// a phone's user agent. Bytes are the fixture's declared AVIF and WebP sizes for the rungs asked for
+// (lib/perf/fixture.ts), as first-viewport.spec.ts counts them, since the decodable files are flat colour.
 
 // In order, but each test runs whatever failed before it, so one red screen still reports the rest. Each opens up
 // to a dozen fresh contexts.
@@ -99,9 +99,17 @@ const origin = () => {
     return server.origin;
 };
 
+/**
+ * A phone's user agent for the phone widths: Pixel 7's, as every other phone context in the suite has (the mobile
+ * project, first-viewport.spec.ts's phone). With isMobile and Chromium's own desktop user agent, which no visitor's
+ * phone sends, each fresh context here fetched the eager images at w1920 first, at a desktop-wide viewport, then again
+ * at the rung their sizes ask for at 390 px. The Pixel 7 profile, on the same build in the same run, fetched each once.
+ */
+const PHONE_UA = devices['Pixel 7'].userAgent;
+
 // Dark, as the suite's own projects paint it (playwright.config.ts), so Home's slide is the viewport.
 const WIDTHS = {
-    390: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: 'dark' },
+    390: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: PHONE_UA, colorScheme: 'dark' },
     768: { viewport: { width: 768, height: 1024 }, deviceScaleFactor: 2, isMobile: false, hasTouch: true, colorScheme: 'dark' },
     1280: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
     1440: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
@@ -263,11 +271,12 @@ for (const screen of Object.keys(PATHS) as Screen[]) {
                         const where = `${path} @${width}: ${describeLook(image.photoId)} (${short(image.photoId)}) in ${Math.round(image.box.width)}x${Math.round(image.box.height)} ${image.fit}, sizes ${image.length}`;
                         // Home's slide takes the rule's rung exactly; anything else that rung or one smaller, never larger.
                         if (screen === 'home' ? step !== 0 : step < 0 || step > 1) failures.push(`${where} asks for w${asked}, the rule's rung is w${rule}`);
-                        // What this context fetched, not currentSrc: Chromium can paint a larger rung it already decoded
-                        // for another context in the same browser (Home's w1920 of the same photograph), which fetches
-                        // nothing. A series thumbnail of the same photograph is smaller than its cover, so it counts too.
+                        // What this context fetched, not currentSrc: the bytes are the claim, and currentSrc can still show
+                        // a larger rung an earlier pick fetched, after the image picked again. Every request counts, in
+                        // the order it was made. A series thumbnail of the same photograph is smaller than its cover, so
+                        // it counts too.
                         const fetched = media.filter((request) => request.photoId === image.photoId).map((request) => request.rung);
-                        for (const rung of fetched) if (ladder.indexOf(rung) > ladder.indexOf(rule)) failures.push(`${where} fetched w${rung}, over the rule's w${rule}`);
+                        for (const rung of fetched) if (ladder.indexOf(rung) > ladder.indexOf(rule)) failures.push(`${where} fetched w${rung}, over the rule's w${rule} (its requests: ${fetched.map((each) => `w${each}`).join(', ')})`);
                     }
                 } finally {
                     await page.context().close();
@@ -290,7 +299,7 @@ test('Work: the first two covers load at once, only the first at high priority, 
 });
 
 test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more than the 800w rung (#3)', async ({ browser }) => {
-    const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark' });
+    const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: PHONE_UA, colorScheme: 'dark' });
     const page = await context.newPage();
     const fetched: { photoId: string; rung: number }[] = [];
     page.on('request', (request) => {
@@ -307,7 +316,8 @@ test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more tha
         expect(images.length).toBeGreaterThan(4);
         for (const image of images) {
             expect(rungFor(image.candidates, image.sizesPx * 2), `${describeLook(image.photoId)}: ${image.length}`).toBeLessThanOrEqual(800);
-            for (const request of fetched.filter((other) => other.photoId === image.photoId)) expect(request.rung, describeLook(image.photoId)).toBeLessThanOrEqual(800);
+            const rungs = fetched.filter((other) => other.photoId === image.photoId).map((request) => request.rung);
+            for (const rung of rungs) expect(rung, `${describeLook(image.photoId)} (${short(image.photoId)}), its requests: ${rungs.map((each) => `w${each}`).join(', ')}`).toBeLessThanOrEqual(800);
         }
     } finally {
         await context.close();
