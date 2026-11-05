@@ -300,9 +300,10 @@
  *     authored lock too, waiting up to 30 s for each. Never touches the
  *     library. Exits 0 when planned, written, or already done, 1 when refused
  *     (a live or listed asset, an unknown photo, asset revision or tombstone,
- *     or a revoke after GC deleted or changed a folder its marker records), 2
- *     on a usage error, 3 when a lock stays busy or the data root isn't ready,
- *     and 4 when a file is damaged or an I/O error stops it.
+ *     or a revoke after GC deleted or cut short a folder its marker records,
+ *     or while one is set aside whole, to rename back first), 2 on a usage
+ *     error, 3 when a lock stays busy or the data root isn't ready, and 4 when
+ *     a file is damaged or an I/O error stops it.
  *
  *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
  *     Plan the cleanup docs/data-root.md's retention rules allow: staging
@@ -319,9 +320,9 @@
  *     if the plan is still the same, after one plain line saying what it
  *     deletes. Both hold the catalog and authored locks for the whole run,
  *     waiting up to 30 s for each. Apply sets each tombstoned folder aside as
- *     .gc-<assetRevision>-<uuid>, checks it once more, and only then deletes
- *     it; a .gc- folder a stopped run left is reported, never deleted. It
- *     never deletes any other asset, a revision, an activation, a record, a
+ *     .gc-<assetRevision>-<prefix>-<uuid>, checks it once more, and only then
+ *     deletes it; a .gc- folder a stopped run left is reported, never deleted.
+ *     It never deletes any other asset, a revision, an activation, a record, a
  *     tombstone, anything in edits/, or anything in the library. Exits 0 when
  *     planned or applied, 1 when a folder it would delete in is a symlink,
  *     isn't a folder, resolves somewhere else, sits in the library, or changes
