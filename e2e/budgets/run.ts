@@ -2,7 +2,7 @@
  * `npm run test:budgets`: #6's budgets on one library, in two layers, with
  * every value beside its budget in `.perf/report.json`.
  *
- *   npm run test:budgets [-- --photos 5000]
+ *   npm run test:budgets [-- --photos 5000] [--build]
  *   npm run test:budgets -- --data-root <a copy of a data root>
  *
  * 1. The library: by default the budget fixture (lib/perf/fixture.ts),
@@ -14,8 +14,11 @@
  * 3. The browser layer: e2e/budgets/budgets.config.ts on 127.0.0.1:3200
  *    (BUDGETS_PORT), Chromium only, over Home, Work, the longest series and
  *    its middle photograph's Viewer. It serves the production build in
- *    `.next`, and runs `npm run build` first only when there is none, so in
- *    CI it takes the one `npm run test:e2e` made.
+ *    `.next`, and runs `npm run build` first only when there is none or
+ *    `--build` asks, so in CI it takes the one `npm run test:e2e` made. It
+ *    says how old a build it reuses is: an old one measures old code.
+ *    `--photos 500` shrinks the long series under 600, so its Viewer is no
+ *    longer the real-length photograph.
  *
  * Nothing here reaches the network: the library is generated, the server is
  * on loopback, Playwright's Chromium is already installed, and Next's
@@ -29,7 +32,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCREEN_BUDGETS, type BrowserScreen } from '../../lib/perf/budgets';
 import { measureInChild } from '../../lib/perf/catalog-budgets';
-import { catalogSection, parseBudgetsArgs, writePerfReport, type BrowserRow, type PerfReport } from '../../lib/perf/report';
+import { browserFailures, catalogSection, parseBudgetsArgs, writePerfReport, type BrowserRow, type PerfReport } from '../../lib/perf/report';
 import { activeRevision, publishBudgetLibrary } from './library';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -44,7 +47,7 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<n
 }
 
 /** The settings that turn a server into the curator, or point it at another root. Never inherited from this shell. */
-const DROPPED = /^(PHOTOGRAPHY_|CURATION_|CURATOR_)/;
+const DROPPED = /^(PHOTOGRAPHY_|CURATION_|CURATOR_)|^SITE_URL$/;
 
 const args = parseBudgetsArgs(process.argv.slice(2));
 const mode: PerfReport['mode'] = args.dataRoot ? 'report' : 'fixture';
@@ -99,18 +102,20 @@ try {
         BUDGETS_BROWSER_OUT: browserOut,
     };
     if ((await run('npx', ['tsx', 'e2e/support/write-site-config.ts', siteConfig], env)) !== 0) throw new Error('Writing the stand-in site config failed.');
-    if (!fs.existsSync(path.join(REPO_ROOT, '.next', 'BUILD_ID'))) {
-        console.log('[budgets] No production build in .next, so building one first.');
+    const buildId = path.join(REPO_ROOT, '.next', 'BUILD_ID');
+    if (fs.existsSync(buildId) && !args.build) {
+        const minutes = Math.round((Date.now() - fs.statSync(buildId).mtimeMs) / 60_000);
+        console.log(`[budgets] Serving the production build already in .next, made ${minutes} min ago. Pass --build for a fresh one.`);
+    } else {
+        console.log(`[budgets] ${args.build ? 'Building fresh, as --build asks.' : 'No production build in .next, so building one first.'}`);
         const buildEnv: NodeJS.ProcessEnv = { ...env };
         delete buildEnv.PHOTOGRAPHY_DATA_DIR;
         if ((await run('npm', ['run', 'build'], buildEnv)) !== 0) throw new Error('npm run build failed.');
     }
     const playwright = await run('npx', ['playwright', 'test', '-c', 'e2e/budgets/budgets.config.ts'], env);
     const browser: BrowserRow[] = fs.existsSync(browserOut) ? JSON.parse(fs.readFileSync(browserOut, 'utf8')) : [];
-    const overRows = mode === 'fixture' ? browser.filter((entry) => entry.over) : [];
-    for (const row of overRows) failed.push(`${row.screen}/${row.profile} ${row.metric}: ${row.value} against ${row.budget}`);
-    // Any other failure of the spec, a server that didn't start or a page that didn't load, fails in either mode.
-    if (playwright !== 0 && overRows.length === 0) failed.push(`the browser layer exited ${playwright}`);
+    // Two profiles, five rows each: fewer means a page that didn't load or a server that didn't start, which fails in either mode.
+    failed.push(...browserFailures({ mode, exitCode: playwright, rows: browser, expectedRows: screens.length * 2 * 5 }));
 
     const report: PerfReport = {
         generatedAt: new Date().toISOString(),

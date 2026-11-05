@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BROWSER_BUDGETS, FIRST_IMAGE_MS, KIB, SCREEN_BUDGETS, type BrowserProfile, type BrowserScreen } from './budgets';
 import type { CatalogBudgetMeasurement, CatalogBudgetScreen } from './catalog-budgets';
-import { BUDGET_PHOTOS } from './fixture';
+import { BUDGET_PHOTOS, BUDGET_VARIANT_BYTES } from './fixture';
 
 /**
  * `npm run test:budgets`' report (#6 items 9, 14 and 15): every value beside
@@ -114,12 +114,66 @@ export interface PerfReport {
     failed: string[];
 }
 
-/** Write `report` to `.perf/report.json` under `root`. Returns the file. */
+/** Write `report` to `.perf/report.json` under `root`, and reportMarkdown() beside it as `report.md`. Returns the JSON file. */
 export async function writePerfReport(root: string, report: PerfReport): Promise<string> {
     const file = path.join(root, PERF_REPORT_FILE);
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
     await fs.promises.writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
+    await fs.promises.writeFile(path.join(path.dirname(file), 'report.md'), reportMarkdown(report));
     return file;
+}
+
+const unitOf = (metric: BrowserMetric) => (metric === 'firstImageMs' ? 'ms' : metric === 'eagerImages' ? '' : 'KiB');
+function shown(value: number | null, metric: BrowserMetric): string {
+    if (value === null) return 'none';
+    const unit = unitOf(metric);
+    return unit === 'KiB' ? `${toKiB(value)} KiB` : unit ? `${value} ${unit}` : String(value);
+}
+
+/** The report as Markdown, for CI's step summary: each value beside its budget, and what failed. */
+export function reportMarkdown(report: PerfReport): string {
+    const { library, catalog } = report;
+    const lines = [
+        `### #6 budgets: ${report.mode}, ${library.photos.toLocaleString('en-US')} photographs in ${library.series.toLocaleString('en-US')} series`,
+        '',
+        '| Catalog model | Largest | Models | gzip KiB | Budget KiB | |',
+        '| --- | --- | --- | --- | --- | --- |',
+        ...catalog.rows.map((row) => `| ${row.screen} | ${row.subject} | ${row.models} | ${row.gzipKiB} | ${row.budgetKiB} |${row.over ? ' **over** ' : ' '}|`),
+        '',
+        '| Screen | Profile | Metric | Value | Budget | |',
+        '| --- | --- | --- | --- | --- | --- |',
+        ...report.browser.map((row) => `| ${row.screen} | ${row.profile} | ${row.metric} | ${shown(row.value, row.metric)} | ${row.budget === null ? 'reported' : shown(row.budget, row.metric)} |${row.over ? ' **over** ' : ' '}|`),
+    ];
+    if (report.failed.length > 0) lines.push('', '**Failed:**', '', ...report.failed.map((entry) => `- ${entry}`));
+    return `${lines.join('\n')}\n`;
+}
+
+const MEDIA_RUNG = /^\/media\/ph_[^/]+\/[^/]+\/[^/]+\/(w\d+)\.(avif|webp)$/;
+
+/** What the fixture declares a `/media` path's file to be, by its rung and format, or null for any other path. */
+export function declaredMediaBytes(pathname: string): number | null {
+    const match = MEDIA_RUNG.exec(pathname);
+    if (!match) return null;
+    const rung = BUDGET_VARIANT_BYTES[match[1] as keyof typeof BUDGET_VARIANT_BYTES];
+    return rung ? rung[match[2] as 'avif' | 'webp'] : null;
+}
+
+/** The photograph a catalog preload's `imagesrcset` names: the opening one. Null for anything else. */
+export function openingPhotoId(imagesrcset: string | null): string | null {
+    return imagesrcset ? (/(?:^|[\s,])\/media\/(ph_[0-9a-f-]+)\//.exec(imagesrcset)?.[1] ?? null) : null;
+}
+
+/**
+ * What the browser layer failed on. In fixture mode, each row over its
+ * budget. In either mode, a run that exited non-zero with no row over, or
+ * with fewer rows than it should have written: a server that didn't start,
+ * or a page that didn't load.
+ */
+export function browserFailures({ mode, exitCode, rows, expectedRows }: { mode: PerfReport['mode']; exitCode: number; rows: readonly BrowserRow[]; expectedRows: number }): string[] {
+    const over = mode === 'fixture' ? rows.filter((row) => row.over) : [];
+    const failed = over.map((row) => `${row.screen}/${row.profile} ${row.metric}: ${row.value} against ${row.budget}`);
+    if (exitCode !== 0 && (over.length === 0 || rows.length < expectedRows)) failed.push(`the browser layer exited ${exitCode} with ${rows.length} of ${expectedRows} rows`);
+    return failed;
 }
 
 export interface BudgetsArgs {
@@ -128,15 +182,17 @@ export interface BudgetsArgs {
     /** The fixture's photographs. */
     photos: number;
     port: number;
+    /** Build `.next` fresh even when it holds a build. */
+    build: boolean;
 }
 
 /**
- * `npm run test:budgets -- [--photos <n>] [--data-root <copy>]`. The port is
+ * `npm run test:budgets -- [--photos <n>] [--data-root <copy>] [--build]`. The port is
  * BUDGETS_PORT, 3200 by default. `--photos` sizes the generated fixture, so
  * it means nothing beside `--data-root`.
  */
 export function parseBudgetsArgs(argv: readonly string[], env: Record<string, string | undefined> = process.env): BudgetsArgs {
-    const args: BudgetsArgs = { dataRoot: null, photos: BUDGET_PHOTOS, port: Number(env.BUDGETS_PORT || 3200) };
+    const args: BudgetsArgs = { dataRoot: null, photos: BUDGET_PHOTOS, port: Number(env.BUDGETS_PORT || 3200), build: false };
     let photosGiven = false;
     for (let at = 0; at < argv.length; at += 1) {
         const flag = argv[at];
@@ -150,8 +206,10 @@ export function parseBudgetsArgs(argv: readonly string[], env: Record<string, st
             args.photos = Number(value);
             photosGiven = true;
             at += 1;
+        } else if (flag === '--build') {
+            args.build = true;
         } else {
-            throw new Error(`${flag} isn't an option. Use --photos <n> or --data-root <copy>.`);
+            throw new Error(`${flag} isn't an option. Use --photos <n>, --data-root <copy> or --build.`);
         }
     }
     if (args.dataRoot !== null && photosGiven) throw new Error('--photos sizes the generated fixture, so it goes without --data-root.');

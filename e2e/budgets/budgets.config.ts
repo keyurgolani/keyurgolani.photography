@@ -26,7 +26,8 @@ export default defineConfig({
   globalTimeout: 15 * 60_000,
   reporter: [['list']],
   outputDir: '../../test-results/budgets',
-  use: { baseURL: `http://${host}:${port}`, trace: 'off', colorScheme: 'dark' },
+  // budgets.spec.ts makes its own contexts, with the profile and Dark each needs.
+  use: { baseURL: `http://${host}:${port}`, trace: 'off' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     // The build is the one the runner made or found: this only serves it.
