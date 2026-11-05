@@ -87,16 +87,18 @@ describe('the watcher process import graph', () => {
 
     it('reaches #14\'s curation sink, and none of the curator\'s commands', () => {
         const { files } = importGraph('scripts/imageWatcher.ts');
-        expect(files).toEqual(expect.arrayContaining(['lib/curation/sink.ts', 'lib/curation/repository.ts', 'lib/catalog/working-layer.ts']));
+        expect(files).toEqual(expect.arrayContaining(['lib/curation/sink.ts', 'lib/curation/repository.ts', 'lib/catalog/working-layer.ts', 'lib/curation/library.ts']));
         expect(files.filter((file) => /^lib\/curation\/(?:actions|commands|resolutions|alerts)\.ts$/.test(file))).toEqual([]);
         expect(files).toEqual(expect.arrayContaining(['lib/curation/sources.ts']));
     });
 
-    it('hands the curation, candidate, and sources sinks, and the settling build, to the identity step in both watch and --once', () => {
+    it('hands the curation, candidate, and sources sinks, the settling build, and the library hook to the identity step in both watch and --once', () => {
         const source = fs.readFileSync(path.join(REPO_ROOT, 'scripts/imageWatcher.ts'), 'utf8');
         expect(source).toMatch(/function factSinks\(\) \{\n\s+return \[jsonLogSink\(\), createCurationSink\(\), createCandidateSink\(\{ owed \}\), createSourcesSink\(\{ owed: owedSources \}\)\];/);
-        expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),\n\s+worker: workerBuilds\(\),/);
-        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\) \}\)/);
+        expect(source).toMatch(/createIdentityStep\(\{\n\s+sinks: factSinks\(\),\n\s+worker: workerBuilds\(\),\n\s+library: createLibraryReporter\(\),/);
+        expect(source).toMatch(/runIdentityOnce\(\{ sinks: factSinks\(\), worker: workerBuilds\(\), library: createLibraryReporter\(\) \}\)/);
+        // A6 (#17): a library root that is missing at start, or goes while watch mode runs, is reported before the exit.
+        expect(source.match(/await reportMissingLibrary\(/g)).toHaveLength(2);
         // #17: every build records its set on the revision's replacement item, and a failure that stays gets an item, or the build owes them to the sinks, which share `owed` and `owedSources`.
         expect(source).toMatch(/function workerBuilds\(\) \{\n\s+return \{ build: recordingFailuresAfterBuild\(settlingAfterBuild\(buildDerivativeSet, \{ owed \}\), \{ owed: owedSources \}\) \};/);
         expect(source).toMatch(/^const owed = owedSettles\(\);$/m);
