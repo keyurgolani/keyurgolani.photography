@@ -161,13 +161,19 @@
  *     on a usage error, 3 when the draft, the live revision or a record
  *     moved, or the authored lock stays busy, and 4 for I/O.
  *
- *   npx tsx scripts/photos.ts history
+ *   npx tsx scripts/photos.ts history [--json] [--limit <n>] [--revisions]
  *     Every activation, oldest first by sequence, with its revision number
  *     and ID, actor, reason, time, validation result, and what its revision
  *     changed against its parent. The live one says LIVE, and one that never
- *     moved the active pointer says interrupted. Takes no lock and writes
- *     nothing. Exits 0, 3 when the data root isn't ready, and 4 when a
- *     catalog file is damaged.
+ *     moved the active pointer says interrupted. --limit shows the newest n.
+ *     --revisions adds each revision that has been live, newest first, with
+ *     its rollback eligibility and reasons, planned as rollback plans it.
+ *     --json prints it all as one versioned object, its usage and data-root
+ *     stops included, with the exit code. Takes no lock and writes
+ *     nothing. Exits 0, 2 on a usage error, 3 when the data root isn't
+ *     ready, and 4 when a catalog file is damaged: with --limit, only a
+ *     shown row's counts, and with --revisions, so does a revision that
+ *     can't be planned.
  *
  *   npx tsx scripts/photos.ts rollback --to <number | revisionId> --reason <text> [--actor <name>]
  *                                      [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
@@ -178,7 +184,10 @@
  *     stops it. An editorial error, such as an accent today's rules refuse,
  *     comes back only with --accept <ruleId> for each flagged rule, given
  *     once per rule; without one it stops before it asks, and the
- *     activation records the rules it accepted. Then it asks to
+ *     activation records the rules it accepted. A target whose last
+ *     photos verify failed, as status/verify.json records it, or any target
+ *     while that record can't be read, stops the same way until
+ *     --accept verify.failed, which only this command takes. Then it asks to
  *     confirm in a terminal; elsewhere --yes confirms, and only with
  *     --expect-active naming the active revision the list was made
  *     against. The actor is --actor or PHOTOS_ACTOR, and one is required.
@@ -187,9 +196,10 @@
  *     confirmation: it finishes what a crashed activation left undone. A
  *     live revision that can't be read is no reason to refuse: the list is
  *     then everything the target publishes. Exits 0 when rolled back or already
- *     active, 1 when the target was never active, its rules stop it, or an
- *     editorial error isn't accepted, 2 on a usage error (an --accept that
- *     isn't an editorial rule's ID included), 4 when a catalog file is damaged or an I/O error stops
+ *     active, 1 when the target was never active, its rules stop it, an
+ *     editorial error isn't accepted, or its recorded verify failed without
+ *     --accept verify.failed, 2 on a usage error (an --accept that isn't an
+ *     editorial rule's ID or verify.failed included), 4 when a catalog file is damaged or an I/O error stops
  *     it, and 3 on any other stop, such as no confirmation, another
  *     revision going live first, or a busy lock. Logs one JSON line per
  *     event.
@@ -203,10 +213,12 @@
  *     record for its revision, every previous activation it names exists,
  *     and committed activations have a pointer. Prints each revision's
  *     result and whether a rollback can return to it, and the fix for what
- *     fails. Reads the data root only, never the library, and takes no lock.
+ *     fails. Reads the data root only, never the library, and takes no
+ *     catalog lock: only a short lock of its own around writing the record.
  *     A full run records its result in status/verify.json, which the
- *     curator's Publish screen reads; --revision checks one revision alone
- *     and records nothing. Exits 0 when the live revision and the chain pass,
+ *     curator's Publish screen and photos rollback read; --revision checks
+ *     one revision alone and records only a pass that started after the
+ *     recorded run finished, which clears that revision's recorded failure. Exits 0 when the live revision and the chain pass,
  *     even if an older revision fails, 1 when either fails, 2 on a usage
  *     error, 3 when the data root isn't ready, and 4 when the registry or an
  *     activation record can't be read or an I/O error stops it.
@@ -296,7 +308,7 @@ import { runCarryOver } from '../lib/catalog/carry-over';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
-import { rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
+import { historyArgs, historyStop, rollbackArgs, runHistoryCommand, runRollbackCommand, type HistoryArgs } from '../lib/catalog/history-cli';
 import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
 import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
@@ -354,9 +366,10 @@ const USAGE = `Usage:
   ${PROGRAM} diff [--json]
   ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
         Marks the rows photos diff printed reviewed, each named, and rows that share a stamp together; there is no --all.
-  ${PROGRAM} history
+  ${PROGRAM} history [--json] [--limit <n>] [--revisions]
   ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
         --accept, once per editorial rule flagged on the target, brings it back with that error; it's the only flag that repeats.
+        --accept verify.failed brings back a revision whose last photos verify failed.
   ${PROGRAM} verify [--revision <revisionId>] [--json]
 ${curationUsage(PROGRAM)}
   ${PROGRAM} gc [--apply <planDigest>]
@@ -581,10 +594,30 @@ async function catalogCommand<T>(parse: () => T, run: (root: string, args: T) =>
 }
 
 async function historyCommand(args: string[]): Promise<number> {
-    parseFlags({ args, options: {} });
+    // With --json, the usage and data-root stops answer in JSON on stdout too, with their exit code.
+    const json = args.includes('--json');
+    const jsonStop = (result: CommandResult) => {
+        process.stdout.write(result.output);
+        return result.exitCode;
+    };
+    let parsed: HistoryArgs;
+    try {
+        parsed = historyArgs(args);
+    } catch (error) {
+        if (json && error instanceof UsageError) return jsonStop(historyStop(2, 'USAGE_ERROR', error.message, true));
+        throw error;
+    }
+    if (parsed.json && dataRoot() === null) {
+        const status = dataRootStatus();
+        return jsonStop(historyStop(3, 'DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`, true));
+    }
     const root = catalogRoot();
     if (typeof root === 'number') return root;
-    return printed(await runHistoryCommand(root));
+    const result = await runHistoryCommand(root, parsed);
+    if (!parsed.json) return printed(result);
+    // JSON goes to stdout whatever the exit code, as verify --json's does.
+    process.stdout.write(result.output);
+    return result.exitCode;
 }
 
 /** Ask a yes-or-no question on the terminal. Only "yes" confirms. */

@@ -4,6 +4,7 @@ import { changesBetween, readHistory, type History, type RevisionChanges } from 
 import { readRevisionFile } from '@/lib/catalog/repository';
 import { planRollback, type RollbackPlan } from '@/lib/catalog/rollback';
 import type { RevisionContent } from '@/lib/catalog/types';
+import { damagedText, readVerifyRecord } from '@/lib/catalog/verify';
 import {
     blockingReasons,
     doneView,
@@ -114,14 +115,20 @@ export async function loadHistoryView(root: string, options: HistoryLoadOptions)
 
     const planned = new Map<string, PlanStatus>();
     const plans: Record<number, PlanView> = {};
+    // #181's A7: the verify record, read once for every plan. One that can't be read refuses them all, so the log says why once.
+    const verifyRecord = toPlan.length > 0 ? await readVerifyRecord(root) : undefined;
+    if (verifyRecord?.state === 'damaged') console.error(`[curation] status/verify.json can't be read: ${damagedText(verifyRecord.cause)} History offers no Restore until photos verify records a new check.`);
     for (const revisionId of toPlan) {
-        const plan = await planRollback({ dataRoot: root, to: { revisionId } });
+        const plan = await planRollback({ dataRoot: root, to: { revisionId }, verifyRecord });
         const names = await namesFor(plan, contentOf);
         if (plan.outcome === 'READY' && plan.target && plan.active) {
             planned.set(revisionId, { outcome: 'READY' });
             plans[plan.target.revisionNumber ?? 0] = await planView(plan, names, contentOf, options.draftPending);
         } else if (plan.outcome === 'VALIDATION_FAILED') {
             planned.set(revisionId, { outcome: 'VALIDATION_FAILED', reasons: blockingReasons(plan.blocking, names.photo) });
+        } else if (plan.outcome === 'VERIFY_FAILED') {
+            // #181's A7: the verify record refuses it. An expected stop, so it isn't logged, and History offers no override.
+            planned.set(revisionId, { outcome: 'VERIFY_FAILED', reason: plan.verify?.reason ?? 'last-verify' });
         } else {
             // A damaged file or an I/O error: the row says it can't be checked, and the log says why.
             console.error(`[curation] History couldn't plan a restore of ${revisionId}: ${plan.outcome}: ${plan.message}`);

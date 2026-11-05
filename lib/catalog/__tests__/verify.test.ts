@@ -256,19 +256,23 @@ describe('photos verify', { timeout: 60_000 }, () => {
         for (const entry of recordOf(root).revisions) expect(JSON.stringify(entry)).not.toContain('route.');
     });
 
-    it('checks one revision with --revision and writes nothing, so it never replaces a recorded failure', async () => {
+    // #181 (A7): a pass with --revision clears that revision's recorded failure, and only that one's.
+    it("checks one revision with --revision, and records only a pass that clears its own failure, never another's", async () => {
         const { root, one, two } = await twoRevisions();
         const { file } = await variantOf(root, two);
         flipByte(file);
         expect((await run(root)).code).toBe(1);
-        const recorded = fs.readFileSync(verifyRecordPath(root), 'utf8');
+        const recorded = recordOf(root);
         flipByte(file);
 
         const single = await run(root, { revisionId: one });
         expect(single.code).toBe(0);
         expect(single.lines[0]).toMatch(/^\[photos\] Checked 1 revision and 3 derivative sets/);
         expect(single.all()).not.toContain(two);
-        expect(fs.readFileSync(verifyRecordPath(root), 'utf8')).toBe(recorded);
+        const after = recordOf(root);
+        expect(after.revisions.find((entry) => entry.revisionId === one)).toMatchObject({ ok: true, problems: [] });
+        expect(after.revisions.find((entry) => entry.revisionId === two)).toEqual(recorded.revisions.find((entry) => entry.revisionId === two));
+        expect(after.checkedAt).toBe(recorded.checkedAt);
 
         const fresh = await twoRevisions(118);
         expect((await run(fresh.root, { revisionId: fresh.two })).code).toBe(0);
@@ -454,7 +458,8 @@ describe('lastKnownGood()', { timeout: 60_000 }, () => {
         fs.writeFileSync(file, `${bytes.toString('utf8').trimEnd()}x`);
         expect((await run(root)).code).toBe(0);
         fs.writeFileSync(file, bytes);
-        const back = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'test', reason: 'restore', logger: quiet });
+        // #181 (A7): a recorded failure refuses the rollback unless the CLI's typed override accepts it.
+        const back = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'test', reason: 'restore', verifyOverride: true, logger: quiet });
         expect(back.outcome).toBe('ROLLED_BACK');
         expect(await lastKnownGood(root)).toBeNull();
         expect(await rollbackReadiness(root)).toMatchObject({ state: 'failed', reason: 'last-verify', revisionNumber: 1 });
@@ -481,7 +486,7 @@ describe('lastKnownGood()', { timeout: 60_000 }, () => {
         fs.rmSync(file);
         execFileSync('mkfifo', [file]);
         const started = Date.now();
-        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged' });
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged', cause: { kind: 'not-a-file' } });
         expect(Date.now() - started).toBeLessThan(2_000);
         expect(await rollbackReadiness(root)).toMatchObject({ state: 'failed', reason: 'record-damaged' });
 
@@ -489,12 +494,12 @@ describe('lastKnownGood()', { timeout: 60_000 }, () => {
         const elsewhere = path.join(path.dirname(root), 'verify-elsewhere.json');
         fs.writeFileSync(elsewhere, good);
         fs.symlinkSync(elsewhere, file);
-        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged' });
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged', cause: { kind: 'not-a-file' } });
 
         fs.rmSync(file);
         const record = JSON.parse(good.toString('utf8')) as Record<string, unknown>;
         fs.writeFileSync(file, JSON.stringify({ ...record, padding: 'x'.repeat(MAX_RECORD_BYTES) }));
-        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged' });
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged', cause: { kind: 'too-big' } });
 
         fs.writeFileSync(file, good);
         expect((await readVerifyRecord(root)).state).toBe('ok');

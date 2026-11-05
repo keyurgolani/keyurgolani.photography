@@ -1,4 +1,5 @@
 // @vitest-environment node
+import fs from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listActivations } from '@/lib/catalog/repository';
 import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
@@ -525,5 +526,71 @@ describe('a restore across a slug rename (#5)', () => {
         const after = await page({ restored: sequence });
         expect(after.history.entries[0]).toMatchObject({ title: 'Revision 3', extra: "Accepted at restore: an address change that doesn't keep the old address." });
         expect((await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))).toMatchObject({ slug: 'salt-roads', slugAliases: [] });
+    });
+});
+
+// #181's A7: History reads the verify record as `photos rollback` does. A revision whose last photos verify
+// failed gets no Restore, and a post that names it anyway, even one carrying `accept=verify.failed`, writes
+// nothing: the override is the command line's alone.
+describe('a revision a photos verify failed (A7)', () => {
+    beforeEach(async () => onRoot(() => createPublishFixture()));
+
+    async function failRevision(revision: number): Promise<string> {
+        const { runVerifyCommand } = await import('@/lib/catalog/verify-cli');
+        const { verifyRecordPath } = await import('@/lib/catalog/verify');
+        const quiet = { out: () => undefined, err: () => undefined };
+        expect(await runVerifyCommand(fixture.root, { json: false }, quiet)).toBe(0);
+        const revisionId = (await listActivations(fixture.root)).find((activation) => activation.revisionNumber === revision)?.revisionId ?? '';
+        const record = JSON.parse(fs.readFileSync(verifyRecordPath(fixture.root), 'utf8')) as { revisions: { revisionId: string; ok: boolean; problems: string[]; problemCount: number }[] };
+        Object.assign(record.revisions.find((entry) => entry.revisionId === revisionId) ?? {}, { ok: false, problems: ['a set no longer matches its sha256'], problemCount: 1 });
+        fs.writeFileSync(verifyRecordPath(fixture.root), JSON.stringify(record));
+        return revisionId;
+    }
+
+    it('shows no Restore for it, and a reason that names photos verify', async () => {
+        await failRevision(1);
+        const { history } = await page();
+        expect(history.plans[1]).toBeUndefined();
+        expect(history.entries[1]).toMatchObject({ title: 'Revision 1', eligibility: { type: 'text', tone: 'alert', text: "It failed its last check, so it can't come back from here. Run photos verify to see what to fix." } });
+    });
+
+    // The A7 review: a record that can't be read refuses every Restore, so the server log says why, once per load.
+    it('logs why a damaged record refuses, once, and offers no Restore', async () => {
+        const { runVerifyCommand } = await import('@/lib/catalog/verify-cli');
+        const { verifyRecordPath } = await import('@/lib/catalog/verify');
+        expect(await runVerifyCommand(fixture.root, { json: false }, { out: () => undefined, err: () => undefined })).toBe(0);
+        fs.writeFileSync(verifyRecordPath(fixture.root), '{ not json');
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const { history } = await page();
+            expect(history.plans[1]).toBeUndefined();
+            expect(history.entries[1]).toMatchObject({ eligibility: { type: 'text', tone: 'alert', text: "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again." } });
+            expect(logged.mock.calls.filter(([line]) => String(line).includes("status/verify.json can't be read: it isn't valid JSON or a verify record."))).toHaveLength(1);
+        } finally {
+            logged.mockRestore();
+        }
+    });
+
+    it('refuses a post for it, accept=verify.failed included, unlogged, and writes nothing', async () => {
+        const live = (await readActivePointer(fixture.root))?.revisionId ?? '';
+        const target = await failRevision(1);
+        const before = folderBytes(fixture.root);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const data = form({ revisionId: target, expectedActive: live, reason: 'Bring it back anyway.' });
+            data.append('accept', 'verify.failed');
+            const result = resultOf(await restoreAction(RESTORE_IDLE, data));
+            expect(result).toEqual({
+                tone: 'alert',
+                heading: "Revision 1 failed its last check, so it can't come back",
+                body: ['Nothing was restored. Revision 2 stays live. Run photos verify to see what to fix.'],
+                actions: ['close', 'reload'],
+            });
+            expect(vi.mocked(rollback).mock.calls[0][0]).toMatchObject({ acceptedRules: [] });
+            expect(logged).not.toHaveBeenCalled();
+        } finally {
+            logged.mockRestore();
+        }
+        expect(folderBytes(fixture.root)).toEqual(before);
     });
 });

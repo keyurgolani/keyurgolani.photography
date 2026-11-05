@@ -9,7 +9,8 @@ import { LockTimeoutError, withLock, type LockContext, type LockRecord } from '.
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
 import { references, ReferenceScanError } from './references';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readLastPublish } from './repository';
-import { errorText as sharedErrorText, holderText } from './rollback';
+import { errorText as sharedErrorText } from './error-text';
+import { holderText } from './rollback';
 import { parseCandidateFile, REVISION_ID_RE } from './schema';
 import { AUTHORED_LOCK } from './working-layer-writer';
 import { catalogPaths } from './working-layer';

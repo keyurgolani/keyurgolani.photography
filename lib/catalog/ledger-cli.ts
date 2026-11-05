@@ -8,7 +8,7 @@ import { hashValue, inboxReviewOf, type FieldReviewState, type ReviewContext } f
 import { readReviewContext } from './review-context';
 import { INBOX_REASONS, inConflict, isGeneratedAlt, restampReason } from './review-reasons';
 import { markAllReviewed, ReviewRefusedError, type MarkReviewedInput } from './review-write';
-import { errorText } from './rollback';
+import { errorText } from './error-text';
 import { REVISION_ID_RE, type AuthoredKind } from './schema';
 import type { CommandResult } from './sequence-commands';
 import type { AuthoredRecord, IssueRecord, RevisionFile, WorkingLayer } from './types';
