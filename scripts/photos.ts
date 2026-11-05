@@ -571,8 +571,11 @@ async function validate(args: string[]): Promise<number> {
     if (result.candidateId) print(`Candidate: ${result.candidateId}`);
     for (const line of issueLines(result.issues, 'publish --dry-run writes them all to the diagnostics file.')) print(line);
     if (result.content && result.candidateId) {
-        const measured = await measureInChild(result.content, { revisionId: result.candidateId, revisionNumber: null }).catch((error: Error) => error);
-        for (const line of budgetLines(measured)) print(line);
+        // A warning, never a failure: a child that can't run, or answers in another shape, says so and changes nothing.
+        const lines = await measureInChild(result.content, { revisionId: result.candidateId, revisionNumber: null })
+            .then((measured) => budgetLines(measured))
+            .catch((error: unknown) => budgetLines(error instanceof Error ? error : new Error(String(error))));
+        for (const line of lines) print(line);
     }
     return exitCode;
 }

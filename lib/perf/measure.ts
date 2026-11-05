@@ -1,5 +1,6 @@
 import { gzipSync } from 'node:zlib';
 import { homeRouteOf } from '../catalog/projections/home';
+import { viewerPeekOf } from '../catalog/projections/viewer';
 import { createRouteBuilder, type CatalogReader, type RouteBuilder } from '../catalog/reader';
 import { SCREEN_BUDGETS, type Screen } from './budgets';
 import type { CatalogBudgetMeasurement, CatalogBudgetRow, CatalogBudgetScreen } from './catalog-budgets';
@@ -67,7 +68,7 @@ export function arraysIn(model: unknown): number {
 export function measureCatalogBudgets(reader: CatalogReader, options: { budgets?: typeof SCREEN_BUDGETS; routes?: RouteBuilder } = {}): CatalogBudgetMeasurement {
     const budgets = options.budgets ?? SCREEN_BUDGETS;
     const routes = options.routes ?? createRouteBuilder();
-    const screens = Object.fromEntries((['home', 'work', 'seriesFirstPage', 'seriesContinuationPage', 'viewer'] as const).map((screen) => [screen, { count: 0, largest: null }])) as CatalogBudgetMeasurement['screens'];
+    const screens = Object.fromEntries((['home', 'work', 'seriesFirstPage', 'seriesContinuationPage', 'viewer', 'viewerPeek'] as const).map((screen) => [screen, { count: 0, largest: null }])) as CatalogBudgetMeasurement['screens'];
     const over: CatalogBudgetRow[] = [];
     const measure = (screen: CatalogBudgetScreen, budget: Screen, subject: string, model: unknown): CatalogBudgetRow => {
         const size = payloadSize(model);
@@ -119,7 +120,10 @@ export function measureCatalogBudgets(reader: CatalogReader, options: { budgets?
         }
         for (const photo of reader.photosOf(series.id)) {
             const viewer = reader.getViewerPhoto(series.slug, photo.id);
-            if (viewer.kind === 'ok') measure('viewer', 'viewer', photo.id, viewer.viewer);
+            if (viewer.kind !== 'ok') continue;
+            measure('viewer', 'viewer', photo.id, viewer.viewer);
+            // The peek endpoint's body for the same photograph (/api/catalog/series/<slug>/photos/<photoId>).
+            measure('viewerPeek', 'viewer', photo.id, viewerPeekOf(viewer.viewer));
         }
     }
     return { revisionId: reader.revision().revisionId, screens, over, home };

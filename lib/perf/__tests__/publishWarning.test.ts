@@ -118,7 +118,7 @@ describe('the measuring child', () => {
 describe('budgetLines()', () => {
     const row = (screen: CatalogBudgetMeasurement['over'][number]['screen'], subject: string, gzipKiB: number, limitKiB: number) => ({
         screen,
-        budget: screen,
+        budget: screen === 'viewerPeek' ? ('viewer' as const) : screen,
         subject,
         records: 1,
         bytes: gzipKiB * 4 * KIB,
@@ -136,6 +136,7 @@ describe('budgetLines()', () => {
                 seriesFirstPage: { count: 1, largest: over[1] },
                 seriesContinuationPage: { count: 0, largest: null },
                 viewer: { count: 25, largest: over[2] },
+                viewerPeek: { count: 0, largest: null },
             },
             over,
             home: { featuredPhotos: 1, bytesPerPhoto: 20, photosAtBudget: 2_400 },

@@ -16,8 +16,8 @@ import { KIB, SCREEN_BUDGETS, type Screen } from './budgets';
  * bundled that way.
  */
 
-/** A model kind measureCatalogBudgets() reads: one per SCREEN_BUDGETS entry. */
-export type CatalogBudgetScreen = Screen;
+/** A model kind measureCatalogBudgets() reads: one per SCREEN_BUDGETS entry, and the Viewer's peek, held to the Viewer's. */
+export type CatalogBudgetScreen = Screen | 'viewerPeek';
 
 export interface CatalogBudgetRow {
     screen: CatalogBudgetScreen;
@@ -68,6 +68,8 @@ function nameOf(row: CatalogBudgetRow): string {
             return `The continuation page of ${row.subject}`;
         case 'viewer':
             return `The Viewer for ${row.subject}`;
+        case 'viewerPeek':
+            return `The Viewer's peek at ${row.subject}`;
     }
 }
 
@@ -88,6 +90,7 @@ export function budgetLines(measurement: CatalogBudgetMeasurement | Error): stri
     lines.push(`  Series, first response: ${largest('seriesFirstPage', (n) => `${count(n)} series`)}`);
     lines.push(`  Series, continuation page: ${largest('seriesContinuationPage', (n) => `${count(n)} pages`)}`);
     lines.push(`  Viewer: ${largest('viewer', (n) => `${count(n)} photographs`)}`);
+    lines.push(`  Viewer peek: ${largest('viewerPeek', (n) => `${count(n)} photographs`)}`);
     for (const row of measurement.over.slice(0, MAX_WARNINGS)) lines.push(`${WARNING} ${nameOf(row)} is ${kib(row.gzipBytes)}, over its ${budgetKiB(row.limit)} budget. ${NOT_A_RULE}`);
     if (measurement.over.length > MAX_WARNINGS) lines.push(`${WARNING} and ${count(measurement.over.length - MAX_WARNINGS)} more models over budget.`);
     return lines;
@@ -99,21 +102,32 @@ const CHILD_TIMEOUT_MS = 120_000;
 /**
  * The child to run: lib/perf/budgets-cli.ts beside this file under tsx, or
  * dist/scripts/budgets-cli.mjs beside the bundle this code was bundled into.
+ * PHOTOS_BUDGETS_CHILD names another, for publishWarning.test.ts's stand-in.
  */
 function childEntry(): string {
+    if (process.env.PHOTOS_BUDGETS_CHILD) return path.resolve(process.env.PHOTOS_BUDGETS_CHILD);
     const here = fileURLToPath(import.meta.url);
     return path.join(path.dirname(here), here.endsWith('.ts') ? 'budgets-cli.ts' : 'budgets-cli.mjs');
 }
 
 /**
- * measureCatalogBudgets() for `content`, run in budgets-cli under
- * `--conditions=react-server`. This process's own Node flags go first, so
- * under tsx the child loads TypeScript the same way. Rejects when the child
- * can't run or answers anything but its measurement.
+ * The child's Node flags: this process's own, so under tsx it loads
+ * TypeScript the same way, less any inspector, which would try the parent's
+ * port, and then the condition that empties `server-only`.
+ */
+export function childArgv(execArgv: readonly string[] = process.execArgv): string[] {
+    return [...execArgv.filter((flag) => !/^--inspect(?:-brk|-port|-wait)?(?:=|$)/.test(flag)), '--conditions=react-server'];
+}
+
+/**
+ * measureCatalogBudgets() for `content`, run in budgets-cli with childArgv().
+ * Rejects when the child can't run or answers anything but JSON. The caller
+ * formats the answer inside the same catch (budgetLines()), so an answer of
+ * the wrong shape says it wasn't measured too.
  */
 export function measureInChild(content: CatalogContent, meta: ReaderMeta, budgets: typeof SCREEN_BUDGETS = SCREEN_BUDGETS): Promise<CatalogBudgetMeasurement> {
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [...process.execArgv, '--conditions=react-server', childEntry()], { stdio: ['pipe', 'pipe', 'pipe'], timeout: CHILD_TIMEOUT_MS });
+        const child = spawn(process.execPath, [...childArgv(), childEntry()], { stdio: ['pipe', 'pipe', 'pipe'], timeout: CHILD_TIMEOUT_MS });
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
