@@ -110,6 +110,22 @@ describe('AboutView', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('A statement heading.');
   });
 
+  it('retries a failed AVIF portrait with WebP before it shows the name panel (#6)', () => {
+    const current = vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${url('w800.avif')}`);
+    try {
+      renderAbout();
+      fireEvent.error(screen.getByRole('img'));
+      expect(screen.getByRole('img', { name: 'Portrait of Test Artist' })).toBeInTheDocument();
+      expect(document.querySelector('source[type="image/avif"]')).toBeNull();
+      current.mockReturnValue(`http://localhost${url('w800.webp')}`);
+      fireEvent.error(screen.getByRole('img'));
+      expect(screen.queryByRole('img')).toBeNull();
+      expect(screen.getByTestId('about-portrait')).toHaveTextContent('Test Artist · TestAlias');
+    } finally {
+      current.mockRestore();
+    }
+  });
+
   it('shows the name panel for a portrait that failed before hydration, when no error event reaches React', () => {
     const complete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
     const natural = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);

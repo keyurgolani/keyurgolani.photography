@@ -99,6 +99,81 @@ describe('ResponsivePhoto', () => {
     expect(element.props).not.toHaveProperty('alt');
   });
 
+  describe('the WebP retry (#6)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    /** The file the browser picked, as an absolute URL, which is how currentSrc reads. */
+    const picked = (variant: string, format: string) => vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${url(variant, format)}`);
+    const types = (container: HTMLElement) => [...container.querySelectorAll('source')].map((source) => source.getAttribute('type'));
+
+    it('retries a failed AVIF file once with the WebP source, in the same element, before it reports the failure', () => {
+      const onError = vi.fn();
+      const { container } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Retried" sizes="100vw" onError={onError} />);
+      const img = container.querySelector('img') as HTMLImageElement;
+      const current = picked('w1200', 'avif');
+      fireEvent.error(img);
+      expect(onError).not.toHaveBeenCalled();
+      // The AVIF source is gone, so the browser picks again, from WebP. The image stays the same element.
+      expect(types(container)).toEqual(['image/webp']);
+      expect(container.querySelector('img')).toBe(img);
+      expect(container.querySelector('source')?.getAttribute('srcset')).toContain(url('w1200', 'webp'));
+      current.mockReturnValue(`http://localhost${url('w1200', 'webp')}`);
+      fireEvent.error(img);
+      expect(onError).toHaveBeenCalledTimes(1);
+      // Once is all: the WebP failure is the failure.
+      fireEvent.error(img);
+      expect(onError).toHaveBeenCalledTimes(2);
+      expect(types(container)).toEqual(['image/webp']);
+    });
+
+    it('reports a failed WebP file at once: a browser without AVIF already had the retry\'s file', () => {
+      const onError = vi.fn();
+      const { container } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="WebP first" sizes="100vw" onError={onError} />);
+      picked('w800', 'webp');
+      fireEvent.error(container.querySelector('img')!);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(types(container)).toEqual(['image/avif', 'image/webp']);
+    });
+
+    it('a load after the retry is a load, with nothing reported', () => {
+      const onError = vi.fn();
+      const onLoad = vi.fn();
+      const { container } = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Recovered" sizes="100vw" onError={onError} onLoad={onLoad} />);
+      picked('w1920', 'avif');
+      fireEvent.error(container.querySelector('img')!);
+      fireEvent.load(container.querySelector('img')!);
+      expect(onError).not.toHaveBeenCalled();
+      expect(onLoad).toHaveBeenCalledTimes(1);
+    });
+
+    it('catches a file that failed before hydration, which fires no event, and retries an AVIF one the same way', () => {
+      vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+      vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+      const current = picked('w1200', 'avif');
+      const avif = vi.fn();
+      const retried = render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Server AVIF" sizes="100vw" loading="eager" onError={avif} />);
+      expect(avif).not.toHaveBeenCalled();
+      expect(types(retried.container)).toEqual(['image/webp']);
+      retried.unmount();
+      current.mockReturnValue(`http://localhost${url('w1200', 'webp')}`);
+      const webp = vi.fn();
+      render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Server WebP" sizes="100vw" loading="eager" onError={webp} />);
+      expect(webp).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a lazy image that hasn\'t started alone at mount, and one that loaded', () => {
+      vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+      const natural = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+      const current = vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue('');
+      const onError = vi.fn();
+      render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Not started" sizes="100vw" onError={onError} />);
+      natural.mockReturnValue(1200);
+      current.mockReturnValue(`http://localhost${url('w1200', 'avif')}`);
+      render(<ResponsivePhoto asset={asset(3000, 2000)} alt="Loaded" sizes="100vw" loading="eager" onError={onError} />);
+      expect(onError).not.toHaveBeenCalled();
+    });
+  });
+
   describe('the preload (#6)', () => {
     const headPreloads = () => [...document.head.querySelectorAll<HTMLLinkElement>('link[rel="preload"][as="image"]')];
 

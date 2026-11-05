@@ -649,6 +649,21 @@ describe('CatalogHome', () => {
       expect(queryButton('Retry')).toBeNull();
     });
 
+    it('counts a photograph as failed only once its WebP retry fails too (#6)', async () => {
+      await renderHome();
+      load(3);
+      click('Next photograph');
+      const current = vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(0).variants.w1200.avif.url}`);
+      fail(0);
+      expect(failure()).toBe('');
+      expect(queryButton('Retry')).toBeNull();
+      expect(slideImage(0)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
+      current.mockReturnValue(`http://localhost${image(0).variants.w1200.webp.url}`);
+      fail(0);
+      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      expect(button('Retry')).toBeInTheDocument();
+    });
+
     it('a one-photograph series that fails offers Retry alone', async () => {
       await renderHome(published({ order: [3], opening: 3 }));
       fail(3);
