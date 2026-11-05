@@ -910,6 +910,18 @@ describe('CatalogHome', () => {
         expect(said()).toEqual([]);
         expect(status().textContent).toBe('');
       });
+
+      it('the first manual move after Home moved by itself, when it crosses, makes one change (review)', async () => {
+        await renderHome(looped());
+        load(3);
+        for (const n of [0, 4, 1]) {
+          advance(HOME_AUTO_ADVANCE_MS);
+          load(n);
+        }
+        const said = watchPolite();
+        next(8);
+        expect(said()).toEqual(['Now showing Fixture series B. 2 of 3, Described photograph 8']);
+      });
     });
 
     it('asks the loop route for the series each window is in, crossing into the next one', async () => {
