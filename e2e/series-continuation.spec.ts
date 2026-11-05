@@ -4,6 +4,7 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog, type VariantByteTable } from '../lib/catalog/testing';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
+import { withoutRequestUrl } from './support/requestUrl';
 import { expect, test } from './support/test';
 
 // #6's continuation in the browser, on a published 250-photo series served
@@ -174,8 +175,12 @@ test.describe('deep entry (?photo=, B5)', () => {
             const response = await request.get(`${origin()}/work/long?photo=${encodeURIComponent(value)}`, { maxRedirects: 0 });
             expect(response.status(), value).toBe(200);
             const html = await response.text();
-            expect(html, value).not.toContain('onerror');
-            expect(html, value).not.toContain(id(999));
+            // The value as typed never reaches the HTML. Its percent-encoded form is only in Next's own copy of the request URL.
+            if (encodeURIComponent(value) !== value) expect(html, value).not.toContain(value);
+            const rendered = withoutRequestUrl(html, '/work/long', { photo: value });
+            expect(rendered, value).not.toContain('onerror');
+            expect(rendered, value).not.toContain(id(999));
+            expect(rendered, value).not.toContain('not-a-photo');
             expect(html, value).not.toContain('Show earlier photographs');
         }
         await page.goto(`${origin()}/work/long?photo=${id(999)}`);
