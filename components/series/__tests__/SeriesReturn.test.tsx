@@ -517,6 +517,71 @@ describe('?photo= (#5, #6 deep entry, B5)', () => {
             expect(returnState()).toBeUndefined();
         });
 
+        describe('when Next answers in place, as Next 16 does for a replace that changes only the query', () => {
+            // The page segment's key is `__PAGE__` whatever the query, so SeriesReturn isn't mounted again: it renders
+            // again with the server's new page, in the commit whose insertion effect has already written the new URL.
+            const answer = (view: ReturnType<typeof mount>, search: string, props: Partial<typeof PROPS>) => {
+                window.history.replaceState({ ...NEXT_KEYS }, '', `/work/harbor${search}`);
+                view.rerender(<SeriesReturn {...PROPS} {...props} />);
+            };
+
+            it('focuses the photograph on the server\'s page and writes kgSeriesPages and kgSeriesReturn back before using the record', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const replace = vi.fn();
+                navigation.replace = replace;
+                const view = mount();
+                expect(replace).toHaveBeenCalledWith(`/work/harbor?photo=${LATE}`, { scroll: false });
+                const late = appendLate();
+                const pagesSeen: unknown[] = [];
+                const spy = vi.spyOn(window.history, 'replaceState').mockImplementation(function (this: History, data, unused, url) {
+                    pagesSeen.push((data as Record<string, unknown> | null)?.[RETURN_KEY] ?? null);
+                    return History.prototype.replaceState.call(this, data, unused, url);
+                });
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                spy.mockRestore();
+                expect(document.activeElement).toBe(late);
+                expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' });
+                expect(pagesSeen).toContainEqual({ photoId: LATE, opener: 'entry', scrollY: 5000 });
+                expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: OLD_PAGES, [ARRIVAL_KEY]: LATE });
+                expect(replace).toHaveBeenCalledTimes(1);
+            });
+
+            it('goes to the heading when the answer doesn\'t hold it, even with the same props as before: it left the revision', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                answer(view, `?photo=${LATE}`, {});
+                expect(document.activeElement).toBe(byId(SERIES_TITLE_ID));
+                expect(returnState()).toBeUndefined();
+            });
+
+            it('lands once: a later render of the same page moves nothing', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                const late = appendLate();
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                expect(document.activeElement).toBe(late);
+                byId(`photo-${A}`).focus();
+                view.rerender(<SeriesReturn {...PROPS} focusPhotoId={LATE} firstPosition={3} />);
+                expect(document.activeElement).toBe(byId(`photo-${A}`));
+            });
+
+            it('waits for the answer: a render before the URL changes lands nothing', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                appendLate();
+                view.rerender(<SeriesReturn {...PROPS} />);
+                expect(document.activeElement).toBe(document.body);
+            });
+
+            it('doesn\'t take an answer for another photograph for its own', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                appendLate();
+                answer(view, `?photo=${A}`, { focusPhotoId: A });
+                expect(document.activeElement).toBe(document.body);
+            });
+        });
+
         it('keeps a later page that has nothing to do with it alone: an answer for another photograph doesn\'t land', () => {
             at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
             const view = mount();
