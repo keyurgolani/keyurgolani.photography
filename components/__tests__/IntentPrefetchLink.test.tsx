@@ -88,13 +88,20 @@ describe('IntentPrefetchLink', () => {
             Object.defineProperty(navigator, 'connection', saved ?? { value: undefined, configurable: true });
         });
 
-        it('prefetches nothing on a pointer, focus or touch, and the link still works', () => {
+        it('prefetches nothing on a pointer, focus or touch, and the link and the caller\'s onFocus still work', () => {
             connection(true);
-            render(<IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>);
+            const onFocus = vi.fn();
+            render(
+                <IntentPrefetchLink href={HREF} onFocus={onFocus}>
+                    Fixture harbor
+                </IntentPrefetchLink>,
+            );
             fireEvent.pointerEnter(link());
             fireEvent.focus(link());
             fireEvent.touchStart(link());
             expect(router.prefetch).not.toHaveBeenCalled();
+            // The caller's onFocus still runs: saveData skips the prefetch, not the focus (mutant M17).
+            expect(onFocus).toHaveBeenCalledTimes(1);
             expect(link()).toHaveAttribute('href', HREF);
         });
 

@@ -394,41 +394,45 @@ test('Tab reaches the entries right after SiteNav, in order, and Enter opens the
 test.describe('Tab down and Shift+Tab back up Work', () => {
     test.skip(({ isMobile }) => isMobile, 'It sets its own sizes. The desktop project covers it.');
 
-    /** Where the focused entry sits once its reveal has run: two frames after the focus, with no wait for a scroll. */
+    /**
+     * Where the focused entry sits once its reveal has run, two frames after the focus, with no wait for a scroll: its
+     * target and ring, the link's ::after (B3), which reaches past the entry by max(--work-room, 6 px), its cover's
+     * top, its title, and the room between the root scroll paddings, as expectNotObscured() measures it.
+     */
     async function placed(page: Page, slug: string) {
         const link = entry(page, slug);
         await expect(link).toBeFocused();
-        const { viewport } = await measure(link);
-        const boxes = await item(page, slug).evaluate(
+        const parts = await item(page, slug).evaluate(
             (li) =>
-                new Promise<{ entry: { top: number; bottom: number }; cover: number; title: { top: number; bottom: number } }>((done) =>
+                new Promise<{ cover: number; title: { top: number; bottom: number } }>((done) =>
                     requestAnimationFrame(() =>
                         requestAnimationFrame(() => {
-                            const box = (el: Element | null) => (el ?? li).getBoundingClientRect();
-                            done({ entry: { top: box(li).top, bottom: box(li).bottom }, cover: box(li.querySelector('[data-cover]')).top, title: { top: box(li.querySelector('h2 a')).top, bottom: box(li.querySelector('h2 a')).bottom } });
+                            const title = (li.querySelector('h2 a') ?? li).getBoundingClientRect();
+                            done({ cover: (li.querySelector('[data-cover]') ?? li).getBoundingClientRect().top, title: { top: title.top, bottom: title.bottom } });
                         }),
                     ),
                 ),
         );
+        const { box: ring, viewport } = await measure(link, STRETCHED);
         const room = viewport.height - viewport.scrollPaddingTop - viewport.scrollPaddingBottom;
-        return { ...boxes, viewport, room, height: boxes.entry.bottom - boxes.entry.top };
+        return { ...parts, ring: { top: ring.top, bottom: ring.bottom }, viewport, room, height: ring.bottom - ring.top };
     }
 
-    /** The entry fully on screen, cover top and all, when it fits the screen, and its title in view when it doesn't. */
+    /** The ring fully on screen, and the cover's top with it, when the ring fits the screen, and the title in view when it doesn't. */
     function expectRevealed(slug: string, way: string, at: Awaited<ReturnType<typeof placed>>) {
-        const what = `${slug} on ${way}, ${Math.round(at.height)} px tall in a ${Math.round(at.room)} px room and a ${at.viewport.height} px screen: ${JSON.stringify(at)}`;
+        const what = `${slug} on ${way}, its ring ${Math.round(at.height)} px tall in a ${Math.round(at.room)} px room and a ${at.viewport.height} px screen: ${JSON.stringify(at)}`;
         if (at.height <= at.viewport.height) {
+            expect(at.ring.top, `${what}: the ring's top`).toBeGreaterThanOrEqual(-0.5);
+            expect(at.ring.bottom, `${what}: the ring's foot`).toBeLessThanOrEqual(at.viewport.height + 0.5);
             expect(at.cover, `${what}: the cover's top`).toBeGreaterThanOrEqual(-0.5);
-            expect(at.entry.top, `${what}: the entry's top`).toBeGreaterThanOrEqual(-0.5);
-            expect(at.entry.bottom, `${what}: the entry's foot`).toBeLessThanOrEqual(at.viewport.height + 0.5);
         } else {
             expect(at.title.top, `${what}: the title's top`).toBeGreaterThanOrEqual(-0.5);
             expect(at.title.bottom, `${what}: the title's foot`).toBeLessThanOrEqual(at.viewport.height + 0.5);
         }
     }
 
-    for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 812 }]) {
-        test(`at ${size.width} by ${size.height}, each entry is on screen, cover top and all, when its link has focus, on Tab down and on Shift+Tab back up`, async ({ page }) => {
+    for (const size of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }, { width: 375, height: 812 }]) {
+        test(`at ${size.width} by ${size.height}, each entry is on screen, ring and cover top and all, when its link has focus, on Tab down and on Shift+Tab back up`, async ({ page }) => {
             await page.setViewportSize(size);
             await openWork(page);
             // By the keyboard past SiteNav to the first entry, so focus is keyboard focus.
