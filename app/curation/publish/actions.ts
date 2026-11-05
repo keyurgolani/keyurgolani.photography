@@ -329,19 +329,17 @@ async function putBackPublished(previous: PublishState, form: FormData): Promise
  * A9's watch: the open page asks every 60 s, and when its tab comes back,
  * which rows are stale now and whether the live revision moved
  * (lib/curation/publish-watch.ts bounds it). requireCurator() first, as
- * every action here; its refusal answers `signed-out` and reads nothing.
- * It reads the data root as the page does and writes nothing. Input the page didn't send, or a catalog that can't be read,
+ * every action here, and its refusal is thrown as theirs is (the route
+ * inventory's rail): nothing after it runs. The page never sees that
+ * notFound(): proxy.ts answers a refused action with a plain 401 or 404
+ * before it runs, so the call rejects, Next's client leaves the page as it
+ * is for a response that isn't RSC, and the watch counts an error and says
+ * nothing (A9 review). It reads the data root as the page does and writes
+ * nothing. Input the page didn't send, or a catalog that can't be read,
  * answers `unavailable`, which the watch backs off from.
  */
 export async function watchPublish(input: { draftId: unknown; active: unknown } | null): Promise<WatchAnswer> {
-    try {
-        await requireCurator();
-    } catch (error) {
-        // The boundary refused (a session that ended, say): nothing is read, and the answer is quiet, since a background
-        // check must never swap the page for a not-found while an edit is open (A9 review). Anything else is thrown.
-        if (isBoundaryRefusal(error)) return { kind: 'signed-out' };
-        throw error;
-    }
+    await requireCurator();
     const draftId = previewDraftId(typeof input === 'object' && input !== null && typeof input.draftId === 'string' ? input.draftId : null);
     const active = previewDraftId(typeof input === 'object' && input !== null && typeof input.active === 'string' ? input.active : null);
     if (draftId === null || active === null) return { kind: 'unavailable' };
@@ -356,12 +354,6 @@ export async function watchPublish(input: { draftId: unknown; active: unknown } 
         console.error('[curation] The Publish screen could not check the catalog again:', error);
         return { kind: 'unavailable' };
     }
-}
-
-/** requireCurator()'s refusals: notFound(), or a redirect to the login. */
-function isBoundaryRefusal(error: unknown): boolean {
-    const digest = typeof error === 'object' && error !== null && 'digest' in error ? String((error as { digest: unknown }).digest) : '';
-    return digest.startsWith('NEXT_HTTP_ERROR_FALLBACK;404') || digest.startsWith('NEXT_REDIRECT');
 }
 
 /** The screen's one action: the form's `intent` picks Validate, Publish, or a review fix. */

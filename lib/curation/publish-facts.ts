@@ -199,15 +199,14 @@ export type Intent = 'validate' | 'publish' | 'mark-description' | 'mark-reviewe
  * open page asks again. `ok`: the rows stale now, by row ID with their
  * summaries, and whether the draft compiles to another candidate than the
  * page shows. `base-moved`: another revision is live. `unavailable`: the
- * input wasn't the page's, or the catalog couldn't be read. `signed-out`:
- * the boundary refused the check.
+ * input wasn't the page's, or the catalog couldn't be read. The boundary
+ * refusing the check isn't an answer: the call rejects, as every curator
+ * action's refusal does (A9 CI fix).
  */
 export type WatchAnswer =
     | { kind: 'ok'; stale: { rowId: string; summary: string }[]; draftChanged: boolean }
     | { kind: 'base-moved'; live: RevisionFacts }
-    | { kind: 'unavailable' }
-    /** The session ended or the boundary refused the check: the watch stops, and the page stays as it is (A9 review). */
-    | { kind: 'signed-out' };
+    | { kind: 'unavailable' };
 
 /**
  * What the screen's one action returns. `serial` grows with every answer, so

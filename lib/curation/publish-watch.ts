@@ -16,9 +16,11 @@ import type { RevisionFacts, ScreenView, WatchAnswer } from './publish-facts';
  *   server runs one action at a time per page;
  * - errors back off, doubling up to 10 minutes, and WATCH_MAX_ERRORS in a
  *   row stop it, as an unreadable answer does;
- * - it stops for good after WATCH_MAX_CHECKS (about two hours), once the
- *   base moved, since only a reload shows the new ledger, and, quietly,
- *   once the server says the session is gone.
+ * - it stops for good after WATCH_MAX_CHECKS (about two hours), and once
+ *   the base moved, since only a reload shows the new ledger. A session
+ *   that ended is an error like any other: proxy.ts answers the action
+ *   with a plain 401, the call rejects with the page left as it is, and
+ *   the watch backs off and stops without a word (A9 review, A9 CI fix).
  */
 
 export const WATCH_INTERVAL_MS = 60_000;
@@ -74,8 +76,6 @@ export function createWatch(deps: WatchDeps): Watch {
         try {
             const answer = await deps.check();
             if (stopped) return;
-            // The session ended: stop without a word, and never swap the page for an error (A9 review).
-            if (answer.kind === 'signed-out') return end();
             deps.onAnswer(answer);
             if (answer.kind === 'base-moved') return end();
             failed = answer.kind === 'unavailable';
@@ -142,7 +142,7 @@ const NOTHING: WatchNews = { line: '', stale: [], baseMoved: null };
  * now, the draft changing, or the base moving, each said once.
  */
 export function watchNews(view: Pick<ScreenView, 'ledger'>, answer: WatchAnswer, announced: ReadonlySet<string>): WatchNews {
-    if (answer.kind === 'unavailable' || answer.kind === 'signed-out') return NOTHING;
+    if (answer.kind === 'unavailable') return NOTHING;
     if (answer.kind === 'base-moved') return { line: `Base moved. Revision ${answer.live.number} went live after this page loaded. Load the updated ledger.`, stale: [], baseMoved: answer.live };
     const rows = new Map([...view.ledger.authored, ...view.ledger.derived, ...view.ledger.health].map((row) => [row.id, row]));
     const fresh = answer.stale.filter((entry) => {

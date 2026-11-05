@@ -153,12 +153,13 @@ export default function PreviewFrame({ src, height, focusable = true, marker = '
                             Fit the window
                         </button>
                         {(Object.keys(SIZES) as (keyof typeof SIZES)[]).map((key) => (
-                            <button key={key} type="button" className={styles.preset} aria-pressed={preset === key} onClick={() => setPreset(key)}>
+                            // The name is set whole, starting with the visible label (WCAG 2.5.3): a visually hidden part is a block in a
+                            // browser, and a block joins a name with spaces around it ("Desktop , 1440 by 900"; A9 CI fix).
+                            <button key={key} type="button" className={styles.preset} aria-pressed={preset === key} aria-label={`${SIZES[key].label}, ${SIZES[key].spoken}`} onClick={() => setPreset(key)}>
                                 {SIZES[key].label}
                                 <span className={styles.size} aria-hidden="true">
                                     {SIZES[key].width} × {SIZES[key].height}
                                 </span>
-                                <span className={styles.visuallyHidden}>, {SIZES[key].spoken}</span>
                             </button>
                         ))}
                     </div>
