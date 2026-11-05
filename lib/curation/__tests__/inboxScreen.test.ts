@@ -70,6 +70,7 @@ function item(n: number, overrides: Partial<InboxItem> = {}): InboxItem {
         placedBy: null,
         unplacedSeries: null,
         observedAt: '2026-02-01T00:00:00.000Z',
+        seriesChosen: false,
         ...overrides,
     };
 }
@@ -137,7 +138,8 @@ describe('bulk choices and row names', () => {
         expect(bulkChoices(item(1))).toEqual({ defer: true, unassigned: true });
         expect(bulkChoices(item(1, { status: 'deferred', group: 'deferred' }))).toEqual({ defer: false, unassigned: true });
         expect(bulkChoices(item(1, { group: 'placed', placedBy: 'Harbor' }))).toEqual({ defer: true, unassigned: false });
-        expect(bulkChoices(item(1, { type: 'missing' }))).toEqual({ defer: true, unassigned: false });
+        // A8 review S1: a missing source is never bulk-deferred.
+        expect(bulkChoices(item(1, { type: 'missing' }))).toEqual({ defer: false, unassigned: false });
         expect(bulkChoices(item(1, { type: 'processing-failure', status: 'failed' }))).toEqual({ defer: true, unassigned: false });
         expect(bulkChoices(item(1, { status: 'approved', group: 'settled' }))).toEqual({ defer: false, unassigned: false });
     });
@@ -224,6 +226,8 @@ describe('loadInboxSummary', () => {
         expect(summary).toEqual({
             state: 'ready',
             readAt: new Date(NOW).toISOString(),
+            cursor: 3,
+            arrived: null,
             needsJudgment: page.needsJudgment,
             waiting: page.waiting,
             placed: page.placed,
@@ -262,7 +266,7 @@ describe('the bulk actions', () => {
         // b moves behind the page's back, so the version the page sent is stale.
         expect(await editEvent({ root: f.root, eventId: b, expectedVersion: 1, expectedBase: null, actor: 'curator:other', choices: { seriesId: DRAFT } })).toMatchObject({ ok: true });
         const state = await runInboxBulk('defer', bulkForm(null, [`${a}:1`, `${b}:1`, `${c}:1`]));
-        expect(state).toMatchObject({ status: 'partial', kind: 'defer', message: 'Left 2 of 3 items for later. 1 was left as it is.' });
+        expect(state).toMatchObject({ status: 'partial', kind: 'defer', message: 'Left 2 of 3 items for later.' });
         if (state.status === 'idle') throw new Error('no answer');
         expect(state.results.map((result) => [result.eventId, result.status])).toEqual([[a, 'done'], [b, 'stale'], [c, 'done']]);
         expect(state.results[1].message).toMatch(/changed since the page loaded/);

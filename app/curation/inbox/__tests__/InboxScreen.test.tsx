@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BULK_IDLE, type InboxActionState, type InboxBulkState, type InboxDetail, type InboxItem, type InboxView, type ReadyInboxSummary, type SeriesOption } from '@/lib/curation/inbox-view';
-import { INBOX_WATCH_INTERVAL_MS } from '@/lib/curation/inbox-watch';
+import { INBOX_WATCH_INTERVAL_MS, INBOX_WATCH_MIN_GAP_MS, OFFLINE_TEXT } from '@/lib/curation/inbox-watch';
 
 // #14's A8 on the Inbox's pieces: the filters, paging and age labels, the bulk actions and their error summary, an
 // item's error summary, the stale alert that keeps unsaved edits, and the poll with its offline state. The server
@@ -58,7 +58,7 @@ const READ_AT = '2026-02-01T03:00:00.000Z';
 const SERIES: SeriesOption[] = [{ id: 'ser_harbor', label: 'Harbor', visibility: 'published', members: [] }];
 
 function item(n: number, overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(n), version: 2, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(n), shortId: `ph_0000…${String(n).padStart(4, '0')}`, sourcePath: `trips/photo-${n}.jpg`, thumbnailUrl: null, waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', ...overrides };
+    return { id: EVT(n), version: 2, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(n), shortId: `ph_0000…${String(n).padStart(4, '0')}`, sourcePath: `trips/photo-${n}.jpg`, thumbnailUrl: null, waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -97,7 +97,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
 type Ready = Extract<InboxView, { state: 'ready' }>;
 function view(overrides: Partial<Ready> = {}): Ready {
     const items = overrides.items ?? [item(1), item(2)];
-    return { state: 'ready', watcher: { state: 'running' }, readAt: READ_AT, activeRevisionId: ACTIVE, needsJudgment: items.length, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items, problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, readAt: READ_AT, cursor: 0, activeRevisionId: ACTIVE, needsJudgment: items.length, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items, problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const ANY = { status: null, type: null, page: 1 } as const;
@@ -176,11 +176,11 @@ describe('the filters, paging and age labels', () => {
 describe('the bulk actions', () => {
     const three = () => [item(1), item(2, { version: 5 }), item(3, { type: 'missing', title: 'Source file missing', sourcePath: 'trips/gone.jpg' }), item(4, { status: 'approved', group: 'settled' })];
 
-    it('put a checkbox on each row a bulk action can take, named for the row, and none on a settled one', () => {
-        render(<InboxList view={view({ items: three() })} query={ANY} />);
+    it('put a checkbox on each row a bulk action can take, named for the row, and none on a settled one, a missing source (S1) or a saved series it would drop (S2)', () => {
+        render(<InboxList view={view({ items: [...three(), item(5, { seriesChosen: true, status: 'deferred', group: 'deferred' })] })} query={ANY} />);
         const boxes = screen.getAllByRole('checkbox');
-        expect(boxes.map((box) => box.getAttribute('aria-label') ?? box.closest('label')?.textContent)).toEqual(['Select photo-1.jpg', 'Select photo-2.jpg', 'Select gone.jpg']);
-        expect(boxes.map((box) => (box as HTMLInputElement).value)).toEqual([`${EVT(1)}:2`, `${EVT(2)}:5`, `${EVT(3)}:2`]);
+        expect(boxes.map((box) => box.getAttribute('aria-label') ?? box.closest('label')?.textContent)).toEqual(['Select photo-1.jpg', 'Select photo-2.jpg']);
+        expect(boxes.map((box) => (box as HTMLInputElement).value)).toEqual([`${EVT(1)}:2`, `${EVT(2)}:5`]);
         expect(screen.getByRole('button', { name: 'Decide later on selected' })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Leave selected unassigned' })).toHaveAccessibleDescription(/approves each selected new photograph into the draft with no series/i);
         // No checkbox inside a row's link: no nested interactive elements.
@@ -200,7 +200,7 @@ describe('the bulk actions', () => {
         sent.bulk = {
             status: 'partial',
             kind: 'defer',
-            message: 'Left 1 of 2 items for later. 1 was left as it is.',
+            message: 'Left 1 of 2 items for later.',
             results: [
                 { eventId: EVT(1), status: 'done', message: 'Left for later.' },
                 { eventId: EVT(2), status: 'stale', message: 'This item changed since the page loaded, so nothing was written. Refresh and review it again.' },
@@ -212,7 +212,8 @@ describe('the bulk actions', () => {
         fireEvent.click(screen.getByRole('checkbox', { name: 'Select photo-2.jpg' }));
         await press(screen.getByRole('button', { name: 'Decide later on selected' }));
         const region = screen.getByRole('status', { name: 'Bulk answer' });
-        expect(region).toHaveTextContent('Left 1 of 2 items for later. 1 was left as it is.');
+        // Said once (N1): what was left is the summary's alone.
+        expect(region).toHaveTextContent(/^Left 1 of 2 items for later\.$/);
         const summary = screen.getByRole('region', { name: '1 item was left as it is' });
         expect(summary).toHaveFocus();
         expect(within(summary).getByRole('link', { name: /photo-2\.jpg/ })).toHaveAttribute('href', `/curation/inbox?item=${EVT(2)}#item`);
@@ -230,6 +231,38 @@ describe('the bulk actions', () => {
         const link = within(summary).getByRole('link', { name: 'The items to select' });
         await press(link);
         expect(screen.getByRole('checkbox', { name: 'Select photo-1.jpg' })).toHaveFocus();
+    });
+});
+
+describe('the bulk answers (A8 review)', () => {
+    it('list in the polite region each item that went through with an answer of its own (S1)', async () => {
+        sent.bulk = {
+            status: 'done',
+            kind: 'unassigned',
+            message: 'Approved 2 new photographs into the draft, unassigned. Nothing is published until you publish.',
+            results: [
+                { eventId: EVT(1), status: 'done', message: 'Approved into the draft. Nothing is published until you publish.' },
+                { eventId: EVT(2), status: 'done', message: 'Approved into the draft. Nothing is published until you publish. It has no description yet, so publishing it waits until one is added and reviewed.', note: true },
+            ],
+            serial: 1,
+        };
+        render(<InboxList view={view()} query={ANY} />);
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Select photo-1.jpg' }));
+        await press(screen.getByRole('button', { name: 'Leave selected unassigned' }));
+        const region = screen.getByRole('status', { name: 'Bulk answer' });
+        const noted = within(region).getByRole('link', { name: 'photo-2.jpg' });
+        expect(noted).toHaveAttribute('href', `/curation/inbox?item=${EVT(2)}#item`);
+        expect(within(region).getByText(/no description yet/)).toBeInTheDocument();
+        expect(within(region).queryByRole('link', { name: 'photo-1.jpg' })).toBeNull();
+        expect(screen.queryByRole('region', { name: /left as/ })).toBeNull();
+    });
+
+    it("send nothing for a submit no bulk button made, as Enter in a checkbox does (N5)", async () => {
+        render(<InboxList view={view()} query={ANY} />);
+        await act(async () => {
+            fireEvent.submit(document.getElementById('inbox-bulk') as HTMLFormElement);
+        });
+        expect(sent.forms).toEqual([]);
     });
 });
 
@@ -285,19 +318,63 @@ describe("an item's answers", () => {
         renderItem();
         fireEvent.change(screen.getByRole('textbox', { name: 'Draft description' }), { target: { value: 'Still typing.' } });
         await act(async () => {
-            window.dispatchEvent(new CustomEvent('curation-inbox:item-changed', { detail: { id: EVT(2) } }));
+            window.dispatchEvent(new CustomEvent('curation-inbox:item-changed', { detail: { id: EVT(2), version: 2 } }));
         });
         expect(screen.queryByRole('alert')).toBeNull();
         await act(async () => {
-            window.dispatchEvent(new CustomEvent('curation-inbox:item-changed', { detail: { id: EVT(1) } }));
+            window.dispatchEvent(new CustomEvent('curation-inbox:item-changed', { detail: { id: EVT(1), version: 2 } }));
         });
         expect(screen.getByRole('alert')).toHaveTextContent(/changed since the page loaded.*Your edits are still in the form/);
         expect(screen.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Still typing.');
     });
+
+    it('raise the alert only for the version the page shows, so a poll in flight during the curator’s own Save says nothing (S4)', async () => {
+        const v = (version: number) => view({ selected: detail({ version }) });
+        const tree = (version: number) => (
+            <main>
+                <InboxList view={v(version)} query={ANY} />
+                <InboxDetailView view={v(version)} />
+            </main>
+        );
+        const { rerender } = render(tree(2));
+        // The curator's Save landed: the page shows version 3, and a poll that compared against 2 answers late.
+        rerender(tree(3));
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('curation-inbox:item-changed', { detail: { id: EVT(1), version: 2 } }));
+        });
+        expect(screen.queryByRole('alert')).toBeNull();
+        // A real move of version 3 does raise it, and a refresh that shows the next version takes it away.
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('curation-inbox:item-changed', { detail: { id: EVT(1), version: 3 } }));
+        });
+        expect(screen.getByRole('alert')).toBeInTheDocument();
+        rerender(tree(4));
+        expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('take the stale answer away once the page shows a newer version (S4)', async () => {
+        sent.answer = { status: 'stale', action: 'approve', eventId: EVT(1), message: 'This item changed since the page loaded, so nothing was written. Refresh and review it again.', serial: 1 };
+        const v = (version: number) => view({ selected: detail({ version }) });
+        const { rerender } = render(
+            <main>
+                <InboxList view={v(2)} query={ANY} />
+                <InboxDetailView view={v(2)} />
+            </main>,
+        );
+        await press(screen.getByRole('button', { name: 'Approve into draft' }));
+        expect(screen.getByRole('alert')).toBeInTheDocument();
+        rerender(
+            <main>
+                <InboxList view={v(3)} query={ANY} />
+                <InboxDetailView view={v(3)} />
+            </main>,
+        );
+        expect(screen.queryByRole('alert')).toBeNull();
+    });
 });
 
 describe('the poll', () => {
-    const summary = (overrides: Partial<ReadyInboxSummary> = {}): ReadyInboxSummary => ({ state: 'ready', readAt: READ_AT, needsJudgment: 2, waiting: 0, placed: 0, unplaced: 0, total: 2, unreadable: 0, watcher: { state: 'running' }, item: { id: EVT(1), version: 2, status: 'open' }, ...overrides });
+    const summary = (overrides: Partial<ReadyInboxSummary> = {}): ReadyInboxSummary => ({ state: 'ready', readAt: READ_AT, cursor: 7, arrived: 0, needsJudgment: 2, waiting: 0, placed: 0, unplaced: 0, total: 2, unreadable: 0, watcher: { state: 'running' }, item: { id: EVT(1), version: 2, status: 'open' }, ...overrides });
     let fetcher: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
@@ -318,21 +395,25 @@ describe('the poll', () => {
     };
 
     it('asks again every 60 s, and says new items once in its polite region, with a way to refresh', async () => {
-        render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={2} item={{ id: EVT(1), version: 2 }} />);
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={{ id: EVT(1), version: 2 }} />);
         expect(fetcher).not.toHaveBeenCalled();
-        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 4 }) }) as Response);
+        // Two arrived while one was decided elsewhere: the net count says 3, the arrivals say 2 (B4).
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 2 }) }) as Response);
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(fetcher.mock.calls[0][0]).toBe(`/api/curation/inbox/summary?item=${EVT(1)}&since=7`);
         const region = screen.getByRole('status', { name: 'Inbox updates' });
         expect(region).toHaveTextContent('2 new items need judgment. Refresh the inbox to see them.');
         expect(within(region).getByRole('link', { name: 'Refresh the inbox' })).toBeInTheDocument();
+        const said = region.querySelector('p');
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher).toHaveBeenCalledTimes(2);
-        expect(region).toHaveTextContent('2 new items need judgment.');
+        // Said once (N3): the same node, not a new one with the same words.
+        expect(region.querySelector('p')).toBe(said);
     });
 
     it('shows the watcher strip when the watcher stops checking in while the page is open', async () => {
-        render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={2} item={null} />);
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         expect(screen.queryByRole('region', { name: 'Watcher' })).toBeNull();
         fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ watcher: { state: 'missing' }, item: null }) }) as Response);
         await tick(INBOX_WATCH_INTERVAL_MS);
@@ -344,29 +425,33 @@ describe('the poll', () => {
         const heard = vi.fn();
         window.addEventListener('curation-inbox:item-changed', heard);
         try {
-            render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={2} item={{ id: EVT(1), version: 2 }} />);
+            render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={{ id: EVT(1), version: 2 }} />);
             fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ item: { id: EVT(1), version: 3, status: 'deferred' } }) }) as Response);
             await tick(INBOX_WATCH_INTERVAL_MS);
             await tick(INBOX_WATCH_INTERVAL_MS);
             expect(heard).toHaveBeenCalledTimes(1);
-            expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({ id: EVT(1) });
+            expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({ id: EVT(1), version: 2 });
         } finally {
             window.removeEventListener('curation-inbox:item-changed', heard);
         }
     });
 
     it('shows an offline state when the browser goes offline or the server cannot be reached, and clears it once back', async () => {
-        render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={2} item={null} />);
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         await act(async () => {
             window.dispatchEvent(new Event('offline'));
         });
         const offline = screen.getByRole('region', { name: 'Offline' });
-        expect(offline).toHaveTextContent(/can't check for changes/);
-        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent(/^You're offline/);
+        // One wording for the notice and the line (N6).
+        expect(offline).toHaveTextContent(OFFLINE_TEXT);
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent(OFFLINE_TEXT);
         await act(async () => {
             window.dispatchEvent(new Event('online'));
         });
+        // The page load was the last check, so online waits out the 15 s gap (S5).
         await tick(0);
+        expect(fetcher).toHaveBeenCalledTimes(0);
+        await tick(INBOX_WATCH_MIN_GAP_MS);
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole('region', { name: 'Offline' })).toBeNull();
         expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('Back online.');
@@ -375,9 +460,33 @@ describe('the poll', () => {
         expect(screen.getByRole('region', { name: 'Offline' })).toBeInTheDocument();
     });
 
+    it('clears the offline notice when a check gets through, even with no online event (S5)', async () => {
+        fetcher.mockImplementationOnce(async () => Promise.reject(new TypeError('Failed to fetch')));
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(screen.getByRole('region', { name: 'Offline' })).toBeInTheDocument();
+        await tick(2 * INBOX_WATCH_INTERVAL_MS);
+        expect(screen.queryByRole('region', { name: 'Offline' })).toBeNull();
+    });
+
+    it('reads again without its cursor when the server refuses it, and counts from the new one (4a)', async () => {
+        fetcher.mockImplementation(async (url: string) =>
+            url.includes('since=7')
+                ? ({ status: 400, ok: false, type: 'basic', json: async () => ({ error: 'bad-cursor' }) } as Response)
+                : ({ status: 200, ok: true, type: 'basic', json: async () => summary({ cursor: 3, arrived: url.includes('since=3') ? 1 : null, item: null }) } as Response),
+        );
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/curation/inbox/summary?since=7', '/api/curation/inbox/summary']);
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('');
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher.mock.calls.at(-1)?.[0]).toBe('/api/curation/inbox/summary?since=3');
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('1 new item needs judgment.');
+    });
+
     it('stops quietly once the session is gone, and never asks again', async () => {
         fetcher.mockImplementation(async () => ({ status: 401, ok: false, type: 'basic', json: async () => ({}) }) as Response);
-        render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={2} item={null} />);
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         await tick(INBOX_WATCH_INTERVAL_MS);
         await tick(10 * INBOX_WATCH_INTERVAL_MS);
         expect(fetcher).toHaveBeenCalledTimes(1);
@@ -388,7 +497,7 @@ describe('the poll', () => {
     it('waits while the tab is hidden, and checks on coming back', async () => {
         const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
         try {
-            render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={2} item={null} />);
+            render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
             await tick(5 * INBOX_WATCH_INTERVAL_MS);
             expect(fetcher).not.toHaveBeenCalled();
             hidden.mockReturnValue(false);
