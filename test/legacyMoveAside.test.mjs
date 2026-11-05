@@ -1073,10 +1073,11 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const photos = path.join(state, 'photos');
       const { status, stderr } = run(['--manifest', manifest, '--apply', library], envOf(stubs(root, { afterMkdir: { [photos]: `ln -s '${target}' '${photos}/legacy-derivatives.used'` } })));
       expect(status).toBe(1);
-      expect(stderr).toMatch(/Can't record the manifest as used/);
+      expect(stderr).toMatch(/Can't record the manifest as used[\s\S]*still unused/);
       expect(fs.readFileSync(target, 'utf8')).toBe('untouched\n');
       expect(fs.readdirSync(library).sort()).toEqual(['a.jpg', 'b.png', ...NAMES, 'trip'].sort());
-      expect(fs.existsSync(asideOf(library))).toBe(false);
+      // The aside folder comes first now, 0700 and checked, and nothing went into it.
+      expect(fs.readdirSync(asideOf(library))).toEqual([]);
     });
   });
 

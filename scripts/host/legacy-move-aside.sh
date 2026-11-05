@@ -166,7 +166,7 @@ done
 command -v perl >/dev/null 2>&1 || refuse "This needs perl, to read the manifest and so that each move is a checked rename and never a copy."
 if [ "$as_root" -eq 1 ]; then
   command -v sudo >/dev/null 2>&1 || refuse "--rename-as-root needs sudo, which isn't on PATH."
-  [ -x /usr/bin/perl ] || refuse "--rename-as-root runs the helper as /usr/bin/perl, which this host doesn't have."
+  [ -x /usr/bin/perl ] && [ -x /usr/bin/env ] || refuse "--rename-as-root runs the helper as /usr/bin/env -i /usr/bin/perl, which this host doesn't have."
 fi
 
 if has_newline "$library" || has_newline "$dest" || has_newline "$manifest"; then
@@ -187,6 +187,8 @@ if [ -e "$dest" ] || [ -L "$dest" ]; then
   to=$(cd -P -- "$dest" && pwd -P) || refuse "Can't open the destination $dest."
   anchor=$to
   dest_exists=1
+  [ "$(stat_of %u "$to")" = "$(id -u)" ] || refuse "The destination $to isn't yours. Pass a --to folder you own."
+  [ -w "$to" ] || refuse "The destination $to isn't writable by you. Pass a --to folder you can write."
 else
   parent=$(dirname -- "$dest")
   [ -d "$parent" ] || refuse "The destination's parent $parent isn't a folder. Make it first, outside the library."
@@ -234,18 +236,43 @@ while :; do
   folder=$(dirname -- "$folder")
 done
 
-# A folder another user can write, here or above, could swap the aside
-# folder or its files between the checks and the renames. The sticky bit
-# stops that, so /tmp-like folders pass.
-open_to=$(perl -e '
-  my $dir = shift;
-  while (1) {
-    my @s = lstat $dir;
-    if (@s && !-l _) { my $mode = $s[2] & 07777; print("$dir\n"), exit 0 if ($mode & 022) && !($mode & 01000) }
-    last if $dir eq "/";
-    $dir =~ s{/[^/]+/?\z}{}; $dir = "/" if $dir eq "";
-  }' -- "$anchor") || refuse "Can't read the modes of $anchor and the folders above it."
-[ -z "$open_to" ] || refuse "The destination $to is under $open_to, which is writable by another user without the sticky bit, so the aside folder could be swapped under it. Pick one only you can write."
+# A folder above the library or the destination that another user owns, or
+# that its group or others can write (sticky or not), could swap what's in
+# it between the checks and the renames. Root's and your own folders pass,
+# so / and /srv do. $1 the first folder to check, $2 what it's above.
+read -r -d '' ANCESTORS <<'ANCESTORS' || true
+my ($dir, $uid, $what) = @ARGV;
+while (1) {
+  my @s = lstat $dir;
+  if (@s && !-l _) {
+    print("$dir is owned by uid $s[4], neither root nor you, so it could change what's under it. Pick a $what only root and you own the folders above.\n"), exit 0 unless $s[4] == 0 || $s[4] == $uid;
+    print("$dir is writable by its group or others, so what's in it could be swapped between the checks and the renames. Make it yours alone with: chmod g-w,o-w $dir\n"), exit 0 if $s[2] & 022;
+  }
+  last if $dir eq "/";
+  $dir =~ s{/[^/]+/?\z}{};
+  $dir = "/" if $dir eq "";
+}
+ANCESTORS
+guard_ancestors() {
+  local found
+  found=$(perl -e "$ANCESTORS" -- "$1" "$(id -u)" "$2") || refuse "Can't read the folders above $1."
+  [ -z "$found" ] || refuse "$found"
+}
+guard_ancestors "$(dirname -- "$lib")" "library"
+guard_ancestors "$anchor" "destination"
+
+# On macOS, an ACL entry can grant what the mode bits don't. Deny-only
+# entries, such as a home folder's, take nothing away from this.
+if [ "$(uname -s)" = Darwin ]; then
+  folder=$anchor
+  while :; do
+    if /bin/ls -led -- "$folder" 2>/dev/null | sed 1d | grep -q ' allow '; then
+      refuse "$folder has an ACL that allows others to change it, so the aside folder could be swapped under it. Pick a destination with no such ACL above it."
+    fi
+    [ "$folder" != / ] || break
+    folder=$(dirname -- "$folder")
+  done
+fi
 
 lib_device=$(stat_of %d "$lib") || lib_device=''
 anchor_device=$(stat_of %d "$anchor") || anchor_device=''
@@ -257,6 +284,23 @@ anchor_mount=$(mount_of "$anchor") || anchor_mount=''
 [ -n "$lib_mount" ] && [ -n "$anchor_mount" ] || refuse "Can't read the mount of $lib or $anchor."
 if [ "$lib_device" != "$anchor_device" ] || [ "$lib_mount" != "$anchor_mount" ]; then
   refuse "The destination $to is on another filesystem than the library, where a move would have to copy the folders. Pick a --to on the library's filesystem, outside the library. If the library is a whole disk of its own, leave the folders where they are."
+fi
+
+# A library on a read-only mount can't be renamed in at all; on Linux, say so up front.
+if [ -r /proc/self/mountinfo ]; then
+  ro=$(perl -e '
+    my ($path) = @ARGV;
+    my ($best, $options) = ("", "");
+    open(my $fh, "<", "/proc/self/mountinfo") or exit 0;
+    while (<$fh>) {
+      my @f = split / /;
+      (my $point = $f[4]) =~ s/\\([0-7]{3})/chr(oct $1)/ge;
+      next unless $path eq $point || index($path, $point eq "/" ? "/" : "$point/") == 0;
+      ($best, $options) = ($point, $f[5]) if length $point >= length $best;
+    }
+    print $best if $options =~ /(?:\A|,)ro(?:,|\z)/;
+  ' -- "$lib") || ro=''
+  [ -z "$ro" ] || refuse "The library $lib is on $ro, mounted read-only, so nothing in it can be moved."
 fi
 
 for name in "${NAMES[@]}"; do
@@ -376,6 +420,23 @@ sub used_holds {
 }
 
 sub manifest_library { my ($m) = @_; return ($m->{library}{dev} // '') . ':' . ($m->{library}{ino} // '') }
+
+# Refuses when a folder from $dir up to / is owned by anyone but root or
+# $uid, or its group or others can write it, sticky or not.
+sub guard_above {
+  my ($dir, $uid) = @_;
+  while (1) {
+    my @s = lstat $dir or refuse("Can't read $dir.");
+    if (!-l _) {
+      refuse("$dir is owned by uid $s[4], neither root nor uid $uid, so it could change what's under it.") unless $s[4] == 0 || $s[4] == $uid;
+      refuse("$dir is writable by its group or others, so what's in it could be swapped. Make it yours alone with: chmod g-w,o-w $dir") if $s[2] & 022;
+    }
+    last if $dir eq '/';
+    $dir =~ s{/[^/]+/?\z}{};
+    $dir = '/' if $dir eq '';
+  }
+}
+sub parent_of { my ($dir) = @_; $dir =~ s{/[^/]+/?\z}{}; return $dir eq '' ? '/' : $dir }
 
 # The library's root: every name in it, and the base name of each original
 # the scan reads there, a plain file with a source extension, not a dot-file.
@@ -525,6 +586,9 @@ my ($m, $digest, $folders) = read_manifest($file);
 check_age($m, time);
 my @l = lstat $lib or refuse("Can't read $lib.");
 refuse("$lib is not the library the manifest names.") unless -d _ && !-l _ && "$l[0]:$l[1]" eq manifest_library($m);
+my $real_lib = abs_path($lib);
+refuse("Can't resolve $lib.") unless defined $real_lib;
+guard_above(parent_of($real_lib), $uid);
 my $f = $folders->{$name};
 refuse("The manifest doesn't move $name, so nothing vouches for it.") unless $f && $f->{moves};
 my ($names, $bases) = root_listing($lib);
@@ -533,18 +597,18 @@ my ($folder_id) = check_folder($lib, $name, $f, $bases);
 
 my @a = lstat $aside or refuse("Can't read the aside folder $aside.");
 refuse("The aside folder $aside is a symlink, or not a folder.") if -l _ || !-d _;
-refuse("The aside folder $aside isn't yours: it belongs to uid $a[4], not $uid.") unless $a[4] == $uid;
-refuse("The aside folder $aside is writable by group or others.") if $a[2] & 022;
+my $aside_id = "$a[0]:$a[1]";
 refuse("The aside folder $aside isn't on the library's device.") unless $a[0] == $l[0];
 my $real = abs_path($aside);
 refuse("Can't resolve the aside folder $aside.") unless defined $real;
-for (my $dir = $real; ; ) {
+for (my $dir = $real; ; $dir = parent_of($dir)) {
   my @s = stat $dir or refuse("Can't read $dir.");
   refuse("The aside folder $aside is inside the library, or is the library.") if "$s[0]:$s[1]" eq manifest_library($m);
   last if $dir eq '/';
-  $dir =~ s{/[^/]+/?\z}{};
-  $dir = '/' if $dir eq '';
 }
+guard_above(parent_of($real), $uid);
+refuse("The aside folder $aside isn't yours: it belongs to uid $a[4], not $uid.") unless $a[4] == $uid;
+refuse("The aside folder $aside is writable by its group or others. Make it yours alone with: chmod g-w,o-w $aside") if $a[2] & 022;
 for my $own ('move-back.sh', 'legacy-derivatives.used') {
   my @s = lstat "$aside/$own" or refuse("The aside folder $aside holds no $own, so it isn't one this run made.");
   refuse("$aside/$own isn't a plain file of yours with one link.") unless -f _ && !-l _ && $s[3] == 1 && $s[4] == $uid;
@@ -552,25 +616,36 @@ for my $own ('move-back.sh', 'legacy-derivatives.used') {
 refuse("$aside/legacy-derivatives.used doesn't hold this manifest's digest, so the aside folder isn't this run's.") unless used_holds("$aside/legacy-derivatives.used", $digest);
 refuse("$aside/$name exists. Compare it with $lib/$name first.") if lstat "$aside/$name";
 
-# Last, immediately before the rename: the exact name and the folder's identity once more.
-opendir(my $dh, $lib) or refuse("Can't list $lib.");
+# Last, immediately before the rename, from inside the library by relative
+# names: the library's identity, the exact name, and the folder's identity.
+chdir $lib or refuse("Can't go into $lib.");
+my @here = stat '.' or refuse("Can't read $lib.");
+refuse("$lib isn't the library the check saw: its device and inode changed.") unless "$here[0]:$here[1]" eq manifest_library($m);
+opendir(my $dh, '.') or refuse("Can't list $lib.");
 my $listed = grep { $_ eq $name } readdir $dh;
 closedir $dh;
-refuse("$lib has no entry named exactly $name now, so it changed since the check.") unless $listed;
-my @s = lstat "$lib/$name" or refuse("Can't read $lib/$name.");
+refuse("$lib has no entry named exactly $name right before the rename, so it changed.") unless $listed;
+my @s = lstat $name or refuse("Can't read $lib/$name.");
 refuse("$lib/$name is not the folder that was checked: its device and inode changed.") unless -d _ && !-l _ && "$s[0]:$s[1]" eq $folder_id;
-if (!rename("$lib/$name", "$aside/$name")) {
+if (!rename($name, "$aside/$name")) {
   if ($!{EACCES} || $!{EPERM}) {
-    my $cause = !-w $lib ? "the library's top folder $lib isn't writable" : !-w "$lib/$name" ? "$lib/$name isn't writable, and moving a folder to a new parent rewrites its .. entry" : "the system refused it ($!)";
+    my $cause = !-w '.' ? "the library's top folder $lib isn't writable" : !-w $name ? "$lib/$name isn't writable, and moving a folder to a new parent rewrites its .. entry" : "the system refused it ($!)";
     print STDERR clean("Permission denied renaming $lib/$name: $cause. Nothing further was moved."), "\n";
     exit 4;
   }
   refuse("Renaming $lib/$name failed: $!.", 5);
 }
 my @after = lstat "$aside/$name";
-if (!(@after && -d _ && "$after[0]:$after[1]" eq $folder_id)) {
-  rename("$aside/$name", "$lib/$name") or refuse("$aside/$name isn't the folder that was checked, and moving it straight back failed ($!). Look before going on.", 5);
-  refuse("What arrived at $aside/$name wasn't the folder that was checked, so it was moved straight back.", 5);
+if (!(@after && -d _ && !-l _ && "$after[0]:$after[1]" eq $folder_id)) {
+  my $wrong = "What arrived at $aside/$name wasn't the folder that was checked";
+  my @now = lstat $aside;
+  refuse("$wrong, and the aside folder $aside changed too, so it was left where it is. Look before going on.", 5) unless @now && !-l _ && "$now[0]:$now[1]" eq $aside_id;
+  opendir(my $again, '.') or refuse("$wrong, and $lib can't be listed, so it was left where it is. Look before going on.", 5);
+  my $back = grep { lc $_ eq lc $name } readdir $again;
+  closedir $again;
+  refuse("$wrong, and the library holds $name again, in some letter case, so it was left where it is. Look before going on.", 5) if $back;
+  rename("$aside/$name", $name) or refuse("$wrong, and moving it straight back failed ($!). Look before going on.", 5);
+  refuse("$wrong, so it was moved straight back.", 5);
 }
 exit 0;
 FORWARD
@@ -671,6 +746,7 @@ done
 # Whether the renames need root, said before anything is written: the
 # library's top folder, and each folder itself, for its .. entry.
 read -r -d '' NEED <<'NEED' || true
+use filetest 'access';
 my ($lib, @names) = @ARGV;
 my @why;
 push @why, "the library's top folder $lib isn't writable by you" unless -w $lib;
@@ -722,7 +798,7 @@ move_back_text() {
   echo "helper='$BACK'"
   echo 'run=perl'
   # shellcheck disable=SC2016 # move-back.sh's own shell expands these
-  echo '[ "${1:-}" != --rename-as-root ] || run="sudo env -i PATH=/usr/bin:/bin /usr/bin/perl"'
+  echo '[ "${1:-}" != --rename-as-root ] || run="sudo /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/perl"'
   echo 'status=0'
   for name in "${moves[@]}"; do
     echo "# mv $(quote "$to/$name") $(quote "$lib/$name")"
@@ -761,11 +837,25 @@ write_new() {
   perl -e 'use Fcntl qw(O_WRONLY O_CREAT O_EXCL O_NOFOLLOW); sysopen(my $f, $ARGV[0], O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, oct $ARGV[1]) or die "$!\n"; local $/; my $text = <STDIN>; print {$f} $text or die "$!\n"; close $f or die "$!\n"' -- "$1" "$2"
 }
 
-# The single-use record first, in the owner's state folder, so a failure
-# after it leaves the manifest spent rather than reusable. Then the aside
-# folder, its move-back.sh and its own record, before the first move. None
-# is in the library, and none is written through a link.
-mkdir -p -- "$state_dir" || refuse "Can't make the state folder $state_dir."
+# The aside folder first, 0700 whatever the umask, and checked, so a
+# folder the helper would refuse is refused before the manifest is spent.
+if [ "$dest_exists" -eq 0 ]; then
+  mkdir -m 0700 -- "$to" || refuse "Can't make $to. Nothing was written, and the manifest is still unused."
+fi
+aside_id=$(stat_of %d:%i "$to") || aside_id=''
+[ -n "$aside_id" ] || refuse "Can't read the device and inode of $to. The manifest is still unused."
+aside_mode=$(perl -e 'my @s = lstat $ARGV[0] or exit 1; printf "%o", $s[2] & 07777' -- "$to") || aside_mode=''
+[ -n "$aside_mode" ] || refuse "Can't read the mode of $to. The manifest is still unused."
+if [ "$(stat_of %u "$to")" != "$(id -u)" ] || [ $((8#$aside_mode & 8#022)) -ne 0 ]; then
+  refuse "The aside folder $to must be yours and writable only by you (it's mode $aside_mode). Make it so with: chmod g-w,o-w $to. The manifest is still unused."
+fi
+
+# Then the single-use record, in the owner's state folder, so a failure
+# after it leaves the manifest spent rather than reusable. Then move-back.sh
+# and the aside folder's own record, before the first move. None is in the
+# library, and none is written through a link.
+# shellcheck disable=SC2174 # -m is for the state folder itself; the folders above are the owner's own
+mkdir -p -m 0700 -- "$state_dir" || refuse "Can't make the state folder $state_dir. The manifest is still unused."
 printf '%s\n' "$digest" | perl -e '
   use Fcntl qw(O_WRONLY O_APPEND O_CREAT O_NOFOLLOW);
   my ($file, $dir) = @ARGV;
@@ -777,12 +867,7 @@ printf '%s\n' "$digest" | perl -e '
   my $line = <STDIN>;
   print {$f} $line or die "$file: $!\n";
   close $f or die "$file: $!\n";
-' -- "$used_file" "$state_dir" || refuse "Can't record the manifest as used in $used_file."
-if [ "$dest_exists" -eq 0 ]; then
-  mkdir -- "$to" || refuse "Can't make $to. The manifest is used up: run photos legacy-derivatives --stdout again."
-fi
-aside_id=$(stat_of %d:%i "$to") || aside_id=''
-[ -n "$aside_id" ] || refuse "Can't read the device and inode of $to."
+' -- "$used_file" "$state_dir" || refuse "Can't record the manifest as used in $used_file. The manifest is still unused."
 move_back_text "$aside_id" | write_new "$move_back" 0644 || refuse "Can't write $move_back. The manifest is used up: run photos legacy-derivatives --stdout again."
 echo "$digest" | write_new "$aside_used" 0600 || refuse "Can't write $aside_used. The manifest is used up: run photos legacy-derivatives --stdout again."
 
@@ -790,7 +875,7 @@ done_moves=()
 for name in "${moves[@]}"; do
   set +e
   if [ "$as_root" -eq 1 ]; then
-    sudo env -i PATH=/usr/bin:/bin "SUDO_UID=$(id -u)" /usr/bin/perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
+    sudo /usr/bin/env -i PATH=/usr/bin:/bin "SUDO_UID=$(id -u)" /usr/bin/perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
   else
     SUDO_UID='' perl -e "$FWD" -- forward "$manifest_file" "$lib" "$to" "$name"
   fi
