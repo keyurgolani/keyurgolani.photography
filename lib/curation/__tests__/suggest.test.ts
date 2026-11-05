@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { eventIdOf, eventKey, fingerprintOf, parseEvent } from '../events';
-import { filenameTokens, loadRules, suggestForNew, type SuggestInput } from '../suggest';
+import { filenameTokens, loadRules, placementFor, suggestForNew, type SuggestInput } from '../suggest';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from '../text';
 
 const AT = '2026-02-01T00:00:00.000Z';
@@ -102,6 +102,12 @@ describe('insertion suggestions (#14, A8)', () => {
         expect(placement?.evidence.join(' ')).toMatch(/captured 2024-06-15/);
         expect(placement?.evidence.join(' ')).toMatch(/2024-06-01/);
         expect(placement?.evidence.join(' ')).not.toMatch(/harbor-dawn|\.jpg/);
+    });
+
+    it('never places a photograph after itself, when the series already lists it (A8 review N8)', () => {
+        const members = [{ photoId: P(1), capturedDate: '2024-05-01' }, { photoId: P(9), capturedDate: '2024-06-15' }, { photoId: P(2), capturedDate: '2024-07-01' }];
+        expect(placementFor('2024-06-15', members, 'ser_harbor', AT, P(9)).value).toEqual({ after: P(1) });
+        expect(placementFor('2024-08-01', [{ photoId: P(1), capturedDate: '2024-05-01' }, { photoId: P(9), capturedDate: '2024-08-01' }], 'ser_harbor', AT, P(9)).value).toBe('end');
     });
 
     it('suggests the end at low for an undated photograph, or a series with no dated photograph', () => {

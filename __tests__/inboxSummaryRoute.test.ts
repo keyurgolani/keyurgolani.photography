@@ -105,7 +105,7 @@ describe('GET /api/curation/inbox/summary', () => {
         expect(response.headers.get('cache-control')).toMatch(/no-store/);
         expect(response.headers.get('content-type')).toMatch(/^application\/json/);
         const body = (await response.json()) as Record<string, unknown>;
-        expect(Object.keys(body).sort()).toEqual(['item', 'needsJudgment', 'placed', 'readAt', 'state', 'total', 'unplaced', 'unreadable', 'waiting', 'watcher']);
+        expect(Object.keys(body).sort()).toEqual(['arrived', 'cursor', 'item', 'needsJudgment', 'placed', 'readAt', 'state', 'total', 'unplaced', 'unreadable', 'waiting', 'watcher']);
         expect(body).toMatchObject({ state: 'ready', needsJudgment: 1, total: 1, item: { id, version: 1, status: 'open' }, watcher: { state: 'missing' } });
         const text = JSON.stringify(body);
         for (const leak of [f.root, path.sep === '/' ? '/Users/' : 'C:\\', 'trips/', f.fresh[0], 'sha256-', 'GPS']) expect(text).not.toContain(leak);
@@ -113,7 +113,7 @@ describe('GET /api/curation/inbox/summary', () => {
 
     it('takes only an item ID in the query, and answers anything else with a no-store 400 before it reads', async () => {
         await served();
-        for (const query of ['?item=evt_nope', '?item=../../etc/passwd', `?item=evt_${'a'.repeat(24)}&item=evt_${'b'.repeat(24)}`, '?status=open', '?item=', `?item=evt_${'a'.repeat(24)}&x=1`]) {
+        for (const query of ['?item=evt_nope', '?item=../../etc/passwd', `?item=evt_${'a'.repeat(24)}&item=evt_${'b'.repeat(24)}`, '?status=open', '?item=', `?item=evt_${'a'.repeat(24)}&x=1`, '?since=', '?since=-1', '?since=1.5', '?since=01', '?since=2026-02-01T00:00:00.000Z', '?since=1&since=2', `?since=${'9'.repeat(17)}`]) {
             const response = (await get(query, signedIn())) as Response;
             expect(response.status, query).toBe(400);
             expect(response.headers.get('cache-control')).toMatch(/no-store/);
@@ -121,6 +121,22 @@ describe('GET /api/curation/inbox/summary', () => {
         }
         expect(summaries.calls).toBe(0);
         expect(((await get('', signedIn())) as Response).status).toBe(200);
+    });
+
+    it('counts arrivals after a cursor it issued, and refuses one it did not with a no-store 400 (4a)', async () => {
+        const { f } = await served();
+        const first = (await ((await get('', signedIn())) as Response).json()) as { cursor: number; arrived: null };
+        expect(first).toMatchObject({ cursor: 1, arrived: null });
+        await createCurationSink({ root: f.root, logger: quiet })([f.fact('processing-failed', null, { reason: 'unsupported-format', path: 'trips/second.heic' })]);
+        const again = (await get(`?since=${first.cursor}`, signedIn())) as Response;
+        expect(again.status).toBe(200);
+        expect(await again.json()).toMatchObject({ cursor: 2, arrived: 1 });
+        for (const since of [first.cursor + 5, 999_999]) {
+            const forged = (await get(`?since=${since}`, signedIn())) as Response;
+            expect(forged.status).toBe(400);
+            expect(forged.headers.get('cache-control')).toMatch(/no-store/);
+            expect(await forged.json()).toEqual({ error: 'bad-cursor' });
+        }
     });
 
     it('says not-ready, with no path, when the data root is not set up', async () => {

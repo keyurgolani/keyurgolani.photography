@@ -8,6 +8,7 @@ import {
     INBOX_WATCH_MAX_ERRORS,
     INBOX_WATCH_MIN_GAP_MS,
     inboxNews,
+    OFFLINE_TEXT,
     type InboxWatchAnswer,
     type InboxWatchDeps,
 } from '../inbox-watch';
@@ -20,7 +21,7 @@ import type { ReadyInboxSummary } from '../inbox-view';
 const ID = `evt_${'a'.repeat(24)}`;
 
 function summary(overrides: Partial<ReadyInboxSummary> = {}): ReadyInboxSummary {
-    return { state: 'ready', readAt: '2026-02-01T03:00:00.000Z', needsJudgment: 2, waiting: 0, placed: 0, unplaced: 0, total: 2, unreadable: 0, watcher: { state: 'running' }, item: { id: ID, version: 3, status: 'open' }, ...overrides };
+    return { state: 'ready', readAt: '2026-02-01T03:00:00.000Z', cursor: 7, arrived: 0, needsJudgment: 2, waiting: 0, placed: 0, unplaced: 0, total: 2, unreadable: 0, watcher: { state: 'running' }, item: { id: ID, version: 3, status: 'open' }, ...overrides };
 }
 
 /** A fake clock and timer queue, and a check that answers what the test queues. */
@@ -159,15 +160,38 @@ describe('the Inbox watch', () => {
         expect(h.heard.every((answer) => answer.kind === 'offline')).toBe(true);
     });
 
-    it('comes back with resume() once the browser is online again, with the backoff reset', async () => {
+    it('comes back with resume() once the browser is online again, with the backoff reset, and keeps the 15 s gap (A8 review S5)', async () => {
         const h = harness([new Error('down'), new Error('down')]);
         h.watch.start();
         await h.advance(INBOX_WATCH_INTERVAL_MS);
         await h.advance(2 * INBOX_WATCH_INTERVAL_MS);
         expect(h.state.checks).toBe(2);
+        // Straight after a check: it waits out the gap, then checks once.
+        h.watch.resume();
+        await h.advance(INBOX_WATCH_MIN_GAP_MS - 1);
+        expect(h.state.checks).toBe(2);
+        await h.advance(1);
+        expect(h.state.checks).toBe(3);
+        expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_INTERVAL_MS);
+        // Long after the last check: at once.
+        await h.advance(INBOX_WATCH_INTERVAL_MS - 1);
         h.watch.resume();
         await h.advance(0);
-        expect(h.state.checks).toBe(3);
+        expect(h.state.checks).toBe(4);
+    });
+
+    it('starts again from wake() after errors stopped it, at the backoff cap (A8 review S5)', async () => {
+        const errors = Array.from({ length: INBOX_WATCH_MAX_ERRORS }, () => new Error('down'));
+        const h = harness(errors);
+        h.watch.start();
+        for (const ms of [1, 2, 4, 8, 10]) await h.advance(ms * INBOX_WATCH_INTERVAL_MS);
+        expect(h.state.checks).toBe(INBOX_WATCH_MAX_ERRORS);
+        expect(h.timers).toEqual([]);
+        h.watch.wake();
+        expect(h.timers).toHaveLength(1);
+        expect(h.timers[0].at - h.now).toBe(10 * INBOX_WATCH_INTERVAL_MS);
+        await h.advance(10 * INBOX_WATCH_INTERVAL_MS);
+        expect(h.state.checks).toBe(INBOX_WATCH_MAX_ERRORS + 1);
         expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_INTERVAL_MS);
     });
 
@@ -207,24 +231,32 @@ describe('fetchInboxSummary', () => {
 
     it('asks for the summary with no cache and no redirect, naming the open item', async () => {
         const fetcher = vi.fn(respond(200, summary()));
-        expect(await fetchInboxSummary(ID, fetcher)).toEqual({ kind: 'summary', summary: summary() });
+        expect(await fetchInboxSummary(ID, null, fetcher)).toEqual({ kind: 'summary', summary: summary() });
         expect(fetcher).toHaveBeenCalledWith(`/api/curation/inbox/summary?item=${ID}`, expect.objectContaining({ cache: 'no-store', redirect: 'manual', credentials: 'same-origin' }));
-        await fetchInboxSummary(null, fetcher);
+        await fetchInboxSummary(null, null, fetcher);
         expect(fetcher).toHaveBeenLastCalledWith('/api/curation/inbox/summary', expect.anything());
+        await fetchInboxSummary(ID, 4, fetcher);
+        expect(fetcher).toHaveBeenLastCalledWith(`/api/curation/inbox/summary?item=${ID}&since=4`, expect.anything());
+    });
+
+    it('reads again without the cursor when the server refuses it, and says the cursor moved (4a)', async () => {
+        const fetcher = vi.fn(async (url: string) => (url.includes('since=') ? ({ status: 400, ok: false, type: 'basic', json: async () => ({ error: 'bad-cursor' }) } as Response) : ({ status: 200, ok: true, type: 'basic', json: async () => summary({ cursor: 3, arrived: null }) } as Response)));
+        expect(await fetchInboxSummary(null, 99, fetcher as unknown as typeof fetch)).toEqual({ kind: 'summary', summary: summary({ cursor: 3, arrived: null }), rebased: true });
+        expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/curation/inbox/summary?since=99', '/api/curation/inbox/summary']);
     });
 
     it('reads a 401, a 404 or a redirect as signed out, a server error as unavailable, and a network failure as offline', async () => {
-        expect(await fetchInboxSummary(null, respond(401, {}))).toEqual({ kind: 'signed-out' });
-        expect(await fetchInboxSummary(null, respond(404, {}))).toEqual({ kind: 'signed-out' });
-        expect(await fetchInboxSummary(null, respond(0, {}, { type: 'opaqueredirect' }))).toEqual({ kind: 'signed-out' });
-        expect(await fetchInboxSummary(null, respond(503, { state: 'not-ready' }))).toEqual({ kind: 'unavailable' });
-        expect(await fetchInboxSummary(null, respond(500, {}))).toEqual({ kind: 'unavailable' });
-        expect(await fetchInboxSummary(null, async () => Promise.reject(new TypeError('Failed to fetch')))).toEqual({ kind: 'offline' });
+        expect(await fetchInboxSummary(null, null, respond(401, {}))).toEqual({ kind: 'signed-out' });
+        expect(await fetchInboxSummary(null, null, respond(404, {}))).toEqual({ kind: 'signed-out' });
+        expect(await fetchInboxSummary(null, null, respond(0, {}, { type: 'opaqueredirect' }))).toEqual({ kind: 'signed-out' });
+        expect(await fetchInboxSummary(null, null, respond(503, { state: 'not-ready' }))).toEqual({ kind: 'unavailable' });
+        expect(await fetchInboxSummary(null, null, respond(500, {}))).toEqual({ kind: 'unavailable' });
+        expect(await fetchInboxSummary(null, null, async () => Promise.reject(new TypeError('Failed to fetch')))).toEqual({ kind: 'offline' });
     });
 
     it('takes only a summary of the shape the route answers', async () => {
         for (const junk of [null, 'x', { state: 'ready' }, { ...summary(), needsJudgment: '2' }, { ...summary(), watcher: { state: 'odd' } }, { ...summary(), item: { id: 'nope', version: 1, status: 'open' } }]) {
-            expect(await fetchInboxSummary(null, respond(200, junk))).toEqual({ kind: 'unavailable' });
+            expect(await fetchInboxSummary(null, null, respond(200, junk))).toEqual({ kind: 'unavailable' });
         }
     });
 });
@@ -233,14 +265,18 @@ describe('what the watch says', () => {
     const page = { needsJudgment: 2, watcher: { state: 'running' } as const, item: { id: ID, version: 3 } };
 
     it('says nothing when nothing changed', () => {
-        expect(inboxNews(page, { kind: 'summary', summary: summary() }, new Set())).toEqual({ line: '', keys: [], forget: [], itemChanged: false, offline: false, watcher: { state: 'running' } });
+        expect(inboxNews(page, { kind: 'summary', summary: summary() }, new Set())).toEqual({ line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, watcher: { state: 'running' } });
     });
 
     it('says new items need judgment once per count, and points to Refresh', () => {
-        const news = inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 5 }) }, new Set());
+        const news = inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set());
         expect(news.line).toBe('3 new items need judgment. Refresh the inbox to see them.');
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 3 }) }, new Set()).line).toBe('1 new item needs judgment. Refresh the inbox to see it.');
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 5 }) }, new Set(news.keys)).line).toBe('');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment. Refresh the inbox to see it.');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set(news.keys)).line).toBe('');
+        // Arrivals, not the net count (A8 review B4): one came in while another was decided elsewhere.
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 2, arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment. Refresh the inbox to see it.');
+        // And a count that went up only because the page's own count was out of date says nothing.
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 9, arrived: 0 }) }, new Set()).line).toBe('');
     });
 
     it('says when the watcher stops checking in and when it is back, each once', () => {
@@ -253,7 +289,8 @@ describe('what the watch says', () => {
 
     it('flags the open item once it changed or left, for the alert, never in the polite line', () => {
         const moved = inboxNews(page, { kind: 'summary', summary: summary({ item: { id: ID, version: 4, status: 'deferred' } }) }, new Set());
-        expect(moved).toMatchObject({ itemChanged: true, line: '' });
+        // With the version the page showed, so the item raises its alert only while it still shows that one (S4).
+        expect(moved).toMatchObject({ itemChanged: true, line: '', changedFrom: 3 });
         expect(inboxNews(page, { kind: 'summary', summary: summary({ item: null }) }, new Set()).itemChanged).toBe(true);
         expect(inboxNews(page, { kind: 'summary', summary: summary({ item: { id: ID, version: 4, status: 'open' } }) }, new Set(moved.keys)).itemChanged).toBe(false);
         expect(inboxNews({ ...page, item: null }, { kind: 'summary', summary: summary({ item: null }) }, new Set()).itemChanged).toBe(false);
@@ -261,7 +298,8 @@ describe('what the watch says', () => {
 
     it('says offline once, and back online once, and nothing for a server error', () => {
         const offline = inboxNews(page, { kind: 'offline' }, new Set());
-        expect(offline).toMatchObject({ offline: true, line: expect.stringMatching(/^You're offline/) });
+        // One wording for the line and the notice (N6).
+        expect(offline).toMatchObject({ offline: true, line: OFFLINE_TEXT });
         expect(inboxNews(page, { kind: 'offline' }, new Set(offline.keys)).line).toBe('');
         expect(inboxNews(page, { kind: 'summary', summary: summary() }, new Set(offline.keys))).toMatchObject({ offline: false, line: 'Back online. The inbox is checking for changes again.' });
         expect(inboxNews(page, { kind: 'unavailable' }, new Set())).toMatchObject({ line: '', offline: false, watcher: null });

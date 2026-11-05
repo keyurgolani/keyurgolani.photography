@@ -78,9 +78,11 @@ const list = (page: Page) => page.locator('#inbox-list');
 const rows = (page: Page) => list(page).locator('a[data-row]');
 
 for (const theme of ['light', 'dark'] as const) {
+    // A phone shows one side at a time, so the list is checked in list view (no item in the URL), at both widths,
+    // and the item view on its own (A8 review B2).
     test(`passes checkSurface() on the list, its filters, bulk actions and pager, in ${theme}`, async ({ page }) => {
         await page.evaluate((stored) => localStorage.setItem('theme', stored), theme);
-        await openInbox(page, '?item=' + newItem(FRESH.approve));
+        await openInbox(page);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         const filters = page.getByRole('search', { name: 'Filter the inbox' });
         await checkSurface(page, {
@@ -92,6 +94,21 @@ for (const theme of ['light', 'dark'] as const) {
                 list(page).getByRole('checkbox'),
                 list(page).getByRole('button', { name: /on selected|selected unassigned/ }),
                 page.getByRole('navigation', { name: 'Inbox pages' }).getByRole('link'),
+            ],
+        });
+    });
+
+    test(`passes checkSurface() on one item's view, in ${theme}`, async ({ page, isMobile }) => {
+        await page.evaluate((stored) => localStorage.setItem('theme', stored), theme);
+        await openInbox(page, `?item=${newItem(FRESH.approve)}#item`);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        const item = page.locator('#item');
+        await checkSurface(page, {
+            controls: [
+                item.getByRole('form', { name: 'Review' }).getByRole('button'),
+                item.getByRole('combobox'),
+                item.getByRole('textbox', { name: 'Draft description' }),
+                ...(isMobile ? [item.getByRole('link', { name: 'Back to inbox' })] : []),
             ],
         });
     });
@@ -149,7 +166,7 @@ test('Decide later on two selected items sends one version each, and lists the o
 test('polls the summary every minute: says new items once, and raises a stale alert on the open item that keeps the typed text', async ({ page }) => {
     await page.clock.install();
     const open = newItem(FRESH.refused);
-    await openInbox(page, `?item=${open}`);
+    await openInbox(page, `?item=${open}#item`);
     const updates = page.getByRole('status', { name: 'Inbox updates' });
     await expect(updates).toHaveText('');
     await updates.evaluate((region) => {
@@ -167,7 +184,7 @@ test('polls the summary every minute: says new items once, and raises a stale al
     expect(await deferEvent({ root: data().root, eventId: open, expectedVersion: shown.version, actor: 'curator:cli' })).toMatchObject({ ok: true });
     await page.clock.fastForward(60_000);
     await expect(updates).toHaveText(/1 new item needs judgment\. Refresh the inbox to see it\./);
-    const alert = page.getByRole('alert');
+    const alert = page.locator('#item [role="alert"][data-state="stale"]');
     await expect(alert).toContainText('changed since the page loaded');
     await expect(alert).toContainText('Your edits are still in the form');
     await expect(page.getByRole('textbox', { name: 'Draft description' })).toHaveValue('Typed while the poll ran.');

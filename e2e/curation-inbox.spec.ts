@@ -92,7 +92,8 @@ const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetR
 const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) });
 /** The answer the last action gave, in the page's polite status region, or for a stale one the alert beside it (#14, A8). */
 const answer = (page: Page, state: 'done' | 'stale' | 'invalid' | 'refused') =>
-    state === 'stale' ? page.locator('[role="alert"][data-state="stale"]') : page.getByRole('status').locator(`[data-state="${state}"]`);
+    // Inside the item, so Next's own route announcer, also an alert, never matches (A8 review B3).
+    state === 'stale' ? page.locator('#item [role="alert"][data-state="stale"]') : page.getByRole('status').locator(`[data-state="${state}"]`);
 /** What the last approval or Decide later did, in the strip at the top of the item it opened. */
 const arrival = (page: Page) => page.locator('#item > [role="status"] [data-state="done"]');
 /** The strip is on the first screen, above the photograph and the item's heading. */
@@ -691,7 +692,7 @@ test('Decide later moves on to the next item too, and the last decision, from th
     await openInbox(page, missing.id, { landed: true });
     // The active revision holds it, so its published statement is kept, and the page says so.
     await expect(page.getByText('Published statement remains unchanged.')).toBeVisible();
-    await pressWhileHeld(page, page.getByRole('button', { name: 'Decide later' }));
+    await pressWhileHeld(page, page.getByRole('button', { name: 'Decide later', exact: true }));
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${failed.id}#item`);
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeFocused();
@@ -705,7 +706,7 @@ test('Decide later moves on to the next item too, and the last decision, from th
         await waitForHydration(page);
     }
     await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeVisible();
-    await page.getByRole('button', { name: 'Decide later' }).click();
+    await page.getByRole('button', { name: 'Decide later', exact: true }).click();
     // Nothing else needs a decision, so the inbox opens on its empty state and says so.
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
     await waitForHydration(page);
@@ -784,7 +785,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
     };
     /** What Decide later did, on the page it opened: the next item's strip, or the empty state's answer. */
     const decidedLater = async (text: string) => {
-        await page.getByRole('button', { name: 'Decide later' }).click();
+        await page.getByRole('button', { name: 'Decide later', exact: true }).click();
         await expect(page).not.toHaveURL(new RegExp(eventId));
         await waitForHydration(page);
         await expect(page.locator('[data-state="done"]').filter({ hasText: `Left ${file} for later.` })).toHaveText(`${text}Open ${file} again`);
@@ -800,7 +801,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
     await expect(page.getByText('The draft uses the new version. Visitors keep the current one until you publish.')).toBeVisible();
     await expect(page.getByText(/^Live in the active revision/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Decide later' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Decide later', exact: true })).toHaveCount(0);
     await expect(page.getByText(/choose Decide later|series or description/)).toHaveCount(0);
     await expect(page.getByText('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.')).toBeVisible();
 
@@ -831,7 +832,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
         await openInbox(page, eventId);
         await expect(hint).toHaveText(moved);
         const before = await readEvent(root, eventId);
-        const later = page.getByRole('button', { name: 'Decide later' });
+        const later = page.getByRole('button', { name: 'Decide later', exact: true });
         await expect(later).toBeDisabled();
         await expect(later).toHaveAccessibleDescription(moved);
         // Confirm can still work, so it's live, and the hint about Decide later isn't its description.

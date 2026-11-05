@@ -28,6 +28,7 @@
       enable = true;
       previews = {
         web = {
+          # 0.0.0.0 is inside Project IDX's own VM, which publishes no host port; IDX's preview proxy is the gate. Narrowing it breaks the preview.
           command = ["npm" "run" "dev" "--" "--port" "$PORT" "--hostname" "0.0.0.0"];
           manager = "web";
         };
