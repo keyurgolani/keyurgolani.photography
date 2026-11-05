@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import LoadingState from '@/components/site/LoadingState';
 import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 import { photoEntryName } from '@/lib/a11y/photoName';
@@ -29,6 +29,8 @@ import { altOf } from './seriesLabels';
 import styles from './SeriesPage.module.css';
 
 const RELOAD_ID = 'series-reload';
+
+const subscribeNever = () => () => undefined;
 
 export interface SeriesSequenceProps {
     /** The revision the page came from. Every page before or after it must come from the same one. */
@@ -141,7 +143,9 @@ function EntryList({ entries, total }: { entries: SeriesEntry[]; total: number }
  * - Focus and scroll: Show more's page goes below what's rendered, above
  *   the control, so the view doesn't move. Show earlier's goes above, and
  *   the old first entry is put back at the offset it had in the view,
- *   measured, not left to CSS scroll anchoring. Focus stays on the control
+ *   measured, not left to CSS scroll anchoring. With JavaScript off, Show
+ *   earlier is a link to the plain series page, which starts at position 1;
+ *   the script takes it over as the button once it runs. Focus stays on the control
  *   while its page loads, then moves to the new entry nearest the old ones:
  *   the first new one after Show more, the last after Show earlier. It moves
  *   only from that control or from nothing, never from where the visitor
@@ -182,6 +186,8 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
     const controllers = useRef(new Set<AbortController>());
     // The continuation endpoint as this site serves it: the public one, or a preview's mirror (#16).
     const pagesPath = useSiteRoutes().catalogApiHref('series/');
+    // False in the server HTML and while it hydrates, then true: with JavaScript off, Show earlier is a plain link.
+    const scripted = useSyncExternalStore(subscribeNever, () => true, () => false);
 
     /** An extent that arrived while another entry was current (#9's modal Viewer), for the series entry once it's back. */
     const unwritten = useRef<SeriesExtent | null>(null);
@@ -374,18 +380,25 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
                             <LoadingState label={loadingLabel(earlier.from, earlier.to)} />
                         </div>
                     )}
-                    <button
-                        ref={(node) => {
-                            buttons.current.earlier = node;
-                        }}
-                        type="button"
-                        className={styles.moreButton}
-                        // Not `disabled` while it loads, so it keeps focus; a press then does nothing.
-                        aria-disabled={waiting ? true : undefined}
-                        onClick={() => void load('earlier')}
-                    >
-                        {failed === 'earlier' ? tryAgainLabel(earlier.from, earlier.to) : SHOW_EARLIER}
-                    </button>
+                    {scripted ? (
+                        <button
+                            ref={(node) => {
+                                buttons.current.earlier = node;
+                            }}
+                            type="button"
+                            className={styles.moreButton}
+                            // Not `disabled` while it loads, so it keeps focus; a press then does nothing.
+                            aria-disabled={waiting ? true : undefined}
+                            onClick={() => void load('earlier')}
+                        >
+                            {failed === 'earlier' ? tryAgainLabel(earlier.from, earlier.to) : SHOW_EARLIER}
+                        </button>
+                    ) : (
+                        // With JavaScript off there's no page to load in place: the plain series page starts at position 1.
+                        <a href={href} className={styles.moreButton}>
+                            {SHOW_EARLIER}
+                        </a>
+                    )}
                 </div>
             )}
 

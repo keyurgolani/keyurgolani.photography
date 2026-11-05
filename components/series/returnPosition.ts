@@ -147,7 +147,11 @@ export interface RestoreOptions {
     scroll?: boolean;
     /** Focus the opener only when nothing else has focus, so a late restore never takes it from where the visitor went. */
     onlyIfIdle?: boolean;
-    /** Fall back to the series heading when neither the cover nor the entry is on the page. Off while a restore may still find them. */
+    /**
+     * Fall back to the series heading when neither the cover nor the entry
+     * is on the page. Off by default: only a caller that knows the
+     * photograph left the revision (the server said so) turns it on.
+     */
     heading?: boolean;
 }
 
@@ -162,11 +166,12 @@ function focusIsIdle(doc: Document): boolean {
  * If the layout changed so that link isn't wholly in view at that offset
  * (another viewport size after a reload), it's scrolled the least distance
  * that shows it, within the page's scroll padding. A cover link that's gone
- * falls back to the photograph's entry. When neither is on the page (the
- * photograph left the revision), focus goes to the series heading, `#series-title`,
+ * falls back to the photograph's entry. When neither is on the page, focus
+ * stays where it is, unless `heading` says the photograph is known to have
+ * left the revision: then it goes to the series heading, `#series-title`,
  * the same way (B5).
  */
-export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle = false, heading = true }: RestoreOptions = {}, doc: Document = document): HTMLElement | null {
+export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle = false, heading = false }: RestoreOptions = {}, doc: Document = document): HTMLElement | null {
     const view = doc.defaultView;
     if (scroll) view?.scrollTo({ top: record.scrollY, left: 0, behavior: 'instant' });
     const opener = openerElement(record, doc);
@@ -204,26 +209,28 @@ const INPUT_EVENTS = ['keydown', 'pointerdown', 'wheel'] as const;
  * starts before the server's page (B5's deep entry), whose earlier pages
  * would move the page under a restored offset. Then it waits for #6's
  * SERIES_RESTORED_EVENT. RESTORE_WAIT_MS caps that wait with what's there,
- * and a later event still focuses the opener. Only the event, or an
- * immediate restore, falls back to the series heading when the photograph
- * isn't there at all, so the timeout never takes focus a later event would
- * give the opener. Either way a delayed restore
+ * and a later event still focuses the opener. When the restore is done (at
+ * once, or on the event, never at the timeout) and the photograph still
+ * isn't on the page, it hands the record to `onMissing`: the saved pages
+ * couldn't bring it back, and only the server can say whether it's in the
+ * revision at all (B5). Either way a delayed restore
  * skips the scroll once the visitor has pressed a key, pressed a pointer or
  * turned the wheel, and moves focus only from the body. Returns the cancel.
  */
-export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage): () => void {
+export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage, onMissing: (record: SeriesReturn) => void = () => undefined): () => void {
     const extent = readSeriesPages(window.history.state, series.revisionId, series.slug, series.total);
     const prepends = extent !== null && extent.first < (series.first ?? 1);
     if (extent === null || (openerElement(record, document) !== null && !prepends)) {
         restoreReturn(record);
         clearReturn();
+        if (openerElement(record, document) === null) onMissing(record);
         return () => undefined;
     }
     let moved = false;
     const onInput = () => {
         moved = true;
     };
-    const late = (heading: boolean) => restoreReturn(record, { scroll: !moved, onlyIfIdle: true, heading });
+    const late = () => restoreReturn(record, { scroll: !moved, onlyIfIdle: true });
     const stop = () => {
         window.removeEventListener(SERIES_RESTORED_EVENT, onRestored);
         window.clearTimeout(timer);
@@ -231,12 +238,13 @@ export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage): () 
     };
     function onRestored() {
         stop();
-        late(true);
+        late();
         clearReturn();
+        if (openerElement(record, document) === null) onMissing(record);
     }
     // The timeout restores what it can and keeps listening, so #6 finishing later still brings focus back.
     function onTimeout() {
-        late(false);
+        late();
         clearReturn();
     }
     for (const type of INPUT_EVENTS) window.addEventListener(type, onInput, { capture: true, passive: true });

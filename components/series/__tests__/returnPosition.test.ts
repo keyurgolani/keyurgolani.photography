@@ -482,6 +482,7 @@ describe('the heading fallback (#5, B5)', () => {
         scheduleRestore({ photoId: LEFT, opener: 'entry', scrollY: 0 }, SERIES, missing);
         const late = document.createElement('a');
         late.id = `photo-${LEFT}`;
+        late.href = `/work/harbor/photo/${LEFT}`;
         document.querySelector('ol')?.append(late);
         restoredEvent();
         expect(missing).not.toHaveBeenCalled();

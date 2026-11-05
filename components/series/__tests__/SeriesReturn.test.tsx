@@ -12,7 +12,7 @@ import SeriesReturn from '../SeriesReturn';
 // for #6's restored entries, and the scroll put back when the intercepted
 // Viewer (#9) closes over the mounted page.
 
-const navigation = vi.hoisted(() => ({ pathname: '/work/harbor', replace: ((_href: string, _options?: unknown) => undefined) as (href: string, options?: unknown) => void }));
+const navigation = vi.hoisted(() => ({ pathname: '/work/harbor', replace: (() => undefined) as (href: string, options?: unknown) => void }));
 vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname, useRouter: () => ({ replace: (href: string, options?: unknown) => navigation.replace(href, options) }) }));
 
 const A = 'ph_00000000-0000-4000-8000-000000000001';
@@ -417,6 +417,14 @@ describe('?photo= (#5, #6 deep entry, B5)', () => {
         expect(document.activeElement).toBe(byId(SERIES_TITLE_ID));
         // The page is already the server's answer for this URL: nothing to ask again.
         expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('restores a return from the Viewer on a deep link\'s page, whatever photograph its ?photo= named', () => {
+        at(`?photo=${B}`, stored({ photoId: A, opener: 'entry', scrollY: 320 }, { [ARRIVAL_KEY]: B }));
+        navigationType = 'back_forward';
+        hydrate({ focusPhotoId: B });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 320, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(byId(`photo-${A}`));
     });
 
     describe('when the saved pages can\'t bring the photograph back', () => {
