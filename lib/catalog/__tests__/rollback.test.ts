@@ -951,7 +951,7 @@ describe('the fault matrix (#181)', { timeout: 60_000 }, () => {
         const result = await rollTo(one, two, { leaseMs: 400, hooks: { lock: { beforeRelease: crash('at unlock') } } });
         expect(result.outcome).toBe('ROLLED_BACK');
         expect(ROLLBACK_EXIT_CODES[result.outcome]).toBe(0);
-        expect(result.message).toBe(`Rolled back to revision 1 (${one}) from revision 2 (${two}). The catalog lock couldn't be released (crash at unlock), so the next publish or rollback waits until its lease runs out.`);
+        expect(result.message).toBe(`Rolled back to revision 1 (${one}) from revision 2 (${two}). The catalog lock couldn't be released (crash at unlock), so the next publish or rollback may wait until its lease runs out.`);
         expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:rollback:committed:1']);
         expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
         expect(await bases(root)).toEqual([one]);

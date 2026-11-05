@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { mediaFilePath } from '../../media/path';
+import { withLock } from '../../storage/lock';
 import { readHistory } from '../history';
 import { historyArgs, historyLines, rollbackArgs, runHistoryCommand, runRollbackCommand, type RollbackArgs } from '../history-cli';
 import { UsageError } from '../owner-cli';
@@ -12,8 +13,8 @@ import { listActivations, readRevisionFile } from '../repository';
 import { planRollback, rollback, ROLLBACK_EXIT_CODES, VERIFY_FAILED_ACCEPT } from '../rollback';
 import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog } from '../testing';
-import { runVerifyCommand } from '../verify-cli';
-import { verifyRecordPath } from '../verify';
+import { runVerifyCommand, VERIFY_RECORD_LOCK } from '../verify-cli';
+import { readVerifyRecord, verifyRecordPath } from '../verify';
 import { authoredPaths, catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
 import { writeAuthoredRecord } from '../working-layer-writer';
 import { VARIANT_BYTES } from './catalogFixtures';
@@ -97,12 +98,13 @@ async function recordFailure(root: string, revisionId: string, problem = 'ph_x: 
 }
 
 /** `revisionId`'s entry in the record there is marked failed, with no new run, so two entries can fail at once. */
-function markFailed(root: string, revisionId: string, problem: string): void {
+function markFailed(root: string, revisionId: string, problem: string | string[], problemCount?: number): void {
+    const problems = typeof problem === 'string' ? [problem] : problem;
     const file = verifyRecordPath(root);
     const record = JSON.parse(fs.readFileSync(file, 'utf8')) as { revisions: { revisionId: string; ok: boolean; problems: string[]; problemCount: number }[] };
     const entry = record.revisions.find((candidate) => candidate.revisionId === revisionId);
     if (!entry) throw new Error(`The record has no entry for ${revisionId}.`);
-    Object.assign(entry, { ok: false, problems: [problem], problemCount: 1 });
+    Object.assign(entry, { ok: false, problems, problemCount: problemCount ?? problems.length });
     fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
 }
 
@@ -223,7 +225,7 @@ describe('rollback eligibility reads the verify record', { timeout: 60_000 }, ()
     it('rolls back with --accept verify.failed and records it in acceptedRules, which history prints', async () => {
         const { root, one, two } = await twoRevisions(722);
         await recordFailure(root, one);
-        const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: [VERIFY_FAILED_ACCEPT], logger: quiet });
+        const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', verifyOverride: true, logger: quiet });
         expect(result.outcome, result.message).toBe('ROLLED_BACK');
         expect(result.activation?.acceptedRules).toEqual([VERIFY_FAILED_ACCEPT]);
         expect(historyLines(await readHistory(root)).join('\n')).toContain('    Accepted a failed photos verify: verify.failed');
@@ -235,9 +237,9 @@ describe('rollback eligibility reads the verify record', { timeout: 60_000 }, ()
         await recordFailure(root, one);
         const editorialOnly = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: ['test.eligibility-editorial'], logger: quiet });
         expect(editorialOnly.outcome).toBe('VERIFY_FAILED');
-        const verifyOnly = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: [VERIFY_FAILED_ACCEPT], logger: quiet });
+        const verifyOnly = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', verifyOverride: true, logger: quiet });
         expect(verifyOnly).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', unaccepted: ['test.eligibility-editorial'] });
-        const both = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: [VERIFY_FAILED_ACCEPT, 'test.eligibility-editorial'], logger: quiet });
+        const both = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: ['test.eligibility-editorial'], verifyOverride: true, logger: quiet });
         expect(both.outcome).toBe('ROLLED_BACK');
         expect(both.activation?.acceptedRules).toEqual(['test.eligibility-editorial', VERIFY_FAILED_ACCEPT]);
     });
@@ -248,7 +250,8 @@ describe('rollback eligibility reads the verify record', { timeout: 60_000 }, ()
         fs.writeFileSync(verifyRecordPath(root), '{"schemaVersion": 1, "revisions": ');
         const plan = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
         expect(plan).toMatchObject({ outcome: 'VERIFY_FAILED', verify: { reason: 'record-damaged', problems: [] } });
-        expect(plan.message).toBe(`status/verify.json can't be read, so nothing shows whether revision 1 (${one}) passed its last photos verify. Run photos verify to record a new check, or accept it with --accept verify.failed. Nothing was rolled back.`);
+        expect(plan).toMatchObject({ verify: { cause: { kind: 'invalid' } } });
+        expect(plan.message).toBe(`status/verify.json can't be read: it isn't valid JSON or a verify record. Nothing shows whether revision 1 (${one}) passed its last photos verify. Run photos verify to record a new check, or accept it with --accept verify.failed. Nothing was rolled back.`);
         const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', logger: quiet });
         expect(result.outcome).toBe('VERIFY_FAILED');
     });
@@ -265,7 +268,7 @@ describe('rollback eligibility reads the verify record', { timeout: 60_000 }, ()
         const { root, one, two } = await twoRevisions(726);
         await recordFailure(root, one);
         fs.writeFileSync(path.join(catalogPaths(root).revisionsDir, `${one}.json`), '{ not json');
-        const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: [VERIFY_FAILED_ACCEPT], logger: quiet });
+        const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', verifyOverride: true, logger: quiet });
         expect(result.outcome).toBe('INTEGRITY_MISMATCH');
     });
 
@@ -279,7 +282,7 @@ describe('rollback eligibility reads the verify record', { timeout: 60_000 }, ()
         const plan = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
         expect(plan).toMatchObject({ outcome: 'VALIDATION_FAILED', verify: null });
         const before = untouched(root);
-        const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: [VERIFY_FAILED_ACCEPT], logger: quiet });
+        const result = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', verifyOverride: true, logger: quiet });
         expect(result.outcome).toBe('VALIDATION_FAILED');
         expect(untouched(root)).toEqual(before);
     });
@@ -317,7 +320,7 @@ describe('rollback eligibility reads the verify record', { timeout: 60_000 }, ()
         const damaged = io();
         expect(await runVerifyCommand(root, { json: false, revisionId: one }, damaged)).toBe(0);
         expect(fs.readFileSync(verifyRecordPath(root), 'utf8')).toBe('{ damaged');
-        expect(damaged.lines).toContain("[photos] status/verify.json can't be read, so this pass cleared nothing. Run photos verify without --revision to record a full check.");
+        expect(damaged.lines).toContain("[photos] status/verify.json can't be read: it isn't valid JSON or a verify record. This pass cleared nothing. Run photos verify without --revision to record a full check.");
     });
 });
 
@@ -356,5 +359,217 @@ describe('photos rollback --accept verify.failed', { timeout: 60_000 }, () => {
         expect(await runRollbackCommand(root, args({ accept: [VERIFY_FAILED_ACCEPT], yes: true, expectActive: two }), out)).toBe(0);
         expect(out.lines).toContain("verify.failed isn't flagged on revision 1: no photos verify has failed it, so there's nothing to accept.");
         expect((await listActivations(root)).at(-1)).toMatchObject({ revisionId: one, acceptedRules: [] });
+    });
+});
+
+/**
+ * The A7 review: the --revision clear can't bring back a stale record, a
+ * failing --revision run writes nothing, --revisions exits 4 when a plan
+ * can't be made, an accepted failure prints every problem, and a damaged
+ * record says why. Then the nits: the override is a typed option, a
+ * trimmed entry still counts its problems, and the edge cases' words.
+ */
+describe('the A7 review', { timeout: 60_000 }, () => {
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'back', actor: 'curator', accept: [], yes: false, ...overrides });
+    const recordText = (root: string) => fs.readFileSync(verifyRecordPath(root), 'utf8');
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    /** Hold the record lock until `release()`, as another photos verify writing the record would. */
+    async function holdRecordLock(root: string): Promise<{ release: () => void; done: Promise<void> }> {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered!: () => void;
+        const holding = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const done = withLock(VERIFY_RECORD_LOCK, { root, waitMs: 0 }, async () => {
+            entered();
+            await gate;
+        });
+        await holding;
+        return { release, done };
+    }
+    /** The record as it is, with its run moved `ms` later and revision `revisionId`'s entry failing with `problem`. */
+    function laterRecord(root: string, ms: number, revisionId: string, problem: string): string {
+        const record = JSON.parse(recordText(root)) as { checkedAt: string; durationMs: number; revisions: { revisionId: string; ok: boolean; problems: string[]; problemCount: number }[] };
+        record.checkedAt = new Date(Date.parse(record.checkedAt) + ms).toISOString();
+        record.durationMs = 0;
+        Object.assign(record.revisions.find((entry) => entry.revisionId === revisionId) ?? {}, { ok: false, problems: [problem], problemCount: 1 });
+        return `${JSON.stringify(record, null, 2)}\n`;
+    }
+
+    it('S1a: clears nothing when the recorded run finished after this pass started, and says to run it again', async () => {
+        const { root, one } = await twoRevisions(741);
+        await recordFailure(root, one);
+        const before = recordText(root);
+        const recorded = JSON.parse(before) as { checkedAt: string };
+        const out = io();
+        // This pass started a minute before the recorded run did.
+        const early = Date.parse(recorded.checkedAt) - 60_000;
+        expect(await runVerifyCommand(root, { json: false, revisionId: one }, out, { clock: () => early })).toBe(0);
+        expect(recordText(root)).toBe(before);
+        expect(out.lines).toContain(`[photos] A full photos verify finished after this pass started, so this pass cleared nothing. Run photos verify --revision ${one} again.`);
+    });
+
+    it('S1b: the clear waits for the record lock, and re-reads the record under it, so a newer full run is never written over', async () => {
+        const { root, one } = await twoRevisions(742);
+        await recordFailure(root, one);
+        const before = recordText(root);
+        const lock = await holdRecordLock(root);
+        let settled = false;
+        const clearing = runVerifyCommand(root, { json: false, revisionId: one }, io()).then((code) => {
+            settled = true;
+            return code;
+        });
+        await sleep(1_500);
+        expect(settled).toBe(false);
+        expect(recordText(root)).toBe(before);
+        // A full run that finished meanwhile, under the lock, still fails revision 1.
+        const newer = laterRecord(root, 60_000, one, 'ph_x: a failure the newer run saw');
+        fs.writeFileSync(verifyRecordPath(root), newer);
+        lock.release();
+        await lock.done;
+        expect(await clearing).toBe(0);
+        expect(recordText(root)).toBe(newer);
+    });
+
+    it('S1b: a full run waits for the record lock too, and leaves a newer record it finds under it', async () => {
+        const { root, one } = await twoRevisions(743);
+        expect(await runVerifyCommand(root, { json: false }, io())).toBe(0);
+        const lock = await holdRecordLock(root);
+        const out = io();
+        let settled = false;
+        const running = runVerifyCommand(root, { json: false }, out).then((code) => {
+            settled = true;
+            return code;
+        });
+        await sleep(1_500);
+        expect(settled).toBe(false);
+        const newer = laterRecord(root, 60 * 60_000, one, 'ph_x: a failure the newer run saw');
+        fs.writeFileSync(verifyRecordPath(root), newer);
+        lock.release();
+        await lock.done;
+        expect(await running).toBe(0);
+        expect(recordText(root)).toBe(newer);
+        expect(out.lines).toContain("[photos] A newer photos verify recorded its run while this one ran, so this run wasn't recorded. The checks above still stand.");
+    });
+
+    it('S2: a failing --revision run exits 1 and leaves the record byte-identical', async () => {
+        const { root, one } = await twoRevisions(744);
+        expect(await runVerifyCommand(root, { json: false }, io())).toBe(0);
+        const before = recordText(root);
+        const photo = (await readRevisionFile(root, one))?.content.photos[0];
+        if (!photo) throw new Error('Revision 1 has no photo.');
+        const file = mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w800', 'webp', root);
+        const bytes = fs.readFileSync(file);
+        const flipped = Buffer.from(bytes);
+        flipped[0] ^= 0xff;
+        fs.writeFileSync(file, flipped);
+        try {
+            const out = io();
+            expect(await runVerifyCommand(root, { json: false, revisionId: one }, out)).toBe(1);
+            expect(recordText(root)).toBe(before);
+            expect(out.errors).toContain('Nothing was recorded: --revision checks one revision, without the activation chain, and records only a pass that clears a recorded failure.');
+        } finally {
+            fs.writeFileSync(file, bytes);
+        }
+    });
+
+    it('S3: --revisions exits 4 when a revision can\'t be planned, and says so on its line', async () => {
+        const { root, one, two } = await twoRevisions(745);
+        const registryDir = path.join(root, 'identity', 'registry');
+        const newest = fs.readdirSync(registryDir).filter((name) => /^v\d+\.json$/.test(name)).sort((a, b) => Number(b.slice(1, -5)) - Number(a.slice(1, -5)))[0];
+        fs.writeFileSync(path.join(registryDir, newest), '{ not json');
+        expect((await runHistoryCommand(root)).exitCode).toBe(0);
+        const result = await runHistoryCommand(root, { json: false, limit: null, revisions: true });
+        expect(result.exitCode).toBe(4);
+        expect(result.output).toContain(`revision 1, ${one}: STORAGE_ERROR, so a rollback can't return to it.`);
+        expect(result.output).toContain(`revision 2, ${two}: LIVE`);
+        expect((await runHistoryCommand(root, { json: true, limit: null, revisions: true })).exitCode).toBe(4);
+    });
+
+    it('S4: with --accept verify.failed, prints every recorded problem, and without it the rest as "also found"', async () => {
+        const { root, one } = await twoRevisions(746);
+        await recordFailure(root, one);
+        markFailed(root, one, ['ph_a: w800.webp does not match its sha256', 'ph_b: w400.avif is missing', 'ph_c: the manifest is damaged'], 5);
+        const accepted = io(null);
+        expect(await runRollbackCommand(root, args({ accept: [VERIFY_FAILED_ACCEPT] }), accepted)).toBe(3);
+        const at = accepted.lines.indexOf('Its last photos verify found:');
+        expect(at).toBeGreaterThan(0);
+        expect(accepted.lines.slice(at + 1, at + 5)).toEqual(['    ph_a: w800.webp does not match its sha256', '    ph_b: w400.avif is missing', '    ph_c: the manifest is damaged', '    And 2 more problems.']);
+        expect(accepted.all()).not.toContain('also found');
+
+        const refused = io(true);
+        expect(await runRollbackCommand(root, args(), refused)).toBe(1);
+        expect(refused.errors[0]).toContain('ph_a: w800.webp does not match its sha256, and 4 more problems.');
+        expect(refused.errors).toEqual(expect.arrayContaining(['Its last photos verify also found: ph_b: w400.avif is missing', 'Its last photos verify also found: ph_c: the manifest is damaged']));
+    });
+
+    it('S5: a damaged record carries its cause, and the refusal and the --revision pass say it', async () => {
+        const { root, one } = await twoRevisions(747);
+        expect(await runVerifyCommand(root, { json: false }, io())).toBe(0);
+        const good = recordText(root);
+        fs.writeFileSync(verifyRecordPath(root), '{ not json');
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged', cause: { kind: 'invalid' } });
+        fs.writeFileSync(verifyRecordPath(root), JSON.stringify({ ...(JSON.parse(good) as object), schemaVersion: 2 }));
+        expect(await readVerifyRecord(root)).toEqual({ state: 'damaged', cause: { kind: 'newer-schema', schemaVersion: 2 } });
+        expect((await planRollback({ dataRoot: root, to: { revisionNumber: 1 } })).message).toMatch(/^status\/verify\.json can't be read: a newer build wrote it \(schema version 2\)\. /);
+
+        // Run as another user, a record with mode 0600 can't be opened. Root opens anything, so only as a user.
+        if (process.getuid?.() === 0) return;
+        fs.writeFileSync(verifyRecordPath(root), good);
+        fs.chmodSync(verifyRecordPath(root), 0o000);
+        try {
+            expect(await readVerifyRecord(root)).toEqual({ state: 'damaged', cause: { kind: 'unreadable', code: 'EACCES' } });
+            const plan = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+            expect(plan.message).toBe(`status/verify.json can't be read: this process can't open it (EACCES). It should belong to the data root's owner, with mode 0600, and photos verify should run as that user. Nothing shows whether revision 1 (${one}) passed its last photos verify. Run photos verify to record a new check, or accept it with --accept verify.failed. Nothing was rolled back.`);
+            const single = io();
+            expect(await runVerifyCommand(root, { json: true, revisionId: one }, single)).toBe(0);
+            expect(JSON.parse(single.lines.join('\n'))).toMatchObject({ recorded: false, note: expect.stringContaining("this process can't open it (EACCES)") });
+        } finally {
+            fs.chmodSync(verifyRecordPath(root), 0o600);
+        }
+    });
+
+    it('takes the override only as verifyOverride, never as an acceptedRules string, and records it there', async () => {
+        const { root, one, two } = await twoRevisions(748);
+        await recordFailure(root, one);
+        const smuggled = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', acceptedRules: [VERIFY_FAILED_ACCEPT], logger: quiet });
+        expect(smuggled.outcome).toBe('VERIFY_FAILED');
+        const typed = await rollback({ dataRoot: root, revisionId: one, expectedActiveRevisionId: two, actor: 'curator', reason: 'back', verifyOverride: true, logger: quiet });
+        expect(typed.outcome).toBe('ROLLED_BACK');
+        expect(typed.activation?.acceptedRules).toEqual([VERIFY_FAILED_ACCEPT]);
+    });
+
+    it('counts the problems of an entry the record trimmed to none, and says where to see them', async () => {
+        const { root, one } = await twoRevisions(749);
+        await recordFailure(root, one);
+        markFailed(root, one, [], 3);
+        expect((await planRollback({ dataRoot: root, to: { revisionNumber: 1 } })).message).toBe(`Revision 1 (${one}) failed its last photos verify with 3 problems; photos verify --revision ${one} lists them. Fix them and run it again, or accept it with --accept verify.failed. Nothing was rolled back.`);
+    });
+
+    it('says the recorded failure stays when the clear can\'t be written', async () => {
+        if (process.getuid?.() === 0) return;
+        const { root, one } = await twoRevisions(750);
+        await recordFailure(root, one);
+        const before = recordText(root);
+        const status = path.dirname(verifyRecordPath(root));
+        fs.chmodSync(status, 0o500);
+        try {
+            const out = io();
+            expect(await runVerifyCommand(root, { json: false, revisionId: one }, out)).toBe(0);
+            expect(out.lines).toContain("[photos] status/verify.json couldn't be written (EACCES), so revision 1's recorded failure stays, and a rollback still refuses it. The checks above still stand.");
+        } finally {
+            fs.chmodSync(status, 0o700);
+        }
+        expect(recordText(root)).toBe(before);
+    });
+
+    it('says plainly that nothing is published yet, with --revisions', async () => {
+        const catalog = await createTestCatalog({ seed: 751, photos: 2, series: 1, variantBytes: VARIANT_BYTES });
+        cleanups.push(() => catalog.cleanup());
+        expect((await runHistoryCommand(catalog.root, { json: false, limit: null, revisions: true })).output).toBe('[photos] Nothing has been published yet, so there is no revision to roll back to.\n');
+        expect(JSON.parse((await runHistoryCommand(catalog.root, { json: true, limit: null, revisions: true })).output)).toMatchObject({ total: 0, rows: [], revisions: [] });
     });
 });

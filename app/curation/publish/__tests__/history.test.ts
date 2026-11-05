@@ -554,6 +554,23 @@ describe('a revision a photos verify failed (A7)', () => {
         expect(history.entries[1]).toMatchObject({ title: 'Revision 1', eligibility: { type: 'text', tone: 'alert', text: "It failed its last check, so it can't come back from here. Run photos verify to see what to fix." } });
     });
 
+    // The A7 review: a record that can't be read refuses every Restore, so the server log says why, once per load.
+    it('logs why a damaged record refuses, once, and offers no Restore', async () => {
+        const { runVerifyCommand } = await import('@/lib/catalog/verify-cli');
+        const { verifyRecordPath } = await import('@/lib/catalog/verify');
+        expect(await runVerifyCommand(fixture.root, { json: false }, { out: () => undefined, err: () => undefined })).toBe(0);
+        fs.writeFileSync(verifyRecordPath(fixture.root), '{ not json');
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const { history } = await page();
+            expect(history.plans[1]).toBeUndefined();
+            expect(history.entries[1]).toMatchObject({ eligibility: { type: 'text', tone: 'alert', text: "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again." } });
+            expect(logged.mock.calls.filter(([line]) => String(line).includes("status/verify.json can't be read: it isn't valid JSON or a verify record."))).toHaveLength(1);
+        } finally {
+            logged.mockRestore();
+        }
+    });
+
     it('refuses a post for it, accept=verify.failed included, unlogged, and writes nothing', async () => {
         const live = (await readActivePointer(fixture.root))?.revisionId ?? '';
         const target = await failRevision(1);

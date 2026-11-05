@@ -136,6 +136,13 @@ describe('photos history and photos rollback, as commands', { timeout: 180_000 }
         expect((await photos(missing, ['history', '--since', 'monday'])).code).toBe(2);
         // #181 (A7): history's flags parse before the data root is read, so a bad one is a usage error there too.
         expect((await photos(missing, ['history', '--limit', '0'])).code).toBe(2);
+        // The A7 review: with --json, a usage error and an unset data root answer in JSON too, on stdout, with the exit code.
+        const usageJson = await photos(missing, ['history', '--json', '--limit', '0']);
+        expect(usageJson.code).toBe(2);
+        expect(JSON.parse(usageJson.stdout)).toMatchObject({ schemaVersion: 1, outcome: 'USAGE_ERROR', exitCode: 2, message: '--limit takes a number of activations from 1, not 0.' });
+        const notReadyJson = await photos(missing, ['history', '--json']);
+        expect(notReadyJson.code).toBe(3);
+        expect(JSON.parse(notReadyJson.stdout)).toMatchObject({ schemaVersion: 1, outcome: 'DATA_ROOT_NOT_READY', exitCode: 3 });
     });
 });
 
