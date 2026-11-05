@@ -168,9 +168,12 @@
  *     moved the active pointer says interrupted. --limit shows the newest n.
  *     --revisions adds each revision that has been live, newest first, with
  *     its rollback eligibility and reasons, planned as rollback plans it.
- *     --json prints it all as one versioned object. Takes no lock and writes
+ *     --json prints it all as one versioned object, its usage and data-root
+ *     stops included, with the exit code. Takes no lock and writes
  *     nothing. Exits 0, 2 on a usage error, 3 when the data root isn't
- *     ready, and 4 when a catalog file is damaged.
+ *     ready, and 4 when a catalog file is damaged: with --limit, only a
+ *     shown row's counts, and with --revisions, so does a revision that
+ *     can't be planned.
  *
  *   npx tsx scripts/photos.ts rollback --to <number | revisionId> --reason <text> [--actor <name>]
  *                                      [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
@@ -210,11 +213,12 @@
  *     record for its revision, every previous activation it names exists,
  *     and committed activations have a pointer. Prints each revision's
  *     result and whether a rollback can return to it, and the fix for what
- *     fails. Reads the data root only, never the library, and takes no lock.
+ *     fails. Reads the data root only, never the library, and takes no
+ *     catalog lock: only a short lock of its own around writing the record.
  *     A full run records its result in status/verify.json, which the
  *     curator's Publish screen and photos rollback read; --revision checks
- *     one revision alone and records only a pass, which clears that
- *     revision's recorded failure. Exits 0 when the live revision and the chain pass,
+ *     one revision alone and records only a pass that started after the
+ *     recorded run finished, which clears that revision's recorded failure. Exits 0 when the live revision and the chain pass,
  *     even if an older revision fails, 1 when either fails, 2 on a usage
  *     error, 3 when the data root isn't ready, and 4 when the registry or an
  *     activation record can't be read or an I/O error stops it.
@@ -304,7 +308,7 @@ import { runCarryOver } from '../lib/catalog/carry-over';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
-import { historyArgs, rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
+import { historyArgs, historyStop, rollbackArgs, runHistoryCommand, runRollbackCommand, type HistoryArgs } from '../lib/catalog/history-cli';
 import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
 import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
@@ -590,7 +594,23 @@ async function catalogCommand<T>(parse: () => T, run: (root: string, args: T) =>
 }
 
 async function historyCommand(args: string[]): Promise<number> {
-    const parsed = historyArgs(args);
+    // With --json, the usage and data-root stops answer in JSON on stdout too, with their exit code.
+    const json = args.includes('--json');
+    const jsonStop = (result: CommandResult) => {
+        process.stdout.write(result.output);
+        return result.exitCode;
+    };
+    let parsed: HistoryArgs;
+    try {
+        parsed = historyArgs(args);
+    } catch (error) {
+        if (json && error instanceof UsageError) return jsonStop(historyStop(2, 'USAGE_ERROR', error.message, true));
+        throw error;
+    }
+    if (parsed.json && dataRoot() === null) {
+        const status = dataRootStatus();
+        return jsonStop(historyStop(3, 'DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`, true));
+    }
     const root = catalogRoot();
     if (typeof root === 'number') return root;
     const result = await runHistoryCommand(root, parsed);

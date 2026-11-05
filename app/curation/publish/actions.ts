@@ -356,8 +356,9 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
         reasons = editorialWords(result.plan?.issues ?? [], result.unaccepted ?? [], (seriesId) => titles[seriesId] || `Series ${seriesId.slice(4, 12)}`, { live, target });
     }
     // The expected stops, which the dialog explains, aren't logged.
+    // A record that can't be read is an expected stop too, but only the log can say why, since History offers no override.
     const expectedStops = ['NO_CHANGES', 'ACTIVE_CHANGED', 'CATALOG_LOCKED', 'VALIDATION_FAILED', 'ACCEPTANCE_REQUIRED', 'VERIFY_FAILED'];
-    if (!expectedStops.includes(result.outcome)) {
+    if (!expectedStops.includes(result.outcome) || result.plan?.verify?.reason === 'record-damaged') {
         console.error(`[curation] A restore from the Publish screen stopped: ${result.outcome}: ${result.message}`);
     }
     return restoreState(previous, {

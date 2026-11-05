@@ -4,6 +4,7 @@ import { changesBetween, readHistory, type History, type RevisionChanges } from 
 import { readRevisionFile } from '@/lib/catalog/repository';
 import { planRollback, type RollbackPlan } from '@/lib/catalog/rollback';
 import type { RevisionContent } from '@/lib/catalog/types';
+import { damagedText, readVerifyRecord } from '@/lib/catalog/verify';
 import {
     blockingReasons,
     doneView,
@@ -114,8 +115,11 @@ export async function loadHistoryView(root: string, options: HistoryLoadOptions)
 
     const planned = new Map<string, PlanStatus>();
     const plans: Record<number, PlanView> = {};
+    // #181's A7: the verify record, read once for every plan. One that can't be read refuses them all, so the log says why once.
+    const verifyRecord = toPlan.length > 0 ? await readVerifyRecord(root) : undefined;
+    if (verifyRecord?.state === 'damaged') console.error(`[curation] status/verify.json can't be read: ${damagedText(verifyRecord.cause)} History offers no Restore until photos verify records a new check.`);
     for (const revisionId of toPlan) {
-        const plan = await planRollback({ dataRoot: root, to: { revisionId } });
+        const plan = await planRollback({ dataRoot: root, to: { revisionId }, verifyRecord });
         const names = await namesFor(plan, contentOf);
         if (plan.outcome === 'READY' && plan.target && plan.active) {
             planned.set(revisionId, { outcome: 'READY' });

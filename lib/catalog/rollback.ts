@@ -10,7 +10,7 @@ import { activateRevision, blockingIssues, CATALOG_LEASE_MS, rebaseWorkingLayer,
 import { assertRevisionId, CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
 import { registeredRules } from './ruleset';
 import type { Activation, Issue, RevisionContent, RevisionFile } from './types';
-import { recordedVerifyFailure, type RecordedVerifyFailure } from './verify';
+import { damagedText, recordedVerifyFailure, type RecordedVerifyFailure, type VerifyRecordRead } from './verify';
 import { readActivePointer } from './working-layer';
 
 export { errorText };
@@ -43,9 +43,12 @@ export { errorText };
  * #181's A7: a target `status/verify.json` records a failed `photos verify`
  * for, or any target while that record can't be read, ends VERIFY_FAILED and
  * writes nothing, as rollbackReadiness() reads the record. Only the CLI's
- * `--accept verify.failed` (VERIFY_FAILED_ACCEPT) brings it back, and the
- * activation records that accept after the editorial ones. History never
- * passes it. A passing `photos verify --revision <id>` clears the entry.
+ * `--accept verify.failed` brings it back, as the typed `verifyOverride`,
+ * which only runRollbackCommand() sets: the string in `acceptedRules` does
+ * nothing, so no other caller gets the override by passing it. The
+ * activation records VERIFY_FAILED_ACCEPT after the editorial accepts. A
+ * passing `photos verify --revision <id>` clears the entry. No record at
+ * all refuses nothing (#117).
  *
  * The rollback copies, edits, renumbers, and erases nothing: the target
  * keeps the number it first went live under.
@@ -158,6 +161,12 @@ export interface RollbackOptions {
      * nothing. None by default, so a caller that names none is refused.
      */
     acceptedRules?: readonly string[];
+    /**
+     * #181's A7: go on past a recorded `photos verify` failure, or a record
+     * that can't be read. `photos rollback --accept verify.failed` is the only
+     * caller that sets it. VERIFY_FAILED_ACCEPT in `acceptedRules` is ignored.
+     */
+    verifyOverride?: boolean;
     hooks?: RollbackHooks;
     logger?: CatalogLogger;
     clock?: () => number;
@@ -251,20 +260,21 @@ export function acceptanceMessage(target: RevisionRef, unaccepted: readonly stri
  * why not. Never throws for a damaged catalog file or an I/O error: those
  * are INTEGRITY_MISMATCH and STORAGE_ERROR.
  */
-export async function planRollback(options: { dataRoot: string; to: RollbackTarget }): Promise<RollbackPlan> {
+export async function planRollback(options: { dataRoot: string; to: RollbackTarget; verifyRecord?: VerifyRecordRead }): Promise<RollbackPlan> {
     const root = path.resolve(options.dataRoot);
     const status = dataRootStatus({ root });
     if (status.state !== 'ready') return emptyPlan('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`);
     if ('revisionId' in options.to) assertRevisionId(options.to.revisionId);
     try {
-        return await plan(root, options.to);
+        return await plan(root, options.to, options.verifyRecord);
     } catch (error) {
         if (error instanceof CatalogIntegrityError) return emptyPlan('INTEGRITY_MISMATCH', `${sentence(error.message)} Nothing was rolled back.`);
         return emptyPlan('STORAGE_ERROR', `${sentence(errorText(error, root))} Nothing was rolled back.`);
     }
 }
 
-async function plan(root: string, to: RollbackTarget): Promise<RollbackPlan> {
+/** `verifyRecord`: the record as a caller planning several revisions read it once. rollback() never passes one, so it reads it fresh under the lock. */
+async function plan(root: string, to: RollbackTarget, verifyRecord?: VerifyRecordRead): Promise<RollbackPlan> {
     const activations = await listActivations(root);
     const pointer = await readActivePointer(root);
     const good = knownGood(activations, pointer);
@@ -332,7 +342,7 @@ async function plan(root: string, to: RollbackTarget): Promise<RollbackPlan> {
         };
     }
     // #181's A7: then the verify record, after the rules, so an integrity error still reads as VALIDATION_FAILED.
-    const verify = await recordedVerifyFailure(root, target.revisionId);
+    const verify = await recordedVerifyFailure(root, target.revisionId, verifyRecord);
     if (verify) return { ...base, outcome: 'VERIFY_FAILED', message: verifyFailedMessage(target, verify), issues: ordered, blocking, editorial, verify };
     return { ...base, outcome: 'READY', message: `Ready to roll back from ${named(active)} to ${named(target)}.`, issues: ordered, blocking, editorial, verify: null };
 }
@@ -343,7 +353,12 @@ export function verifyFailedMessage(target: RevisionRef, verify: RecordedVerifyF
     const accept = `or accept it with --accept ${VERIFY_FAILED_ACCEPT}. Nothing was rolled back.`;
     if (verify.reason === 'record-damaged') {
         const lower = target.revisionNumber === null ? target.revisionId : `revision ${target.revisionNumber} (${target.revisionId})`;
-        return `status/verify.json can't be read, so nothing shows whether ${lower} passed its last photos verify. Run photos verify to record a new check, ${accept}`;
+        const why = verify.cause ? `: ${damagedText(verify.cause)}` : '.';
+        return `status/verify.json can't be read${why} Nothing shows whether ${lower} passed its last photos verify. Run photos verify to record a new check, ${accept}`;
+    }
+    // The record trims a big catalog's problems, so an entry can count some and list none.
+    if (verify.problems.length === 0 && verify.problemCount > 0) {
+        return `${name} failed its last photos verify with ${verify.problemCount} ${verify.problemCount === 1 ? 'problem' : 'problems'}; photos verify --revision ${target.revisionId} lists them. Fix them and run it again, ${accept}`;
     }
     const [first] = verify.problems;
     const more = verify.problemCount > 1 ? `, and ${verify.problemCount - 1} more ${verify.problemCount === 2 ? 'problem' : 'problems'}` : '';
@@ -375,7 +390,8 @@ function leaseEnd(holder: LockRecord | null, ownLeaseMs: number): string {
 export async function rollback(options: RollbackOptions): Promise<RollbackResult> {
     const root = path.resolve(options.dataRoot);
     const { actor, reason, hooks = {}, logger = jsonLogger, clock = Date.now } = options;
-    const acceptedRules = [...new Set(options.acceptedRules ?? [])];
+    // VERIFY_FAILED_ACCEPT is the typed verifyOverride's to record, never an accept a caller passes as a string.
+    const acceptedRules = [...new Set(options.acceptedRules ?? [])].filter((rule) => rule !== VERIFY_FAILED_ACCEPT);
     if (!/\S/.test(actor)) throw new TypeError('A rollback needs an actor.');
     if (!/\S/.test(reason)) throw new TypeError('A rollback needs a reason.');
     assertRevisionId(options.revisionId);
@@ -391,7 +407,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
 
     const status = dataRootStatus({ write: true, root });
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}. Nothing was rolled back.`);
-    logEvent(logger, 'catalog.rollback.started', { actor, reason, revisionId: options.revisionId, expectedActiveRevisionId: options.expectedActiveRevisionId, acceptedRules });
+    logEvent(logger, 'catalog.rollback.started', { actor, reason, revisionId: options.revisionId, expectedActiveRevisionId: options.expectedActiveRevisionId, acceptedRules, verifyOverride: options.verifyOverride === true });
 
     let held: RollbackResult | null = null;
     // Set once the work under the lock has its answer, so a release that fails after it can't undo that answer.
@@ -412,7 +428,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
         // #181: the release failed after the answer. What the rollback did stands; the lock file stays until its lease runs out.
         const done = answered as RollbackResult | null;
         if (done !== null) {
-            done.message = `${done.message} The catalog lock couldn't be released (${errorText(error, root)}), so the next publish or rollback waits until its lease runs out.`;
+            done.message = `${done.message} The catalog lock couldn't be released (${errorText(error, root)}), so the next publish or rollback may wait until its lease runs out.`;
             logEvent(logger, 'catalog.lock.release-failed', { lock: CATALOG_LOCK, outcome: done.outcome, error: errorText(error, root) });
             return done;
         }
@@ -480,7 +496,7 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
             return finish('ACTIVE_CHANGED', why);
         }
         // #181's A7: a recorded verify failure goes on only with the CLI's accept for it, read under the lock too.
-        const verifyAccepted = planned.outcome === 'VERIFY_FAILED' && acceptedRules.includes(VERIFY_FAILED_ACCEPT);
+        const verifyAccepted = planned.outcome === 'VERIFY_FAILED' && options.verifyOverride === true;
         if (planned.outcome !== 'READY' && !verifyAccepted) return finish(planned.outcome, planned.message);
         // #117: every editorial rule flagged on the target needs its own accept, checked under the lock against the
         // plan made there, so rules that changed since the caller looked can't slip through. Nothing is written yet.

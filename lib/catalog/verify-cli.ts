@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFile } from '../storage/atomicWrite';
 import { hasErrorCode, PRIVATE_DIR_MODE } from '../storage/fsx';
+import { LockTimeoutError, withLock } from '../storage/lock';
 import { count, parseFlags, UsageError } from './owner-cli';
 import { REVISION_ID_RE } from './schema';
-import { MAX_RECORD_BYTES, readVerifyRecord, verifyCatalog, verifyRecordPath, VERIFY_EXIT_CODES, type ChainCheck, type RevisionCheck, type VerifyOptions, type VerifyRecord, type VerifyReport } from './verify';
+import { damagedText, MAX_RECORD_BYTES, readVerifyRecord, verifyCatalog, verifyRecordPath, VERIFY_EXIT_CODES, type ChainCheck, type RevisionCheck, type VerifyOptions, type DamagedCause, type VerifyRecord, type VerifyRecordRead, type VerifyReport } from './verify';
 
 /**
  * `photos verify [--revision <revisionId>] [--json]`, #117: argv parsing,
@@ -19,7 +20,20 @@ import { MAX_RECORD_BYTES, readVerifyRecord, verifyCatalog, verifyRecordPath, VE
  * rollback it refused can go ahead. It never records a failure, never
  * touches another entry or the run's own `checkedAt`, and writes nothing
  * when there is no record, no failure to clear, or a record it can't read.
+ *
+ * The A7 review: both writes, a full run's and a clear, take a short lock
+ * of their own, VERIFY_RECORD_LOCK, never the catalog lock, and read the
+ * record again under it. A clear goes ahead only when this pass started
+ * after the recorded run finished, so it never writes an older pass over a
+ * newer failure. A full run leaves a record from a run that started after
+ * it. Neither checks anything under the lock: it covers the write alone.
  */
+
+/** The lock both record writes take, in `locks/`. */
+export const VERIFY_RECORD_LOCK = 'verify-record';
+/** How long a write waits for another one. Writes take milliseconds, so a holder past this crashed or hangs. */
+export const VERIFY_RECORD_WAIT_MS = 10_000;
+const VERIFY_RECORD_LEASE_MS = 30_000;
 
 export interface VerifyArgs {
     /** Check this revision alone, recording only a pass that clears its recorded failure. */
@@ -97,27 +111,46 @@ function chainLines(chain: ChainCheck): string[] {
     return [...chain.problems.map((problem) => `Activation chain: ${problem}`), ...chain.warnings.map((warning) => `Activation chain, a warning: ${warning}`)];
 }
 
-/** What a `--revision` run did to the record, for its report. */
-export type SingleRecord = 'cleared' | 'nothing' | 'damaged';
+/** What a `--revision` run did to the record, for its report. `stale`: a full run finished after this pass started. */
+export type SingleRecord = { kind: 'cleared' } | { kind: 'nothing' } | { kind: 'damaged'; cause: DamagedCause } | { kind: 'stale' };
 
-const SINGLE_LINES: Record<SingleRecord, (entry: RevisionCheck | undefined) => string> = {
-    cleared: (entry) => `Recorded: ${!entry ? 'the revision' : entry.revisionNumber === null ? entry.revisionId : `revision ${entry.revisionNumber}`} passes now, so status/verify.json no longer fails it.`,
-    nothing: () => 'Nothing was recorded: --revision checks one revision, without the activation chain, and records only a pass that clears a recorded failure.',
-    damaged: () => "[photos] status/verify.json can't be read, so this pass cleared nothing. Run photos verify without --revision to record a full check.",
-};
+const nameOf = (entry: RevisionCheck | undefined) => (!entry ? 'the revision' : entry.revisionNumber === null ? entry.revisionId : `revision ${entry.revisionNumber}`);
+
+function singleLine(single: SingleRecord, entry: RevisionCheck | undefined): string {
+    switch (single.kind) {
+        case 'cleared':
+            return `Recorded: ${nameOf(entry)} passes now, so status/verify.json no longer fails it.`;
+        case 'damaged':
+            return `[photos] status/verify.json can't be read: ${damagedText(single.cause)} This pass cleared nothing. Run photos verify without --revision to record a full check.`;
+        case 'stale':
+            return `[photos] A full photos verify finished after this pass started, so this pass cleared nothing. Run photos verify --revision ${entry?.revisionId ?? '<revisionId>'} again.`;
+        case 'nothing':
+        default:
+            return 'Nothing was recorded: --revision checks one revision, without the activation chain, and records only a pass that clears a recorded failure.';
+    }
+}
 
 /** What `photos verify` prints: a line per revision, oldest first, the chain, any note, and the verdict last. */
-export function verifyLines(report: VerifyReport, note: string | null = null, single: SingleRecord = 'nothing'): string[] {
+export function verifyLines(report: VerifyReport, note: string | null = null, single: SingleRecord = { kind: 'nothing' }): string[] {
     const verdict = `[photos] ${report.outcome}: ${report.message}`;
     const { record } = report;
     if (!record) return [verdict];
     const lines = [`[photos] Checked ${count(record.revisions.length, 'revision')} and ${count(record.sets.checked, 'derivative set')} in ${(record.durationMs / 1000).toFixed(1)} s.`];
     for (const entry of record.revisions) lines.push(...revisionLines(entry));
     if (report.full) lines.push(...chainLines(record.chain));
-    else lines.push(SINGLE_LINES[single](record.revisions[0]));
+    else lines.push(singleLine(single, record.revisions[0]));
     if (note) lines.push(note);
     lines.push(verdict);
     return lines;
+}
+
+/**
+ * Run `write` under VERIFY_RECORD_LOCK, with the record as it reads under
+ * the lock. The lock lives in `locks/`, so a data root whose `status/` can't
+ * be written still takes it, and the write's own error says why.
+ */
+async function underRecordLock(root: string, write: (read: VerifyRecordRead) => Promise<void>): Promise<void> {
+    await withLock(VERIFY_RECORD_LOCK, { root, waitMs: VERIFY_RECORD_WAIT_MS, leaseMs: VERIFY_RECORD_LEASE_MS }, async () => write(await readVerifyRecord(root)));
 }
 
 export interface VerifyIo {
@@ -135,39 +168,68 @@ export async function runVerifyCommand(dataRoot: string, args: VerifyArgs, io: V
     const root = path.resolve(dataRoot);
     const report = await verifyCatalog({ ...options, dataRoot: root, ...(args.revisionId === undefined ? {} : { revisionId: args.revisionId }) });
     const exitCode = VERIFY_EXIT_CODES[report.outcome];
-    let recorded = false;
-    let note: string | null = null;
-    let single: SingleRecord = 'nothing';
-    const unwritten = (error: unknown) => {
+    // Set inside the record lock's callback, so typed wide: a plain initializer would narrow them for the code after it.
+    let recorded = false as boolean;
+    let note = null as string | null;
+    let single = { kind: 'nothing' } as SingleRecord;
+    const unwritten = (error: unknown, stays = '') => {
+        if (error instanceof LockTimeoutError) return `[photos] Another photos verify held status/verify.json's lock for ${VERIFY_RECORD_WAIT_MS / 1000} s, so ${stays || 'this run'} wasn't recorded. The checks above still stand.`;
         const code = (error as NodeJS.ErrnoException | null)?.code;
-        return `[photos] status/verify.json couldn't be written (${typeof code === 'string' ? code : 'an I/O error'}), so the Publish screen doesn't know about this run. The checks above still stand.`;
+        const why = `status/verify.json couldn't be written (${typeof code === 'string' ? code : 'an I/O error'})`;
+        return stays ? `[photos] ${why}, so ${stays}. The checks above still stand.` : `[photos] ${why}, so the Publish screen doesn't know about this run. The checks above still stand.`;
     };
+    const start = report.record ? Date.parse(report.record.checkedAt) : Number.NaN;
     if (report.full && report.record) {
+        const record = report.record;
         try {
-            await writeVerifyRecord(root, report.record);
-            recorded = true;
+            await underRecordLock(root, async (read) => {
+                // A run that started after this one already recorded: it saw a newer catalog, so it stays.
+                if (read.state === 'ok' && Date.parse(read.record.checkedAt) > start) {
+                    note = "[photos] A newer photos verify recorded its run while this one ran, so this run wasn't recorded. The checks above still stand.";
+                    return;
+                }
+                await writeVerifyRecord(root, record);
+                recorded = true;
+            });
         } catch (error) {
             note = unwritten(error);
         }
     } else if (report.record && report.outcome === 'VERIFIED') {
         const checked = report.record.revisions[0];
-        const read = await readVerifyRecord(root);
-        if (read.state === 'damaged') single = 'damaged';
-        else if (read.state === 'ok' && checked && read.record.revisions.some((entry) => entry.revisionId === checked.revisionId && !entry.ok)) {
-            // Only this revision's entries change, to this pass. The run's checkedAt stays the full run's.
-            const entry: RevisionCheck = { ...checked, checkedAt: report.record.checkedAt };
-            const next: VerifyRecord = { ...read.record, revisions: read.record.revisions.map((other) => (other.revisionId === checked.revisionId ? entry : other)) };
-            try {
-                await writeVerifyRecord(root, next);
+        const checkedAt = report.record.checkedAt;
+        try {
+            await underRecordLock(root, async (read) => {
+                if (read.state === 'damaged') {
+                    single = { kind: 'damaged', cause: read.cause };
+                    return;
+                }
+                if (read.state !== 'ok' || !checked || !read.record.revisions.some((entry) => entry.revisionId === checked.revisionId && !entry.ok)) return;
+                // Only a pass that started after the recorded run finished is newer than its failure.
+                const finished = Date.parse(read.record.checkedAt) + (typeof read.record.durationMs === 'number' ? read.record.durationMs : 0);
+                if (!(start >= finished)) {
+                    single = { kind: 'stale' };
+                    return;
+                }
+                // Only this revision's entries change, to this pass. The run's checkedAt stays the full run's.
+                const entry: RevisionCheck = { ...checked, checkedAt };
+                const next: VerifyRecord = { ...read.record, revisions: read.record.revisions.map((other) => (other.revisionId === checked.revisionId ? entry : other)) };
+                try {
+                    await writeVerifyRecord(root, next);
+                } catch (error) {
+                    note = unwritten(error, `${nameOf(checked)}'s recorded failure stays, and a rollback still refuses it`);
+                    return;
+                }
                 recorded = true;
-                single = 'cleared';
-            } catch (error) {
-                note = unwritten(error);
-            }
+                single = { kind: 'cleared' };
+            });
+        } catch (error) {
+            note = unwritten(error, `${nameOf(checked)}'s recorded failure stays, and a rollback still refuses it`);
         }
     }
     if (args.json) {
-        io.out(JSON.stringify({ outcome: report.outcome, exitCode, message: report.message, recorded, ...(note ? { note } : {}), record: report.record }, null, 2));
+        // A --revision pass that cleared nothing for a reason says why, as the text report does.
+        const said = note ?? (single.kind === 'damaged' || single.kind === 'stale' ? singleLine(single, report.record?.revisions[0]) : null);
+        io.out(JSON.stringify({ outcome: report.outcome, exitCode, message: report.message, recorded, ...(said ? { note: said } : {}), record: report.record }, null, 2));
         return exitCode;
     }
     const print = exitCode === 0 ? io.out : io.err;

@@ -6,6 +6,7 @@ import type { CatalogLogger } from './publish';
 import { knownGood } from './history';
 import { acceptanceMessage, editorialRuleIds, errorText, planRollback, rollback, ROLLBACK_EXIT_CODES, unacceptedRules, VERIFY_FAILED_ACCEPT, type RollbackOptions, type RollbackOutcome, type RollbackPlan, type RollbackResult, type RollbackTarget } from './rollback';
 import { CatalogIntegrityError } from './repository';
+import { readVerifyRecord } from './verify';
 import { AUTHORED_ONLY_RULE_IDS, registeredRules } from './ruleset';
 import { REVISION_ID_RE } from './schema';
 import type { CommandResult } from './sequence-commands';
@@ -185,8 +186,10 @@ export async function revisionEligibility(root: string, history: History, limit:
     const named = new Set(shownRows(history.rows, limit).map((row) => row.activation.revisionId));
     const targets = [...good].filter(([revisionId]) => named.has(revisionId)).sort((a, b) => b[1] - a[1]);
     const out: RevisionEligibility[] = [];
+    // The verify record, read once for every plan.
+    const verifyRecord = targets.length > 0 ? await readVerifyRecord(root) : undefined;
     for (const [revisionId, revisionNumber] of targets) {
-        const plan = await planRollback({ dataRoot: root, to: { revisionId } });
+        const plan = await planRollback({ dataRoot: root, to: { revisionId }, verifyRecord });
         const live = plan.outcome === 'NO_CHANGES';
         const eligible = plan.outcome === 'READY';
         const accept = plan.outcome === 'READY' || plan.outcome === 'VERIFY_FAILED' ? [...plan.editorial, ...(plan.outcome === 'VERIFY_FAILED' ? [VERIFY_FAILED_ACCEPT] : [])] : [];
@@ -200,6 +203,7 @@ export async function revisionEligibility(root: string, history: History, limit:
 
 /** The `--revisions` lines: a head, then one line per revision and its reasons, indented. */
 export function eligibilityLines(revisions: readonly RevisionEligibility[]): string[] {
+    if (revisions.length === 0) return ['[photos] No revision has been live yet, so there is nothing to roll back to.'];
     const lines = ['[photos] Rollback eligibility, newest first:'];
     for (const entry of revisions) {
         const name = `revision ${entry.revisionNumber}, ${entry.revisionId}`;
@@ -251,14 +255,13 @@ export const HISTORY_JSON_SCHEMA_VERSION = 1;
  * (#181's A7), planned as a rollback would plan it; `--json` prints both as
  * one versioned object. Exits 0, 3 when the data root isn't ready, and 4
  * when an activation record, the active pointer, or a revision file is
- * damaged or can't be read, after printing what it could.
+ * damaged or can't be read, after printing what it could. With --limit,
+ * only the shown rows count toward that 4. With --revisions, so does any
+ * revision that can't be planned, INTEGRITY_MISMATCH or STORAGE_ERROR.
  */
 export async function runHistoryCommand(dataRoot: string, args: HistoryArgs = { json: false, limit: null, revisions: false }): Promise<CommandResult> {
     const root = path.resolve(dataRoot);
-    const stop = (exitCode: CommandResult['exitCode'], outcome: string, message: string): CommandResult => ({
-        exitCode,
-        output: args.json ? `${JSON.stringify({ schemaVersion: HISTORY_JSON_SCHEMA_VERSION, outcome, message }, null, 2)}\n` : `[photos] ${outcome}: ${message}\n`,
-    });
+    const stop = (exitCode: CommandResult['exitCode'], outcome: string, message: string) => historyStop(exitCode, outcome, message, args.json);
     const status = dataRootStatus({ root });
     if (status.state !== 'ready') return stop(3, 'DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`);
     let history: History;
@@ -270,9 +273,11 @@ export async function runHistoryCommand(dataRoot: string, args: HistoryArgs = { 
         // A damaged record is INTEGRITY_MISMATCH, anything else, such as a folder it can't read, STORAGE_ERROR. Both exit 4.
         return stop(4, error instanceof CatalogIntegrityError ? 'INTEGRITY_MISMATCH' : 'STORAGE_ERROR', sentence(errorText(error, root)));
     }
+    if (history.rows.length === 0 && args.revisions && !args.json) return { exitCode: 0, output: '[photos] Nothing has been published yet, so there is no revision to roll back to.\n' };
     const shown = shownRows(history.rows, args.limit);
     const damaged = shown.filter((row) => row.summary === null).length;
-    const exitCode = damaged > 0 ? 4 : 0;
+    const unplanned = (revisions ?? []).filter((entry) => entry.outcome === 'INTEGRITY_MISMATCH' || entry.outcome === 'STORAGE_ERROR').length;
+    const exitCode = damaged > 0 || unplanned > 0 ? 4 : 0;
     if (args.json) {
         const pointer = history.pointer ? { revisionId: history.pointer.revisionId, activationId: history.pointer.activationId, version: history.pointer.version } : null;
         const out = { schemaVersion: HISTORY_JSON_SCHEMA_VERSION, total: history.rows.length, shown: shown.length, pointer, rows: shown.map(rowJson), ...(revisions ? { revisions } : {}) };
@@ -281,7 +286,16 @@ export async function runHistoryCommand(dataRoot: string, args: HistoryArgs = { 
     const lines = historyLines(history, args.limit);
     if (revisions) lines.push(...eligibilityLines(revisions));
     if (damaged > 0) lines.push(`[photos] INTEGRITY_MISMATCH: ${count(damaged, 'activation')} ${damaged === 1 ? 'names' : 'name'} a revision that can't be read.`);
+    if (unplanned > 0) lines.push(`[photos] ${count(unplanned, 'revision')} couldn't be planned, as listed above.`);
     return { exitCode, output: `${lines.join('\n')}\n` };
+}
+
+/** How `photos history` stops before it reads anything: a line, or with --json an object carrying the exit code, as the CLI's usage and data-root stops print it too. */
+export function historyStop(exitCode: CommandResult['exitCode'], outcome: string, message: string, json: boolean): CommandResult {
+    return {
+        exitCode,
+        output: json ? `${JSON.stringify({ schemaVersion: HISTORY_JSON_SCHEMA_VERSION, outcome, exitCode, message }, null, 2)}\n` : `[photos] ${outcome}: ${message}\n`,
+    };
 }
 
 // Rollback.
@@ -327,9 +341,8 @@ function refLines(plan: RollbackPlan): string[] {
 export function planLines(plan: RollbackPlan, accepted: readonly string[] = []): string[] {
     const lines = [`[photos] ${plan.outcome}: ${plan.message}`, ...refLines(plan)];
     if (plan.outcome === 'READY' || plan.outcome === 'VALIDATION_FAILED' || plan.outcome === 'VERIFY_FAILED') lines.push(...changeLines(plan));
-    // #181's A7: what the recorded verify found, past the first, which the message names.
-    const found = plan.verify?.problems ?? [];
-    for (const problem of found.slice(1, PRINTED_ISSUES)) lines.push(`Its last photos verify also found: ${problem}`);
+    // #181's A7: what the recorded verify found, past the first, which the refusal's message names.
+    if (plan.outcome === 'VERIFY_FAILED') for (const problem of (plan.verify?.problems ?? []).slice(1, PRINTED_ISSUES)) lines.push(`Its last photos verify also found: ${problem}`);
     if (plan.editorial.length) {
         const marked = plan.editorial.map((rule) => `${rule} (${accepted.includes(rule) ? 'accepted' : 'not accepted'})`);
         lines.push(`Editorial errors, which a rollback brings back only with --accept for each: ${marked.join(', ')}`);
@@ -388,6 +401,14 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
         io.out(plan.verify?.reason === 'record-damaged'
             ? `Accepted: status/verify.json can't be read, so nothing shows its last photos verify passed (${VERIFY_FAILED_ACCEPT}). The activation records that you accepted it.`
             : `Accepted: its last photos verify failed (${VERIFY_FAILED_ACCEPT}). The activation records that you accepted it.`);
+        // What's being accepted, every problem the record keeps, since no message above names any.
+        const problems = plan.verify?.problems ?? [];
+        const total = Math.max(plan.verify?.problemCount ?? 0, problems.length);
+        if (total > 0) {
+            io.out('Its last photos verify found:');
+            for (const problem of problems) io.out(`    ${problem}`);
+            if (total > problems.length) io.out(`    And ${count(total - problems.length, 'more problem')}.`);
+        }
     }
     if (shown.outcome !== 'READY' || !plan.target || !plan.active) return planExit;
 
@@ -428,7 +449,9 @@ export async function runRollbackCommand(dataRoot: string, args: RollbackArgs, i
         expectedActiveRevisionId: expected,
         actor: args.actor,
         reason: args.reason,
-        acceptedRules: accept,
+        // The override is typed, so the string never reaches rollback() as an accept.
+        acceptedRules: accept.filter((rule) => rule !== VERIFY_FAILED_ACCEPT),
+        verifyOverride: accept.includes(VERIFY_FAILED_ACCEPT),
         logger: io.logger ?? options.logger,
     });
     const exitCode = ROLLBACK_EXIT_CODES[result.outcome];

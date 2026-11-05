@@ -391,7 +391,37 @@ async function run(root: string, options: VerifyOptions, full: boolean): Promise
 
 // The record's reader.
 
-export type VerifyRecordRead = { state: 'none' } | { state: 'damaged' } | { state: 'ok'; record: VerifyRecord };
+/**
+ * Why a record reads as damaged (A7 review), so a refusal can say what to
+ * fix: a file this process can't open, such as one with mode 0600 that
+ * belongs to another user, isn't the same problem as a newer build's
+ * record or a torn write.
+ */
+export type DamagedCause =
+    | { kind: 'unreadable'; code: string }
+    | { kind: 'not-a-file' }
+    | { kind: 'too-big' }
+    | { kind: 'newer-schema'; schemaVersion: number }
+    | { kind: 'invalid' };
+
+export type VerifyRecordRead = { state: 'none' } | { state: 'damaged'; cause: DamagedCause } | { state: 'ok'; record: VerifyRecord };
+
+/** A damaged record's cause, in words that follow "status/verify.json can't be read: ", ending in a full stop. */
+export function damagedText(cause: DamagedCause): string {
+    switch (cause.kind) {
+        case 'unreadable':
+            return `this process can't open it (${cause.code}). It should belong to the data root's owner, with mode 0600, and photos verify should run as that user.`;
+        case 'not-a-file':
+            return "it isn't a regular file.";
+        case 'too-big':
+            return `it's over ${MAX_RECORD_BYTES / (1024 * 1024)} MB.`;
+        case 'newer-schema':
+            return `a newer build wrote it (schema version ${cause.schemaVersion}).`;
+        case 'invalid':
+        default:
+            return "it isn't valid JSON or a verify record.";
+    }
+}
 
 const isEntry = (value: unknown): value is Pick<RevisionCheck, 'revisionId' | 'ok'> => {
     if (typeof value !== 'object' || value === null) return false;
@@ -405,69 +435,92 @@ const isRecord = (value: unknown): value is VerifyRecord => {
     return record.schemaVersion === VERIFY_RECORD_SCHEMA_VERSION && typeof record.checkedAt === 'string' && Array.isArray(record.revisions) && record.revisions.every(isEntry);
 };
 
+const damaged = (cause: DamagedCause): VerifyRecordRead => ({ state: 'damaged', cause });
+const errorCode = (error: unknown) => {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return typeof code === 'string' ? code : 'EIO';
+};
+
 /**
- * The last full run's record: none before the first, damaged when it can't
- * be read or isn't one this build reads. Never throws, and never blocks or
- * reads without bound: anything but a regular file of at most
- * MAX_RECORD_BYTES, a symlink or a FIFO included, is damaged, which shows
- * the warning.
+ * The last full run's record: none before the first, damaged, with its
+ * cause, when it can't be read or isn't one this build reads. Never throws,
+ * and never blocks or reads without bound: anything but a regular file of at
+ * most MAX_RECORD_BYTES, a symlink or a FIFO included, is damaged, which
+ * shows the warning.
  */
 export async function readVerifyRecord(root: string): Promise<VerifyRecordRead> {
     const file = verifyRecordPath(root);
     let handle: fs.promises.FileHandle;
     try {
         const stats = await fs.promises.lstat(/*turbopackIgnore: true*/ file);
-        if (!stats.isFile() || stats.size > MAX_RECORD_BYTES) return { state: 'damaged' };
+        if (!stats.isFile()) return damaged({ kind: 'not-a-file' });
+        if (stats.size > MAX_RECORD_BYTES) return damaged({ kind: 'too-big' });
         // O_NOFOLLOW for a symlink swapped in after the lstat, O_NONBLOCK so a FIFO swapped in can't hold the open.
         handle = await fs.promises.open(/*turbopackIgnore: true*/ file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     } catch (error) {
-        return hasErrorCode(error, 'ENOENT', 'ENOTDIR') ? { state: 'none' } : { state: 'damaged' };
+        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { state: 'none' };
+        // ELOOP: O_NOFOLLOW met a symlink swapped in after the lstat.
+        return hasErrorCode(error, 'ELOOP') ? damaged({ kind: 'not-a-file' }) : damaged({ kind: 'unreadable', code: errorCode(error) });
     }
     let text: string;
     try {
         const stats = await handle.stat();
-        if (!stats.isFile() || stats.size > MAX_RECORD_BYTES) return { state: 'damaged' };
+        if (!stats.isFile()) return damaged({ kind: 'not-a-file' });
+        if (stats.size > MAX_RECORD_BYTES) return damaged({ kind: 'too-big' });
         const buffer = Buffer.alloc(MAX_RECORD_BYTES + 1);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-        if (bytesRead > MAX_RECORD_BYTES) return { state: 'damaged' };
+        if (bytesRead > MAX_RECORD_BYTES) return damaged({ kind: 'too-big' });
         text = buffer.subarray(0, bytesRead).toString('utf8');
-    } catch {
-        return { state: 'damaged' };
+    } catch (error) {
+        return damaged({ kind: 'unreadable', code: errorCode(error) });
     } finally {
         await handle.close().catch(() => undefined);
     }
+    let value: unknown;
     try {
-        const value: unknown = JSON.parse(text);
-        return isRecord(value) ? { state: 'ok', record: value } : { state: 'damaged' };
+        value = JSON.parse(text);
     } catch {
-        return { state: 'damaged' };
+        return damaged({ kind: 'invalid' });
     }
+    if (isRecord(value)) return { state: 'ok', record: value };
+    const version = (value as { schemaVersion?: unknown } | null)?.schemaVersion;
+    if (typeof version === 'number' && Number.isInteger(version) && version > VERIFY_RECORD_SCHEMA_VERSION) return damaged({ kind: 'newer-schema', schemaVersion: version });
+    return damaged({ kind: 'invalid' });
 }
 
 /**
  * Why the record refuses a rollback to `revisionId`, or null when it
  * doesn't (#181's A7): `last-verify` when an entry for it, from any run,
- * failed, with that entry's problems; `record-damaged` for any revision
- * while the record can't be read, as rollbackReadiness() reads it. No
- * record, or no entry for it, refuses nothing. Read only, never throws.
+ * failed, with that entry's problems; `record-damaged`, with its cause, for
+ * any revision while the record can't be read, as rollbackReadiness() reads
+ * it. No record, or no entry for it, refuses nothing: that's #117's design,
+ * since nothing runs verify until the owner does.
  */
 export interface RecordedVerifyFailure {
     reason: 'last-verify' | 'record-damaged';
     /** The failed entry's problems as the record keeps them; none for a damaged record. */
     problems: string[];
     problemCount: number;
+    /** `record-damaged`'s cause. */
+    cause?: DamagedCause;
 }
 
-export async function recordedVerifyFailure(root: string, revisionId: string): Promise<RecordedVerifyFailure | null> {
-    const read = await readVerifyRecord(path.resolve(/*turbopackIgnore: true*/ root));
-    if (read.state === 'damaged') return { reason: 'record-damaged', problems: [], problemCount: 0 };
-    if (read.state === 'none') return null;
-    const failed = read.record.revisions.find((entry) => entry.revisionId === revisionId && !entry.ok);
-    if (!failed) return null;
+/** What one read of the record says about `revisionId`: its failure, if any, and whether any entry names it. Pure. */
+export function verifyStanding(read: VerifyRecordRead, revisionId: string): { failure: RecordedVerifyFailure | null; recorded: boolean } {
+    if (read.state === 'damaged') return { failure: { reason: 'record-damaged', problems: [], problemCount: 0, cause: read.cause }, recorded: false };
+    if (read.state === 'none') return { failure: null, recorded: false };
+    const entries = read.record.revisions.filter((entry) => entry.revisionId === revisionId);
+    const failed = entries.find((entry) => !entry.ok);
+    if (!failed) return { failure: null, recorded: entries.length > 0 };
     // The reader checks only an entry's ID and `ok`, so the rest is read with care.
     const problems = Array.isArray(failed.problems) ? failed.problems.filter((problem): problem is string => typeof problem === 'string') : [];
     const problemCount = typeof failed.problemCount === 'number' && Number.isInteger(failed.problemCount) && failed.problemCount >= problems.length ? failed.problemCount : problems.length;
-    return { reason: 'last-verify', problems, problemCount };
+    return { failure: { reason: 'last-verify', problems, problemCount }, recorded: true };
+}
+
+/** recordedVerifyFailure() from the record on disk, or from `read`, one the caller made once for several revisions. Read only, never throws. */
+export async function recordedVerifyFailure(root: string, revisionId: string, read?: VerifyRecordRead): Promise<RecordedVerifyFailure | null> {
+    return verifyStanding(read ?? (await readVerifyRecord(path.resolve(/*turbopackIgnore: true*/ root))), revisionId).failure;
 }
 
 // The Publish screen's gate.
@@ -516,12 +569,10 @@ export async function rollbackReadiness(root: string, { revisionId, registry }: 
     } catch {
         return failed('live-check');
     }
-    const read = await readVerifyRecord(resolved);
-    if (read.state === 'damaged') return failed('record-damaged');
     // From any run, one made while another revision was live included: a restore can bring back a revision whose sets failed.
-    const entries = read.state === 'ok' ? read.record.revisions.filter((entry) => entry.revisionId === target) : [];
-    if (entries.some((entry) => !entry.ok)) return failed('last-verify');
-    return { state: entries.length > 0 ? 'verified' : 'live-ok', revisionId: target, revisionNumber };
+    const { failure, recorded: checkedBefore } = verifyStanding(await readVerifyRecord(resolved), target);
+    if (failure) return failed(failure.reason);
+    return { state: checkedBefore ? 'verified' : 'live-ok', revisionId: target, revisionNumber };
 }
 
 /** The live revision's number when it's rollback-ready, else null (#117, AC 14). Read only. */
