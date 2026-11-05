@@ -5,8 +5,8 @@ import IntentPrefetchLink, { type IntentPrefetchLinkProps } from '@/components/I
 
 export type WorkEntryLinkProps = Omit<IntentPrefetchLinkProps, 'onFocus' | 'onBlur'>;
 
-/** A root scroll padding in px: `auto` and anything unparsed count as none. */
-const padding = (value: string) => parseFloat(value) || 0;
+/** A resolved length in px: `auto` and anything unparsed count as none. */
+const px = (value: string) => parseFloat(value) || 0;
 
 /**
  * Brings a Work entry, its list item, cover and copy, into view once keyboard
@@ -22,18 +22,24 @@ const padding = (value: string) => parseFloat(value) || 0;
  *   past;
  * - one taller than the screen stays where the browser put it, with its
  *   focused title in view.
- * Every scroll is instant, so nothing animates, under reduced motion or not.
+ * The box is the entry grown by however far the link's ::after, its target
+ * and focus ring (B3), reaches past it, max(--work-room, 6 px) in most
+ * themes, and rounded outward, so the ring's edge stays on screen too. Every
+ * scroll is instant, so nothing animates, under reduced motion or not.
  */
 function revealEntry(link: HTMLElement): void {
     requestAnimationFrame(() => {
         if (document.activeElement !== link) return;
         const entry = link.closest('li');
         if (entry === null) return;
-        const { top, bottom } = entry.getBoundingClientRect();
+        const box = entry.getBoundingClientRect();
+        const ring = getComputedStyle(link, '::after');
+        const top = Math.floor(box.top - Math.max(0, -px(ring.top)));
+        const bottom = Math.ceil(box.bottom + Math.max(0, -px(ring.bottom)));
         const screen = window.innerHeight;
         if (top >= 0 && bottom <= screen) return;
         const root = getComputedStyle(document.documentElement);
-        const room = screen - padding(root.scrollPaddingTop) - padding(root.scrollPaddingBottom);
+        const room = screen - px(root.scrollPaddingTop) - px(root.scrollPaddingBottom);
         const height = bottom - top;
         if (height <= room) entry.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
         else if (height <= screen) window.scrollBy({ top: top < 0 ? top : bottom - screen, behavior: 'instant' });
@@ -53,7 +59,7 @@ export default function WorkEntryLink(props: WorkEntryLinkProps) {
         leftWithWindow.current = event.relatedTarget === null && !document.hasFocus();
     };
     const onFocus = (event: FocusEvent<HTMLAnchorElement>) => {
-        const refocus = leftWithWindow.current || (event.relatedTarget === null && !document.hasFocus());
+        const refocus = (leftWithWindow.current && event.relatedTarget === null) || (event.relatedTarget === null && !document.hasFocus());
         leftWithWindow.current = false;
         if (refocus || !event.currentTarget.matches(':focus-visible')) return;
         revealEntry(event.currentTarget);

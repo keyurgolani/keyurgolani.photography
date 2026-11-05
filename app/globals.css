@@ -23,6 +23,7 @@
 }
 
 /* A focused element that fits between these scrolls into view with room around it. */
+/* No scroll-behavior: smooth on html: Work's entry reveal measures in the frame after the browser's focus scroll (components/work/WorkEntryLink.tsx), so that scroll must be done by then. */
 html {
     scroll-padding-top: 6rem;
     scroll-padding-bottom: 8rem;
