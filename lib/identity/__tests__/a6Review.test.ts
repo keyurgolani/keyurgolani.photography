@@ -13,7 +13,7 @@ import { currentProfileId } from '../profile';
 import { IO_ERROR_AFTER_PASSES, IO_ERROR_MIN_SPAN_MS } from '../reconcile';
 import { readRegistry, writeRegistry } from '../registry';
 import { scanLibrary } from '../scan';
-import type { DerivativeJob, IdentityFact, PhotoRecord, Registry } from '../types';
+import type { DerivativeJob, IdentityFact, PhotoRecord } from '../types';
 import { createWorker, requeueIoErrors, type WorkerOptions, type WorkerTimers } from '../worker';
 import {
     createIdentityStep,
@@ -120,7 +120,7 @@ describe('review 1: the pixel cap applies before anything decodes', () => {
         const scan = await scanLibrary(lib.root, { clock: () => Date.now() + 3_600_000 });
         const inspection = await inspectEntry(lib.root, scan.entries[0], { maxPixels: 1_000 });
         expect(raw).toHaveBeenCalledTimes(1);
-        expect((raw.mock.contexts[0] as { options: { limitInputPixels: number } }).options.limitInputPixels).toBe(1_000);
+        expect((raw.mock.contexts[0] as { options: { input: { limitInputPixels: number } } }).options.input.limitInputPixels).toBe(1_000);
         expect(inspection).toMatchObject({ kind: 'image', pixelDigest: expect.stringMatching(/^sha256-/) });
     });
 

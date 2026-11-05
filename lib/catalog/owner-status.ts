@@ -347,7 +347,8 @@ function heartbeatProblem(heartbeat: HeartbeatAge | null): StatusCheck['problems
  * when that one got through, else by the pass under way.
  */
 function stallProblem(heartbeat: Extract<HeartbeatAge, { found: true }>, now: number): StatusCheck['problems'][number] | null {
-    const progressed = heartbeat.lastPassResult === 'committed' || heartbeat.lastPassResult === 'library-empty' || heartbeat.lastPassResult === 'library-unavailable';
+    // A6 review: only a committed pass got anywhere. A refused one, for an empty or unavailable library, is no progress.
+    const progressed = heartbeat.lastPassResult === 'committed';
     const running = heartbeat.passRunningMs === null ? null : new Date(now - heartbeat.passRunningMs).toISOString();
     const since = heartbeat.lastProgressAt ?? (progressed ? heartbeat.lastPassAt : null) ?? running;
     if (since === null || now - Date.parse(since) <= WATCHER_STALLED_AFTER_MS) return null;
@@ -378,8 +379,13 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
         if (ambiguous.length > 0) problems.push({ code: 'ambiguous-open', message: `${ambiguous.length} ambiguous ${ambiguous.length === 1 ? 'item' : 'items'} open` });
     }
     const heartbeat = dataRoot === null ? null : await watcherHeartbeatAge(path.resolve(dataRoot), clock);
-    // A last pass that refused an empty library (`library-empty`) fails nothing here: A6's library-unavailable item
-    // reports it, and the container's healthcheck already does. Its pass got through, so it isn't a stall either.
+    // A6 review: fail closed. A last pass that refused the library fails the check even when its item couldn't be
+    // written, as with curation/events/ unwritable. Reported once, with the item when there is one.
+    const refused = heartbeat?.found && (heartbeat.lastPassResult === 'library-empty' || heartbeat.lastPassResult === 'library-unavailable') ? heartbeat : null;
+    if (refused && !problems.some((problem) => problem.code === 'library-unavailable')) {
+        const what = refused.lastPassResult === 'library-empty' ? 'the library empty while the registry has present photos' : 'the library root missing or unreadable';
+        problems.push({ code: 'library-unavailable', message: `The watcher's last pass${refused.lastPassAt ? `, at ${refused.lastPassAt},` : ''} found ${what}, so it changed nothing` });
+    }
     if (heartbeat?.found && heartbeat.lastPassResult === 'failed') {
         problems.push({ code: 'last-pass-failed', message: `The watcher's last pass failed${heartbeat.lastPassAt ? `, at ${heartbeat.lastPassAt}` : ''}` });
     }
@@ -388,7 +394,9 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
     const late = heartbeatProblem(heartbeat);
     if (late) problems.push(late);
     const held = status.inbox && !('error' in status.inbox) ? status.inbox.held.length : 0;
-    return { ok: problems.length === 0, problems, counts: { held, retrying: status.identity.retryingJobs, permanent: status.identity.failedProfiles.length } };
+    // Review nit: a superseded set isn't a failure of these bytes.
+    const permanent = status.identity.failedProfiles.filter((failed) => failed.error !== 'source-superseded').length;
+    return { ok: problems.length === 0, problems, counts: { held, retrying: status.identity.retryingJobs, permanent } };
 }
 
 function checkLines(check: StatusCheck): string {

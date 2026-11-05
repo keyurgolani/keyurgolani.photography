@@ -93,6 +93,8 @@ export const EVENT_TYPE_FOR_FACT: Record<IdentityFactType, CurationEventType | n
     ambiguous: 'ambiguous',
     'processing-failed': 'processing-failure',
     renamed: null,
+    // A6 review: closes the io-error item of the same key (lib/curation/sink.ts), and opens none.
+    'io-recovered': null,
 };
 
 const photoId = z.string().regex(PHOTO_ID_RE, 'must be a photo ID');
@@ -458,6 +460,8 @@ export const CLOSE_REASONS = {
     restored: (photoId: string) => `These bytes brought back the archived photograph ${photoId} under its old ID.`,
     /** A6 (#17): a `library-unavailable` item, once a pass finds the library again. */
     available: 'The library is available again.',
+    /** A6 review: an `io-error` item, once the pass reads its file again. */
+    readable: 'The file can be read again.',
 } as const;
 
 /**
@@ -479,7 +483,7 @@ export function watcherCloseOf(event: Pick<CurationEvent, 'status' | 'decisions'
     return { decision, cause: decision.resolution ?? closeCauseOf(decision.reason) };
 }
 
-export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'available' | Resolution;
+export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'available' | 'readable' | Resolution;
 
 /** Which of CLOSE_REASONS a watcher's close reason is, or null for any other text. */
 export function closeCauseOf(reason: string): CloseCause | null {
@@ -489,6 +493,7 @@ export function closeCauseOf(reason: string): CloseCause | null {
     if (/^These bytes brought back the archived photograph .+ under its old ID\.$/.test(reason)) return 'restored';
     if (reason === CLOSE_REASONS.archived) return 'archived';
     if (reason === CLOSE_REASONS.available) return 'available';
+    if (reason === CLOSE_REASONS.readable) return 'readable';
     if (reason === CLOSE_REASONS.gone) return 'gone';
     if (reason === CLOSE_REASONS.moved) return 'moved';
     if (reason === CLOSE_REASONS.unheld) return 'unheld';

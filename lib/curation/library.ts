@@ -83,7 +83,8 @@ export function libraryCauseText(facts: LibraryFacts | undefined): string {
         case 'empty':
             return 'the library root is empty while the registry has present photos';
         case 'unreadable':
-            return `the library root can't be read (${facts.detail ?? 'unknown'})`;
+            // A6 review: many files at once (`EACCES on 21 of 30 files`), or the root itself (`EACCES`).
+            return / files$/.test(facts.detail ?? '') ? `the library's files can't be read (${facts.detail})` : `the library root can't be read (${facts.detail ?? 'unknown'})`;
         case 'mass-missing':
             return `one pass found ${facts.missing ?? 0} of ${facts.bound ?? 0} bound sources missing`;
         default:
@@ -163,6 +164,17 @@ export interface LibraryStateOptions {
     logger?: Logger;
     /** How long to wait for the curation lock. A busy lock throws, and the next pass reports again. */
     waitMs?: number;
+    /**
+     * A6 review (2a): called with the outage's id (outageIdOf()) before an
+     * open item closes, outside the curation lock, since the step's requeue
+     * takes the registry lock, which comes first.
+     */
+    beforeClose?: (outageId: string) => Promise<void>;
+}
+
+/** A6 review (2a): one outage's id, persisted with the item: its ID and when the outage began. A restart reads the same one. */
+export function outageIdOf(item: CurationEvent): string {
+    return `${item.id}@${sinceOf(item)}`;
 }
 
 function readyRoot(root: string | undefined): string {
@@ -184,6 +196,8 @@ export async function recordLibraryState(verdict: LibraryVerdict, options: Libra
     const looked = await readLibraryItem(root);
     if (verdict.available) {
         if (!libraryOpen(looked) || await stillHeld(root, looked)) return null;
+        // Before the lock: the requeue is the step's, under the registry lock. Done twice after a crash, it is a no-op.
+        await options.beforeClose?.(outageIdOf(looked));
     } else if (unavailable(looked, at, { cause: verdict.cause, ...(verdict.detail === undefined ? {} : { detail: verdict.detail }) }) === null) {
         return null;
     }
@@ -236,11 +250,11 @@ export async function openMassMissing(root: string, hold: LockContext, { at, mis
  * verdict, and logs a failure instead of throwing, so the next pass reports
  * again.
  */
-export function createLibraryReporter(options: LibraryStateOptions = {}): (verdict: LibraryVerdict) => Promise<void> {
+export function createLibraryReporter(options: LibraryStateOptions = {}): (verdict: LibraryVerdict, hooks?: { beforeClose?: (outageId: string) => Promise<void> }) => Promise<void> {
     const { logger = console } = options;
-    return async (verdict) => {
+    return async (verdict, hooks) => {
         try {
-            await recordLibraryState(verdict, options);
+            await recordLibraryState(verdict, { ...options, ...(hooks?.beforeClose ? { beforeClose: hooks.beforeClose } : {}) });
         } catch (error) {
             logger.warn(`[curation] Could not record library-unavailable in the inbox; the next pass tries again: ${error instanceof Error ? error.message : String(error)}`);
         }

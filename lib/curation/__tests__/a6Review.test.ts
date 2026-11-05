@@ -63,7 +63,8 @@ describe('review 3: --check fails closed on the heartbeat', () => {
         const events = curationPaths(f.root).events;
         fs.mkdirSync(events, { recursive: true });
         fs.chmodSync(events, 0o500);
-        cleanups.push(async () => fs.chmodSync(events, 0o700));
+        // Before the fixture's own cleanup, which needs the folder writable.
+        cleanups.unshift(async () => fs.chmodSync(events, 0o700));
         const warnings: string[] = [];
         await createLibraryReporter({ root: f.root, logger: { ...quiet, warn: (line: string) => { warnings.push(line); } } })({ available: false, cause: 'missing' });
         expect(warnings).toEqual([expect.stringContaining('library-unavailable')]);

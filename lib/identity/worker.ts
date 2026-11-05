@@ -9,7 +9,7 @@ import { failureCodeOf, RETRY_DELAYS_MS } from './failures';
 import type { Hasher } from './ids';
 import { currentProfileId } from './profile';
 import { readRegistry, writeRegistry } from './registry';
-import type { DerivativeJob, Registry } from './types';
+import type { DerivativeJob, ProfileEntry, Registry } from './types';
 
 /**
  * The derivative worker: one in-process queue that builds the current
@@ -108,11 +108,24 @@ export interface DerivativeWorker {
     idle(): Promise<void>;
     /** Take no more jobs, and clear the retries' timers. A build already running finishes. */
     stop(): void;
+    /**
+     * A6 review: build nothing more until resume(), as while the library is
+     * unavailable. A build under way finishes, and the queue keeps its jobs.
+     * The worker pauses itself when a build finds the library gone.
+     */
+    pause?(): void;
+    /** A6 review: build the queue again, after a pass found the library. */
+    resume?(): void;
+    /** A6 review: how many builds wait for a retry that isn't due, and the earliest, for `--once`. */
+    retryWaits?(): { count: number; earliest: string | null };
     /** What each build did since start or the last takeResults(). */
     readonly results: readonly WorkerResult[];
     /** Return the results and forget them, so a long-running watcher doesn't keep every one. */
     takeResults(): WorkerResult[];
 }
+
+/** The longest timer the worker sets, since setTimeout overflows past about 24.8 days. A6 review. */
+export const MAX_TIMER_MS = 24 * 60 * 60_000;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -181,8 +194,10 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
     let root: string | null = null;
     const queue: DerivativeJob[] = [];
     const queued = new Set<string>();
-    /** Jobs waiting for a retry that isn't due yet, by key, with their timers. */
-    const waiting = new Map<string, unknown>();
+    /** Jobs waiting for a retry that isn't due yet, by key, with their timers and when each is due. */
+    const waiting = new Map<string, { handle: unknown; retryAt: string }>();
+    // A6 review: set while the library is unavailable, by a build that found it gone or by the watcher's pass.
+    let paused = false;
     let results: WorkerResult[] = [];
     let draining: Promise<void> | null = null;
 
@@ -199,15 +214,19 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
         ...(options.maxSourcePixels === undefined ? {} : { maxSourcePixels: options.maxSourcePixels }),
     });
 
-    /** Queue `job` once its retry is due, at `retryAt`. */
+    /**
+     * Queue `job` once its retry is due, at `retryAt`. A timer runs at most
+     * MAX_TIMER_MS (24 h), and one that fires early waits again.
+     */
     function waitForRetry(job: DerivativeJob, retryAt: string): void {
         const key = keyOf(job);
         if (state !== 'running' || waiting.has(key)) return;
         const handle = timers.setTimeout(() => {
             waiting.delete(key);
-            enqueue([job]);
-        }, Math.max(0, Date.parse(retryAt) - clock()));
-        waiting.set(key, handle);
+            if (Date.parse(retryAt) > clock()) waitForRetry(job, retryAt);
+            else enqueue([job]);
+        }, Math.min(MAX_TIMER_MS, Math.max(0, Date.parse(retryAt) - clock())));
+        waiting.set(key, { handle, retryAt });
     }
 
     /**
@@ -231,7 +250,8 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
         logger.log(JSON.stringify(line));
     }
 
-    async function run(job: DerivativeJob, dataRoot: string): Promise<void> {
+    /** Build one job. Returns true when the job goes back on the queue: the library was gone, so the worker paused. */
+    async function run(job: DerivativeJob, dataRoot: string): Promise<boolean> {
         let outcome: BuildOutcome;
         let threw = false;
         try {
@@ -249,7 +269,18 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
         } else if (outcome.status === 'pending') {
             if (outcome.reason === 'retrying') {
                 waitForRetry(job, outcome.retryAt);
-                return;
+                return false;
+            }
+            if (outcome.reason === 'library-unavailable') {
+                // A6 review: an outage, not this set. Keep the queue as it is, and ask for the pass that confirms it.
+                if (!paused) logger.warn('[derivatives] The library can\'t be read, so the worker pauses until a pass finds it again. Nothing was recorded as failed.');
+                paused = true;
+                try {
+                    onPassNeeded?.(outcome.reason);
+                } catch (error) {
+                    logger.error(`[derivatives] Scheduling a pass failed: ${errorText(error)}`);
+                }
+                return true;
             }
             logger.log(`[derivatives] ${describe(job)} stays pending (${outcome.reason}). Asking for another pass.`);
             try {
@@ -258,18 +289,21 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
                 logger.error(`[derivatives] Scheduling a pass failed: ${errorText(error)}`);
             }
         }
+        return false;
     }
 
-    /** Build queued jobs one at a time until the queue is empty or the worker stops. */
+    /** Build queued jobs one at a time until the queue is empty, the worker stops, or it pauses. */
     async function drain(dataRoot: string): Promise<void> {
         try {
-            while (state === 'running') {
+            while (state === 'running' && !paused) {
                 const job = queue.shift();
                 if (!job) break;
+                let again = false;
                 try {
-                    await run(job, dataRoot);
+                    again = await run(job, dataRoot);
                 } finally {
-                    queued.delete(keyOf(job));
+                    if (again) queue.unshift(job);
+                    else queued.delete(keyOf(job));
                 }
             }
         } finally {
@@ -279,7 +313,7 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
     }
 
     function pump(): void {
-        if (draining || state !== 'running' || root === null || queue.length === 0) return;
+        if (draining || paused || state !== 'running' || root === null || queue.length === 0) return;
         draining = drain(root);
     }
 
@@ -381,8 +415,23 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
 
         stop() {
             state = 'stopped';
-            for (const handle of waiting.values()) timers.clearTimeout(handle);
+            for (const { handle } of waiting.values()) timers.clearTimeout(handle);
             waiting.clear();
+        },
+
+        pause() {
+            paused = true;
+        },
+
+        resume() {
+            if (!paused) return;
+            paused = false;
+            pump();
+        },
+
+        retryWaits() {
+            const due = [...waiting.values()].map((wait) => wait.retryAt).sort();
+            return { count: due.length, earliest: due[0] ?? null };
         },
 
         get results() {
@@ -395,6 +444,49 @@ export function createWorker(options: WorkerOptions = {}): DerivativeWorker {
             return taken;
         },
     };
+}
+
+/**
+ * A6 review, with the coordinator's limit 2a: put `io-error` builds back to
+ * pending for one more try. With `outageId`, the id of a library outage that
+ * just ended, each such build goes back once for that outage. Without one,
+ * at the first pass after it failed, each goes back once for good
+ * (`clean-pass`): a flap shorter than the watcher's look at the library is
+ * never seen as an outage, so this one try is what saves it. A try that fails
+ * again is final, until the next outage. Writes the registry only when
+ * something changes. Returns how many went back.
+ */
+export async function requeueIoErrors(
+    root: string,
+    { outageId, profileId = currentProfileId(), clock = Date.now, logger = console, lock }: { outageId?: string; profileId?: string; clock?: () => number; logger?: Logger; lock?: { waitMs?: number; leaseMs?: number } } = {},
+): Promise<number> {
+    const tag = outageId ?? 'clean-pass';
+    const due = (entry: ProfileEntry | undefined) => entry?.state === 'failed' && failureCodeOf(entry.error) === 'io-error'
+        && (outageId === undefined ? entry.requeuedFor === undefined : entry.requeuedFor !== outageId);
+    const targets = (registry: Registry) => Object.values(registry.photos)
+        .filter((photo) => photo.source.present && photo.sourceHealth !== 'archived' && photo.mergedInto === undefined)
+        .flatMap((photo) => Object.values(photo.revisions).filter((revision) => !revision.reassignedTo && due(revision.profiles[profileId])));
+    // Looked at first without the lock, so a pass with nothing to put back writes nothing.
+    if (targets(await readRegistry(root)).length === 0) return 0;
+    try {
+        return await withLock('registry', { root, waitMs: lock?.waitMs, leaseMs: lock?.leaseMs }, async ({ signal }) => {
+            const registry = await readRegistry(root);
+            const revisions = targets(registry);
+            for (const revision of revisions) {
+                const entry = revision.profiles[profileId];
+                revision.profiles[profileId] = { state: 'pending', attempts: entry.attempts, requeuedFor: tag };
+            }
+            if (revisions.length === 0) return 0;
+            signal.throwIfAborted();
+            await writeRegistry(root, { ...registry, updatedAt: iso(clock()) }, registry.version);
+            logger.log(`[derivatives] Put ${revisions.length} unreadable ${revisions.length === 1 ? 'build' : 'builds'} back to pending for one more try (${outageId === undefined ? 'the library read clean' : 'the library outage ended'}).`);
+            return revisions.length;
+        });
+    } catch (error) {
+        // A busy registry: the next pass looks again.
+        if (error instanceof LockTimeoutError) return 0;
+        throw error;
+    }
 }
 
 /** What a run of builds did, for `--once`. Failures exclude `source-superseded`, which only a decision or a revert brings back. */

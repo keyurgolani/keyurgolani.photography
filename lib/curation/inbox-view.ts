@@ -310,7 +310,7 @@ export interface InboxDetail extends InboxItem {
  * brought an archived one back.
  */
 export type ResolvedCause =
-    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' | 'available' }
+    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' | 'available' | 'readable' }
     | { kind: 'merged'; into: string | null };
 
 /**
@@ -376,6 +376,8 @@ export function resolvedResponse(cause: ResolvedCause | null, type: CurationEven
             return "The file is its own photograph now, and that photograph's new item reviews it.";
         case 'restored':
             return 'This file brought the archived photograph back under its old ID, so its own item places it.';
+        case 'readable':
+            return 'The watcher can read the file again, so it processes it as usual.';
         case 'available':
             return 'The library is available again. A source it held that is still gone now shows as missing.';
         default:

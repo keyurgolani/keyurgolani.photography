@@ -7,7 +7,8 @@ import { namedUuid, sha256, type Hasher } from './ids';
 import { inspectEntry, type Inspection } from './inspect';
 import { currentProfileId } from './profile';
 import { IO_ERROR_CODES } from './failures';
-import { IO_ERROR_AFTER_PASSES, isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
+import { massMissing } from './library';
+import { IO_ERROR_AFTER_PASSES, IO_ERROR_MIN_SPAN_MS, isStillChanging, reconcile, type FactDraft, type ReconcileReport } from './reconcile';
 import { emptyStatCache, readRegistry, readStatCache, writeRegistry, writeStatCache, type StatCache, type StatCacheEntry } from './registry';
 import { folderOf, LibraryRootMissingError, LibraryRootUnreadableError, scanLibrary, type LibraryScan } from './scan';
 import type { DerivativeJob, IdentityFact, RecordedDecision, Registry } from './types';
@@ -21,6 +22,8 @@ export interface PassDeps {
     clock?: () => number;
     profileId?: string;
     logger?: Logger;
+    /** A6 review: the pixel cap the inspection applies before decoding, MAX_SOURCE_PIXELS by default. Tests lower it. */
+    maxSourcePixels?: number;
 }
 
 /** Receives committed facts. Sinks see a fact again after a crash, so they dedupe by factId. */
@@ -46,6 +49,8 @@ export interface ObservedLibrary {
     statCache: StatCache;
     /** What became of each decision, in order. */
     decisions: DecisionOutcome[];
+    /** A6 review: the files this pass read EACCES, EPERM or EIO, of how many scanned, and the commonest errno. */
+    unreadableIo: { count: number; total: number; errno: string | null };
 }
 
 /**
@@ -112,6 +117,8 @@ export async function observeLibrary(
 
     const inspections = new Map<string, Inspection>();
     const entries: Record<string, StatCacheEntry> = {};
+    const ioErrnos = new Map<string, number>();
+    const recovered: FactDraft[] = [];
     for (const entry of scan.entries) {
         const cached = statCache.entries[entry.path];
         // An unreadable file is always read again: A6 keeps its entry only to count the passes it was skipped.
@@ -121,7 +128,7 @@ export async function observeLibrary(
             if (unchanged) entries[entry.path] = cached;
             continue;
         }
-        const inspection = unchanged ? cached.inspection : await inspectEntry(root, entry, { hasher });
+        const inspection = unchanged ? cached.inspection : await inspectEntry(root, entry, { hasher, ...(deps.maxSourcePixels === undefined ? {} : { maxPixels: deps.maxSourcePixels }) });
         inspections.set(entry.path, inspection);
         if (inspection.kind === 'image' || inspection.kind === 'unsupported') {
             entries[entry.path] = {
@@ -133,7 +140,7 @@ export async function observeLibrary(
                 emitted: unchanged ? [...cached.emitted] : [],
             };
         } else if (inspection.kind === 'unreadable' && IO_ERROR_CODES.includes(inspection.error)) {
-            // A6: one more pass this version of the file was skipped for EACCES, EPERM or EIO.
+            // A6: one more pass this version of the file was skipped for EACCES, EPERM or EIO, since `firstSkippedAt`.
             const before = cached !== undefined && sameSignature(cached, entry) && cached.inspection.kind === 'unreadable' ? cached : undefined;
             entries[entry.path] = {
                 size: entry.size,
@@ -143,7 +150,17 @@ export async function observeLibrary(
                 inspection,
                 emitted: before ? [...before.emitted] : [],
                 skipped: (before?.skipped ?? 0) + 1,
+                firstSkippedAt: before?.firstSkippedAt ?? new Date(scan.observedAt).toISOString(),
             };
+            ioErrnos.set(inspection.error, (ioErrnos.get(inspection.error) ?? 0) + 1);
+        }
+        // A6 review: a file reported as io-error that reads again says so, under the key it was reported with, so its item closes.
+        if (cached?.inspection.kind === 'unreadable' && (inspection.kind === 'image' || inspection.kind === 'unsupported')) {
+            for (const key of cached.emitted) {
+                const [, subject, assetRevision] = /^processing-failed:([^:]+):(sha256-[0-9a-f]{64})$/.exec(key) ?? [];
+                if (assetRevision === undefined) continue;
+                recovered.push({ type: 'io-recovered', key, photoId: subject.startsWith('ph_') ? subject : null, assetRevision, path: entry.path, folder: folderOf(entry.path), observedAt: new Date(scan.observedAt).toISOString() });
+            }
         }
     }
 
@@ -154,6 +171,8 @@ export async function observeLibrary(
     for (const entry of scan.entries) {
         const cached = entries[entry.path];
         if (cached?.inspection.kind !== 'unreadable' || (cached.skipped ?? 0) < IO_ERROR_AFTER_PASSES) continue;
+        // A6 review: and over at least ten minutes, so a flap across a few quick passes reports nothing.
+        if (cached.firstSkippedAt === undefined || scan.observedAt - Date.parse(cached.firstSkippedAt) < IO_ERROR_MIN_SPAN_MS) continue;
         const bound = Object.values(result.registry.photos).find((photo) => photo.source.present && photo.sourceHealth !== 'archived' && photo.mergedInto === undefined && photo.source.key === entry.key);
         const photoId = bound?.photoId ?? null;
         const assetRevision = bound?.source.observedRevision ?? unreadableRevision(entry.path);
@@ -169,6 +188,7 @@ export async function observeLibrary(
         });
     }
 
+    result.facts.push(...recovered);
     // An unsupported file or a digest collision changes no registry state, so report it once per version of the file.
     const facts = result.facts.filter((fact) => {
         if (!reportedOncePerVersion(fact)) return true;
@@ -189,6 +209,11 @@ export async function observeLibrary(
         retryAfterMs: result.retryAfterMs,
         statCache: { schemaVersion: statCache.schemaVersion, version: statCache.version + 1, entries },
         decisions: result.decisions,
+        unreadableIo: {
+            count: [...ioErrnos.values()].reduce((sum, n) => sum + n, 0),
+            total: scan.entries.length,
+            errno: [...ioErrnos.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0] ?? null,
+        },
     };
 }
 
@@ -335,7 +360,12 @@ export async function runReconcilePass(options: PassOptions = {}): Promise<PassO
             const replay = replayDecisions(decisions, before.decided ?? {}, { complete });
             const observed = await observeLibrary({ root: libraryRoot(), registry: before, statCache: await readStatCache(root), deps: options, decisions: replay.fresh });
             const present = Object.values(before.photos).filter((photo) => photo.sourceHealth === 'present').length;
-            if (observed.scan.entries.length === 0 && present > 0) return { status: 'skipped' as const, reason: 'library-empty' as const, present };
+            // Source files only (A6 review): a library left with nothing but files the watcher can't read is as empty.
+            if (!observed.scan.entries.some((entry) => entry.kind === 'source') && present > 0) return { status: 'skipped' as const, reason: 'library-empty' as const, present };
+            // A6 review: 20 or more files, over 10% of them, unreadable at once is the library, not each file: a wrong-owner
+            // chown, say. The pass refuses, as for an unreadable root, and reports no item per file.
+            const { count, total, errno } = observed.unreadableIo;
+            if (massMissing(count, total)) return { status: 'skipped' as const, reason: 'library-unavailable' as const, cause: 'unreadable' as const, detail: `${errno ?? 'unknown'} on ${count} of ${total} files` };
             const { outcomes, decided } = replay.settle(observed.decisions);
             signal.throwIfAborted();
             // The stat cache counts the passes in a row each was skipped (A6), and the IO_ERROR_AFTER_PASSES-th reports it.

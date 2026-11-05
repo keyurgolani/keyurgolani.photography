@@ -57,7 +57,29 @@ export function isRetryable(error: string | undefined): boolean {
 export function classifyDecodeFailure(error: unknown): Extract<FailureCode, 'too-large' | 'unsupported-format' | 'decode-error'> | null {
     if (typeof error === 'object' && error !== null && typeof (error as NodeJS.ErrnoException).code === 'string') return null;
     const message = error instanceof Error ? error.message : String(error);
+    // A6 review: memory first, since libvips names the loader when an allocation fails in it too.
+    if (ALLOCATION_FAILURE.test(message)) return null;
     if (/pixel limit/i.test(message)) return 'too-large';
     if (/unsupported image format/i.test(message)) return 'unsupported-format';
-    return 'decode-error';
+    return DECODE_FAILURES.some((pattern) => pattern.test(message)) ? 'decode-error' : null;
 }
+
+/** A6 review: a libvips allocation failure, which can pass, so it's transient. */
+const ALLOCATION_FAILURE = /out of memory|cannot allocate|vips_malloc|memory allocation/i;
+
+/**
+ * A6 review: the decoder errors that mean the bytes themselves are bad, by
+ * the messages Sharp and libvips give. Anything else from the decoder is
+ * transient, so it retries.
+ */
+const DECODE_FAILURES: readonly RegExp[] = [
+    /^VipsJpeg: /i,
+    /premature end/i,
+    /corrupt/i,
+    /truncated/i,
+    /(jpeg|png|spng|webp|heif|gif|tiff)load(_buffer)?: /i,
+    /libspng read error/i,
+    /invalid (input|png|jpeg|marker|huffman|sos|header)/i,
+    /bad (huffman|header|data|marker)/i,
+    /not a (jpeg|png|webp) file/i,
+];
