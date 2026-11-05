@@ -100,7 +100,8 @@ export async function createInboxFixture(): Promise<InboxFixture> {
     };
 }
 
-function fact(fixture: InboxFixture, type: IdentityFactType, photoId: string | null, extra: Partial<IdentityFact> = {}): IdentityFact {
+/** A fact as #10's pass would commit it for `photoId`, or for an unbound file. A8's spec opens its own items with it. */
+export function fact(fixture: InboxFixture, type: IdentityFactType, photoId: string | null, extra: Partial<IdentityFact> = {}): IdentityFact {
     const assetRevision = extra.assetRevision ?? (photoId ? fixture.revisionOf(photoId) : `sha256-${'e'.repeat(64)}`);
     const sourcePath = extra.path ?? (photoId ? fixture.catalog.registry.photos[photoId].source.path : FAILED_SOURCE);
     const folder = path.posix.dirname(sourcePath);

@@ -90,8 +90,9 @@ const webOrigin = () => {
 
 const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetRevision: data().revisionOf(photoId), key: `new:${photoId}:${data().revisionOf(photoId)}` }));
 const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) });
-/** The answer the last action gave, in the page's polite status region. */
-const answer = (page: Page, state: 'done' | 'stale' | 'invalid' | 'refused') => page.getByRole('status').locator(`[data-state="${state}"]`);
+/** The answer the last action gave, in the page's polite status region, or for a stale one the alert beside it (#14, A8). */
+const answer = (page: Page, state: 'done' | 'stale' | 'invalid' | 'refused') =>
+    state === 'stale' ? page.locator('[role="alert"][data-state="stale"]') : page.getByRole('status').locator(`[data-state="${state}"]`);
 /** What the last approval or Decide later did, in the strip at the top of the item it opened. */
 const arrival = (page: Page) => page.locator('#item > [role="status"] [data-state="done"]');
 /** The strip is on the first screen, above the photograph and the item's heading. */
