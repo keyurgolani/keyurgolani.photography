@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import PreviewFrame from '../PreviewFrame';
 
@@ -47,8 +47,8 @@ describe('PreviewFrame', () => {
         render(<PreviewFrame src={SRC} draftHash="1a2b3c4d" presets backHref="/curation/publish" />);
         const group = screen.getByRole('group', { name: 'Frame size' });
         const fit = screen.getByRole('button', { name: 'Fit the window' });
-        const desktop = screen.getByRole('button', { name: 'Desktop, 1440 by 900' });
-        const mobile = screen.getByRole('button', { name: 'Mobile, 390 by 844' });
+        const desktop = screen.getByRole('button', { name: 'Desktop 1440 × 900' });
+        const mobile = screen.getByRole('button', { name: 'Mobile 390 × 844' });
         expect(group).toContainElement(fit);
         for (const button of [fit, desktop, mobile]) expect(button).toHaveAttribute('type', 'button');
         expect(fit).toHaveAttribute('aria-pressed', 'true');
@@ -68,14 +68,56 @@ describe('PreviewFrame', () => {
         expect(frame.style.width).toBe('');
     });
 
+    /** The name the page computes for `button`, through the same matcher getByRole uses. */
+    const nameOf = (button: HTMLElement): string => {
+        let name = '';
+        screen.getAllByRole('button', {
+            name: (computed, element) => {
+                if (element === button) name = computed;
+                return element === button;
+            },
+        });
+        return name;
+    };
+    const visibleText = (element: HTMLElement) => (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+    /** In a browser each part of an inline-flex button is a flex item, which is a block; jsdom applies no CSS module. */
+    const asLaidOut = () => {
+        for (const part of screen.getByRole('group', { name: 'Frame size' }).querySelectorAll<HTMLElement>('button *')) part.style.display = 'block';
+    };
+
     it('names each preset the same once the stylesheet lays it out (A9 CI fix)', () => {
         render(<PreviewFrame src={SRC} presets />);
-        // jsdom applies no CSS module. In a browser, the visually hidden words are absolutely placed, which makes them a
-        // block, and a block's text joins a name with a space around it: "Desktop , 1440 by 900", which the e2e walk missed.
-        for (const part of screen.getByRole('group', { name: 'Frame size' }).querySelectorAll<HTMLElement>('button *')) part.style.display = 'block';
-        expect(screen.getByRole('button', { name: 'Desktop, 1440 by 900' })).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Mobile, 390 by 844' })).toBeInTheDocument();
+        // A block's text joins a name with a space around it, so a visually hidden ", 1440 by 900" read "Desktop , 1440 by 900".
+        asLaidOut();
+        expect(screen.getByRole('button', { name: 'Desktop 1440 × 900' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Mobile 390 × 844' })).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Fit the window' })).toBeInTheDocument();
+    });
+
+    it('names each preset with its visible text, exactly, laid out or not (WCAG 2.5.3, axe label-content-name-mismatch; A9 CI fix)', () => {
+        render(<PreviewFrame src={SRC} presets />);
+        const buttons = within(screen.getByRole('group', { name: 'Frame size' })).getAllByRole('button');
+        expect(buttons.map(visibleText)).toEqual(['Fit the window', 'Desktop 1440 × 900', 'Mobile 390 × 844']);
+        for (const button of buttons) expect(nameOf(button), visibleText(button)).toBe(visibleText(button));
+        asLaidOut();
+        for (const button of buttons) expect(nameOf(button), visibleText(button)).toBe(visibleText(button));
+    });
+
+    it("keeps the Publish panel's markup as it was before A9: a <p> toolbar holding the marker alone, then the picture (A9 CI fix)", () => {
+        // Dark parity matches elements by tag and position, so a <div> toolbar moved every path under the panel's frame.
+        const { container } = render(<PreviewFrame src={SRC} embedded focusable={false} marker="Draft" />);
+        const frame = container.firstElementChild as HTMLElement;
+        expect([...frame.children].map((child) => child.tagName)).toEqual(['P', 'DIV']);
+        expect([...(frame.children[0] as HTMLElement).children].map((child) => child.tagName)).toEqual(['SPAN']);
+        expect(frame.children[1]).toHaveAttribute('role', 'img');
+    });
+
+    it('keeps the full toolbar a <p> too, holding only phrasing content, so nothing in it breaks the paragraph (A9 CI fix)', () => {
+        const { container } = render(<PreviewFrame src={SRC} draftHash="1a2b3c4d" presets backHref="/curation/publish" />);
+        const toolbar = (container.firstElementChild as HTMLElement).children[0] as HTMLElement;
+        expect(toolbar.tagName).toBe('P');
+        expect(toolbar.querySelectorAll('div, p, section, ul, ol')).toHaveLength(0);
+        expect(within(toolbar).getByRole('group', { name: 'Frame size' }).tagName).toBe('SPAN');
     });
 
     it('keeps the embedded panel to its marker, with no presets', () => {
