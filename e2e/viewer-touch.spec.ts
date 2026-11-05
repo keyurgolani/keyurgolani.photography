@@ -27,6 +27,8 @@ const header = (page: Page) => viewer(page).locator('header');
 const button = (page: Page, name: string) => viewer(page).getByRole('button', { name, exact: true });
 const stage = (page: Page) => viewer(page).locator('[data-viewer-stage]');
 const announcer = (page: Page) => viewer(page).locator('[data-viewer-announcer]');
+/** A move's announcement (#178): the position, then the title and the description when the photograph has them. */
+const moved = (position: number, total: number) => new RegExp(`^Photograph ${position} of ${total}(\\. |$)`);
 const dialog = (page: Page) => page.getByRole('dialog', { name: /^Fixture harbor/ });
 const entry = (page: Page, photoId: string) => page.locator(`[id="photo-${photoId}"]`);
 const technical = (page: Page) => viewer(page).getByRole('button', { name: /^(Show|Hide) technical details$/ });
@@ -157,7 +159,7 @@ test.describe('swipe', () => {
         const length = await page.evaluate(() => history.length);
         await swipe(page, -150);
         await expectStill(page, P[2], 3);
-        await expect(announcer(page)).toHaveText('Photograph 3 of 3');
+        await expect(announcer(page)).toHaveText(moved(3, 3));
         expect(await focusPlace(page)).toBe('body');
         await swipe(page, 150);
         await expectStill(page, P[1], 2);
@@ -938,7 +940,7 @@ test.describe('arrows under the open modal', () => {
         expect(await focusPlace(page)).toBe('body');
         await page.keyboard.press('ArrowRight');
         await expectStill(page, P[1], 2);
-        await expect(announcer(page)).toHaveText('Photograph 2 of 3');
+        await expect(announcer(page)).toHaveText(moved(2, 3));
         // WebKit can leave focus on the body after a tap on content that takes none; the key works either way.
         if (testInfo.project.use.hasTouch) {
             const { x, y } = await centerOf(stage(page));
@@ -955,6 +957,31 @@ test.describe('arrows under the open modal', () => {
         await page.keyboard.press('Escape');
         await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, P[0])).toBeFocused();
+    });
+
+    test('a second press at the last photograph is heard again: the end message lands twice on the same live region (bug 3, #178)', async ({ page }, testInfo) => {
+        await openFromSeries(page, P[2], testInfo, 'keyboard');
+        // Every time the region's text becomes the end message, on the region itself, the node a screen reader watches.
+        await announcer(page).evaluate((region) => {
+            const heard: string[] = [];
+            (window as unknown as { kgHeard: string[]; kgRegion: Element }).kgHeard = heard;
+            (window as unknown as { kgRegion: Element }).kgRegion = region;
+            new MutationObserver((records) => {
+                for (const record of records) {
+                    if (record.type === 'characterData') heard.push((record.target as Text).data);
+                    for (const added of record.addedNodes) heard.push(added.textContent ?? '');
+                }
+            }).observe(region, { childList: true, characterData: true, subtree: true });
+        });
+        const landings = () =>
+            page.evaluate(() => (window as unknown as { kgHeard: string[] }).kgHeard.filter((text) => text === 'Last photograph in Fixture harbor.').length);
+        await page.keyboard.press('ArrowRight');
+        await expect.poll(landings).toBe(1);
+        await page.keyboard.press('ArrowRight');
+        await expect.poll(landings).toBe(2);
+        // The same node both times: the region is never remounted, which a screen reader may not announce.
+        expect(await announcer(page).evaluate((region) => region === (window as unknown as { kgRegion: Element }).kgRegion)).toBe(true);
+        await expectStill(page, P[2], 3);
     });
 });
 
@@ -996,7 +1023,7 @@ test.describe('presentation', () => {
         if (testInfo.project.use.hasTouch) await swipe(page, -150);
         else await button(page, 'Next photograph').click();
         await expectStill(page, P[1], 2);
-        await expect(announcer(page)).toHaveText('Photograph 2 of 3');
+        await expect(announcer(page)).toHaveText(moved(2, 3));
         const motion = await page.evaluate(() => {
             const record = (window as unknown as { kgMotion: { animations: string[]; transforms: string[]; running: boolean } }).kgMotion;
             record.running = false;
