@@ -53,6 +53,12 @@ export const SINGLE_LEAD = 'Revision 1 is the first, and the only one so far. Ea
 export const LIVE_TEXT = "This is what visitors see, so there's nothing to restore.";
 export const UNREADABLE_TEXT = "Its saved copy can't be read, so it can't come back. The server log names what failed.";
 export const UNCHECKED_TEXT = "It can't be checked right now, so it can't come back yet. The server log names what failed.";
+/** #181's A7: the verify record refuses it. Only the command line's --accept verify.failed overrides that, so no Restore here. */
+export const VERIFY_FAILED_TEXT = "It failed its last check, so it can't come back from here. Run photos verify to see what to fix.";
+export const VERIFY_DAMAGED_TEXT = "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again.";
+
+/** Why the verify record refused a plan: a failed entry for it, or a record that can't be read. */
+export type VerifyRefusal = 'last-verify' | 'record-damaged';
 
 export type EntryKind = 'Publish' | 'Restore';
 
@@ -229,7 +235,11 @@ export interface EntryInput {
 }
 
 /** What one planRollback() said about a revision, for its entry. */
-export type PlanStatus = { outcome: 'READY' } | { outcome: 'VALIDATION_FAILED'; reasons: string[] } | { outcome: Exclude<RollbackOutcome, 'READY' | 'VALIDATION_FAILED'> };
+export type PlanStatus =
+    | { outcome: 'READY' }
+    | { outcome: 'VALIDATION_FAILED'; reasons: string[] }
+    | { outcome: 'VERIFY_FAILED'; reason: VerifyRefusal }
+    | { outcome: Exclude<RollbackOutcome, 'READY' | 'VALIDATION_FAILED' | 'VERIFY_FAILED'> };
 
 /**
  * The revisions the shown entries could restore, newest first, each once:
@@ -359,6 +369,7 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
         if (!plan) return { type: 'check', revision: activation.revisionNumber, href: input.hrefs.check(activation.revisionNumber, activation.sequence) };
         if (plan.outcome === 'READY') return { type: 'restore', revision: activation.revisionNumber };
         if (plan.outcome === 'VALIDATION_FAILED') return { type: 'text', text: blockedText(plan.reasons), tone: 'alert' };
+        if (plan.outcome === 'VERIFY_FAILED') return { type: 'text', text: plan.reason === 'record-damaged' ? VERIFY_DAMAGED_TEXT : VERIFY_FAILED_TEXT, tone: 'alert' };
         return { type: 'text', text: UNCHECKED_TEXT, tone: 'alert' };
     })();
 
@@ -461,12 +472,17 @@ export function impactLines(input: ImpactInput): { lines: ImpactLine[]; note?: s
 export const draftNoteFor = (target: number) =>
     `Your draft stays, and this screen then compares it against revision ${target}. If a change in it clashes with revision ${target}, Publish stays locked until you settle that change.`;
 
-/** The editorial rules a restore accepted, in the owner's words, with no rule IDs (spec, copy rules). */
+/**
+ * What a restore accepted, in the owner's words, with no rule IDs (spec,
+ * copy rules): its editorial rules, and #181's `verify.failed`, which only
+ * the command line accepts.
+ */
 const ACCEPTED_WORDS: Record<string, string> = {
     'accent.contrast': "an accent color that's hard to read on the Viewer's dark bands",
     'accent.format': "an accent color the site can't show",
     'route.slug-change': "an address change that doesn't keep the old address",
     'route.alias-reassigned': 'an address taken from another series',
+    'verify.failed': 'a failed check from photos verify',
 };
 
 export function acceptedWords(codes: readonly string[]): string {
@@ -615,6 +631,8 @@ export interface OutcomeFacts {
     reasons: string[];
     /** NO_CHANGES settled an interrupted record on the way. */
     settled: boolean;
+    /** VERIFY_FAILED's cause. A failed entry when absent. */
+    verify?: VerifyRefusal;
 }
 
 /**
@@ -671,6 +689,11 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
                 ...(facts.reasons.length ? { list: facts.reasons.map((reason) => `${capitalised(reason)}.`) } : {}),
                 actions: ['close', 'reload'],
             };
+        case 'VERIFY_FAILED':
+            // A post that skipped History's missing Restore, or a check that failed after the page loaded. No accept here.
+            return facts.verify === 'record-damaged'
+                ? { tone: 'alert', heading: `The record of the last check can't be read, so revision ${n} can't come back`, body: [`Nothing was restored. Revision ${m} stays live. Run photos verify to check it again.`], actions: ['close', 'reload'] }
+                : { tone: 'alert', heading: `Revision ${n} failed its last check, so it can't come back`, body: [`Nothing was restored. Revision ${m} stays live. Run photos verify to see what to fix.`], actions: ['close', 'reload'] };
         case 'NOT_ELIGIBLE':
             return { tone: 'alert', heading: `Revision ${n} never went live, so it can't come back`, body: ['Nothing was restored. Load the page again for the current list.'], actions: ['close', 'reload'] };
         case 'NOTHING_ACTIVE':

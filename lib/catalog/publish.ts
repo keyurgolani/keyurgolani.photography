@@ -4,6 +4,7 @@ import { canonicalJson } from '../identity/ids';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
+import type { VersionedWriteHooks } from '../storage/document';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { legacySitePhotos } from './legacy-photos';
@@ -118,6 +119,8 @@ export interface PublishHooks {
     afterStep?(step: number): void | Promise<void>;
     /** Passed to the catalog lock, so a test can pause renewals. */
     lock?: LockHooks;
+    /** Passed to step 11's pointer write, so a test can fail it between its temp and its link (#181). */
+    pointer?: VersionedWriteHooks;
 }
 
 export interface PublishOptions {
@@ -233,6 +236,7 @@ interface CommitInput {
     lockTakeover: Activation['lockTakeover'];
     clock: () => number;
     afterStep?: (step: number) => void | Promise<void>;
+    pointerHooks?: VersionedWriteHooks;
 }
 
 type CommitResult = { ok: true; activation: Activation } | { ok: false; outcome: 'LOCK_LOST'; message: string };
@@ -274,7 +278,7 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
     // A compare-and-swap on the version read above: a holder that lost the lock after that re-read, and finds the
     // pointer moved by the process that has it now, stops here instead of putting its revision back.
     try {
-        await writeActivePointer(root, { revisionId: pending.revisionId, activationId: pending.activationId }, pointer?.version ?? 0);
+        await writeActivePointer(root, { revisionId: pending.revisionId, activationId: pending.activationId }, pointer?.version ?? 0, input.pointerHooks);
     } catch (error) {
         if (error instanceof ActivePointerMovedError) return lost;
         throw error;
@@ -563,7 +567,7 @@ export interface ActivateOptions {
     /** Editorial rules a #15 rollback accepted. */
     acceptedRules?: string[];
     lockTakeover?: Activation['lockTakeover'];
-    hooks?: Pick<PublishHooks, 'afterStep'>;
+    hooks?: Pick<PublishHooks, 'afterStep' | 'pointer'>;
     logger?: CatalogLogger;
     clock?: () => number;
 }
@@ -659,6 +663,7 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         lockTakeover: options.lockTakeover ?? lock.takeover,
         clock,
         afterStep: options.hooks?.afterStep,
+        pointerHooks: options.hooks?.pointer,
     });
     if (!result.ok) return { outcome: result.outcome, message: result.message, activation: null, recovery, issues };
     return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery, issues };
@@ -854,6 +859,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             lockTakeover: lock.takeover,
             clock,
             afterStep: step,
+            pointerHooks: hooks.pointer,
         });
         if (!committed.ok) throw new Stop('LOCK_LOST', committed.message);
         Object.assign(result, { revisionId: committed.activation.revisionId, revisionNumber: committed.activation.revisionNumber, activationId: committed.activation.activationId });

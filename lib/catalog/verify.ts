@@ -11,7 +11,7 @@ import { verifyDirectory, type AssetIdentity } from '../storage/publish';
 import { historyState, knownGood } from './history';
 import { blockingIssues, validateStored } from './publish';
 import { assertRevisionId, CatalogIntegrityError, listActivations, readRevisionFile, revisionNumberFor } from './repository';
-import { errorText } from './rollback';
+import { errorText } from './error-text';
 import { registeredRules } from './ruleset';
 import { REVISION_ID_RE } from './schema';
 import type { Activation, ActivePointer, Issue } from './types';
@@ -73,6 +73,8 @@ export interface RevisionCheck {
     failedSets: string[];
     /** What to do about it, or null when it passes. */
     fix: string | null;
+    /** When a `photos verify --revision` pass replaced this entry, clearing its failure (#181). The record's own `checkedAt` stays the full run's. */
+    checkedAt?: string;
 }
 
 export interface ChainCheck {
@@ -98,7 +100,7 @@ export interface VerifyReport {
     message: string;
     /** Null when it stopped before checking anything. */
     record: VerifyRecord | null;
-    /** A run over everything, which the CLI records. `--revision` checks one and records nothing. */
+    /** A run over everything, which the CLI records. `--revision` checks one, and records only a pass that clears its failure (#181). */
     full: boolean;
 }
 
@@ -440,6 +442,32 @@ export async function readVerifyRecord(root: string): Promise<VerifyRecordRead> 
     } catch {
         return { state: 'damaged' };
     }
+}
+
+/**
+ * Why the record refuses a rollback to `revisionId`, or null when it
+ * doesn't (#181's A7): `last-verify` when an entry for it, from any run,
+ * failed, with that entry's problems; `record-damaged` for any revision
+ * while the record can't be read, as rollbackReadiness() reads it. No
+ * record, or no entry for it, refuses nothing. Read only, never throws.
+ */
+export interface RecordedVerifyFailure {
+    reason: 'last-verify' | 'record-damaged';
+    /** The failed entry's problems as the record keeps them; none for a damaged record. */
+    problems: string[];
+    problemCount: number;
+}
+
+export async function recordedVerifyFailure(root: string, revisionId: string): Promise<RecordedVerifyFailure | null> {
+    const read = await readVerifyRecord(path.resolve(/*turbopackIgnore: true*/ root));
+    if (read.state === 'damaged') return { reason: 'record-damaged', problems: [], problemCount: 0 };
+    if (read.state === 'none') return null;
+    const failed = read.record.revisions.find((entry) => entry.revisionId === revisionId && !entry.ok);
+    if (!failed) return null;
+    // The reader checks only an entry's ID and `ok`, so the rest is read with care.
+    const problems = Array.isArray(failed.problems) ? failed.problems.filter((problem): problem is string => typeof problem === 'string') : [];
+    const problemCount = typeof failed.problemCount === 'number' && Number.isInteger(failed.problemCount) && failed.problemCount >= problems.length ? failed.problemCount : problems.length;
+    return { reason: 'last-verify', problems, problemCount };
 }
 
 // The Publish screen's gate.

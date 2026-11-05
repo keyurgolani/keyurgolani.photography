@@ -351,6 +351,8 @@ export async function readVersionedDocument(dir: string, { hooks }: { hooks?: Re
 }
 
 export interface VersionedWriteHooks {
+    /** After the temp is created, before its bytes are written. Throw an ENOSPC here to simulate a full disk (#181). */
+    beforeWrite?(temp: string): void | Promise<void>;
     /** After the temp is staged and fsynced, before the folder is listed. */
     afterStage?(temp: string): void | Promise<void>;
     /** After the listing found the newest still at the expected version, before the link. */
@@ -399,6 +401,7 @@ export async function writeVersionedDocument<T extends VersionedDocument>(
         // it deletes anything, or ran before it, and then the listing below sees the newer version that prune kept.
         const handle = await fs.promises.open(temp, 'wx', PRIVATE_FILE_MODE);
         try {
+            await hooks?.beforeWrite?.(temp);
             await handle.writeFile(versionText(next, version));
             await handle.sync();
         } finally {

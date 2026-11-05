@@ -122,6 +122,9 @@ export async function loadHistoryView(root: string, options: HistoryLoadOptions)
             plans[plan.target.revisionNumber ?? 0] = await planView(plan, names, contentOf, options.draftPending);
         } else if (plan.outcome === 'VALIDATION_FAILED') {
             planned.set(revisionId, { outcome: 'VALIDATION_FAILED', reasons: blockingReasons(plan.blocking, names.photo) });
+        } else if (plan.outcome === 'VERIFY_FAILED') {
+            // #181's A7: the verify record refuses it. An expected stop, so it isn't logged, and History offers no override.
+            planned.set(revisionId, { outcome: 'VERIFY_FAILED', reason: plan.verify?.reason ?? 'last-verify' });
         } else {
             // A damaged file or an I/O error: the row says it can't be checked, and the log says why.
             console.error(`[curation] History couldn't plan a restore of ${revisionId}: ${plan.outcome}: ${plan.message}`);

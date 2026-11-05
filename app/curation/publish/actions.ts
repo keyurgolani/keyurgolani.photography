@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { publish, type PublishResult } from '@/lib/catalog/publish';
 import { previewDraftId } from '@/lib/catalog/preview-reader';
 import { listActivations, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
-import { rollback } from '@/lib/catalog/rollback';
+import { rollback, VERIFY_FAILED_ACCEPT } from '@/lib/catalog/rollback';
 import { REVISION_ID_RE } from '@/lib/catalog/schema';
 import { hashValue } from '@/lib/catalog/review';
 import type { AuthoredKind } from '@/lib/catalog/schema';
@@ -296,9 +296,11 @@ const ACCEPTS_MAX = 16;
  * rule ID, at most 64 characters and at most 16 of them, deduplicated. The
  * rest are dropped, never echoed. rollback() then accepts only the flagged
  * editorial rules among them, so this shapes the input and isn't the gate.
+ * #181's A7: `verify.failed` is dropped too. Its override is the command
+ * line's alone, so a post can't carry it.
  */
 function acceptedFrom(form: FormData): string[] {
-    const ids = form.getAll('accept').filter((value): value is string => typeof value === 'string' && value.length <= ACCEPT_LENGTH_MAX && RULE_ID_RE.test(value));
+    const ids = form.getAll('accept').filter((value): value is string => typeof value === 'string' && value.length <= ACCEPT_LENGTH_MAX && RULE_ID_RE.test(value) && value !== VERIFY_FAILED_ACCEPT);
     return [...new Set(ids)].slice(0, ACCEPTS_MAX);
 }
 
@@ -354,7 +356,7 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
         reasons = editorialWords(result.plan?.issues ?? [], result.unaccepted ?? [], (seriesId) => titles[seriesId] || `Series ${seriesId.slice(4, 12)}`, { live, target });
     }
     // The expected stops, which the dialog explains, aren't logged.
-    const expectedStops = ['NO_CHANGES', 'ACTIVE_CHANGED', 'CATALOG_LOCKED', 'VALIDATION_FAILED', 'ACCEPTANCE_REQUIRED'];
+    const expectedStops = ['NO_CHANGES', 'ACTIVE_CHANGED', 'CATALOG_LOCKED', 'VALIDATION_FAILED', 'ACCEPTANCE_REQUIRED', 'VERIFY_FAILED'];
     if (!expectedStops.includes(result.outcome)) {
         console.error(`[curation] A restore from the Publish screen stopped: ${result.outcome}: ${result.message}`);
     }
@@ -367,6 +369,7 @@ export async function restoreAction(previous: RestoreState, form: FormData): Pro
             holderSince: result.holder?.acquiredAt ?? null,
             reasons,
             settled: Boolean(result.recovery?.committed),
+            ...(result.plan?.verify ? { verify: result.plan.verify.reason } : {}),
         }),
     });
 }
