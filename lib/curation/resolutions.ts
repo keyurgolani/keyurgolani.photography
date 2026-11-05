@@ -80,6 +80,11 @@ const FAILURE_TEXT: Record<CandidateFailure, string> = {
     integrity: "a set already in place for these bytes doesn't match its manifest",
     undecodable: "the new file can't be decoded",
     build: 'building it failed',
+    'io-error': "the new file can't be read (EACCES, EPERM or EIO)",
+    'decode-error': "the decoder refused the new file's bytes",
+    'unsupported-format': "the new file's bytes are in a format the watcher can't read",
+    'too-large': 'the new file is over the 200 MP pixel cap',
+    'retries-exhausted': 'building it failed, and so did each of its three retries',
 };
 
 export interface ConfirmFaults {

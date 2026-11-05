@@ -7,8 +7,9 @@ import { dataRootStatus, libraryRoot } from '../storage/config';
 import { hasErrorCode, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, withoutAbsolutePaths } from '../storage/fsx';
 import { LockTimeoutError, withLock } from '../storage/lock';
 import { IntegrityError, MANIFEST_FILE, manifestFiles, publishDirectory, readDirectoryManifest, verifyDirectory, type DirectoryManifest } from '../storage/publish';
+import { classifyDecodeFailure, failureCodeOf } from './failures';
 import { assetRevisionOf, sha256, type Hasher } from './ids';
-import { encodeLqip, encodeVariant, lqipDataUri, PROFILE_1, variantWidthFor } from './profile';
+import { encodeLqip, encodeVariant, lqipDataUri, MAX_SOURCE_PIXELS, PROFILE_1, variantWidthFor } from './profile';
 import { readRegistry, writeRegistry } from './registry';
 import type { AssetManifest, DerivativeJob, ProfileEntry, Registry, VariantFile } from './types';
 import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from './variants';
@@ -58,6 +59,15 @@ export interface BuildOptions {
     faults?: WriterFaults;
     lock?: { waitMs?: number; leaseMs?: number };
     logger?: Logger;
+    /**
+     * A6 (#17): retry a transient failure (one with no code, lib/identity/failures.ts)
+     * after each of `delaysMs`, by leaving the entry pending with its next try,
+     * then record `retries-exhausted`. Without it, as for a direct call, every
+     * failure is recorded as failed, as before. The worker passes one.
+     */
+    retry?: { delaysMs: readonly number[] };
+    /** The pixel cap, MAX_SOURCE_PIXELS by default. Tests lower it. */
+    maxSourcePixels?: number;
 }
 
 export type BuildOutcome =
@@ -67,6 +77,14 @@ export type BuildOutcome =
     | { status: 'failed'; error: string; cause?: unknown }
     /** Left pending. The source changed since the last pass, so run another, or the registry lock was busy. */
     | { status: 'pending'; reason: 'digest-mismatch' | 'source-changing' | 'locked' }
+    /** A6: a transient failure, left pending for its retry number `retries`, due at `retryAt`. */
+    | { status: 'pending'; reason: 'retrying'; retries: number; retryAt: string; error: string }
+    /**
+     * A6 review: reading the source failed while the library root itself
+     * can't be read or is gone. Nothing is recorded, and the worker pauses
+     * until a pass finds the library again.
+     */
+    | { status: 'pending'; reason: 'library-unavailable' }
     /** Nothing to do, and nothing changed. */
     | { status: 'skipped'; reason: 'data-root' | 'unknown' | 'reassigned' | 'not-pending' | 'source-missing' };
 
@@ -85,6 +103,45 @@ export const STAGING_ID = /^[a-z0-9-]+$/;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** A decoder's error, named by its code (lib/identity/failures.ts), so the recorded reason says whether a retry can help. */
+class DecodeFailure extends Error {
+    constructor(code: string, cause: unknown) {
+        super(`${code}: ${errorText(cause)}`, { cause });
+        this.name = 'DecodeFailure';
+    }
+}
+
+/**
+ * A6 review: the reason a build that threw records. An IntegrityError is
+ * `corrupt-destination` (`integrity: ...`) only for the set's own folder,
+ * `finalDir`; one for any other folder, such as staging checked before the
+ * rename, names no code, so it retries.
+ */
+export function buildFailureText(error: unknown, finalDir: string): string {
+    if (error instanceof IntegrityError) return `${error.dir === finalDir ? 'integrity' : 'staging check failed'}: ${error.problems.join('; ')}`;
+    return errorText(error);
+}
+
+/** Whether the library root can still be listed: the difference between one unreadable file and an outage. */
+async function libraryReadable(library: string): Promise<boolean> {
+    try {
+        await fs.promises.readdir(library);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** `step`, with a decoder's error rethrown as a DecodeFailure. An errno error is rethrown as it is. */
+async function decoding<T>(step: () => Promise<T>): Promise<T> {
+    try {
+        return await step();
+    } catch (error) {
+        const code = classifyDecodeFailure(error);
+        throw code === null ? error : new DecodeFailure(code, error);
+    }
+}
 
 /**
  * Remove the staging folders that builds killed before publishing left. A
@@ -130,8 +187,8 @@ function variantDifferences(manifest: DirectoryManifest | null): string[] {
     ];
 }
 
-async function lqipOf(source: Buffer): Promise<string> {
-    return lqipDataUri(await encodeLqip(source));
+async function lqipOf(source: Buffer, limitInputPixels: number): Promise<string> {
+    return lqipDataUri(await decoding(() => encodeLqip(source, { limitInputPixels })));
 }
 
 /** Decode an encoded file and check it is what the profile promised. Returns its dimensions. */
@@ -211,16 +268,39 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     // The reason goes into the registry and `photos identity status`, so it names files relative to the library or the data root, never where they live on the host.
     const recordFailed = async (reason: string, cause?: unknown, still?: (current: Registry) => boolean): Promise<BuildOutcome> => {
         const error = withoutAbsolutePaths(reason, [library, root]);
+        const delays = options.retry?.delaysMs;
+        // What the entry became, decided under the lock from the retries it already had.
+        let written: ProfileEntry | null = null;
+        const next = (current: ProfileEntry): ProfileEntry => {
+            const attempts = current.attempts + 1;
+            // The requeue an io-error already had (A6 review) stays with the entry, so it isn't given again.
+            const requeued = current.requeuedFor === undefined ? {} : { requeuedFor: current.requeuedFor };
+            if (delays === undefined || failureCodeOf(error) !== null) {
+                written = { state: 'failed', attempts, error, ...requeued };
+            } else {
+                const retries = current.retries ?? 0;
+                written = retries < delays.length
+                    ? { state: 'pending', attempts, error, retries: retries + 1, retryAt: iso(clock() + delays[retries]), ...requeued }
+                    : { state: 'failed', attempts, error: `retries-exhausted: ${error}`, ...requeued };
+            }
+            return written;
+        };
         try {
-            if (!await record(root, job, (current) => ({ state: 'failed', attempts: current.attempts + 1, error }), options, still)) {
+            if (!await record(root, job, next, options, still)) {
                 return { status: 'pending', reason: 'source-changing' };
             }
         } catch (lockError) {
             if (lockError instanceof LockTimeoutError) return { status: 'pending', reason: 'locked' };
             throw lockError;
         }
-        logger.warn(`[derivatives] ${job.photoId} ${job.assetRevision} ${job.profileId} failed: ${error}`);
-        return { status: 'failed', error, ...(cause === undefined ? {} : { cause }) };
+        const entry = written as ProfileEntry | null;
+        if (entry?.state === 'pending' && entry.retries !== undefined && entry.retryAt !== undefined) {
+            logger.warn(`[derivatives] ${job.photoId} ${job.assetRevision} ${job.profileId} failed, and retries at ${entry.retryAt} (retry ${entry.retries} of ${delays?.length ?? 0}): ${error}`);
+            return { status: 'pending', reason: 'retrying', retries: entry.retries, retryAt: entry.retryAt, error };
+        }
+        const recorded = entry?.error ?? error;
+        logger.warn(`[derivatives] ${job.photoId} ${job.assetRevision} ${job.profileId} failed: ${recorded}`);
+        return { status: 'failed', error: recorded, ...(cause === undefined ? {} : { cause }) };
     };
 
     // A set already in place is kept if it matches, and never overwritten if it doesn't.
@@ -244,12 +324,17 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
     try {
         source = await fs.promises.readFile(path.join(library, photo.source.path));
     } catch (error) {
+        // A6 review: an outage, not this file. Record nothing, so no set fails for a share that dropped out.
+        if (!await libraryReadable(library)) return { status: 'pending', reason: 'library-unavailable' };
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
         return recordFailed(`source unreadable: ${errorText(error)}`, error);
     }
     if (assetRevisionOf(source, hasher) !== job.assetRevision) return { status: 'pending', reason: 'digest-mismatch' };
     if (revision.width === null || revision.height === null) return recordFailed('undecodable');
     const { width: orientedWidth, height: orientedHeight } = revision;
+    // A6: the pixel cap, from #10's recorded size before anything is decoded, and Sharp's own as it decodes.
+    const maxPixels = options.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+    if (orientedWidth * orientedHeight > maxPixels) return recordFailed(`too-large: ${orientedWidth}x${orientedHeight} is over the ${maxPixels}-pixel cap`);
 
     const id = idGen();
     const staging = path.join(stagingRoot(root), id);
@@ -264,7 +349,7 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
                     variants[width] = {} as Record<VariantFormat, VariantFile>;
                     for (const format of VARIANT_FORMATS) {
                         const name = `${width}.${format}`;
-                        const encoded = await encodeVariant(source, width, format);
+                        const encoded = await decoding(() => encodeVariant(source, width, format, { limitInputPixels: maxPixels }));
                         const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
                         const size = await validated(name, data, format, variantWidthFor(orientedWidth, orientedHeight, PROFILE_1.variants[width].width));
                         await writeFile(path.join(staging, name), data);
@@ -278,7 +363,7 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
                     assetRevision: job.assetRevision,
                     profileId: job.profileId,
                     variants,
-                    lqip: await lqipOf(source),
+                    lqip: await lqipOf(source, maxPixels),
                     createdAt: iso(clock()),
                 };
                 await faults.beforeManifest?.();
@@ -293,7 +378,7 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
             }
         });
     } catch (error) {
-        return recordFailed(error instanceof IntegrityError ? `integrity: ${error.problems.join('; ')}` : errorText(error), error);
+        return recordFailed(buildFailureText(error, finalDir), error);
     }
     return recordReady(false);
 }

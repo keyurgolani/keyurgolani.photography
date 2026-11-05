@@ -1,10 +1,12 @@
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries, RecordUnusableError } from '../catalog/working-layer';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
+import { massMissing } from '../identity/library';
 import type { FactSink } from '../identity/pass';
 import { readRegistry } from '../identity/registry';
 import type { IdentityFact, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import {
+    CLOSE_REASONS,
     CURATION_SCHEMA_VERSION,
     EVENT_TYPE_FOR_FACT,
     eventIdOf,
@@ -22,6 +24,7 @@ import {
     type Suggestions,
 } from './events';
 import { photoHolders, type ReferenceCache } from './holders';
+import { boundSources, openMassMissing } from './library';
 import { EventUnusableError, InvalidEventError, listEvents, readEvent, readRulesFile, RulesFileError, withCurationLock, writeEvent } from './repository';
 import { loadRules, suggestForNew, type LoadedRules } from './suggest';
 
@@ -56,7 +59,8 @@ export const SINK_WAIT_MS = 5_000;
 function derivedFactsOf(fact: IdentityFact, registry: Registry | null): DerivedFacts {
     const revision = fact.photoId === null ? undefined : registry?.photos[fact.photoId]?.revisions[fact.assetRevision];
     return {
-        factType: fact.type,
+        // Never `io-recovered`, which opens no item.
+        factType: fact.type as Exclude<IdentityFact['type'], 'io-recovered'>,
         sourcePath: fact.path,
         folder: fact.folder,
         ...(fact.fromPath === undefined ? {} : { fromPath: fact.fromPath }),
@@ -196,6 +200,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
     return async (facts) => {
         const relevant: { fact: IdentityFact; type: CurationEventType }[] = [];
         const renames: IdentityFact[] = [];
+        const recovered: IdentityFact[] = [];
         for (const fact of facts) {
             const type = Object.hasOwn(EVENT_TYPE_FOR_FACT, fact.type) ? EVENT_TYPE_FOR_FACT[fact.type] : undefined;
             if (type === undefined) {
@@ -207,11 +212,13 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 skip(fact, problem);
                 continue;
             }
-            if (type !== null) relevant.push({ fact, type });
+            // A6 review: a file that reads again closes its io-error item, and opens nothing.
+            if (fact.type === 'io-recovered') recovered.push(fact);
+            else if (type !== null) relevant.push({ fact, type });
             // A rename of a file with no photo ID matches no item by identity, so it changes nothing.
             else if (fact.photoId !== null) renames.push(fact);
         }
-        if (relevant.length === 0 && renames.length === 0) return;
+        if (relevant.length === 0 && renames.length === 0 && recovered.length === 0) return;
         const status = dataRootStatus({ versioned: true, ...(options.root === undefined ? {} : { root: options.root }) });
         if (status.state !== 'ready' || status.root === null) throw new Error(`The data root is ${status.state}, so the curation inbox can't be written.`);
         const root = status.root;
@@ -352,6 +359,21 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 return true;
             };
 
+            // A6 (#17): one pass that marks at least 20 bound sources missing, over 10% of them, looks like the library
+            // going, so the library-unavailable item opens before their missing items do, and holds them from the start
+            // (lib/curation/library.ts). Facts from one pass share its observedAt. Without the registry, nothing is held.
+            if (registry !== null) {
+                const byPass = new Map<string, Set<string>>();
+                for (const { fact, type } of relevant) {
+                    if (type === 'missing' && fact.photoId !== null) byPass.set(fact.observedAt, (byPass.get(fact.observedAt) ?? new Set<string>()).add(fact.photoId));
+                }
+                const present = boundSources(registry);
+                for (const [at, photos] of byPass) {
+                    const bound = present + photos.size;
+                    if (massMissing(photos.size, bound)) await openMassMissing(root, hold, { at, missing: photos.size, bound }, logger);
+                }
+            }
+
             for (const { fact, type } of relevant) {
                 if (type === 'replacement' && fact.photoId !== null && await foldIntoNew(fact)) continue;
                 if (type === 'reappeared' && fact.photoId !== null && await closeMissing(fact)) continue;
@@ -419,6 +441,23 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     if (next.status !== existing.status) reopened++;
                     else updated++;
                 }
+            }
+
+            for (const fact of recovered) {
+                const id = eventIdOf(eventKey('processing-failure', fact));
+                const current = await readOrSkip(id);
+                if (current === null || current.type !== 'processing-failure' || current.derivedFacts.failure !== 'io-error' || !STILL_OPEN.has(current.status) || current.factIds.includes(fact.factId)) continue;
+                const active = await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
+                const closed: CurationEvent = {
+                    ...current,
+                    status: 'resolved',
+                    lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
+                    factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
+                    decisions: [...current.decisions, { action: 'close', at: producedAt, by: 'watcher', baseRevisionId: active, reason: CLOSE_REASONS.readable }],
+                    reviewedAt: producedAt,
+                    reviewedBy: 'watcher',
+                };
+                if (await write(fact, closed, current.version)) updated++;
             }
 
             if (renames.length > 0) {

@@ -98,7 +98,7 @@ describe('photos status', () => {
         const result = await runStatusCommand({ dataRoot: catalog.root }, { json: true });
         const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
         expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working', 'inbox']);
-        expect(status.inbox).toEqual({ counts: { needsReview: 0, missing: 0, failed: 0, ambiguous: 0, stale: 0 }, missing: [], failed: [], ambiguous: [], stale: [], unreadable: 0, placementUnknown: false });
+        expect(status.inbox).toEqual({ counts: { needsReview: 0, missing: 0, held: 0, failed: 0, ambiguous: 0, stale: 0 }, library: null, missing: [], held: [], failed: [], ambiguous: [], stale: [], unreadable: 0, placementUnknown: false });
         expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
     });

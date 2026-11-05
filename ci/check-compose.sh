@@ -363,3 +363,11 @@ if ! jq -e --argjson before "$(jq -c '.services | del(.curator) | map_values(.po
   fail "The LAN mode variables must change curator's publish alone: every other service must publish as it does with them unset."
 fi
 echo "With nothing set, curator publishes 127.0.0.1:3001; only curator reads CURATOR_PUBLISH, CURATOR_HOST_PORT and CURATOR_EXTRA_HOSTS, and web keeps its literal 127.0.0.1."
+
+# 9. A6 (#17): image-watcher keeps restart: always. It exits 75 to re-bind a
+#    library share that went unreadable or empty, and only Docker's restart
+#    brings it back.
+if ! jq -e -f ci/compose-restart.jq <<<"$resolved" >/dev/null; then
+  fail "image-watcher must keep restart: always: it exits 75 to re-bind a library share, and only Docker's restart starts it again."
+fi
+echo "image-watcher keeps restart: always."

@@ -23,10 +23,20 @@ import { v1Reads } from './events-v1';
  * it (schemaVersionFor()), so after an image rollback v1.7.x keeps reading
  * every item that holds nothing new, and reads the rest as a newer build's
  * (`unknown-schema-version`) rather than as damaged. It never writes those.
+ *
+ * A6 (v2.0.0) adds the `library-unavailable` type, the `io-error` failure
+ * and the build failure codes. Each is a value v1.7.0's schema doesn't know,
+ * so an item that holds one is stamped 2 by itself, under the same version.
  */
 export const CURATION_SCHEMA_VERSION = 2;
 
-export const EVENT_TYPES = ['new', 'replacement', 'missing', 'reappeared', 'ambiguous', 'processing-failure'] as const;
+/**
+ * A6 (#17): `library-unavailable` is the one item the watcher opens when
+ * the library root is missing, empty or unreadable, or when one pass marks
+ * at least 20 bound sources and over 10% of them missing
+ * (lib/curation/library.ts). It has no photo.
+ */
+export const EVENT_TYPES = ['new', 'replacement', 'missing', 'reappeared', 'ambiguous', 'processing-failure', 'library-unavailable'] as const;
 export type CurationEventType = (typeof EVENT_TYPES)[number];
 
 /** `resolved` is #17's: the watcher closed the item because what it reported is over, such as a missing source back again. */
@@ -83,6 +93,8 @@ export const EVENT_TYPE_FOR_FACT: Record<IdentityFactType, CurationEventType | n
     ambiguous: 'ambiguous',
     'processing-failed': 'processing-failure',
     renamed: null,
+    // A6 review: closes the io-error item of the same key (lib/curation/sink.ts), and opens none.
+    'io-recovered': null,
 };
 
 const photoId = z.string().regex(PHOTO_ID_RE, 'must be a photo ID');
@@ -127,7 +139,21 @@ export const editsSchema = z.strictObject({
 });
 export type CuratorEdits = z.infer<typeof editsSchema>;
 
-export const FAILURE_REASONS = ['unsupported-format', 'digest-collision', 'undecodable'] as const;
+/** A6 adds `io-error`: a file that read EACCES, EPERM or EIO three passes in a row. */
+export const FAILURE_REASONS = ['unsupported-format', 'digest-collision', 'undecodable', 'io-error'] as const;
+
+/** A6: why the library is unavailable, and since when (lib/curation/library.ts). */
+export const libraryFactsSchema = z.strictObject({
+    cause: z.enum(['missing', 'empty', 'unreadable', 'mass-missing']),
+    /** When this outage began: the first pass that found it, or the pass that marked the sources missing. */
+    since: timestamp,
+    /** For `unreadable`: the errno, such as EACCES. */
+    detail: z.string().min(1).optional(),
+    /** For `mass-missing`: how many bound sources the pass marked missing, and of how many. */
+    missing: z.number().int().nonnegative().optional(),
+    bound: z.number().int().nonnegative().optional(),
+});
+export type LibraryFacts = z.infer<typeof libraryFactsSchema>;
 
 /**
  * One side of a replacement's comparison (#17, A5): oriented size, aspect
@@ -158,7 +184,7 @@ export type Comparison = z.infer<typeof comparisonSchema>;
 
 /** Facts the watcher saw. Curator-only, but never GPS or any other curator-only EXIF, and never an absolute path. */
 export const derivedFactsSchema = z.strictObject({
-    factType: z.enum(['new', 'renamed', 'reappeared', 'replaced', 'metadata-changed', 'ambiguous', 'missing', 'processing-failed']),
+    factType: z.enum(['new', 'renamed', 'reappeared', 'replaced', 'metadata-changed', 'ambiguous', 'missing', 'processing-failed', 'library-unavailable']),
     sourcePath: libraryPath,
     /** The source's library-relative folder, '' at the root. */
     folder: z.string(),
@@ -178,6 +204,8 @@ export const derivedFactsSchema = z.strictObject({
     /** Version 2: the missing photograph #10 suggests a new file is, by its file name or its capture time (A5). */
     suggestedFor: photoId.optional(),
     suggestedBy: z.enum(['basename', 'capture-time']).optional(),
+    /** A6: a `library-unavailable` item's cause and outage. */
+    library: libraryFactsSchema.optional(),
 });
 export type DerivedFacts = z.infer<typeof derivedFactsSchema>;
 
@@ -212,7 +240,14 @@ export const decisionSchema = z.strictObject({
 export type CurationDecision = z.infer<typeof decisionSchema>;
 
 /** Why a replacement's derivative set wasn't built: #10's writer's failure, without its text, which may name a host path. */
-export const CANDIDATE_FAILURES = ['superseded', 'integrity', 'undecodable', 'build'] as const;
+/**
+ * A6 (#17) adds the build failure codes (lib/identity/failures.ts) a set can
+ * fail with for good: `io-error`, `decode-error`, `unsupported-format`,
+ * `too-large` and `retries-exhausted`. `integrity` is `corrupt-destination`,
+ * under the name it had, and `build` is a failure with no code, which only a
+ * v1.7.x worker or a worker without retries records.
+ */
+export const CANDIDATE_FAILURES = ['superseded', 'integrity', 'undecodable', 'build', 'io-error', 'decode-error', 'unsupported-format', 'too-large', 'retries-exhausted'] as const;
 export type CandidateFailure = (typeof CANDIDATE_FAILURES)[number];
 
 /**
@@ -394,6 +429,7 @@ export const FAILURE_TEXT: Record<(typeof FAILURE_REASONS)[number], string> = {
     'unsupported-format': 'The file is not a format the watcher reads.',
     'digest-collision': "Another file in the library looks like the same photograph but isn't the same size, so the watcher set this one aside.",
     undecodable: 'The file could not be decoded.',
+    'io-error': "The file couldn't be read three passes in a row (EACCES, EPERM or EIO). Check its permissions or the disk, then dismiss this item; the watcher reads it again on its own.",
 };
 
 /**
@@ -422,6 +458,10 @@ export const CLOSE_REASONS = {
     split: (photoId: string) => `The file is its own photograph now, ${photoId}, whose new item reviews it.`,
     /** A5 (#17): a new photograph whose bytes brought back an archived one under its old ID, after approving it. */
     restored: (photoId: string) => `These bytes brought back the archived photograph ${photoId} under its old ID.`,
+    /** A6 (#17): a `library-unavailable` item, once a pass finds the library again. */
+    available: 'The library is available again.',
+    /** A6 review: an `io-error` item, once the pass reads its file again. */
+    readable: 'The file can be read again.',
 } as const;
 
 /**
@@ -443,7 +483,7 @@ export function watcherCloseOf(event: Pick<CurationEvent, 'status' | 'decisions'
     return { decision, cause: decision.resolution ?? closeCauseOf(decision.reason) };
 }
 
-export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | Resolution;
+export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'available' | 'readable' | Resolution;
 
 /** Which of CLOSE_REASONS a watcher's close reason is, or null for any other text. */
 export function closeCauseOf(reason: string): CloseCause | null {
@@ -452,6 +492,8 @@ export function closeCauseOf(reason: string): CloseCause | null {
     if (/^The file is its own photograph now, .+, whose new item reviews it\.$/.test(reason)) return 'split';
     if (/^These bytes brought back the archived photograph .+ under its old ID\.$/.test(reason)) return 'restored';
     if (reason === CLOSE_REASONS.archived) return 'archived';
+    if (reason === CLOSE_REASONS.available) return 'available';
+    if (reason === CLOSE_REASONS.readable) return 'readable';
     if (reason === CLOSE_REASONS.gone) return 'gone';
     if (reason === CLOSE_REASONS.moved) return 'moved';
     if (reason === CLOSE_REASONS.unheld) return 'unheld';

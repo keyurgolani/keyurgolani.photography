@@ -23,8 +23,22 @@ export type ProfileState = 'pending' | 'ready' | 'failed';
 export interface ProfileEntry {
     state: ProfileState;
     attempts: number;
+    /** The writer's reason for a failed entry, or, on a pending one waiting for a retry, for its last try. */
     error?: string;
     readyAt?: string;
+    /**
+     * A6 (#17): on a pending entry, how many retries of a transient failure
+     * the worker has scheduled. v1.7.x ignores it.
+     */
+    retries?: number;
+    /** A6 (#17): on a pending entry, when its next retry is due. The worker builds it no sooner. v1.7.x ignores it. */
+    retryAt?: string;
+    /**
+     * A6 review: the requeue an `io-error` build last had: `clean-pass`, its
+     * one extra try at the first pass after it failed, or the id of the
+     * library outage whose end put it back. Each is given once. v1.7.x ignores it.
+     */
+    requeuedFor?: string;
 }
 
 export interface AssetRevisionRecord {
@@ -89,9 +103,16 @@ export type IdentityFactType =
     | 'metadata-changed'
     | 'ambiguous'
     | 'missing'
-    | 'processing-failed';
+    | 'processing-failed'
+    /**
+     * A6 review: a file reported `processing-failed` with `io-error` reads
+     * again. It carries that fact's key, so the sink closes its item. v1.7.x
+     * skips a fact type it doesn't know.
+     */
+    | 'io-recovered';
 
-export type ProcessingFailure = 'unsupported-format' | 'digest-collision' | 'undecodable';
+/** A6 (#17) adds `io-error`: a file that read EACCES, EPERM or EIO for IO_ERROR_AFTER_PASSES passes in a row. */
+export type ProcessingFailure = 'unsupported-format' | 'digest-collision' | 'undecodable' | 'io-error';
 
 export interface IdentityFact {
     type: IdentityFactType;
