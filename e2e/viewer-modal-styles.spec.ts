@@ -122,8 +122,7 @@ async function expectHeldThenOpen(page: Page, sheets: Awaited<ReturnType<typeof 
     // Long enough for the RSC answer and a commit, had the open not waited.
     await page.waitForTimeout(1000);
     await expect(page.locator('dialog'), 'no dialog while the sheet is held').toHaveCount(0);
-    // Still the series page; the activation has written its ?photo= (B5).
-    expect(new URL(page.url()).pathname).toBe('/work/harbor');
+    await expect(page).toHaveURL(`${origin()}/work/harbor`);
     sheets.release();
     await expect(dialog(page)).toBeVisible();
     const first = await watched(page);
@@ -288,7 +287,7 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         expect(await page.evaluate(() => (window as unknown as { kgPolls: () => number }).kgPolls()), 'no poll left running').toBe(0);
         // One Back returns to the series, scrolled where it was.
         await page.goBack();
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, P[1])).toBeInViewport();
         expect(Math.abs((await page.evaluate(() => Math.round(window.scrollY))) - before.scrollY), 'scrolled where it was').toBeLessThanOrEqual(4);
     });

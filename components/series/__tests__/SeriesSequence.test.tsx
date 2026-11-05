@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { SeriesChapter, SeriesEntry } from '@/lib/catalog/projections/series';
 import SiteRoutesProvider from '@/components/site/SiteRoutes';
@@ -395,6 +396,16 @@ describe('SeriesSequence on a deep entry (?photo=, B5)', () => {
         });
         window.scrollBy = vi.fn() as unknown as typeof window.scrollBy;
         Element.prototype.scrollIntoView = vi.fn();
+    });
+
+    it('serves Show earlier as a link to the plain series page with JavaScript off, and the script takes it over as a button', () => {
+        const html = renderToString(<SeriesSequence {...props({ entries: range(101, 200), prevHref: PAGE_1, nextHref: PAGE_3 })} />);
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const link = [...doc.querySelectorAll('a')].find((node) => node.textContent === SHOW_EARLIER);
+        expect(link?.getAttribute('href')).toBe('/work/fixture-long');
+        deep();
+        expect(earlier().tagName).toBe('BUTTON');
+        expect(screen.queryByRole('link', { name: SHOW_EARLIER })).toBeNull();
     });
 
     it('shows Show earlier above the entries and Show more below, with the range it shows', () => {

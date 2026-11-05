@@ -6,7 +6,7 @@ import { photoEntryName } from '@/lib/a11y/photoName';
 import type { SeriesPhotoProps } from '@/components/series/SeriesPhoto';
 import type { ActiveCatalog } from '@/lib/catalog/public-reader';
 import { createCatalogReader, type CatalogContent } from '@/lib/catalog/reader';
-import { createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
+import { buildTestCatalog, createTestCatalog, type TestCatalog } from '@/lib/catalog/testing';
 import type { RevisionContent } from '@/lib/catalog/types';
 import { REPO_ROOT } from '../../test/helpers/runTsx';
 
@@ -809,10 +809,23 @@ describe('?photo= (#5, #6 deep entry, B5)', () => {
     }
 
     it('renders the series with that photograph named for the return position to focus, read on the server', async () => {
-        const page = await htmlWith({ photo: P[2] });
-        expect(page).toContain(`id="photo-${P[2]}"`);
-        expect(state.returnProps.at(-1)).toEqual(expect.objectContaining({ focusPhotoId: P[2] }));
+        await htmlWith({ photo: P[2] });
+        expect(state.returnProps.at(-1)).toEqual(expect.objectContaining({ focusPhotoId: P[2], firstPosition: 1 }));
         expect(state.loads).toBe(1);
+    });
+
+    it('renders the page past the first that holds the photograph, so its entry is in the server HTML only with ?photo=', async () => {
+        const deepId = (n: number) => `ph_00000000-0000-4000-8000-${String(n + 500).padStart(12, '0')}`;
+        const LONG = Array.from({ length: 150 }, (_, n) => deepId(n + 1));
+        const long = await buildTestCatalog({ seed: 57, photos: LONG.map((photoId) => ({ id: photoId })), series: [{ id: 'ser_fixture-long', slug: 'fixture-long', photoIds: LONG }] });
+        state.catalog = served(long.content as unknown as CatalogContent);
+        const plain = await htmlWith({}, 'fixture-long');
+        expect(plain).not.toContain(`id="photo-${LONG[129]}"`);
+        const deep = await htmlWith({ photo: LONG[129] }, 'fixture-long');
+        expect(deep).toContain(`id="photo-${LONG[129]}"`);
+        expect(deep).not.toContain(`id="photo-${LONG[0]}"`);
+        expect(deep).toMatch(/<ol[^>]*start="101"/);
+        expect(state.returnProps.at(-1)).toEqual(expect.objectContaining({ focusPhotoId: LONG[129], firstPosition: 101 }));
     });
 
     it.each([

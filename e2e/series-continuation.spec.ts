@@ -101,7 +101,7 @@ test('Back from the Viewer of a photograph past the first page finds it again', 
     await entry(page, 150).click();
     await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[149]}$`));
     await page.goBack();
-    await expect(page).toHaveURL(new RegExp(`/work/long\\?photo=${LONG[149]}$`));
+    await expect(page).toHaveURL(/\/work\/long$/);
     await expect(entry(page, 150)).toBeAttached();
     await expect(sequence(page)).not.toHaveAttribute('aria-busy', 'true');
     await expect(entries(page)).toHaveCount(200);
@@ -122,7 +122,7 @@ test('Back after a reload on the Viewer loads the same pages again and fires the
         });
     });
     await page.goBack();
-    await expect(page).toHaveURL(new RegExp(`/work/long\\?photo=${LONG[149]}$`));
+    await expect(page).toHaveURL(/\/work\/long$/);
     await expect(entries(page)).toHaveCount(200);
     await expect(entry(page, 150)).toBeAttached();
     await expect.poll(() => page.evaluate(() => (window as unknown as { restored?: number }).restored ?? 0)).toBe(1);
@@ -199,18 +199,62 @@ test.describe('deep entry (?photo=, B5)', () => {
         await expect(showEarlier(page)).toBeVisible();
     });
 
-    test('activation writes ?photo=, so a reload of the series opens on the page that holds the photograph', async ({ page }) => {
+    test('opening a photograph leaves the series URL alone, so a reload after #250 starts at the top, not on its page', async ({ page, request }) => {
+        await openSeries(page);
+        await pressShowMore(page, 200);
+        await showMore(page).focus();
+        await page.keyboard.press('Enter');
+        await expect(entries(page)).toHaveCount(250);
+        await entry(page, 250).click();
+        await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[249]}$`));
+        await page.goBack();
+        await expect(page).toHaveURL(`${origin()}/work/long`);
+        await expect(entry(page, 250)).toBeFocused();
+        // The document a reload asks for renders page 1 first, never 201 to 250.
+        const html = await (await request.get(page.url())).text();
+        expect(html).toContain(`id="photo-${LONG[0]}"`);
+        expect(html).not.toContain(`id="photo-${LONG[249]}"`);
+        expect(html).not.toContain('Show earlier photographs');
+        await page.reload();
+        await waitForHydration(page);
+        expect(await page.locator('[data-position]').first().textContent()).toBe('1');
+        await expect(showEarlier(page)).toHaveCount(0);
+    });
+
+    test('Viewer, Work, then Back twice lands on the photograph past the first page once the saved pages load, never on the heading', async ({ page }) => {
         await openSeries(page);
         await pressShowMore(page, 200);
         await entry(page, 150).click();
         await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[149]}$`));
+        await page.goto(`${origin()}/work`);
+        await waitForHydration(page);
+        await page.goBack();
+        await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[149]}$`));
+        await page.goBack();
+        await expect(page).toHaveURL(`${origin()}/work/long`);
+        await expect(entry(page, 150)).toBeFocused();
+        await expect(page.locator('#series-title')).not.toBeFocused();
+        await expect(entries(page)).toHaveCount(200);
+    });
+
+    test('when the saved pages can\'t bring the photograph back, the return asks for its page with ?photo= and focuses it there', async ({ page }) => {
+        await openSeries(page);
+        await pressShowMore(page, 200);
+        // Stands in for #6's limits 22 and 24, an extent that's gone: the only way to reach this path in a browser.
+        await page.evaluate(() => {
+            const state = { ...(history.state as Record<string, unknown>) };
+            delete state.kgSeriesPages;
+            history.replaceState(state, '');
+        });
+        await entry(page, 150).click();
+        await expect(page).toHaveURL(new RegExp(`/work/long/photo/${LONG[149]}$`));
+        await page.reload();
+        await waitForHydration(page);
         await page.goBack();
         await expect(page).toHaveURL(`${origin()}/work/long?photo=${LONG[149]}`);
         await expect(entry(page, 150)).toBeFocused();
-        await page.reload();
-        await waitForHydration(page);
-        await expect(entry(page, 150)).toBeAttached();
-        await expect(entry(page, 101)).toBeAttached();
+        await expect(entry(page, 150)).toBeInViewport();
+        await expect(page.locator('#series-title')).not.toBeFocused();
     });
 });
 

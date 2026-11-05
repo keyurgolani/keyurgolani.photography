@@ -195,7 +195,7 @@ test.describe('swipe', () => {
             // showModal() put focus on Close, and a swipe never moves it.
             await expect(button(page, 'Close')).toBeFocused();
             await button(page, 'Close').tap();
-            await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[0]}`);
+            await expect(page).toHaveURL(`${origin()}/work/harbor`);
             await expect(page.locator('dialog')).toHaveCount(0);
             await expect(entry(page, P[0])).toBeFocused();
         } catch (error) {
@@ -212,12 +212,12 @@ test.describe('swipe', () => {
         await swipe(page, -150);
         await expect.poll(held, 'the move asked for photograph 2').toBeGreaterThan(0);
         await button(page, 'Close').tap();
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[0]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(entry(page, P[0])).toBeFocused();
         // After the held payload would have landed, the visitor is still on the series.
         await page.waitForTimeout(2000);
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[0]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(page.locator('dialog')).toHaveCount(0);
     });
 
@@ -907,7 +907,7 @@ test.describe('double-tap', () => {
         // A tap on the photograph takes focus as any tap on content does: off Close, onto the zoomed region or the body. It never leaves the dialog.
         expect(['viewer', 'body']).toContain(await focusPlace(page));
         await button(page, 'Close').tap();
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[0]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, P[0])).toBeFocused();
     });
 
@@ -952,7 +952,7 @@ test.describe('arrows under the open modal', () => {
         await expectStill(page, P[1], 2);
         // Escape still closes it in one step, onto the opener.
         await page.keyboard.press('Escape');
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[0]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, P[0])).toBeFocused();
     });
 });
@@ -1130,13 +1130,13 @@ test.describe('presentation', () => {
 
         await button(page, 'Close').focus();
         await page.keyboard.press('Enter');
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(entry(page, P[1])).toBeFocused();
         // Space closes it too, once.
         await openFromSeries(page, P[1], testInfo, 'keyboard');
         await button(page, 'Close').focus();
         await page.keyboard.press('Space');
-        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(entry(page, P[1])).toBeFocused();
     });

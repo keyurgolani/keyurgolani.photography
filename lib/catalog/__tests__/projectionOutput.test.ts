@@ -161,6 +161,19 @@ async function screens(routes: RouteBuilder): Promise<Record<string, unknown[]>>
                 next = continued.kind === 'ok' ? continued.page.nextHref : null;
             }
             for (const photoId of photoIdsOf(content)) out.viewer.push([name, slug, photoId, reader.getViewerPhoto(slug, photoId)]);
+            // B5's deep entry: ?photo= of the last photograph (the second page), of the first, of another series', and of an
+            // unknown one, then Show earlier's walk back through each page's prevHref.
+            for (const photoId of [LONG[102], LONG[0], SHORT[0], id(999)]) {
+                const deep = reader.getSeriesPage(slug, routes, { photoId });
+                out.series.push([name, slug, photoId, deep]);
+                let prev = deep.kind === 'ok' ? deep.page.prevHref : null;
+                while (prev !== null) {
+                    const cursor = prev.slice(prev.lastIndexOf('/') + 1);
+                    const earlier = reader.getSeriesContinuation(slug, cursor, routes);
+                    out.continuation.push([name, slug, cursor, earlier]);
+                    prev = earlier.kind === 'ok' ? earlier.page.prevHref : null;
+                }
+            }
         }
     }
     // Home's empty state: no featured series resolves. Only Home reads the site record's featured list.
@@ -224,6 +237,10 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         expect(kinds(out.continuation)).toEqual(new Set(['ok']));
         expect(kinds(out.viewer)).toEqual(new Set(['ok', 'redirect', 'not-found']));
         const json = JSON.stringify(out);
+        // B5: a deep page names its photograph and the page before it, and the walk back reaches the first page.
+        expect(out.series.some((entry) => ((entry as unknown[]).at(-1) as { page?: { focusPhotoId: string | null; prevHref: string | null } }).page?.focusPhotoId === LONG[102])).toBe(true);
+        expect(out.series.some((entry) => typeof ((entry as unknown[]).at(-1) as { page?: { prevHref: string | null } }).page?.prevHref === 'string')).toBe(true);
+        expect(out.continuation.some((entry) => ((entry as unknown[]).at(-1) as { page?: { entries: { position: number }[] } }).page?.entries[0].position === 1)).toBe(true);
         for (const fragment of ['"image":null', '"cover":null', '"lqip":"data:image/webp', '"descriptionPending":true', '"startPosition":102', '"featuredSeries":null', '"followingSeries":[']) {
             expect(json, fragment).toContain(fragment);
         }

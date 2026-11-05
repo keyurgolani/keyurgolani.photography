@@ -88,8 +88,7 @@ async function scrollTo(page: Page, link: Locator): Promise<number> {
 
 /** Back on the series, with focus on `opener`, at `offset` within a pixel, and `opener` in view. */
 async function expectReturned(page: Page, opener: Locator, offset: number): Promise<void> {
-    // The series URL, with the ?photo= the activation wrote (B5).
-    await expect(page).toHaveURL(new RegExp(`^${origin()}${SERIES}\\?photo=ph_[0-9a-f-]{36}$`));
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
     await expect(page.locator('dialog')).toHaveCount(0);
     await expect(opener).toBeFocused();
     await expect.poll(async () => Math.abs((await scrollY(page)) - offset), { message: `scroll offset near ${offset}` }).toBeLessThanOrEqual(1);
@@ -291,8 +290,7 @@ test.describe('an entry past the first page', () => {
 
     /** On the series, with both pages, focus on LATE, at `offset` within a pixel, and LATE in view. */
     async function expectBackOnLate(page: Page, offset: number): Promise<void> {
-        // With the ?photo= the activation wrote (B5).
-        await expect(page).toHaveURL(`${pagedOrigin()}${PAGED}?photo=${LATE}`);
+        await expect(page).toHaveURL(`${pagedOrigin()}${PAGED}`);
         await expect(listed(page)).toHaveCount(PAGED_COUNT);
         await expect(entry(page, LATE)).toBeFocused();
         await expect.poll(async () => Math.abs((await scrollY(page)) - offset), { message: `scroll offset near ${offset}` }).toBeLessThanOrEqual(1);
