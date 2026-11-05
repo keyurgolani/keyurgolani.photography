@@ -15,7 +15,7 @@ afterEach(async () => {
     for (const dir of scratch.splice(0)) await fs.promises.rm(dir, { recursive: true, force: true });
 });
 
-const row = (screen: CatalogBudgetMeasurement['over'][number]['screen'], gzipKiB: number, limitKiB: number, subject = screen) => ({
+const row = (screen: CatalogBudgetMeasurement['over'][number]['screen'], gzipKiB: number, limitKiB: number, subject: string = screen) => ({
     screen,
     budget: screen === 'seriesContinuationPage' ? ('seriesFirstPage' as const) : screen,
     subject,

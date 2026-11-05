@@ -61,8 +61,9 @@ jobs:
     name: Browser tests
     runs-on: ubuntu-latest
     # The suite alone takes about 19 minutes on next, and the Playwright install
-    # is bounded at three 6-minute tries.
-    timeout-minutes: 40
+    # is bounded at three 6-minute tries. test:budgets adds a few minutes, most of
+    # them writing the 5,000-photograph library.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -97,6 +98,10 @@ jobs:
 
       - run: npm run test:e2e
 
+      # #6's budgets on the build test:e2e just made: a generated library on 127.0.0.1:3200, Chromium only, no
+      # network. A budget over its number in lib/perf/budgets.ts fails the job, and so the pull request.
+      - run: npm run test:budgets
+
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -104,6 +109,7 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            .perf/
           retention-days: 7
 
   themes:

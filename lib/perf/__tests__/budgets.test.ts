@@ -199,7 +199,7 @@ describe('the budget fixture', () => {
         expect(Math.min(...lengths)).toBeGreaterThanOrEqual(1);
         expect(lengths[1]).toBeGreaterThan(lengths[2]);
         // Series records come from the seed, whatever the photo count, and so do the covers.
-        const authored = (series: TestCatalogContent['series']) => series.map(({ photoIds: _ids, cover: _cover, ...rest }) => rest);
+        const authored = (series: TestCatalogContent['series']) => series.map((entry) => ({ ...entry, photoIds: [], cover: null }));
         expect(authored(small.series)).toEqual(authored(fixture.series));
         expect(small.content.series.map((series) => series.cover)).toEqual(fixture.content.series.map((series) => series.cover));
         expect(() => budgetFixtureOptions({ photos: 198 })).toThrow(/at least 199/);
