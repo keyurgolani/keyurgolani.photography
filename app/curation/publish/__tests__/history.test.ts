@@ -9,7 +9,7 @@ import { resetSessionsForTests } from '@/lib/curation/auth/sessions';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '@/test/helpers/curatorSecrets';
 import { folderBytes } from '@/test/helpers/folderBytes';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
-import { createEditorialFixture, createHistoryFixture, createPublishFixture, createRemovalsFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
+import { createEditorialFixture, createHistoryFixture, createPublishFixture, createRemovalsFixture, createRenameFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
 
 // #15's 15-4 on real data roots, through the real curator boundary: the
 // page's History read, the restore action's guards (anonymous, a wrong
@@ -28,7 +28,7 @@ vi.mock('@/lib/catalog/rollback', async (importOriginal) => {
     return { ...actual, rollback: vi.fn(actual.rollback) };
 });
 
-const { rollback } = await import('@/lib/catalog/rollback');
+const { planRollback, rollback } = await import('@/lib/catalog/rollback');
 const { loadPublishPage } = await import('../load');
 const { publishAction, restoreAction } = await import('../actions');
 
@@ -420,6 +420,12 @@ describe('a restore that brings back editorial errors (#117)', () => {
         });
     });
 
+    it("gives the flagged rule a rollback's hint, the accept, not the publish fix", async () => {
+        const plan = await planRollback({ dataRoot: fixture.root, to: { revisionNumber: 4 } });
+        const issue = plan.issues.find((entry) => entry.code === 'accent.contrast');
+        expect(issue?.hint).toBe('A rollback brings this back only once you accept it: --accept accent.contrast with photos rollback, or its box in Restore on the Publish screen.');
+    });
+
     it('refuses a post without the accept, whatever the dialog did: ACCEPTANCE_REQUIRED, unlogged, and nothing written', async () => {
         const { history } = await page();
         const before = folderBytes(fixture.root);
@@ -473,5 +479,51 @@ describe('a restore that brings back editorial errors (#117)', () => {
         expect(isNotFound(outcome)).toBe(true);
         expect(rollback).not.toHaveBeenCalled();
         expect(folderBytes(fixture.root)).toEqual(before);
+    });
+});
+
+describe('a restore across a slug rename (#5)', () => {
+    beforeEach(async () => {
+        await onRoot(() => createRenameFixture());
+    });
+
+    /** Restore revision 3, from revision 4's /work/salt-roads-west back to /work/salt-roads, with one `accept` field per value. */
+    async function restoreAcross(history: HistoryView, accepts: readonly string[]): Promise<RestoreState> {
+        const plan = history.plans[3];
+        if (!plan) throw new Error(`No plan for revision 3: ${Object.keys(history.plans).join(', ')}`);
+        const data = form({ revisionId: plan.revisionId, expectedActive: plan.activeRevisionId, reason: 'Undo the new address.' });
+        for (const value of accepts) data.append('accept', value);
+        return restoreAction(RESTORE_IDLE, data);
+    }
+
+    it('asks for the address change by name, as an accept and not a refusal', async () => {
+        const { history } = await page();
+        expect(history.plans[3].editorial).toEqual({
+            lead: "Today's checks flag one address change on revision 3.",
+            rules: [{ id: 'route.slug-change', label: "Accept Salt Roads' address: it changes from /work/salt-roads-west to /work/salt-roads without keeping the old one" }],
+            note: 'Restoring brings it back as it was, and History records that you accepted it.',
+        });
+    });
+
+    it('restores nothing without the accept, and says what is still to accept', async () => {
+        const { history } = await page();
+        const before = folderBytes(fixture.root);
+        const result = resultOf(await restoreAcross(history, []));
+        expect(result).toMatchObject({
+            heading: "Revision 3 needs you to accept what today's checks flag",
+            list: ["Salt Roads' address: it changes from /work/salt-roads-west to /work/salt-roads without keeping the old one."],
+        });
+        expect(folderBytes(fixture.root)).toEqual(before);
+    });
+
+    it('restores with the accept, and History says what was accepted', async () => {
+        const { history } = await page();
+        const state = await restoreAcross(history, ['route.slug-change']);
+        expect(state.answer).toMatchObject({ kind: 'restored', rebased: true });
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ kind: 'rollback', actor: 'curator:web', acceptedRules: ['route.slug-change'] });
+        const sequence = state.answer?.kind === 'restored' ? state.answer.sequence : 0;
+        const after = await page({ restored: sequence });
+        expect(after.history.entries[0]).toMatchObject({ title: 'Revision 3', extra: "Accepted at restore: an address change that doesn't keep the old address." });
+        expect((await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))).toMatchObject({ slug: 'salt-roads', slugAliases: [] });
     });
 });

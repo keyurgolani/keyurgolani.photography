@@ -119,8 +119,16 @@ export interface RuleContext {
     candidate: CandidateContent;
     /** The working layer the candidate came from, or null for a stored revision (#15 rollback, photos:verify). */
     authored: WorkingLayer | null;
-    /** The active revision, or null before the first activation. */
+    /** The active revision, or null before the first activation. A stored revision's check names the stored revision itself. */
     active: RevisionFile | null;
+    /**
+     * For a stored revision about to go live again (#15's rollback): the
+     * revision it replaces, or null when that can't be read. #5's route rules
+     * compare against it, since only what's live shows which address changes.
+     * Absent elsewhere, so photos verify's verdict on a revision doesn't
+     * depend on which one is live.
+     */
+    replaces?: RevisionFile | null;
     /** #10's registry snapshot, or null without one. */
     registry: Registry | null;
     /** For privacy.path: no published string may hold either. */

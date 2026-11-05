@@ -178,7 +178,7 @@ async function planView(plan: RollbackPlan, names: Names, contentOf: (revisionId
         featuredChanged: Boolean(targetContent && activeContent && !same(targetContent.site.featuredSeriesIds, activeContent.site.featuredSeriesIds)),
         orderChanged: Boolean(targetContent && activeContent && !same(order(targetContent), order(activeContent))),
     });
-    const editorial = editorialView(plan.issues, plan.editorial, names.series, target.revisionNumber ?? 0);
+    const editorial = editorialView(plan.issues, plan.editorial, names.series, target.revisionNumber ?? 0, { live: activeContent?.series ?? [], target: targetContent?.series ?? [] });
     return {
         revisionId: target.revisionId,
         revision: target.revisionNumber ?? 0,

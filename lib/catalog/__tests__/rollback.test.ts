@@ -831,3 +831,79 @@ describe('after a rollback off a damaged live revision', { timeout: 60_000 }, ()
         }
     });
 });
+
+describe('a slug rename (#5)', { timeout: 60_000 }, () => {
+    /** Give the fixture's one series a new slug and aliases in the working layer. Returns its old slug. */
+    async function readdress(root: string, slug: string, slugAliases: (old: string) => string[]): Promise<string> {
+        const record = (await readWorkingLayer(root)).series[0];
+        if (!record) throw new Error('The fixture has no series');
+        await writeAuthoredRecord({ ...structuredClone(record), slug, slugAliases: slugAliases(record.slug) }, { expectedVersion: record.version, root });
+        return record.slug;
+    }
+
+    it('refuses a publish that drops the old slug, and takes it with the old slug as an alias', async () => {
+        const { root, publishNow } = await setup({ seed: 260 });
+        const first = await publishNow();
+        expect(first.outcome).toBe('PUBLISHED');
+        const old = await readdress(root, 'fixture-renamed', () => []);
+        const refused = await publishNow();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(refused.issues).toContainEqual(expect.objectContaining({ code: 'route.slug-change', severity: 'error', field: 'slug', message: expect.stringContaining(`from /work/${old} to /work/fixture-renamed`) }));
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: first.revisionId });
+
+        await readdress(root, 'fixture-renamed', () => [old]);
+        expect(await publishNow()).toMatchObject({ outcome: 'PUBLISHED', revisionNumber: 2 });
+    });
+
+    it("rolls back across it only with an accept, as an editorial rule and never an integrity one, and photos rollback exits 1 without it", async () => {
+        const { root, publishNow, rollTo } = await setup({ seed: 261 });
+        const one = (await publishNow()).revisionId ?? '';
+        const old = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        const two = (await publishNow()).revisionId ?? '';
+
+        // Revision 1 has the old slug and no alias for the new one, so going back drops /work/fixture-renamed.
+        const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+        expect(planned).toMatchObject({ outcome: 'READY', editorial: ['route.slug-change'], blocking: [] });
+        expect(planned.issues).toEqual([expect.objectContaining({ code: 'route.slug-change', field: 'slug', message: expect.stringContaining(`from /work/fixture-renamed to /work/${old}`) })]);
+
+        const headless = io(null);
+        const code = await runRollbackCommand(root, { to: { revisionNumber: 1 }, reason: 'undo the rename', actor: 'curator', accept: [], yes: true, expectActive: two }, headless);
+        expect(code).toBe(1);
+        const printed = [...headless.lines, ...headless.errors].join('\n');
+        expect(printed).toContain('--accept route.slug-change');
+        // A stored revision can't be edited, so the hint is the accept, not the publish fix.
+        expect(printed).toContain('    A rollback brings this back only once you accept it: --accept route.slug-change with photos rollback, or its box in Restore on the Publish screen.');
+        expect(printed).not.toContain('to slugAliases with photos edit');
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+
+        const back = await rollTo(one, two, { acceptedRules: ['route.slug-change'] });
+        expect(back.outcome).toBe('ROLLED_BACK');
+        expect(back.activation).toMatchObject({ revisionId: one, acceptedRules: ['route.slug-change'], validation: { errors: 1 } });
+    });
+
+    it('refuses a second rename that keeps only the newest old slug', async () => {
+        const { root, publishNow } = await setup({ seed: 263 });
+        await publishNow();
+        const first = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        expect((await publishNow()).outcome).toBe('PUBLISHED');
+        await readdress(root, 'fixture-renamed-again', () => ['fixture-renamed']);
+        const refused = await publishNow();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(refused.issues).toContainEqual(expect.objectContaining({ code: 'route.slug-change', field: 'slugAliases', message: expect.stringContaining(`drops /work/${first}`) }));
+        await readdress(root, 'fixture-renamed-again', () => [first, 'fixture-renamed']);
+        expect((await publishNow()).outcome).toBe('PUBLISHED');
+    });
+
+    it("doesn't flag a rollback whose target keeps every live slug", async () => {
+        const { root, publishNow, rollTo } = await setup({ seed: 262 });
+        await publishNow();
+        const old = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        const two = (await publishNow()).revisionId ?? '';
+        // Back to the old slug, keeping the new one as an alias: nothing breaks, so nothing asks.
+        await readdress(root, old, () => ['fixture-renamed']);
+        const three = (await publishNow()).revisionId ?? '';
+        const forward = await planRollback({ dataRoot: root, to: { revisionNumber: 2 } });
+        expect(forward).toMatchObject({ outcome: 'READY', editorial: [] });
+        expect((await rollTo(two, three)).outcome).toBe('ROLLED_BACK');
+    });
+});

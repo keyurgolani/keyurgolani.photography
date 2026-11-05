@@ -465,6 +465,8 @@ export const draftNoteFor = (target: number) =>
 const ACCEPTED_WORDS: Record<string, string> = {
     'accent.contrast': "an accent color that's hard to read on the Viewer's dark bands",
     'accent.format': "an accent color the site can't show",
+    'route.slug-change': "an address change that doesn't keep the old address",
+    'route.alias-reassigned': 'an address taken from another series',
 };
 
 export function acceptedWords(codes: readonly string[]): string {
@@ -477,18 +479,89 @@ const ACCENT_WORDS: Record<string, string> = {
     'accent.format': "accent color: it isn't a color the site can show",
 };
 
+/** A series' addresses in one revision: its slug and its old ones. */
+export interface SeriesAddresses {
+    id: string;
+    slug: string;
+    slugAliases: readonly string[];
+}
+
+/** The series' addresses on both sides of a restore, for #5's route rules: what's live, and what the restore brings back. */
+export interface RestoreAddresses {
+    live: readonly SeriesAddresses[];
+    target: readonly SeriesAddresses[];
+}
+
+const NO_ADDRESSES: RestoreAddresses = { live: [], target: [] };
+
+/** "Salt Roads'", "FILMS'", "Dawn's", and inside a closing quote or bracket, "(Dawn's)". */
+function possessive(name: string): string {
+    const [, base, closing] = /^([\s\S]*?)(["'\u2019\u201d)\]}\u00bb]*)$/.exec(name) ?? [name, name, ''];
+    return `${base}${/s$/i.test(base) ? "'" : "'s"}${closing}`;
+}
+
+type FlaggedIssue = Pick<Issue, 'code' | 'record'> & Partial<Pick<Issue, 'field'>>;
+
+/**
+ * #5's address changes in plain words: "Harbor Nights' address: it changes
+ * from /work/harbor to /work/harbor-nights without keeping the old one", or
+ * "Salt Roads' address: it takes /work/harbor from Harbor Nights". Where the
+ * addresses aren't known, or several series share the rule, the words say
+ * what changes without the addresses.
+ */
+function addressWords(code: string, issues: readonly FlaggedIssue[], seriesName: (id: string) => string, addresses: RestoreAddresses): string | undefined {
+    if (code !== 'route.slug-change' && code !== 'route.alias-reassigned') return undefined;
+    const flagged = issues.filter((issue) => issue.code === code && issue.record.kind === 'series');
+    const ids = [...new Set(flagged.map((issue) => issue.record.id))];
+    const renamed = code === 'route.slug-change';
+    if (ids.length === 0) return renamed ? 'an address that changes without keeping the old one' : 'an address another series has now';
+    if (ids.length > 1) {
+        const owners = possessive(ids.map(seriesName).join(' and '));
+        return renamed ? `${owners} addresses: they change without keeping the old ones` : `${owners} addresses: they take ones other series have now`;
+    }
+    const [id] = ids;
+    const owner = `${possessive(seriesName(id))} address`;
+    const live = addresses.live.find((series) => series.id === id);
+    const target = addresses.target.find((series) => series.id === id);
+    if (renamed) {
+        if (!live || !target || live.slug === target.slug) return `${owner}: it changes without keeping the old one`;
+        const change = `${owner}: it changes from /work/${live.slug} to /work/${target.slug}`;
+        // Every live address the target holds neither as its slug nor as an old one.
+        const dropped = [live.slug, ...live.slugAliases].filter((slug) => slug !== target.slug && !target.slugAliases.includes(slug));
+        if (dropped.length === 1 && dropped[0] === live.slug) return `${change} without keeping the old one`;
+        if (dropped.length === 0) return `${change} without keeping an old one`;
+        const list = dropped.map((slug) => `/work/${slug}`);
+        return `${change} without keeping ${list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : list[0]}`;
+    }
+    // The address the flagged field holds on the target, and the series that has it live.
+    const fields = flagged.map((issue) => issue.field);
+    const slug = fields.length === 1 && target ? addressAt(target, fields[0]) : undefined;
+    const holder = slug === undefined ? undefined : addresses.live.find((series) => series.id !== id && (series.slug === slug || series.slugAliases.includes(slug)));
+    return slug !== undefined && holder ? `${owner}: it takes /work/${slug} from ${seriesName(holder.id)}` : `${owner}: it takes one another series has now`;
+}
+
+/** The address a field such as `slug` or `slugAliases[1]` holds. */
+function addressAt(series: SeriesAddresses, field: string | undefined): string | undefined {
+    if (field === 'slug') return series.slug;
+    const index = /^slugAliases\[(\d+)\]$/.exec(field ?? '')?.[1];
+    return index === undefined ? undefined : series.slugAliases[Number(index)];
+}
+
 /**
  * Each editorial rule in `codes`, in the owner's words with no rule ID:
  * "Salt Roads' accent color: it's hard to read on the Viewer's dark bands".
- * A rule the copy doesn't know yet names its series, "Salt Roads' style,
- * which today's checks flag", or reads "a style today's checks flag". Words
- * two rules would share get their place among them, ", 1 of 2", so every
- * box has a name of its own.
+ * #5's route rules name the addresses from `addresses`. A rule the copy
+ * doesn't know yet names its series, "Salt Roads' style, which today's
+ * checks flag", or reads "a style today's checks flag". Words two rules
+ * would share get their place among them, ", 1 of 2", so every box has a
+ * name of its own.
  */
-export function editorialWords(issues: readonly Pick<Issue, 'code' | 'record'>[], codes: readonly string[], seriesName: (id: string) => string): string[] {
+export function editorialWords(issues: readonly FlaggedIssue[], codes: readonly string[], seriesName: (id: string) => string, addresses: RestoreAddresses = NO_ADDRESSES): string[] {
     const words = codes.map((code) => {
+        const address = addressWords(code, issues, seriesName, addresses);
+        if (address !== undefined) return address;
         const records = [...new Set(issues.filter((issue) => issue.code === code && issue.record.kind === 'series').map((issue) => seriesName(issue.record.id)))];
-        const owner = records.length ? `${records.join(' and ')}'` : '';
+        const owner = records.length ? possessive(records.join(' and ')) : '';
         const known = ACCENT_WORDS[code];
         if (known !== undefined) return `${owner ? `${owner} ` : 'an '}${known}`;
         return owner ? `${owner} style, which today's checks flag` : "a style today's checks flag";
@@ -503,13 +576,23 @@ export function editorialWords(issues: readonly Pick<Issue, 'code' | 'record'>[]
     });
 }
 
+/** What the dialog's lead counts a rule as: #5's route rules are address changes, and the rest styles. */
+const nounOf = (code: string) => (code.startsWith('route.') ? 'address change' : 'style');
+
+/** "one style", "2 address changes", "one style and one address change". */
+function flaggedCount(codes: readonly string[]): string {
+    const counts = new Map<string, number>();
+    for (const code of codes) counts.set(nounOf(code), (counts.get(nounOf(code)) ?? 0) + 1);
+    return [...counts].map(([noun, n]) => (n === 1 ? `one ${noun}` : `${n} ${noun}s`)).join(' and ');
+}
+
 /** The dialog's accept boxes for a restore of revision `target` that brings back `editorial`, or nothing when it brings back none. */
-export function editorialView(issues: readonly Pick<Issue, 'code' | 'record'>[], editorial: readonly string[], seriesName: (id: string) => string, target: number): EditorialView | undefined {
+export function editorialView(issues: readonly FlaggedIssue[], editorial: readonly string[], seriesName: (id: string) => string, target: number, addresses: RestoreAddresses = NO_ADDRESSES): EditorialView | undefined {
     if (editorial.length === 0) return undefined;
-    const words = editorialWords(issues, editorial, seriesName);
+    const words = editorialWords(issues, editorial, seriesName, addresses);
     const one = editorial.length === 1;
     return {
-        lead: `Today's checks flag ${one ? 'one style' : `${editorial.length} styles`} on revision ${target}.`,
+        lead: `Today's checks flag ${flaggedCount(editorial)} on revision ${target}.`,
         rules: editorial.map((id, index) => ({ id, label: `Accept ${words[index]}` })),
         note: one ? 'Restoring brings it back as it was, and History records that you accepted it.' : 'Restoring brings them back as they were, and History records that you accepted them.',
     };

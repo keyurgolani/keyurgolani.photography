@@ -287,10 +287,28 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
     return { ok: true, activation: committed };
 }
 
-/** Run every rule over a stored revision, as a rollback or a repair records it. */
-export function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
-    const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } });
+/**
+ * Run every rule over a stored revision, as a rollback or a repair records
+ * it. `replaces` is the live revision a rollback would replace, or null when
+ * it can't be read, for #5's route rules; without it they have nothing to
+ * compare against and stay quiet.
+ */
+export function validateStored(root: string, revision: RevisionFile, registry: Registry | null, replaces?: RevisionFile | null): { validation: Activation['validation']; issues: Issue[] } {
+    const issues = acceptHints(runRules({ candidate: revision.content, authored: null, active: revision, ...(replaces === undefined ? {} : { replaces }), registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } }));
     return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
+}
+
+/**
+ * A stored revision can't be edited, so an editorial rule's hint, which
+ * names the fix a publish takes, is wrong for it: the way past one is an
+ * accept. Each editorial issue gets that hint instead; integrity ones keep
+ * theirs.
+ */
+export function acceptHints(issues: readonly Issue[]): Issue[] {
+    const editorial = new Set(registeredRules().filter((rule) => rule.rollbackClass === 'editorial').map((rule) => rule.id));
+    return issues.map((issue) => (editorial.has(issue.code)
+        ? { ...issue, hint: `A rollback brings this back only once you accept it: --accept ${issue.code} with photos rollback, or its box in Restore on the Publish screen.` }
+        : issue));
 }
 
 /**
@@ -614,7 +632,10 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         return { outcome: 'STORAGE_ERROR', message: `The identity registry can't be read, so ${revision.revisionId}'s sets can't be checked: ${reason}${/[.!?]$/.test(reason) ? '' : '.'} Nothing was activated.`, activation: null, recovery };
     }
     const acceptedRules = options.acceptedRules ?? [];
-    const { validation, issues } = validateStored(root, revision, registry);
+    // The revision this replaces, for #5's route rules only. One that can't be read is no reason to refuse, since
+    // moving off it is what a rollback is for, so the route rules then have nothing to compare against, as in the plan.
+    const replaces = await readRevisionFile(root, pointer.revisionId).catch(() => null);
+    const { validation, issues } = validateStored(root, revision, registry, replaces);
     const blocking = blockingIssues(issues, acceptedRules);
     if (blocking.length > 0) {
         const codes = [...new Set(blocking.map((issue) => issue.code))].sort().join(', ');

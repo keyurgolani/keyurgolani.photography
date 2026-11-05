@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RevisionChanges } from '@/lib/catalog/history';
 import {
+    acceptedWords,
     blockedText,
     blockingReasons,
     doneView,
@@ -23,6 +24,7 @@ import {
     type HistoryViewInput,
     type OutcomeFacts,
     type PlanStatus,
+    type RestoreAddresses,
 } from '../publish-history';
 
 // #15's 15-4: History's view and copy from 15-2's results, without a data
@@ -303,6 +305,75 @@ describe('the impact list', () => {
         const strange = editorialView([{ code: 'tone.mood', record: { kind: 'site', id: 'site' } }, { code: 'tone.grain', record: { kind: 'site', id: 'site' } }, { code: 'tone.hue', record: { kind: 'series', id: 'ser_s' } }], ['tone.grain', 'tone.hue', 'tone.mood'], names.seriesName, 4);
         expect(strange?.rules.map((rule) => rule.label)).toEqual(["Accept a style today's checks flag, 1 of 2", "Accept Salt Roads' style, which today's checks flag", "Accept a style today's checks flag, 2 of 2"]);
         expect(editorialWords([contrast, format], ['accent.format'], names.seriesName)).toEqual(["Harbor Nights' accent color: it isn't a color the site can show"]);
+    });
+
+    describe('a restore across a rename (#5)', () => {
+        // Live, Harbor Nights is at /work/harbor. Revision 4 renamed it to /work/harbor-nights without keeping
+        // /work/harbor, and gave /work/harbor to Salt Roads as an old address.
+        const addresses: RestoreAddresses = {
+            live: [{ id: 'ser_h', slug: 'harbor', slugAliases: [] }, { id: 'ser_s', slug: 'salt-roads', slugAliases: [] }],
+            target: [{ id: 'ser_h', slug: 'harbor-nights', slugAliases: [] }, { id: 'ser_s', slug: 'salt-roads', slugAliases: ['harbor'] }],
+        };
+        const renamed = { code: 'route.slug-change', record: { kind: 'series' as const, id: 'ser_h' }, field: 'slug' };
+        const taken = { code: 'route.alias-reassigned', record: { kind: 'series' as const, id: 'ser_s' }, field: 'slugAliases[0]' };
+
+        it('names each address change in plain words, from and to, and calls it an address change, not a style', () => {
+            expect(editorialView([renamed], ['route.slug-change'], names.seriesName, 4, addresses)).toEqual({
+                lead: "Today's checks flag one address change on revision 4.",
+                rules: [{ id: 'route.slug-change', label: "Accept Harbor Nights' address: it changes from /work/harbor to /work/harbor-nights without keeping the old one" }],
+                note: 'Restoring brings it back as it was, and History records that you accepted it.',
+            });
+            const both = editorialView([renamed, taken], ['route.alias-reassigned', 'route.slug-change'], names.seriesName, 4, addresses);
+            expect(both?.lead).toBe("Today's checks flag 2 address changes on revision 4.");
+            expect(both?.rules).toEqual([
+                { id: 'route.alias-reassigned', label: "Accept Salt Roads' address: it takes /work/harbor from Harbor Nights" },
+                { id: 'route.slug-change', label: "Accept Harbor Nights' address: it changes from /work/harbor to /work/harbor-nights without keeping the old one" },
+            ]);
+            for (const rule of both?.rules ?? []) expect(rule.label).not.toContain(rule.id);
+        });
+
+        it('counts styles and address changes apart when a restore brings back both', () => {
+            const contrast = { code: 'accent.contrast', record: { kind: 'series' as const, id: 'ser_s' } };
+            expect(editorialView([contrast, renamed], ['accent.contrast', 'route.slug-change'], names.seriesName, 4, addresses)?.lead).toBe("Today's checks flag one style and one address change on revision 4.");
+        });
+
+        it("still says what changes when the addresses aren't known, or several series change at once", () => {
+            expect(editorialWords([renamed, taken], ['route.slug-change', 'route.alias-reassigned'], names.seriesName)).toEqual([
+                "Harbor Nights' address: it changes without keeping the old one",
+                "Salt Roads' address: it takes one another series has now",
+            ]);
+            const two = [renamed, { ...renamed, record: { kind: 'series' as const, id: 'ser_s' } }];
+            expect(editorialWords(two, ['route.slug-change'], names.seriesName, addresses)).toEqual(["Harbor Nights and Salt Roads' addresses: they change without keeping the old ones"]);
+        });
+
+        it("gives a name that doesn't end in s its 's", () => {
+            const dawn = (id: string) => (id === 'ser_h' ? 'Dawn' : names.seriesName(id));
+            expect(editorialWords([renamed, taken], ['route.slug-change', 'route.alias-reassigned'], dawn, addresses)).toEqual([
+                "Dawn's address: it changes from /work/harbor to /work/harbor-nights without keeping the old one",
+                "Salt Roads' address: it takes /work/harbor from Dawn",
+            ]);
+        });
+
+        it('names every address a restore drops when it drops more than the one it renames from', () => {
+            const twice: RestoreAddresses = {
+                live: [{ id: 'ser_h', slug: 'harbor-at-night', slugAliases: ['harbor-nights', 'harbor'] }],
+                target: [{ id: 'ser_h', slug: 'harbor', slugAliases: [] }],
+            };
+            expect(editorialWords([renamed], ['route.slug-change'], names.seriesName, twice)).toEqual(["Harbor Nights' address: it changes from /work/harbor-at-night to /work/harbor without keeping /work/harbor-at-night and /work/harbor-nights"]);
+        });
+
+        it('reads the final s in any case, and puts the apostrophe inside a closing quote or bracket', () => {
+            const named = (title: string) => editorialWords([renamed], ['route.slug-change'], () => title)[0].split(' address')[0];
+            expect(named('FILMS')).toBe("FILMS'");
+            expect(named('"Tides"')).toBe('"Tides\'"');
+            expect(named('(Dawn)')).toBe("(Dawn's)");
+            expect(named('Night [II]')).toBe("Night [II's]");
+        });
+
+        it('says in History what a restore across a rename accepted', () => {
+            expect(acceptedWords(['route.slug-change'])).toBe("an address change that doesn't keep the old address");
+            expect(acceptedWords(['route.slug-change', 'route.alias-reassigned'])).toBe("an address change that doesn't keep the old address and an address taken from another series");
+        });
     });
 });
 
