@@ -78,7 +78,7 @@ function imageOf(n: number): ViewerImage {
 }
 
 /** Photo n of 3, described, so a move's announcement can carry the description. */
-function model(n: number, { withImage = false, revision = REVISION } = {}): PublishedViewerPhoto {
+function model(n: number, { withImage = false, revision = REVISION, technical = false } = {}): PublishedViewerPhoto {
     return {
         catalogRevision: revision,
         series: { id: 'ser_fixture', slug: 'fixture', title: 'Fixture series', accent: '#a0b0c0' },
@@ -93,7 +93,7 @@ function model(n: number, { withImage = false, revision = REVISION } = {}): Publ
             image: withImage ? imageOf(n) : null,
             shareImage: null,
             accent: null,
-            technical: {},
+            technical: technical ? { Make: 'Fixture Make' } : {},
         },
         position: n,
         total: 3,
@@ -102,11 +102,12 @@ function model(n: number, { withImage = false, revision = REVISION } = {}): Publ
     };
 }
 
-function photo(n: number, options: { withImage?: boolean; revision?: string } = {}) {
+type PhotoOptions = { withImage?: boolean; revision?: string; technical?: boolean; mount?: string };
+function photo(n: number, options: PhotoOptions = {}) {
     const viewer = model(n, options);
     return (
         <StoryViewer
-            key={`${viewer.catalogRevision}/${viewer.photo.id}`}
+            key={`${options.mount ?? ''}${viewer.catalogRevision}/${viewer.photo.id}`}
             viewer={viewer}
             closeHref="/work/fixture"
             previousHref={viewer.previousPhotoId === null ? null : photoHref(n - 1)}
@@ -116,11 +117,11 @@ function photo(n: number, options: { withImage?: boolean; revision?: string } = 
     );
 }
 
-function renderShell(mode: ViewerMode, n: number, options: { withImage?: boolean; revision?: string } = {}) {
+function renderShell(mode: ViewerMode, n: number, options: PhotoOptions = {}) {
     const view = render(<ViewerShell mode={mode}>{photo(n, options)}</ViewerShell>);
     return {
         ...view,
-        move: (to: number, moved: { withImage?: boolean; revision?: string } = options) => view.rerender(<ViewerShell mode={mode}>{photo(to, moved)}</ViewerShell>),
+        move: (to: number, moved: PhotoOptions = options) => view.rerender(<ViewerShell mode={mode}>{photo(to, moved)}</ViewerShell>),
         show: (child: ReactNode) => view.rerender(<ViewerShell mode={mode}>{child}</ViewerShell>),
     };
 }
@@ -490,9 +491,12 @@ describe('bug 5: the revision check, for every visitor', () => {
     });
     const checks = () => fetchMock.mock.calls.map(([url]) => String(url));
     // The served revision is REVISED: a check in the one before gets the 409, one in REVISED a 200.
-    const revised409 = () =>
+    // The 409 says whether the photograph shown is still there (#178 review): kept, under a renamed series, or gone.
+    const revised409 = (photo?: 'kept' | 'renamed' | 'gone') =>
         fetchMock.mockImplementation(async (url: string) =>
-            String(url).includes(REVISION) ? new Response('{}', { status: 409 }) : new Response(JSON.stringify({ revisionId: REVISED, photoId: '', image: null, accent: null }), { status: 200 }),
+            String(url).includes(REVISION)
+                ? new Response(JSON.stringify({ reason: 'revision-changed', ...(photo && { photo }) }), { status: 409 })
+                : new Response(JSON.stringify({ revisionId: REVISED, photoId: '', image: null, accent: null }), { status: 200 }),
         );
     const setHidden = (value: boolean) =>
         act(() => {
@@ -549,10 +553,10 @@ describe('bug 5: the revision check, for every visitor', () => {
         expect(router.refresh).toHaveBeenCalledOnce();
     });
 
-    it('on a page no move has left, a 409 asks for the page again where a missing photograph lands in the Viewer', async () => {
+    it('on a page no move has left, a 409 for a photograph that\'s gone asks for the page again where it lands in the Viewer', async () => {
         vi.useFakeTimers();
         const { move } = renderShell('page', 2);
-        revised409();
+        revised409('gone');
         advance(30_000);
         await flush();
         // A refresh of a directly loaded page would land a dropped photograph on the site's not-found page, outside
@@ -563,6 +567,32 @@ describe('bug 5: the revision check, for every visitor', () => {
         move(2, { revision: REVISED });
         await flush();
         expect(router.refresh).toHaveBeenCalledOnce();
+    });
+
+    it.each([['kept'], ['an answer that doesn\'t say']] as const)('on a page no move has left, a 409 for a photograph %s refreshes: nothing remounts', async (said) => {
+        vi.useFakeTimers();
+        renderShell('page', 2);
+        revised409(said === 'kept' ? 'kept' : undefined);
+        advance(30_000);
+        await flush();
+        expect(router.refresh).toHaveBeenCalledOnce();
+        expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    it('on a page no move has left, a 409 under a renamed series asks for the page again, and focus and the zoomed scroll come back on the remounted photograph', async () => {
+        vi.useFakeTimers();
+        const { move } = renderShell('page', 2, { technical: true });
+        const toggle = () => screen.getByRole('button', { name: /technical details$/ });
+        toggle().focus();
+        revised409('renamed');
+        advance(30_000);
+        await flush();
+        expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
+        // It comes back through the other slot, a new photograph element: the old toggle is gone with focus on it.
+        const before = toggle();
+        move(2, { technical: true, revision: REVISED, mount: 'slot/' });
+        expect(before.isConnected).toBe(false);
+        expect(document.activeElement).toBe(toggle());
     });
 
     it('on a page after a move, a 409 refreshes', async () => {
@@ -712,5 +742,118 @@ describe('a photograph unpublished or moved mid-visit (#178)', () => {
         expect(router.prefetch).not.toHaveBeenCalled();
         move(1);
         expect(step('Next photograph')).toBeInTheDocument();
+    });
+});
+
+describe('the B9 review', () => {
+    beforeEach(() => {
+        vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => 'visible');
+    });
+
+    it('moves the address to the canonical URL when a photograph renders under a former slug of its series, and nothing remounts', () => {
+        window.history.replaceState(null, '', `/work/fixture-old/photo/${id(2)}?from=mail`);
+        const replaced = vi.spyOn(window.history, 'replaceState');
+        renderShell('modal', 2);
+        expect(window.location.pathname).toBe(photoHref(2));
+        expect(window.location.search).toBe('?from=mail');
+        expect(replaced).toHaveBeenCalledOnce();
+        expect(router.replace).not.toHaveBeenCalled();
+        // Already canonical: nothing to move.
+        replaced.mockClear();
+        document.body.innerHTML = '';
+        renderShell('page', 3);
+        window.history.replaceState(null, '', photoHref(3));
+        replaced.mockClear();
+        renderShell('page', 3);
+        expect(replaced).not.toHaveBeenCalled();
+    });
+
+    it('lands a move\'s waiting announcement with the end message when Next is pressed at the end before it settles', () => {
+        vi.useFakeTimers();
+        const { move } = renderShell('page', 2);
+        const ears = listen(announcer());
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        move(3);
+        advance(100);
+        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        advance(1000);
+        expect(ears.heard()).toEqual(['Photograph 3 of 3. Fixture title 3. A described photograph, number 3. Last photograph in Fixture series.']);
+        ears.stop();
+    });
+
+    it('forgets an Escape the zoom took once its key is done, so a later cancel on its own closes the modal', () => {
+        vi.useFakeTimers();
+        renderShell('modal', 2, { withImage: true });
+        fireEvent.click(zoom());
+        // The browser may send no cancel after a key the page took.
+        fireEvent.keyDown(stage(), { key: 'Escape' });
+        expect(stage()).not.toHaveAttribute('data-zoomed');
+        advance(1);
+        act(() => {
+            root().dispatchEvent(new Event('cancel', { cancelable: true }));
+        });
+        expect(router.back).toHaveBeenCalledOnce();
+    });
+
+    it('puts focus on Zoom when the zoomed region it was in resets, even once the browser has moved it to the body', () => {
+        renderShell('page', 2, { withImage: true });
+        fireEvent.click(zoom());
+        const region = stage();
+        region.focus();
+        // A browser's focus fixup: the region drops focus to the body the moment its tabindex goes.
+        const removeAttribute = region.removeAttribute.bind(region);
+        region.removeAttribute = (name: string) => {
+            removeAttribute(name);
+            if (name.toLowerCase() === 'tabindex') region.blur();
+        };
+        fireEvent.click(zoom());
+        expect(document.activeElement).toBe(zoom());
+    });
+
+    it('never overlaps two revision checks: a check still waiting skips the next', async () => {
+        vi.useFakeTimers();
+        let answer: (response: Response) => void = () => undefined;
+        fetchMock.mockImplementation(() => new Promise<Response>((resolve) => (answer = resolve)));
+        renderShell('page', 2);
+        advance(30_000);
+        advance(30_000);
+        await flush();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        answer(new Response(JSON.stringify({ revisionId: REVISION, photoId: id(2), image: null, accent: null }), { status: 200 }));
+        await flush();
+        advance(30_000);
+        await flush();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('in the modal, a move that lands on ViewerUnavailable refreshes once, so Back lands on the series as it is now', () => {
+        const { show } = renderShell('modal', 2);
+        fireEvent.click(step('Next photograph'));
+        show(<ViewerUnavailable />);
+        expect(router.refresh).toHaveBeenCalledOnce();
+    });
+
+    it('on a page, a move that lands on ViewerUnavailable doesn\'t refresh: the link back loads the series afresh', () => {
+        const { show } = renderShell('page', 2);
+        fireEvent.click(step('Next photograph'));
+        show(<ViewerUnavailable />);
+        expect(router.refresh).not.toHaveBeenCalled();
+    });
+
+    it('prefetches a neighbour again when Next invalidates its prefetched page, and not after close', () => {
+        vi.useFakeTimers();
+        const { unmount } = renderShell('page', 2);
+        advance(1000);
+        expect(router.prefetch).toHaveBeenCalledTimes(2);
+        const [href, options] = router.prefetch.mock.calls[0] as [string, { kind: string; onInvalidate?: () => void }];
+        expect(options).toEqual({ kind: 'full', onInvalidate: expect.any(Function) });
+        act(() => options.onInvalidate?.());
+        advance(1000);
+        expect(router.prefetch).toHaveBeenCalledTimes(3);
+        expect(router.prefetch).toHaveBeenLastCalledWith(href, expect.objectContaining({ kind: 'full' }));
+        unmount();
+        act(() => options.onInvalidate?.());
+        advance(1000);
+        expect(router.prefetch).toHaveBeenCalledTimes(3);
     });
 });

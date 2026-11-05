@@ -1219,8 +1219,8 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
             await new Promise((resolve) => setTimeout(resolve, 250));
         });
         expect(router.prefetch.mock.calls).toEqual([
-            [photoHref(3), { kind: 'full' }],
-            [photoHref(1), { kind: 'full' }],
+            [photoHref(3), expect.objectContaining({ kind: 'full' })],
+            [photoHref(1), expect.objectContaining({ kind: 'full' })],
         ]);
         expect(fetchMock).not.toHaveBeenCalled();
         move(3);
@@ -1228,7 +1228,7 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
             await new Promise((resolve) => setTimeout(resolve, 250));
         });
         // At the last photograph there's only the one before.
-        expect(router.prefetch).toHaveBeenLastCalledWith(photoHref(2), { kind: 'full' });
+        expect(router.prefetch).toHaveBeenLastCalledWith(photoHref(2), expect.objectContaining({ kind: 'full' }));
         expect(router.prefetch).toHaveBeenCalledTimes(3);
     });
 

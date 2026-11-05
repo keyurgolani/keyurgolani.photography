@@ -263,7 +263,7 @@ describe('the Viewer route', () => {
         expect(await generateMetadata(props(slug, photoId))).toEqual({});
     });
 
-    it('through the intercepted route, answers a photo moved out of the series not-found, for ViewerUnavailable, and still redirects a letter-case variant (#178)', async () => {
+    it('through the intercepted route, answers a photo moved out of the series not-found, for ViewerUnavailable, renders one under a former slug, and still redirects a letter-case variant (#178)', async () => {
         const through = async (slug: string, photoId: string): Promise<Awaited<ReturnType<typeof answer>>> => {
             try {
                 return { html: renderToStaticMarkup(await InterceptedRoute(props(slug, photoId))) };
@@ -278,9 +278,16 @@ describe('the Viewer route', () => {
         expect(await through('Route-A', P[3])).toEqual({ notFound: true });
         // The same series, another case: the 308 as on the page.
         expect(await through('Route-A', P[0])).toEqual({ redirect: `/work/route-a/photo/${P[0]}` });
+        // A former slug of the same series (a rename mid-visit) keeps the visitor on the photograph: rendered, never a 308.
+        // Under interception Next takes the slug from the visitor's own URL, so a 308 to the canonical URL would come
+        // straight back here (#178 review). The Viewer moves the address to the canonical URL itself.
+        const renamed = html(await through('sentinel-old-slug', P[1]));
+        expect(renamed).toContain('data-surface="viewer"');
+        expect(renamed).toContain(`href="/work/route-a/photo/${P[0]}"`);
         expect(html(await through('route-a', P[0]))).toContain('data-surface="viewer"');
         // The page itself keeps every 308 (#7, decided).
         expect(await answer('route-b', P[0])).toEqual({ redirect: `/work/route-a/photo/${P[0]}` });
+        expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
     });
 
     it('keeps the query on every redirect, re-encoded after the canonical path', async () => {
