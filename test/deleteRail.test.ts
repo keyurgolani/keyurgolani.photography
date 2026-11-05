@@ -1,5 +1,7 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { callersAcross, callSites, deleteCalls, exclusionOf, identifierSites, PROCESS_CALL, RAIL_EXCLUSIONS, repositorySources, scanSource, shippedFiles, type DeleteCall } from './helpers/deleteCalls';
@@ -40,31 +42,31 @@ interface Allowed {
 
 const ALLOWLIST: readonly Allowed[] = [
     // runGc's apply path, the one place a tombstoned folder's bytes go.
-    { file: 'lib/catalog/retention.ts', fn: 'removeSetAside', calls: ['fs.promises.rm'], reason: "only on the owner's photos gc --apply <digest>: GC's tombstoned delete, of a manifest-only asset folder it set aside as .gc-<r>-<prefix>-<uuid> this run and checked again" },
-    { file: 'lib/catalog/retention.ts', fn: 'runGc.collectTombstoned', calls: ['hooks.remove', 'hooks.remove'], reason: "only on photos gc --apply, and only in tests: the hooks.remove seam a test sets in place of removeSetAside" },
-    { file: 'lib/catalog/retention.ts', fn: 'runGc.held', calls: ['fs.promises.rm', 'fs.promises.unlink'], reason: "only on photos gc --apply <digest>: GC's abandoned-staging and orphan-candidate deletes, each rechecked under its locks just before" },
+    { file: 'lib/catalog/retention.ts', fn: 'removeSetAside', calls: ['fs.promises.rm(aside, { recursive: true, force: true })'], reason: "only on the owner's photos gc --apply <digest>: GC's tombstoned delete, of a manifest-only asset folder it set aside as .gc-<r>-<prefix>-<uuid> this run and checked again" },
+    { file: 'lib/catalog/retention.ts', fn: 'runGc.collectTombstoned', calls: ['hooks.remove', 'hooks.remove(aside, removeSetAside)'], reason: "only on photos gc --apply, and only in tests: the hooks.remove seam a test sets in place of removeSetAside" },
+    { file: 'lib/catalog/retention.ts', fn: 'runGc.held', calls: ['fs.promises.rm(checked.target, { recursive: true, force: true })', 'fs.promises.unlink(checked.target)'], reason: "only on photos gc --apply <digest>: GC's abandoned-staging and orphan-candidate deletes, each rechecked under its locks just before" },
     // Storage pruning.
-    { file: 'lib/storage/document.ts', fn: 'pruneVersions.remove', calls: ['fs.promises.unlink'], reason: "on every versioned write: drops a versioned document folder's oldest version files beyond the retained count, only names it wrote" },
-    { file: 'lib/storage/document.ts', fn: 'pruneVersions', calls: ['remove', 'remove'], reason: 'on every versioned write: its calls to its own remove(), for swept temps and versions past the retained count' },
+    { file: 'lib/storage/document.ts', fn: 'pruneVersions.remove', calls: ['fs.promises.unlink(path.join(/*turbopackIgnore: true*/ dir, name))'], reason: "on every versioned write: drops a versioned document folder's oldest version files beyond the retained count, only names it wrote" },
+    { file: 'lib/storage/document.ts', fn: 'pruneVersions', calls: ['remove(`v${version}.json`)', 'remove(temp.name)'], reason: 'on every versioned write: its calls to its own remove(), for swept temps and versions past the retained count' },
     // Temp and probe cleanup.
-    { file: 'lib/storage/config.ts', fn: 'sweepProbes', calls: ['fs.rmSync'], reason: 'on every data-root write check: removes a .link-probe- file a killed process on this host left in the data root' },
-    { file: 'lib/storage/config.ts', fn: 'linkProblem', calls: ['fs.rmSync'], reason: 'on every data-root write check: removes the hard-link probe file and its link it just made' },
-    { file: 'lib/curation/auth/credential-cli.ts', fn: 'writeOwnerOnly', calls: ['fs.rmSync'], reason: 'when the owner writes a curator credential: removes its own temp file when the rename into place fails' },
-    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicWriteFile', calls: ['fs.promises.rm'], reason: 'on every atomic write: removes its own temp file when the write fails' },
-    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicCreateFile', calls: ['fs.promises.rm'], reason: 'on every create-once write: removes its own temp file once the hard link is made or refused' },
-    { file: 'lib/storage/document.ts', fn: 'writeVersionedDocument', calls: ['fs.promises.rm'], reason: 'on every versioned write: removes its own temp file once the version is linked into place' },
+    { file: 'lib/storage/config.ts', fn: 'sweepProbes', calls: ['fs.rmSync(file, { force: true })'], reason: 'on every data-root write check: removes a .link-probe- file a killed process on this host left in the data root' },
+    { file: 'lib/storage/config.ts', fn: 'linkProblem', calls: ['fs.rmSync(name, { force: true })'], reason: 'on every data-root write check: removes the hard-link probe file and its link it just made' },
+    { file: 'lib/curation/auth/credential-cli.ts', fn: 'writeOwnerOnly', calls: ['fs.rmSync(temp, { force: true })'], reason: 'when the owner writes a curator credential: removes its own temp file when the rename into place fails' },
+    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicWriteFile', calls: ['fs.promises.rm(/*turbopackIgnore: true*/ temp, { force: true })'], reason: 'on every atomic write: removes its own temp file when the write fails' },
+    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicCreateFile', calls: ['fs.promises.rm(temp, { force: true })'], reason: 'on every create-once write: removes its own temp file once the hard link is made or refused' },
+    { file: 'lib/storage/document.ts', fn: 'writeVersionedDocument', calls: ['fs.promises.rm(temp, { force: true })'], reason: 'on every versioned write: removes its own temp file once the version is linked into place' },
     // Locks: the lock files the app's own locks create.
-    { file: 'lib/storage/lock.ts', fn: 'withLock.breakExpired', calls: ['fs.promises.rm', 'fs.promises.rm'], reason: 'whenever a lock is taken over: removes a lock file whose lease expired, after moving it aside' },
-    { file: 'lib/storage/lock.ts', fn: 'withLock.tryCreate', calls: ['fs.promises.rm'], reason: 'whenever a lock is taken: removes its own half-made lock file' },
-    { file: 'lib/storage/lock.ts', fn: 'withLock.release', calls: ['fs.promises.rm'], reason: 'whenever a lock is released: removes the lock file it holds' },
+    { file: 'lib/storage/lock.ts', fn: 'withLock.breakExpired', calls: ['fs.promises.rm(stalePath, { force: true })', 'fs.promises.rm(stalePath, { force: true })'], reason: 'whenever a lock is taken over: removes a lock file whose lease expired, after moving it aside' },
+    { file: 'lib/storage/lock.ts', fn: 'withLock.tryCreate', calls: ['fs.promises.rm(lockPath, { force: true })'], reason: 'whenever a lock is taken: removes its own half-made lock file' },
+    { file: 'lib/storage/lock.ts', fn: 'withLock.release', calls: ['fs.promises.rm(releasing, { force: true })'], reason: 'whenever a lock is released: removes the lock file it holds' },
     // Staging and build leftovers: what a derivative build itself wrote under staging/.
-    { file: 'lib/identity/derivatives.ts', fn: 'clearStagingEntry', calls: ['fs.promises.rm', 'fs.promises.unlink'], reason: "at watcher start (removeAbandonedStaging, from lib/identity/worker.ts): removes only direct children of staging/ that belong to builds that never published; follows no symlink, so an entry that is a symlink is unlinked as a link, never followed; and stays inside staging/ by dev:inode, each target's parent staging/'s own, re-checked right before the delete" },
-    { file: 'lib/identity/derivatives.ts', fn: 'buildDerivativeSet', calls: ['fs.promises.rm'], reason: 'when a derivative build fails: removes its own staging folder' },
-    { file: 'lib/storage/publish.ts', fn: 'publishDirectory', calls: ['fs.promises.rm'], reason: 'when a build publishes a set another writer already published: drops its own staging copy' },
+    { file: 'lib/identity/derivatives.ts', fn: 'clearStagingEntry', calls: ['fs.promises.rm(target, { recursive: true, force: true })', 'fs.promises.unlink(target)'], reason: "at watcher start (removeAbandonedStaging, from lib/identity/worker.ts): removes only direct children of staging/ that belong to builds that never published; follows no symlink, so an entry that is a symlink is unlinked as a link, never followed; and stays inside staging/ by dev:inode, each target's parent staging/'s own, re-checked right before the delete" },
+    { file: 'lib/identity/derivatives.ts', fn: 'buildDerivativeSet', calls: ['fs.promises.rm(staging, { recursive: true, force: true })'], reason: 'when a derivative build fails: removes its own staging folder' },
+    { file: 'lib/storage/publish.ts', fn: 'publishDirectory', calls: ['fs.promises.rm(stagingDir, { recursive: true, force: true })'], reason: 'when a build publishes a set another writer already published: drops its own staging copy' },
     // Files the app made and has moved or finished with.
-    { file: 'lib/identity/decisions.ts', fn: 'settleDecisions', calls: ['fs.promises.rm'], reason: 'on each identity pass that rejects a decision: removes the decision file from identity/decisions/ once its contents are written to rejected/' },
-    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: ['fs.promises.rm'], reason: "when photos edit's editor fails: removes photos edit's own working copy" },
-    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: ['fs.promises.rm'], reason: "when photos edit saves: removes photos edit's own working copy" },
+    { file: 'lib/identity/decisions.ts', fn: 'settleDecisions', calls: ['fs.promises.rm(source, { force: true })'], reason: 'on each identity pass that rejects a decision: removes the decision file from identity/decisions/ once its contents are written to rejected/' },
+    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: ['fs.promises.rm(working, { force: true })'], reason: "when photos edit's editor fails: removes photos edit's own working copy" },
+    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: ['fs.promises.rm(working, { force: true })'], reason: "when photos edit saves: removes photos edit's own working copy" },
     // Process calls: every one is on this list by its whole call, arguments and options included (item 43), with what it runs and why that can't delete.
     {
         kind: 'process',
@@ -82,11 +84,11 @@ const ALLOWLIST: readonly Allowed[] = [
         calls: ["holder = globalThis, which the rail can't read", "holder[key], which the rail can't read", "holder[key], which the rail can't read"],
         reason: "each module's own process-wide state slot on globalThis, under its Symbol.for() key; reaches no delete",
     },
-    { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
+    { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm(created, { recursive: true, force: true })'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
     // Legacy derivatives, until A12 fences or removes them.
-    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm'], reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
-    { file: 'utils/imageOptimizer.ts', fn: 'purgeDynamicCache', calls: ['fs.unlinkSync'], reason: 'inside the photo library, until A12: legacy dynamic-cache files, when a legacy set is rebuilt', until: 'A12' },
-    { file: 'utils/imageOptimizer.ts', fn: 'forgetSetSource', calls: ['fs.rmSync'], reason: "inside the photo library, until A12: a legacy set's source record, when its set may no longer be its own", until: 'A12' },
+    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm(file, { force: true })'], reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
+    { file: 'utils/imageOptimizer.ts', fn: 'purgeDynamicCache', calls: ['fs.unlinkSync(path.join(paths.dynamicCache, name))'], reason: 'inside the photo library, until A12: legacy dynamic-cache files, when a legacy set is rebuilt', until: 'A12' },
+    { file: 'utils/imageOptimizer.ts', fn: 'forgetSetSource', calls: ['fs.rmSync(setSourceFile(filename, paths), { force: true })'], reason: "inside the photo library, until A12: a legacy set's source record, when its set may no longer be its own", until: 'A12' },
 ];
 
 const SCANNED = shippedFiles();
@@ -201,6 +203,39 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
         }
     });
 
+    it('pins every delete by its whole call, so changing what it deletes fails the rail (item 52, D1 and D2)', () => {
+        for (const [file, fn, from, to] of [
+            // D1: removeSetAside removing the photo's folder instead of the aside it set.
+            ['lib/catalog/retention.ts', 'removeSetAside', 'await fs.promises.rm(aside, { recursive: true, force: true });', 'await fs.promises.rm(path.dirname(aside), { recursive: true, force: true });'],
+            // D2: the staging clear removing all of staging/ instead of one entry: its `dir` is stagingRoot(root), and so is stagingRoot(root) written out.
+            ['lib/identity/derivatives.ts', 'clearStagingEntry', 'await fs.promises.rm(target, { recursive: true, force: true });', 'await fs.promises.rm(dir, { recursive: true, force: true });'],
+            ['lib/identity/derivatives.ts', 'clearStagingEntry', 'await fs.promises.rm(target, { recursive: true, force: true });', 'await fs.promises.rm(stagingRoot(root), { recursive: true, force: true });'],
+            // And an option added is a change too.
+            ['lib/storage/lock.ts', 'withLock.release', 'fs.promises.rm(releasing, { force: true })', 'fs.promises.rm(releasing, { force: true, recursive: true })'],
+        ]) {
+            const shipped = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+            expect(shipped.split(from).length - 1, from).toBe(1);
+            expect(passes(scanSource(file, shipped).filter((call) => call.fn === fn))).toBe(true);
+            const changed = scanSource(file, shipped.replace(from, to)).filter((call) => call.fn === fn);
+            expect(changed.length, to).toBeGreaterThan(0);
+            expect(passes(changed), to).toBe(false);
+        }
+    });
+
+    it('scans a source file that is new and not yet added, and leaves a git-ignored one out (item 54)', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rail-others-'));
+        const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+        git('init', '--quiet');
+        fs.mkdirSync(path.join(root, 'lib'));
+        fs.writeFileSync(path.join(root, '.gitignore'), 'ignored/\n');
+        fs.writeFileSync(path.join(root, 'lib', 'tracked.ts'), 'export {};\n');
+        git('add', 'lib/tracked.ts', '.gitignore');
+        fs.writeFileSync(path.join(root, 'lib', 'untracked.ts'), 'export {};\n');
+        fs.mkdirSync(path.join(root, 'ignored'));
+        fs.writeFileSync(path.join(root, 'ignored', 'built.js'), 'export {};\n');
+        expect(shippedFiles(root)).toEqual(['lib/tracked.ts', 'lib/untracked.ts']);
+    });
+
     it('fails on a new process call in every scanned directory, whatever it runs (item 44\'s positive control)', () => {
         const spawning = [
             "import { spawn } from 'node:child_process';\nexport function later(): void {\n    spawn('ls', ['-l']);\n}\n",
@@ -262,10 +297,10 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
         const found = scanSource(fixture, fs.readFileSync(path.join(REPO_ROOT, fixture), 'utf8'));
         expect(found.map((call) => [call.fn, call.call])).toEqual([
             ['<module>', 'import rm'],
-            ['tidyUp', 'fs.promises.rm'],
-            ['tidyUpSync', 'fs.unlinkSync'],
-            ['tidyUpSync', "fs['rmSync']"],
-            ['viaImport', 'rm'],
+            ['tidyUp', 'fs.promises.rm(dir, { recursive: true, force: true })'],
+            ['tidyUpSync', 'fs.unlinkSync(file)'],
+            ['tidyUpSync', "fs['rmSync'](file)"],
+            ['viaImport', 'rm(dir, { recursive: true })'],
             ['viaShell', 'runs a process: execSync(`rm -rf ${dir}`)'],
             ['viaShell', "runs a process: spawn('rm', ['-rf', dir])"],
             ['viaShell', "runs a process: spawn('find', [dir, '-name', '*.tmp', '-delete'])"],
@@ -294,14 +329,14 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             ['viaGitAndFind', "runs a process: execFileSync('git', ['clean', '-fdx'])"],
             ['viaGitAndFind', "runs a process: cp.execSync('git clean -fd')"],
             ['viaGitAndFind', "runs a process: spawnSync('find', ['.', '-name', '*.tmp', '-delete'])"],
-            ['viaComputedAccess', "fs.promises['unlink']"],
+            ['viaComputedAccess', "fs.promises['unlink'](file)"],
             ['viaComputedAccess', 'computed access fsp[name]'],
             ['viaComputedAccess', 'Reflect.get(fs, …)'],
-            ['viaExtraNames', 'fse.remove'],
-            ['viaExtraNames', 'fse.removeSync'],
-            ['viaExtraNames', 'fse.emptyDir'],
-            ['viaExtraNames', 'fse.emptyDirSync'],
-            ['Janitor.sweep', 'fs.rmSync'],
+            ['viaExtraNames', 'fse.remove(dir)'],
+            ['viaExtraNames', 'fse.removeSync(dir)'],
+            ['viaExtraNames', 'fse.emptyDir(dir)'],
+            ['viaExtraNames', 'fse.emptyDirSync(dir)'],
+            ['Janitor.sweep', 'fs.rmSync(file)'],
             // Round 4: git clean with options, and git with a list it can't read.
             ['viaGitOptions', 'runs a process: cp.execSync(`git -C ${dir} clean -fdx`)'],
             ['viaGitOptions', "runs a process: execFileSync('git', ['-C', dir, 'clean', '-fd'])"],
@@ -351,7 +386,7 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             ['viaEscapes', 'escapes fs'],
             // The alias is followed, and each use of it escapes too.
             ['viaEscapes', "escapes import('node:fs')"],
-            ['viaEscapes', 'loaded.rmSync'],
+            ['viaEscapes', "loaded.rmSync('x')"],
             ['viaEscapes', 'escapes cp'],
             ['viaEscapes', 'escapes fsp'],
             ['viaEscapes', 'escapes alias'],
@@ -391,8 +426,8 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             ['viaWrappers', "runs a process: execFileSync('sudo', args)"],
             ['viaWrappers', "runs a process: cp.execSync('npx rimraf build')"],
             // mkdtempDisposable removes its folder when disposed.
-            ['viaDisposable', 'disposable.mkdtempDisposableSync'],
-            ['viaDisposable', 'disposable.mkdtempDisposable'],
+            ['viaDisposable', "disposable.mkdtempDisposableSync('x')"],
+            ['viaDisposable', "disposable.mkdtempDisposable('y')"],
             // Round 6 (item 31): Reflect.get on child_process.
             ['viaReflectProcess', 'Reflect.get(cp, …)'],
             // exec string commands.
@@ -534,10 +569,10 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             ['viaNamedDefault', 'computed access fsNamed[name]'],
             ['viaDestructuredDefault', 'runs a process: whole.exec(command)'],
             ['viaDotDefault', "computed access (await import('node:fs')).default[name]"],
+            // Round 9 (item 48): node:module, cluster, inspector, repl, wasi and worker_threads, however they're loaded.
             ['<module>', 're-exports node:fs'],
             ['<module>', 're-exports node:child_process'],
             ['viaData', "import() of a data: URL, which the rail can't read"],
-            // Round 9 (item 48): node:module, cluster, inspector, repl, wasi and worker_threads, however they're loaded.
             ['<module>', "module node:cluster, which the rail can't read"],
             ['<module>', "module inspector, which the rail can't read"],
             ['<module>', "module node:repl, which the rail can't read"],

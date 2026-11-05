@@ -1850,7 +1850,7 @@ describe('--set-aside, round 9: lock order and wait, the status of a blocked put
         expect(snapshot(built.root)).toEqual(before);
     });
 
-    it('45: an Inbox approve and a --set-aside started together both finish', async () => {
+    it('45: an Inbox approve that holds the curation lock while --set-aside holds the catalog lock: both finish', async () => {
         const f = await createCurationFixture({ published: true });
         writeRules(f.root, { schemaVersion: 1, series: [{ seriesId: DRAFT, folders: ['trips'] }] });
         const fact = f.fact('new', f.fresh[0]);
@@ -1858,11 +1858,20 @@ describe('--set-aside, round 9: lock order and wait, the status of a blocked put
         const event = (await listEvents(f.root)).events.find((each) => each.photoId === f.fresh[0]) as CurationEvent;
         // No standing tombstone: --set-aside takes all four locks, then refuses what it finds, as a run that got its locks does.
         const target = `assets/${f.fresh[1]}/${f.revisionOf(f.fresh[1])}`;
-        const [approved, setAsideRun] = await Promise.all([
-            approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:test', expectedBase: f.catalog.revisionId, choices: {}, waitMs: 10_000 }),
-            setAside(f, target, undefined, 10_000),
-        ]);
-        expect(approved).toMatchObject({ ok: true });
+        const curationLock = path.join(f.root, 'locks', `${CURATION_LOCK}.lock`);
+        let approving: ReturnType<typeof approveEvent> | null = null;
+        // The overlap, made for real (item 53): once --set-aside holds the catalog lock, an approve starts and takes the curation lock
+        // before --set-aside goes on. Approve then wants the authored lock. Under the old order (catalog, authored, curation) --set-aside
+        // would hold authored and wait for curation, approve would hold curation and wait for authored, and both would time out.
+        const setAsideRun = await setAside(f, target, { afterLock: async (name) => {
+            if (name !== CATALOG_LOCK) return;
+            approving = approveEvent({ root: f.root, eventId: event.id, expectedVersion: event.version, actor: 'curator:test', expectedBase: f.catalog.revisionId, choices: {}, waitMs: 5_000 });
+            const until = Date.now() + 5_000;
+            while (!fs.existsSync(curationLock) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+            expect(fs.existsSync(curationLock)).toBe(true);
+        } }, 5_000);
+        expect(approving).not.toBeNull();
+        expect(await approving).toMatchObject({ ok: true });
         expect(setAsideRun.text).not.toMatch(/_LOCKED|LOCK_LOST/);
         expect(setAsideRun.text).toMatch(/NOT_FOUND|NOT_TAKEN_DOWN/);
     });
