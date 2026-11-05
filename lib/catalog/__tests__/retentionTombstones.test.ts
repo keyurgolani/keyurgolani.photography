@@ -12,6 +12,7 @@ import type { CurationEvent } from '../../curation/events';
 import { runStatusCommand } from '../owner-status';
 import { runPurge, runRevoke } from '../purge';
 import { CATALOG_LOCK } from '../repository';
+import { AUTHORED_LOCK } from '../working-layer-writer';
 import { runPurgeCommand, purgeArgs } from '../purge-cli';
 import { references } from '../references';
 import { GC_EXIT_CODES, planDigest, runGc, trashName, type GcEntry, type GcOptions, type GcResult } from '../retention';
@@ -94,7 +95,8 @@ const assetsOf = (root: string) => new Map([...snapshot(root)].filter(([file]) =
  * with photos gc --set-aside, then the exact rename back.
  */
 function wholeText(aside: string, original: string, occupied: boolean, then = 'then revoke, or rerun photos gc'): string {
-    const back = `rename it back with mv ${aside} ${original}, from the data root in image-watcher's container; ${then}`;
+    // A line the owner can run as it stands, from the compose file's own service and data-root path (item 38).
+    const back = `rename it back with docker compose -f docker-compose.prod.yml run --rm --no-deps -w /data/portfolio image-watcher mv ${aside} ${original}; ${then}`;
     return occupied
         ? `set aside whole at ${aside}, and something else is at ${original}: set that aside with photos gc --set-aside ${original}, then ${back}`
         : `set aside whole at ${aside}: ${back}`;
@@ -1423,7 +1425,202 @@ describe('photos gc --set-aside, the data root trash/ (item 29a)', { timeout: 12
         await setAside(built, folderOf(built, built.d));
         const name = trashName(built.d, built.first[built.d], PAST_GRACE);
         const { output } = await runStatusCommand({ dataRoot: built.root });
-        expect(output).toMatch(new RegExp(`Trash: 1 folder, \\d+\\.\\d kB, in trash/: ${name}\\. Emptying trash/ is your own step\\.`));
+        expect(output).toMatch(new RegExp(`Trash: 1 folder in trash/, \\d+\\.\\d kB\\. Emptying trash/ is your own step\\.\\n  ${name}, \\d+\\.\\d kB\\n`));
         expect(output).not.toMatch(/\brm\b/);
+    });
+
+    it('says when trash/ is a symlink or a file, and gives a count, not a walk, for more than 20 entries (item 38)', async () => {
+        const built = await fixture();
+        const elsewhere = fs.mkdtempSync(path.join(path.dirname(built.root), 'elsewhere-'));
+        fs.symlinkSync(elsewhere, path.join(built.root, 'trash'));
+        expect((await runStatusCommand({ dataRoot: built.root })).output).toContain('Trash: trash/ in the data root is a symlink, which nothing reads or empties.');
+        fs.renameSync(path.join(built.root, 'trash'), path.join(path.dirname(built.root), 'trash-link-moved'));
+        fs.writeFileSync(path.join(built.root, 'trash'), 'a file');
+        expect((await runStatusCommand({ dataRoot: built.root })).output).toContain('Trash: trash/ in the data root is a file, which nothing reads or empties.');
+        fs.renameSync(path.join(built.root, 'trash'), path.join(path.dirname(built.root), 'trash-file-moved'));
+        for (let n = 0; n < 21; n += 1) fs.mkdirSync(path.join(built.root, 'trash', `entry-${n}`), { recursive: true });
+        const { output } = await runStatusCommand({ dataRoot: built.root });
+        expect(output).toContain('Trash: 21 folders in trash/, size unknown. Emptying trash/ is your own step.');
+        expect(output).not.toContain('entry-0');
+    });
+});
+
+describe("--set-aside keeps what GC keeps, and refuses what it can't move safely (items 34 to 36)", { timeout: 120_000 }, () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    async function setAside(built: PurgeFixture, target: string, hooks?: { beforeRename?(): void }) {
+        const out: string[] = [];
+        const exitCode = await runGcCommand(built.root, gcArgs(['--set-aside', target]), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet, waitMs: 200, setAsideHooks: hooks });
+        return { exitCode, text: out.join('\n') };
+    }
+
+    /** Refused with `pattern`, the exit code `code`, and the data root byte for byte as it was. */
+    async function refused(built: PurgeFixture, target: string, pattern: RegExp, code = 1, hooks?: { beforeRename?(): void }) {
+        const before = snapshot(built.root);
+        const { exitCode, text } = await setAside(built, target, hooks);
+        vi.restoreAllMocks();
+        expect(text).toMatch(pattern);
+        expect(exitCode).toBe(code);
+        expect(snapshot(built.root)).toEqual(before);
+        return text;
+    }
+
+    /** Make lstatSync report another inode for `file`, as a swap just before the rename would. */
+    function swapped(file: string): void {
+        const real = fs.lstatSync;
+        const target = path.resolve(file);
+        vi.spyOn(fs, 'lstatSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+            if (typeof each !== 'string' || path.resolve(each) !== target || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { ino: stat.ino + 1 });
+        }) as typeof fs.lstatSync);
+    }
+
+    it('34: refuses a tombstoned folder the live revision shows, naming it', async () => {
+        const built = await fixture();
+        writeTombstone(built.root, { photoId: built.a, assetRevisions: [built.first[built.a]], createdAt: new Date(T0).toISOString() });
+        await refused(built, folderOf(built, built.a), /PROTECTED: .*the live revision, rev_[0-9a-f]{64}, shows it/);
+    });
+
+    it('34: refuses a tombstoned folder a draft series lists, naming it', async () => {
+        const built = await fixture();
+        writeTombstone(built.root, { photoId: built.c, assetRevisions: [built.first[built.c]], createdAt: new Date(T0).toISOString() });
+        await refused(built, folderOf(built, built.c), new RegExp(`PROTECTED: .*the draft's series ${built.seriesId} lists it`));
+    });
+
+    it('34: refuses a tombstoned folder an open Inbox item names, naming it', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const event = writeOpenEvent(built.root, built.d, built.first[built.d]);
+        await refused(built, folderOf(built, built.d), new RegExp(`PROTECTED: .*the open Inbox item ${event.id} names it`));
+    });
+
+    it('34: takes the authored lock as GC does', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const before = snapshot(built.root);
+        const result = await withLock(AUTHORED_LOCK, { root: built.root, waitMs: 0 }, () => setAside(built, folderOf(built, built.d)));
+        expect(result.exitCode).toBe(3);
+        expect(result.text).toMatch(/AUTHORED_LOCKED/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('35: refuses a whole .gc- folder and gives its rename-back text, and still sets aside a partial one', async () => {
+        const built = await fixture();
+        const id = await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        let aside = '';
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { remove: async (target) => {
+            aside = path.relative(fs.realpathSync(built.root), target).split(path.sep).join('/');
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        } } });
+        void id;
+        const text = await refused(built, aside, /SET_ASIDE_WHOLE/);
+        expect(text).toContain(wholeText(aside, folderOf(built, built.d), false));
+
+        const other = await fixture();
+        await purgeD(other);
+        const planned2 = await gc(other.root, PAST_GRACE);
+        let partial = '';
+        await gc(other.root, PAST_GRACE, { apply: planned2.plan?.digest, hooks: { remove: async (target, removeAt) => {
+            partial = path.relative(fs.realpathSync(other.root), target).split(path.sep).join('/');
+            const set = path.join(target, other.profileId);
+            const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json');
+            await removeAt(path.join(set, file));
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        } } });
+        expect((await setAside(other, partial)).exitCode).toBe(0);
+        expect(fs.existsSync(path.join(other.root, partial))).toBe(false);
+    });
+
+    it.each([
+        ['assets/<p>/..', (built: PurgeFixture) => `assets/${built.d}/..`],
+        ['assets/<p>/.', (built: PurgeFixture) => `assets/${built.d}/.`],
+    ])('36: refuses %s, so a dot can never move all of assets/', async (_what, target) => {
+        const built = await fixture();
+        await purgeD(built);
+        await refused(built, target(built), /NOT_AN_ASSET_PATH/);
+    });
+
+    it('36: refuses a symlinked trash/ and a file trash/', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const elsewhere = fs.mkdtempSync(path.join(path.dirname(built.root), 'elsewhere-'));
+        fs.symlinkSync(elsewhere, path.join(built.root, 'trash'));
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: trash\/ in the data root is a symlink or not a folder/);
+        fs.renameSync(path.join(built.root, 'trash'), path.join(path.dirname(built.root), 'trash-link-moved'));
+        fs.writeFileSync(path.join(built.root, 'trash'), 'a file');
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: trash\/ in the data root is a symlink or not a folder/);
+    });
+
+    it('36: refuses a target that is a symlink, and one that is a file', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const folder = path.join(built.root, folderOf(built, built.d));
+        fs.renameSync(folder, path.join(path.dirname(built.root), 'moved-folder'));
+        fs.symlinkSync(path.join(path.dirname(built.root), 'moved-folder'), folder);
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: .*is a symlink or not a folder/);
+        fs.renameSync(folder, path.join(path.dirname(built.root), 'moved-link'));
+        fs.writeFileSync(folder, 'a file');
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: .*is a symlink or not a folder/);
+    });
+
+    it('36: refuses a folder whose only tombstone is revoked', async () => {
+        const built = await fixture();
+        const id = await purgeD(built);
+        writeRevoke(built.root, id);
+        await refused(built, folderOf(built, built.d), /NOT_TAKEN_DOWN/);
+    });
+
+    it('36: exits 3 when the data root is not ready', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.renameSync(path.join(built.root, 'data-root.json'), path.join(path.dirname(built.root), 'data-root.json.moved'));
+        await refused(built, folderOf(built, built.d), /DATA_ROOT_NOT_READY/, 3);
+    });
+
+    it('36: exits 4 on a damaged tombstone', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.writeFileSync(path.join(tombstonesDir(built.root), 'tomb_00000000-0000-4000-8000-0000000000dd.json'), '{');
+        await refused(built, folderOf(built, built.d), /INTEGRITY_MISMATCH/, 4);
+    });
+
+    it('36: refuses EXDEV from the rename as a cross-device move', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash'));
+        await refused(built, folderOf(built, built.d), /CROSS_DEVICE/, 1, { beforeRename: () => {
+            vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+                throw Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' });
+            });
+        } });
+    });
+
+    it('36: refuses when a folder above the target is not the one it checked', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash'));
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: .*changed just before/, 1, { beforeRename: () => swapped(fs.realpathSync(path.join(built.root, 'assets', built.d))) });
+    });
+
+    it('36: re-checks the target and trash/ by inode just before the rename', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash'));
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: .*changed just before/, 1, { beforeRename: () => swapped(fs.realpathSync(path.join(built.root, folderOf(built, built.d)))) });
+        await refused(built, folderOf(built, built.d), /UNSAFE_PATH: trash\/ changed just before/, 1, { beforeRename: () => swapped(fs.realpathSync(path.join(built.root, 'trash'))) });
+    });
+
+    it('36: checks it still holds its locks just before the rename', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        fs.mkdirSync(path.join(built.root, 'trash'));
+        await refused(built, folderOf(built, built.d), /LOCK_LOST/, 3, { beforeRename: () => {
+            const lockFile = path.join(built.root, 'locks', `${CATALOG_LOCK}.lock`);
+            fs.renameSync(lockFile, `${lockFile}.broken`);
+            const now = new Date().toISOString();
+            fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
+        } });
     });
 });

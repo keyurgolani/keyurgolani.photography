@@ -293,7 +293,32 @@ describe('the delete-call rail', () => {
             ['viaVm', "vm.runInNewContext, which the rail can't read"],
             ['viaVm', "vm.runInThisContext, which the rail can't read"],
             ['viaVm', "new vm.Script, which the rail can't read"],
+            // Round 7 (item 37): shell -c scripts read through words, nested interpreters and stdin shells included (X16 strengthened).
+            ['viaNestedShellScripts', "spawnSync runs node -e with require('fs').rmSync"],
+            ['viaNestedShellScripts', "spawnSync runs a python3 script, which the rail can't read"],
+            ['viaNestedShellScripts', 'spawnSync runs sh with no literal script, so it may read one from stdin or a file'],
+            ['viaNestedShellScripts', 'spawnSync runs rm'],
+            // The options' input strings.
+            ['viaInputStrings', 'spawnSync runs git clean'],
+            // The loader's owner, bare.
+            ['viaBareOwner', "(process as NodeJS.Process).getBuiltinModule('node:child_process').execSync runs rm"],
+            // Wrapper script flags combined, or as --flag=, and busybox sh (X19 strengthened).
+            ['viaWrapperFlagForms', "execFileSync runs sudo -si, which the rail can't read"],
+            ['viaWrapperFlagForms', "execFileSync runs env --split-string, which the rail can't read"],
+            ['viaWrapperFlagForms', "execFileSync runs npx --call, which the rail can't read"],
+            ['viaWrapperFlagForms', 'execFileSync runs sh with no literal script, so it may read one from stdin or a file'],
+            // More eval and Worker forms.
+            ['viaMoreEval', "globalThis['eval'], which the rail can't read"],
+            ['viaMoreEval', "Reflect.get(globalThis, …), which the rail can't read"],
+            ['viaMoreEval', "new (require('node:worker_threads').Worker) with eval, which the rail can't read"],
+            ['viaMoreEval', "new Spawned with eval, which the rail can't read"],
         ]);
+    });
+
+    it('finds nothing in a Script that is not node:vm\'s, or in node --version (item 37\'s false positives)', () => {
+        const fixture = 'test/fixtures/deleteRail/strayForms.ts';
+        const found = scanSource(fixture, fs.readFileSync(path.join(REPO_ROOT, fixture), 'utf8'));
+        expect(found.filter((call) => call.fn.startsWith('notFindings'))).toEqual([]);
     });
 
     it('bans the deleting packages by module name, default imports, require and import() included', () => {

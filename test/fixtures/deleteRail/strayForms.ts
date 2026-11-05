@@ -263,3 +263,43 @@ export function viaVm(code: string): void {
     vm.runInThisContext(code);
     void new vm.Script(code);
 }
+
+// Round 7 (#181's A10 review, item 37).
+
+export function viaNestedShellScripts(): void {
+    spawnSync('sh', ['-c', "node -e \"require('fs').rmSync('x')\""]);
+    spawnSync('bash', ['-c', 'python3 -c "print(1)"']);
+    spawnSync('sh', ['-c', 'sh -s']);
+    spawnSync('sh', ['-c', '/usr/local/bin/rm -rf x']);
+}
+
+export function viaInputStrings(): void {
+    spawnSync('ls', [], { input: 'git clean -fdx' });
+}
+
+export function viaBareOwner(): void {
+    (process as NodeJS.Process).getBuiltinModule('node:child_process').execSync('rm -rf d');
+}
+
+export function viaWrapperFlagForms(): void {
+    execFileSync('sudo', ['-si']);
+    execFileSync('env', ['--split-string=sh -c x']);
+    execFileSync('npx', ['--call=echo hi']);
+    execFileSync('busybox', ['sh']);
+}
+
+export function viaMoreEval(code: string): void {
+    globalThis['eval'](code);
+    Reflect.get(globalThis, 'eval');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- the rail's positive control: a form it must catch
+    void new (require('node:worker_threads').Worker)(code, { eval: true });
+    const Spawned = workers.Worker;
+    void new Spawned(code, { eval: true });
+}
+
+export function notFindings(): void {
+    class Script {}
+    void new Script();
+    cp.execSync('node --version');
+    spawnSync('node', ['--version']);
+}
