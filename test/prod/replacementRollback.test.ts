@@ -10,8 +10,9 @@
  * its file replaced by other pixels, B, and one watcher pass has opened the
  * replacement item. B's set is built and the item confirmed, the way the
  * watcher and `curation confirm` do it, and a publish makes revision 2. The
- * server serves B's URLs and 404s A's, and after #15's rollback to revision
- * 1, from this process, serves A's URLs again, with the same bytes as
+ * server serves B's URLs, none with any of A's bytes, and 404s A's. A
+ * watcher pass then keeps A's set, and after #15's rollback to revision 1,
+ * from this process, the server serves A's URLs again, with the same bytes as
  * before, and 404s B's, with no restart. The Home records endpoint names the
  * URLs of the revision served at each step.
  */
@@ -25,10 +26,11 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { publish } from '../../lib/catalog/publish';
 import { rollback } from '../../lib/catalog/rollback';
-import { createWorld, makeImages, OWNER, quiet, removeTemplate, SERIES, type World } from '../../lib/curation/__tests__/replacementWorld';
+import { createWorld, makeImages, OWNER, quiet, removeTemplate, SERIES, setDir, type World } from '../../lib/curation/__tests__/replacementWorld';
 import { confirmReplacement } from '../../lib/curation/resolutions';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../lib/identity/variants';
 import { mediaUrl } from '../../lib/media/url';
+import { MANIFEST_FILE } from '../../lib/storage/publish';
 
 const STANDALONE = path.resolve(import.meta.dirname, '../../.next/standalone');
 const IMMUTABLE = 'public, max-age=31536000, immutable';
@@ -179,11 +181,17 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('a rollback after a replacem
         expect(second.outcome, second.message).toBe('PUBLISHED');
         expect(await ready()).toMatchObject({ state: 'ok', revisionId: second.revisionId, revisionNumber: 2 });
         const replaced = await servedBytes(newUrls);
-        expect(Object.values(replaced)).not.toEqual(Object.values(before));
+        // Other pixels in every variant: no B file has any A file's bytes.
+        for (const digest of Object.values(replaced)) expect(Object.values(before)).not.toContain(digest);
         await refused(oldUrls);
         const secondRecords = await homeRecords(second.revisionId!);
         for (const url of newUrls) expect(secondRecords).toContain(url);
         for (const url of oldUrls) expect(secondRecords).not.toContain(url);
+
+        // The watcher's next pass, as image-watcher would run one between the publish and the rollback, keeps A's set:
+        // only revision 1 holds it now, and nothing but #15's GC, from the CLI, ever removes a set.
+        await w.pass();
+        expect(fs.existsSync(path.join(setDir(w, w.a), MANIFEST_FILE)), "A's set after the watcher's pass").toBe(true);
 
         // #15's rollback to revision 1: the old URLs serve again, byte for byte, and B's answer 404.
         const rolled = await rollback({ dataRoot: w.root, revisionId: w.revisionId, expectedActiveRevisionId: second.revisionId!, actor: OWNER, reason: 'back to A', logger: quiet });

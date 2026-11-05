@@ -239,6 +239,15 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
         }
     });
 
+    it('prints status --json on stdout whatever its exit code, so a monitor reads one stream', async () => {
+        const run = await photos(['status', '--check', '--json'], { PHOTOGRAPHY_DATA_DIR: undefined, NODE_ENV: 'production' });
+        expect(run.code).toBe(1);
+        expect(run.stderr).toBe('');
+        const printed = JSON.parse(run.stdout) as { check: { ok: boolean; problems: { code: string }[] } };
+        expect(printed.check.ok).toBe(false);
+        expect(printed.check.problems.map((problem) => problem.code)).toContain('heartbeat-missing');
+    });
+
     it('refuses a repeated flag and an empty series order with exit 2, and takes a chapter title after --', async () => {
         const catalog = await createTestCatalog({ seed: 1321, photos: 3, series: 1 });
         cleanups.push(() => catalog.cleanup());
