@@ -29,17 +29,21 @@ interface PageOptions {
     root?: Record<string, unknown>;
     rows?: string[];
     markup?: string;
+    /** The root row's id, `0` as Next writes it. */
+    rootId?: string;
 }
 
 /** A page for `?photo=<value>`, its flight stream cut into three pushes, one of them mid-row. */
-function page(value: string, { root = {}, rows = [], markup = '' }: PageOptions = {}): string {
-    const stream = [
-        '1:"$Sreact.fragment"',
-        textRow('2', 'a caption\nover two lines é'),
-        `0:${JSON.stringify({ P: null, ...fieldsFor(value), i: false, t: { t: { s: '' } }, ...root })}`,
-        '3:["$","main",null,{"children":"Fixture long series"}]',
-        ...rows,
-    ].join('\n') + '\n';
+function page(value: string, { root = {}, rows = [], markup = '', rootId = '0' }: PageOptions = {}): string {
+    // A text row has no newline after it; every other row ends with one.
+    const stream =
+        '1:"$Sreact.fragment"\n' +
+        // A hint row, with no id.
+        ':HL["/_next/static/chunks/fixture.css","style"]\n' +
+        textRow('2', 'a caption\nover two lines é') +
+        [`${rootId}:${JSON.stringify({ P: null, ...fieldsFor(value), i: false, t: { t: { s: '' } }, ...root })}`, '3:["$","main",null,{"children":"Fixture long series"}]', ...rows]
+            .map((row) => `${row}\n`)
+            .join('');
     const cuts = [0, 7, Math.floor(stream.length / 2), stream.length];
     const pushes = cuts.slice(1).map((end, n) => `<script>self.__next_f.push(${escapeHtml(JSON.stringify([1, stream.slice(cuts[n], end)]))})</script>`);
     return `<!DOCTYPE html><html><head></head><body><main><h1>Fixture long series</h1>${markup}</main><script>(self.__next_f=self.__next_f||[]).push([0])</script>${pushes.join('')}</body></html>`;
@@ -67,6 +71,7 @@ describe('withoutRequestUrl', () => {
         expect(rootOf(view)).toEqual({ P: null, i: false, t: { t: { s: '' } } });
         expect(view).toContain('<h1>Fixture long series</h1>');
         expect(view).toContain('1:"$Sreact.fragment"');
+        expect(view).toContain(':HL["/_next/static/chunks/fixture.css","style"]');
         expect(view).toContain('a caption\nover two lines é');
         expect(view).toContain('3:["$","main",null,{"children":"Fixture long series"}]');
         // The flight scripts are read, not left in as they were.
@@ -102,7 +107,7 @@ describe('withoutRequestUrl', () => {
         });
 
         it('with no root row', () => {
-            const html = page(ID).replace(/\\n0:/, '\\n9:');
+            const html = page(ID, { rootId: '9' });
             expect(() => withoutRequestUrl(html, PATH, { photo: ID })).toThrow(/root/);
         });
 
