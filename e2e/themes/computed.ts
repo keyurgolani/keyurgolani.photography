@@ -72,11 +72,14 @@ export interface Walk {
     resolved: Record<string, string>;
     /** Each folded element that paints anything its parent doesn't, by its parent's path. Fail. */
     folded: string[];
+    /** Each pinned paint a focused folded element's pseudo-element showed, as WalkOptions.fold pinned it. Sanctioned, and listed. */
+    foldedPinned: string[];
 }
 
 /**
- * What a folded element may not paint for itself (WalkOptions.fold): it takes its parent's ink and type, and draws no
- * fill, line, outline, band, decoration or compositing of its own, so leaving it out of the walk hides nothing.
+ * What a folded element may not paint for itself (WalkOptions.fold): it takes its parent's ink and type, takes no room
+ * of its own, and draws no fill, line, outline, band, decoration, clip, mask or compositing, so leaving it out of the
+ * walk hides nothing. `pseudo` is what its ::before and ::after, where they render, may not paint either.
  */
 export const FOLD_PAINT = {
     inherited: [
@@ -95,10 +98,31 @@ export const FOLD_PAINT = {
         'text-decoration-line': 'none',
         opacity: '1',
         filter: 'none',
+        'backdrop-filter': 'none',
         'mix-blend-mode': 'normal',
         transform: 'none',
+        'clip-path': 'none',
+        'mask-image': 'none',
+        'vertical-align': 'baseline',
+        'margin-top': '0px', 'margin-right': '0px', 'margin-bottom': '0px', 'margin-left': '0px',
+        'padding-top': '0px', 'padding-right': '0px', 'padding-bottom': '0px', 'padding-left': '0px',
+    },
+    pseudo: {
+        'background-color': 'rgba(0, 0, 0, 0)',
+        'background-image': 'none',
+        'border-top-style': 'none', 'border-right-style': 'none', 'border-bottom-style': 'none', 'border-left-style': 'none',
+        'outline-style': 'none',
+        'box-shadow': 'none',
+        opacity: '1',
+        filter: 'none',
+        'backdrop-filter': 'none',
+        'clip-path': 'none',
+        'mask-image': 'none',
     },
 } as const;
+
+/** A folded element's pseudo-element paint, pinned by property, for while the element matches :focus-visible. */
+export type FoldedFocus = Partial<Record<'::before' | '::after', Record<string, string>>>;
 
 export interface WalkOptions {
     /**
@@ -109,10 +133,12 @@ export interface WalkOptions {
     /**
      * Elements left out of the walk where they are, with no layout change: an inline wrapper the head adds round its
      * parent's text, which the base had as the parent's own (dark-parity.spec.ts's FOLDED). It must hold no elements and
-     * paint nothing its parent doesn't (FOLD_PAINT); anything else is a `folded` failure. Its pseudo-elements aren't
-     * walked.
+     * paint nothing its parent doesn't (FOLD_PAINT); anything else is a `folded` failure. Its ::before and ::after,
+     * where they render, must paint nothing either (FOLD_PAINT.pseudo), except, while the element matches
+     * :focus-visible, the properties `focused` pins, which must equal their pinned values exactly and are listed as
+     * `foldedPinned`, a sanctioned departure.
      */
-    fold?: readonly string[];
+    fold?: readonly { selector: string; focused?: FoldedFocus }[];
 }
 
 /**
@@ -164,11 +190,12 @@ export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = 
         const resolved: Record<string, string> = {};
         const tags = new Map<Element, string>();
         for (const { selector, as } of retagged) for (const el of document.querySelectorAll(selector)) tags.set(el, as);
-        const folds = new Set<Element>();
-        for (const selector of foldedAway) for (const el of document.querySelectorAll(selector)) folds.add(el);
+        const folds = new Map<Element, Record<string, Record<string, string>>>();
+        for (const { selector, focused } of foldedAway) for (const el of document.querySelectorAll(selector)) folds.set(el, focused ?? {});
         const folded: string[] = [];
-        /** A folded element's own paint against its parent's, by the parent's path. */
-        const checkFold = (el: Element, parentPath: string) => {
+        const foldedPinned: string[] = [];
+        /** A folded element's own paint against its parent's, and its pseudo-elements' against nothing, by the parent's path. */
+        const checkFold = (el: Element, parentPath: string, focused: Record<string, Record<string, string>>) => {
             const view = el.ownerDocument.defaultView!;
             const own = view.getComputedStyle(el);
             const parent = view.getComputedStyle(el.parentElement!);
@@ -181,6 +208,23 @@ export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = 
             for (const [name, value] of Object.entries(paint.neutral)) {
                 const mine = own.getPropertyValue(name);
                 if (mine !== value) folded.push(`${where} ${name}: ${mine}, where a folded element paints ${value}`);
+            }
+            const ringOn = el.matches(':focus-visible');
+            for (const which of ['::before', '::after']) {
+                const style = view.getComputedStyle(el, which);
+                const content = style.getPropertyValue('content');
+                if (content === 'none' || content === 'normal') continue;
+                const pinned = ringOn ? (focused[which] ?? {}) : {};
+                for (const [name, value] of Object.entries(pinned)) {
+                    const mine = style.getPropertyValue(name);
+                    if (mine === value) foldedPinned.push(`${where}${which} ${name}: ${mine}, pinned while focused`);
+                    else folded.push(`${where}${which} ${name}: ${mine}, where it's pinned to ${value} while focused`);
+                }
+                for (const [name, value] of Object.entries(paint.pseudo)) {
+                    if (name in pinned) continue;
+                    const mine = style.getPropertyValue(name);
+                    if (mine !== value) folded.push(`${where}${which} ${name}: ${mine}, where a folded element's ${which} paints ${value}`);
+                }
             }
         };
         const visit = (el: Element, path: string, dx: number, dy: number) => {
@@ -208,8 +252,9 @@ export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = 
             const counts = new Map<string, number>();
             for (const child of el.children) {
                 if (skip.has(child.tagName) || isPart(child)) continue;
-                if (folds.has(child)) {
-                    checkFold(child, path);
+                const fold = folds.get(child);
+                if (fold) {
+                    checkFold(child, path, fold);
                     continue;
                 }
                 const tag = tags.get(child) ?? child.tagName.toLowerCase();
@@ -224,6 +269,7 @@ export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = 
             elements,
             resolved,
             folded,
+            foldedPinned,
         };
     }, [[...PROPERTIES], selectors, leaveOut, [...retag], [...fold], FOLD_PAINT] as const);
 }
@@ -255,6 +301,7 @@ export function compare(base: Walk, head: Walk, allowances: Record<string, numbe
     const result: Comparison = { structural: [], styles: [], geometry: [], deltas: [], largest: 0, tokens: [], added: [], sanctioned: [] };
     // A folded element that paints for itself is a style the walk can't compare, so it fails as one.
     result.styles.push(...(base.folded ?? []).map((line) => `base ${line}`), ...(head.folded ?? []).map((line) => `head ${line}`));
+    result.sanctioned.push(...(base.foldedPinned ?? []).map((line) => `base ${line}`), ...(head.foldedPinned ?? []).map((line) => `head ${line}`));
     for (const where of ['root', 'body'] as const) {
         const [b, h] = [base.tokens[where], head.tokens[where]];
         for (const [name, value] of Object.entries(b)) {
