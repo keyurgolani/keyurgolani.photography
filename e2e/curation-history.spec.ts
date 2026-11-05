@@ -9,10 +9,12 @@ import {
     createHistoryFixture,
     createPublishFixture,
     createRemovalsFixture,
+    createRenameFixture,
     editBehindThePage,
     fixBoth,
     holdCatalogLock,
     publishFromCli,
+    RENAMED_SLUG,
     SALT_ROADS_IDS,
     SALT_ROADS_TITLES,
     setAssetsAside,
@@ -514,4 +516,33 @@ test.describe('accepting what today’s checks flag', () => {
             await expectRingNotClipped(box);
         });
     }
+});
+
+// #5: a restore across a slug rename. Revision 4 moved Salt Roads to
+// /work/salt-roads-west and kept /work/salt-roads. Revision 3 has only
+// /work/salt-roads, so restoring it drops the new address, which today's
+// route.slug-change flags as an address change to accept, not a refusal.
+test.describe('a restore across a slug rename', () => {
+    const RENAME = /^Accept Salt Roads' address: it changes from \/work\/salt-roads-west to \/work\/salt-roads without keeping the old one$/;
+
+    test('asks for the address change in plain words, restores once accepted, and the site follows', async ({ page, request }) => {
+        fixture = await createRenameFixture({ dir: DIR });
+        if (!web) throw new Error('The catalog server did not start');
+        expect((await request.get(`${web.origin}/work/${RENAMED_SLUG}`, { maxRedirects: 0 })).status()).toBe(200);
+        await open(page);
+        await openDialog(page, 3);
+        await expect(dialog(page).getByRole('group', { name: "Today's checks flag one address change on revision 3." })).toBeVisible();
+        await expect(dialog(page).getByText('route.slug-change')).toHaveCount(0);
+        await expect(submit(page)).toHaveAttribute('aria-disabled', 'true');
+        await acceptBox(page, RENAME).check();
+        await expect(submit(page)).not.toHaveAttribute('aria-disabled');
+        await confirm(page, 'Undo the new address.');
+        await page.waitForURL(/\?restored=5#history-result-heading$/);
+        await expect(page.locator('#history-result-heading')).toHaveText('Revision 3 is live again');
+        await expect(page.locator('#entry-5').getByText("Accepted at restore: an address change that doesn't keep the old address.")).toBeVisible();
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ kind: 'rollback', acceptedRules: ['route.slug-change'] });
+        // What the owner accepted: the old address answers again, and the new one is gone.
+        await expect.poll(async () => (await request.get(`${web?.origin}/work/salt-roads`, { maxRedirects: 0 })).status()).toBe(200);
+        expect((await request.get(`${web.origin}/work/${RENAMED_SLUG}`, { maxRedirects: 0 })).status()).toBe(404);
+    });
 });

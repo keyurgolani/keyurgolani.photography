@@ -7,7 +7,7 @@ import { cameraSettingsCaption } from '../legacy-photos';
 import { ORDER_RULES } from '../order-rules';
 import { BAND_COLORS, registeredRules, registerRule, runRules, rulesetVersion } from '../rules';
 import { createTestCatalog, type TestCatalog } from '../testing';
-import type { Issue, RuleContext } from '../types';
+import type { Issue, RevisionFile, RuleContext } from '../types';
 
 let catalog: TestCatalog;
 let clean: RuleContext;
@@ -36,6 +36,24 @@ const describe0 = (ctx: RuleContext, text: string) => {
     photoAt(ctx, 0).alt = { kind: 'described', text };
     return { kind: 'photo' as const, id: photoAt(ctx, 0).id };
 };
+
+/** The candidate as it stands, as the live revision a publish compares against. Change the candidate after this. */
+function goLive(ctx: RuleContext, change: (live: RevisionFile) => void = () => undefined): RevisionFile {
+    const live = { revisionId: `rev_${'a'.repeat(43)}`, content: structuredClone(ctx.candidate) } as unknown as RevisionFile;
+    change(live);
+    ctx.active = live;
+    return live;
+}
+
+/** Give the series at `index` new addresses in both the candidate and the working layer. */
+function readdress(ctx: RuleContext, index: number, slug: string, slugAliases: string[] = []): string {
+    const series = ctx.candidate.series[index];
+    const old = series.slug;
+    Object.assign(series, { slug, slugAliases });
+    const authored = ctx.authored?.series.find((entry) => entry.id === series.id);
+    if (authored) Object.assign(authored, { slug, slugAliases });
+    return old;
+}
 
 interface Row {
     code: string;
@@ -122,6 +140,19 @@ const rows: Row[] = [
     { code: 'route.collision', gate: 'render', severity: 'error', rollbackClass: 'integrity', breakIt: (ctx) => {
         const [first, second] = ctx.authored?.series ?? [];
         second.slugAliases = [first.slug];
+        return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'slugAliases[0]' };
+    } },
+    { code: 'route.slug-change', gate: 'publish', severity: 'error', rollbackClass: 'editorial', breakIt: (ctx) => {
+        goLive(ctx);
+        readdress(ctx, 0, 'fixture-renamed');
+        return { record: { kind: 'series', id: 'ser_fixture-01' }, field: 'slug' };
+    } },
+    { code: 'route.alias-reassigned', gate: 'publish', severity: 'error', rollbackClass: 'editorial', breakIt: (ctx) => {
+        // Live, the first series keeps an old address. The draft drops it, and the second series takes it.
+        goLive(ctx, (live) => {
+            live.content.series[0].slugAliases = ['fixture-old'];
+        });
+        readdress(ctx, 1, ctx.candidate.series[1].slug, ['fixture-old']);
         return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'slugAliases[0]' };
     } },
     { code: 'accent.format', gate: 'publish', severity: 'error', rollbackClass: 'editorial', breakIt: (ctx) => {
@@ -363,6 +394,85 @@ describe('the edges of the checks', () => {
         expect(runRules(ctx)).toEqual([]);
         describe0(ctx, 'Slide 1');
         expect(codes(ctx)).toEqual(['description.placeholder']);
+    });
+});
+
+describe("a slug change against the live site (#5)", () => {
+    const routeIssues = (ctx: RuleContext) => runRules(ctx).filter((issue) => issue.code.startsWith('route.'));
+
+    it('route.slug-change: spells out the fix, and passes once the old slug is an alias', () => {
+        const ctx = context();
+        goLive(ctx);
+        const old = readdress(ctx, 0, 'fixture-renamed');
+        expect(routeIssues(ctx)).toEqual([{
+            code: 'route.slug-change',
+            severity: 'error',
+            record: { kind: 'series', id: 'ser_fixture-01' },
+            field: 'slug',
+            message: `The address changes from /work/${old} to /work/fixture-renamed, and nothing keeps /work/${old}, so every link to it would break.`,
+            hint: `Add ${old} to slugAliases with photos edit ser_fixture-01, so /work/${old} leads to the new address.`,
+        }]);
+        readdress(ctx, 0, 'fixture-renamed', [old]);
+        expect(routeIssues(ctx)).toEqual([]);
+    });
+
+    it('route.slug-change: has nothing to say before the first publish, for a new series, or for a series the draft takes off the site', () => {
+        const first = context();
+        readdress(first, 0, 'fixture-renamed');
+        expect(routeIssues(first)).toEqual([]);
+
+        const added = context();
+        goLive(added, (live) => {
+            live.content.series = live.content.series.filter((series) => series.id !== 'ser_fixture-02');
+        });
+        readdress(added, 1, 'fixture-brand-new');
+        expect(routeIssues(added)).toEqual([]);
+
+        const gone = context();
+        goLive(gone);
+        gone.candidate.series = gone.candidate.series.filter((series) => series.id !== 'ser_fixture-01');
+        expect(routeIssues(gone)).toEqual([]);
+    });
+
+    it('route.alias-reassigned: a live slug can become neither the slug nor an alias of another series, even once its series leaves', () => {
+        const ctx = context();
+        goLive(ctx);
+        const old = ctx.candidate.series[0].slug;
+        // The draft hides the first series under another slug, and the second series takes the first one's.
+        ctx.candidate.series = ctx.candidate.series.filter((series) => series.id !== 'ser_fixture-01');
+        const hidden = ctx.authored?.series.find((series) => series.id === 'ser_fixture-01');
+        if (hidden) Object.assign(hidden, { slug: 'fixture-retired', visibility: 'hidden' });
+        readdress(ctx, 0, old);
+        expect(routeIssues(ctx)).toEqual([{
+            code: 'route.alias-reassigned',
+            severity: 'error',
+            record: { kind: 'series', id: 'ser_fixture-02' },
+            field: 'slug',
+            message: `/work/${old} belongs to ser_fixture-01 on the live site. Giving it to this series would send every link to ser_fixture-01 here instead.`,
+            hint: `Choose another slug. An address moves to another series only once a publish has taken it off ser_fixture-01.`,
+        }]);
+    });
+
+    it('both rules flag a rename whose old slug goes to another series', () => {
+        const ctx = context();
+        goLive(ctx);
+        const old = readdress(ctx, 0, 'fixture-renamed');
+        readdress(ctx, 1, ctx.candidate.series[1].slug, [old]);
+        expect(routeIssues(ctx).map((issue) => [issue.code, issue.record.id, issue.field])).toEqual([
+            ['route.slug-change', 'ser_fixture-01', 'slug'],
+            ['route.alias-reassigned', 'ser_fixture-02', 'slugAliases[0]'],
+        ]);
+    });
+
+    it("compare a stored revision against the one it would replace, as a rollback passes it, and stay quiet when nothing is given", () => {
+        const ctx = context();
+        const live = goLive(ctx);
+        const old = readdress(ctx, 0, 'fixture-renamed');
+        const self = { ...live, content: structuredClone(ctx.candidate) } as RevisionFile;
+        // A stored revision's check names the stored revision as active, so only `replaces` says what's live.
+        expect(routeIssues({ ...ctx, authored: null, active: self, replaces: live })).toEqual([expect.objectContaining({ code: 'route.slug-change', field: 'slug', message: expect.stringContaining(`from /work/${old} to /work/fixture-renamed`) })]);
+        expect(routeIssues({ ...ctx, authored: null, active: self })).toEqual([]);
+        expect(routeIssues({ ...ctx, authored: null, active: self, replaces: null })).toEqual([]);
     });
 });
 
