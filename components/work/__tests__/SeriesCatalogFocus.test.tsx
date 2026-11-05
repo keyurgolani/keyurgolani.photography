@@ -5,8 +5,12 @@ import SeriesCatalog from '../SeriesCatalog';
 
 // B3's body, item 93, in B10: keyboard focus scrolls the title link into view, not its entry, so Shift+Tab back up
 // Work can leave a cover's top above the screen. Keyboard focus on an entry's link brings the whole entry, its list
-// item, into view, at once and only as far as it must. Pointer focus never scrolls. jsdom has no layout and no
-// scrollIntoView, so each entry's box is stubbed and scrollIntoView is a spy.
+// item, into view, once the browser's own focus scroll is done: in the frame after the focus. The room is the screen
+// less html's scroll paddings (6rem and 8rem, app/globals.css), 576 px of an 800 px window. An entry that fits the
+// room scrolls into it, nearest. One that fits the screen but not the room meets the screen's edge. One taller than
+// the screen keeps the title where the browser put it. Pointer focus and a window coming back into focus never
+// scroll. jsdom has no layout, no scrollIntoView and no input modality, so each entry's box, the frame, scrolling and
+// :focus-visible are stubbed.
 
 const router = vi.hoisted(() => ({ prefetch: vi.fn(), push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), refresh: vi.fn() }));
 
@@ -28,15 +32,17 @@ const work: WorkCatalog = { catalogRevision: `rev_${'a'.repeat(64)}`, series: [s
 const link = (n: number) => screen.getByRole('link', { name: `Entry ${n}` });
 const entryOf = (n: number) => link(n).closest('li');
 
-/** Every list item's box, as getBoundingClientRect gives it, against jsdom's 768 px tall window. */
+/** The window: 800 px tall, with html's scroll paddings, 96 and 128 px, so the room between them is 576 px. */
+const HEIGHT = 800;
+const PADDING_TOP = 96;
+const PADDING_BOTTOM = 128;
+
+/** Every list item's box, as getBoundingClientRect gives it. */
 function entryBox(top: number, bottom: number) {
     vi.spyOn(HTMLLIElement.prototype, 'getBoundingClientRect').mockReturnValue({ top, bottom, left: 0, right: 375, width: 375, height: bottom - top, x: 0, y: top, toJSON: () => ({}) });
 }
 
-/**
- * Whether a link matches :focus-visible, as the browser decides from how focus came: by the keyboard, or by a click or
- * a tap. jsdom has no such model, so each case says which it is.
- */
+/** Whether a link matches :focus-visible, as the browser decides from how focus came: by the keyboard, or by a click or a tap. */
 function focusVisible(visible: boolean) {
     const matches = HTMLAnchorElement.prototype.matches;
     vi.spyOn(HTMLAnchorElement.prototype, 'matches').mockImplementation(function (this: HTMLAnchorElement, selector: string) {
@@ -44,45 +50,119 @@ function focusVisible(visible: boolean) {
     });
 }
 
-const saved = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+const savedScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+const savedHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight');
 let scrollIntoView: Mock<(options?: ScrollIntoViewOptions | boolean) => void>;
+let scrollBy: Mock;
+let windowFocused: boolean;
+let frames: FrameRequestCallback[];
+
+/** Runs the frames asked for so far, as the browser does after its own focus scroll. */
+const nextFrame = () =>
+    act(() => {
+        const due = frames;
+        frames = [];
+        for (const frame of due) frame(0);
+    });
 
 beforeEach(() => {
     router.prefetch.mockClear();
+    frames = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((frame) => frames.push(frame));
     scrollIntoView = vi.fn();
     Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scrollIntoView, configurable: true, writable: true });
+    scrollBy = vi.fn();
+    vi.spyOn(window, 'scrollBy').mockImplementation(scrollBy);
+    Object.defineProperty(window, 'innerHeight', { value: HEIGHT, configurable: true });
+    document.documentElement.style.scrollPaddingTop = `${PADDING_TOP}px`;
+    document.documentElement.style.scrollPaddingBottom = `${PADDING_BOTTOM}px`;
+    windowFocused = true;
+    vi.spyOn(document, 'hasFocus').mockImplementation(() => windowFocused);
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
-    Object.defineProperty(Element.prototype, 'scrollIntoView', saved ?? { value: undefined, configurable: true, writable: true });
+    Object.defineProperty(Element.prototype, 'scrollIntoView', savedScrollIntoView ?? { value: undefined, configurable: true, writable: true });
+    if (savedHeight) Object.defineProperty(window, 'innerHeight', savedHeight);
+    document.documentElement.style.scrollPaddingTop = '';
+    document.documentElement.style.scrollPaddingBottom = '';
 });
 
 const focus = (n: number) => act(() => link(n).focus());
+const nothingScrolled = () => {
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(scrollBy).not.toHaveBeenCalled();
+};
 
 describe('Work\'s entry on keyboard focus', () => {
+    it('waits for the frame after the focus, once the browser\'s own focus scroll is done, before it measures or scrolls', () => {
+        render(<SeriesCatalog work={work} />);
+        entryBox(-300, 200);
+        focusVisible(true);
+        focus(2);
+        expect(link(2)).toHaveFocus();
+        nothingScrolled();
+        nextFrame();
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
         ['starts above the screen, as after Shift+Tab back up the list', -300, 200],
-        ['runs off the foot of the screen', 500, 1100],
-    ])('brings the whole entry into view, nearest and at once, when its link takes keyboard focus and the entry %s', (_, top, bottom) => {
+        ['runs off the foot of the screen, as after Tab down it', 500, 1000],
+    ])('scrolls an entry that fits the room into it, nearest and at once, when the entry %s', (_, top, bottom) => {
         render(<SeriesCatalog work={work} />);
         entryBox(top, bottom);
         focusVisible(true);
         focus(2);
-        expect(link(2)).toHaveFocus();
+        nextFrame();
         expect(scrollIntoView).toHaveBeenCalledTimes(1);
         expect(scrollIntoView.mock.contexts[0]).toBe(entryOf(2));
-        // Instant, never smooth, so it doesn't animate, under reduced motion or not.
+        // Instant, never smooth, so it doesn't animate, under reduced motion or not. The browser keeps the paddings.
         expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+        expect(scrollBy).not.toHaveBeenCalled();
     });
 
-    it('leaves the scroll alone when the whole entry is on screen already', () => {
+    it.each([
+        ['up, its top above the screen, to the screen\'s top', -50, 650, -50],
+        ['down, its foot below the screen, to the screen\'s foot', 300, 1000, 200],
+    ])('brings an entry that fits the screen but not the room %s, at once', (_, top, bottom, by) => {
         render(<SeriesCatalog work={work} />);
-        entryBox(100, 700);
+        entryBox(top, bottom);
         focusVisible(true);
         focus(2);
-        expect(link(2)).toHaveFocus();
+        nextFrame();
+        expect(scrollBy).toHaveBeenCalledTimes(1);
+        expect(scrollBy).toHaveBeenCalledWith({ top: by, behavior: 'instant' });
         expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('leaves an entry taller than the screen where the browser\'s focus scroll put it, with its title in view', () => {
+        render(<SeriesCatalog work={work} />);
+        entryBox(-400, 600);
+        focusVisible(true);
+        focus(2);
+        nextFrame();
+        nothingScrolled();
+    });
+
+    it('leaves the scroll alone when the whole entry is on screen already, in the room or not', () => {
+        render(<SeriesCatalog work={work} />);
+        entryBox(40, 760);
+        focusVisible(true);
+        focus(2);
+        nextFrame();
+        nothingScrolled();
+    });
+
+    it('does nothing when focus has moved on by the frame', () => {
+        render(<SeriesCatalog work={work} />);
+        entryBox(-300, 200);
+        focusVisible(true);
+        focus(2);
+        focus(3);
+        expect(frames).toHaveLength(2);
+        act(() => frames[0](0));
+        nothingScrolled();
     });
 
     it('never scrolls for focus that isn\'t keyboard focus, a click or a tap, even with the entry above the screen', () => {
@@ -90,8 +170,35 @@ describe('Work\'s entry on keyboard focus', () => {
         entryBox(-300, 200);
         focusVisible(false);
         focus(2);
+        nextFrame();
         expect(link(2)).toHaveFocus();
-        expect(scrollIntoView).not.toHaveBeenCalled();
+        nothingScrolled();
+    });
+
+    it('never scrolls when the window comes back into focus onto the link it left', () => {
+        render(<SeriesCatalog work={work} />);
+        entryBox(40, 760);
+        focusVisible(true);
+        focus(2);
+        nextFrame();
+        // The visitor switches away, scrolls the entry off, and comes back: the browser focuses the link again.
+        windowFocused = false;
+        act(() => link(2).blur());
+        entryBox(-300, 200);
+        windowFocused = true;
+        focus(2);
+        nextFrame();
+        nothingScrolled();
+    });
+
+    it('never scrolls for a focus with nothing before it while the window doesn\'t have focus', () => {
+        render(<SeriesCatalog work={work} />);
+        entryBox(-300, 200);
+        focusVisible(true);
+        windowFocused = false;
+        focus(2);
+        nextFrame();
+        nothingScrolled();
     });
 
     it('still prefetches the entry\'s series on that focus', () => {
@@ -99,6 +206,7 @@ describe('Work\'s entry on keyboard focus', () => {
         entryBox(-300, 200);
         focusVisible(true);
         focus(3);
+        nextFrame();
         expect(router.prefetch.mock.calls).toEqual([['/work/entry-3']]);
         expect(scrollIntoView.mock.contexts[0]).toBe(entryOf(3));
     });

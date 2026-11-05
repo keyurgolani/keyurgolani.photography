@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { FocusEvent, ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import IntentPrefetchLink from '../IntentPrefetchLink';
 
 // #6 item 9 (B10): a link that prefetches its page only on a visitor's intent, a pointer coming onto it, focus, or a
@@ -78,6 +78,33 @@ describe('IntentPrefetchLink', () => {
         expect(onFocus).toHaveBeenCalledTimes(1);
         expect(onFocus.mock.results[0].value).toEqual({ type: 'focus', target: link() });
         expect(router.prefetch.mock.invocationCallOrder[0]).toBeLessThan(onFocus.mock.invocationCallOrder[0]);
+    });
+
+    // As B9's Viewer skips its idle prefetch: a visitor who asked to save data gets no page fetched ahead.
+    describe('with saveData on', () => {
+        const saved = Object.getOwnPropertyDescriptor(navigator, 'connection');
+        const connection = (saveData: boolean) => Object.defineProperty(navigator, 'connection', { value: { saveData }, configurable: true });
+        afterEach(() => {
+            Object.defineProperty(navigator, 'connection', saved ?? { value: undefined, configurable: true });
+        });
+
+        it('prefetches nothing on a pointer, focus or touch, and the link still works', () => {
+            connection(true);
+            render(<IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>);
+            fireEvent.pointerEnter(link());
+            fireEvent.focus(link());
+            fireEvent.touchStart(link());
+            expect(router.prefetch).not.toHaveBeenCalled();
+            expect(link()).toHaveAttribute('href', HREF);
+        });
+
+        it('prefetches again once saveData is off, read at each intent', () => {
+            connection(true);
+            render(<IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>);
+            connection(false);
+            fireEvent.pointerEnter(link());
+            expect(router.prefetch).toHaveBeenCalledWith(HREF);
+        });
     });
 
     it('prefetches the href it has now, after a render that changed it', () => {

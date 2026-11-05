@@ -386,32 +386,67 @@ test('Tab reaches the entries right after SiteNav, in order, and Enter opens the
     await expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[1].slug}`);
 });
 
-// B3's body, item 93, in B10: Shift+Tab scrolled only the title link into view, so going back up could leave a cover's
-// top above the screen. Keyboard focus on an entry brings the whole entry into view.
-test.describe('Shift+Tab back up Work', () => {
+// B3's body, item 93, in B10: the browser scrolls only the focused title into view, so Shift+Tab back up the list
+// could leave a cover's top above the screen, and Tab down it, where Chromium centres the title, could too. Keyboard
+// focus on an entry brings the whole entry into view, in the frame after the browser's own scroll. The room is the
+// screen less html's scroll paddings, as expectNotObscured() measures it: an entry that fits it scrolls into it, one
+// that fits the screen but not the room meets the screen's edge, and one taller than the screen keeps its title.
+test.describe('Tab down and Shift+Tab back up Work', () => {
     test.skip(({ isMobile }) => isMobile, 'It sets its own sizes. The desktop project covers it.');
 
+    /** Where the focused entry sits once its reveal has run: two frames after the focus, with no wait for a scroll. */
+    async function placed(page: Page, slug: string) {
+        const link = entry(page, slug);
+        await expect(link).toBeFocused();
+        const { viewport } = await measure(link);
+        const boxes = await item(page, slug).evaluate(
+            (li) =>
+                new Promise<{ entry: { top: number; bottom: number }; cover: number; title: { top: number; bottom: number } }>((done) =>
+                    requestAnimationFrame(() =>
+                        requestAnimationFrame(() => {
+                            const box = (el: Element | null) => (el ?? li).getBoundingClientRect();
+                            done({ entry: { top: box(li).top, bottom: box(li).bottom }, cover: box(li.querySelector('[data-cover]')).top, title: { top: box(li.querySelector('h2 a')).top, bottom: box(li.querySelector('h2 a')).bottom } });
+                        }),
+                    ),
+                ),
+        );
+        const room = viewport.height - viewport.scrollPaddingTop - viewport.scrollPaddingBottom;
+        return { ...boxes, viewport, room, height: boxes.entry.bottom - boxes.entry.top };
+    }
+
+    /** The entry fully on screen, cover top and all, when it fits the screen, and its title in view when it doesn't. */
+    function expectRevealed(slug: string, way: string, at: Awaited<ReturnType<typeof placed>>) {
+        const what = `${slug} on ${way}, ${Math.round(at.height)} px tall in a ${Math.round(at.room)} px room and a ${at.viewport.height} px screen: ${JSON.stringify(at)}`;
+        if (at.height <= at.viewport.height) {
+            expect(at.cover, `${what}: the cover's top`).toBeGreaterThanOrEqual(-0.5);
+            expect(at.entry.top, `${what}: the entry's top`).toBeGreaterThanOrEqual(-0.5);
+            expect(at.entry.bottom, `${what}: the entry's foot`).toBeLessThanOrEqual(at.viewport.height + 0.5);
+        } else {
+            expect(at.title.top, `${what}: the title's top`).toBeGreaterThanOrEqual(-0.5);
+            expect(at.title.bottom, `${what}: the title's foot`).toBeLessThanOrEqual(at.viewport.height + 0.5);
+        }
+    }
+
     for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 812 }]) {
-        test(`at ${size.width} by ${size.height}, each entry's cover is on screen, top and all, when its link has focus`, async ({ page }) => {
+        test(`at ${size.width} by ${size.height}, each entry is on screen, cover top and all, when its link has focus, on Tab down and on Shift+Tab back up`, async ({ page }) => {
             await page.setViewportSize(size);
             await openWork(page);
-            const last = `/work/${PUBLISHED[PUBLISHED.length - 1].slug}`;
-            // By the keyboard to the last entry, so focus is keyboard focus, then to the foot of the page.
+            // By the keyboard past SiteNav to the first entry, so focus is keyboard focus.
+            const first = `/work/${PUBLISHED[0].slug}`;
             for (let press = 0; press < 20; press++) {
                 await page.keyboard.press('Tab');
-                if ((await page.evaluate(() => document.activeElement?.getAttribute('href'))) === last) break;
+                if ((await page.evaluate(() => document.activeElement?.getAttribute('href'))) === first) break;
             }
-            await expect(entry(page, PUBLISHED[PUBLISHED.length - 1].slug)).toBeFocused();
+            expectRevealed(PUBLISHED[0].slug, 'Tab', await placed(page, PUBLISHED[0].slug));
+            for (const series of PUBLISHED.slice(1)) {
+                await page.keyboard.press('Tab');
+                expectRevealed(series.slug, 'Tab', await placed(page, series.slug));
+            }
+            // From the foot of the page, back up.
             await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-            for (let index = PUBLISHED.length - 2; index >= 0; index--) {
-                const series = PUBLISHED[index];
+            for (const series of PUBLISHED.slice(0, -1).reverse()) {
                 await page.keyboard.press('Shift+Tab');
-                await expect(entry(page, series.slug)).toBeFocused();
-                // Read after a frame, with no wait for a scroll to finish: the scroll is instant.
-                const top = await item(page, series.slug)
-                    .locator('[data-cover]')
-                    .evaluate((cover) => new Promise<number>((done) => requestAnimationFrame(() => done(cover.getBoundingClientRect().top))));
-                expect(top, `${series.slug}'s cover top, with its link focused`).toBeGreaterThanOrEqual(-0.5);
+                expectRevealed(series.slug, 'Shift+Tab', await placed(page, series.slug));
             }
         });
     }
