@@ -235,6 +235,11 @@ async function clickMiddleOf(page: Page, target: Locator): Promise<void> {
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
+type Edges = { left: number; top: number; right: number; bottom: number };
+/** Whether `outer` holds `inner` grown by `by` px on every side, to half a pixel. */
+const holds = (outer: Edges, inner: Edges, by = 0) =>
+    outer.left <= inner.left - by + 0.5 && outer.top <= inner.top - by + 0.5 && outer.right >= inner.right + by - 0.5 && outer.bottom >= inner.bottom + by - 0.5;
+
 /** The five choices: System paints Light or Dark from the device, and the other four paint themselves. */
 const THEMES = ['system', 'light', 'bright', 'dark', 'black'] as const;
 /** Each painted theme's surround room, sm below 40rem and md above (styles/themes.css). Dark and Black have none. */
@@ -261,8 +266,6 @@ for (const theme of THEMES) {
                 return { entry: box(el), cover: box(el.querySelector('[data-cover]')) };
             });
             // The target holds the whole list item, and the cover with its surround's room on every side.
-            const holds = (outer: typeof target, inner: typeof target, by = 0) =>
-                outer.left <= inner.left - by + 0.5 && outer.top <= inner.top - by + 0.5 && outer.right >= inner.right + by - 0.5 && outer.bottom >= inner.bottom + by - 0.5;
             expect(holds(target, parts.entry), `${series.slug}'s target holds its entry: ${JSON.stringify({ target, entry: parts.entry })}`).toBe(true);
             expect(holds(target, parts.cover, room), `${series.slug}'s target holds its cover and its ${room} px surround`).toBe(true);
             // Every point of the entry in view lands on the link: the cover, the title, the statement, the count, and between.
@@ -292,9 +295,64 @@ for (const theme of THEMES) {
             const own = await measure(link);
             expect(own.outline.style, `${series.slug}'s title draws no ring of its own`).toBe('none');
             expect(own.boxShadow, `${series.slug}'s title draws no band of its own`).toBe('none');
+            // The ring never paints over the copy (B3's review, 1): every line of the title, statement and count lies
+            // inside the target shrunk by what the ring paints, its outline and band (width plus offset).
+            const painted = await link.evaluate((el) => {
+                const style = getComputedStyle(el);
+                return parseFloat(style.getPropertyValue('--focus-ring-width')) + parseFloat(style.getPropertyValue('--focus-ring-offset'));
+            });
+            const clear = { left: target.left + painted, top: target.top + painted, right: target.right - painted, bottom: target.bottom - painted };
+            const lines = await listItem.evaluate((el) => {
+                const found: { text: string; left: number; top: number; right: number; bottom: number }[] = [];
+                const walker = document.createTreeWalker(el.querySelector('h2')?.parentElement ?? el, NodeFilter.SHOW_TEXT);
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                    if (!node.textContent?.trim()) continue;
+                    const range = document.createRange();
+                    range.selectNodeContents(node);
+                    for (const r of range.getClientRects()) found.push({ text: node.textContent.trim().slice(0, 24), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+                }
+                return found;
+            });
+            expect(lines.length, `${series.slug} has copy to check`).toBeGreaterThan(0);
+            const covered = lines.filter((line) => !holds(clear, line)).map((line) => `"${line.text}" at ${JSON.stringify(line)} against ${JSON.stringify(clear)}`);
+            expect(covered, `${series.slug}: the ring paints over none of the copy`).toEqual([]);
         }
     });
 }
+
+/** Each entry's target, the link's ::after, in Work order. */
+const targets = async (page: Page) => Promise.all(PUBLISHED.map((series) => measure(entry(page, series.slug), STRETCHED).then((m) => m.box)));
+
+// B3's review, 1: the target grows past the copy by the ring's width and offset, so it must still stay on screen at the
+// narrowest phone, inside the gutter where the theme has one, and two neighbours' must never meet at the narrowest
+// column gap, at 768.
+test.describe('the grown target', () => {
+    test.skip(({ isMobile }) => isMobile, 'It sets its own sizes. The desktop project covers it.');
+
+    for (const theme of THEMES) {
+        test(`in ${theme}, the grown target stays inside the gutter at 375, and neighbours' targets never meet at 768`, async ({ page }) => {
+            await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+            await page.setViewportSize({ width: 375, height: 812 });
+            await openWork(page);
+            const painted = (await page.locator('html').getAttribute('data-theme')) ?? '';
+            const viewport = await page.evaluate(() => document.documentElement.clientWidth);
+            for (const [index, box] of (await targets(page)).entries()) {
+                // Black's covers meet the screen's edge, so its target does too, and no further.
+                const margin = painted === 'black' ? 0 : 1;
+                expect(box.left, `entry ${index + 1}'s target on the left`).toBeGreaterThanOrEqual(margin);
+                expect(viewport - box.right, `entry ${index + 1}'s target on the right`).toBeGreaterThanOrEqual(margin);
+            }
+            await page.setViewportSize({ width: 768, height: 1024 });
+            await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length)).toBe(0);
+            const boxes = await targets(page);
+            // Two to a row: the 1st and 2nd, the 3rd and 4th.
+            for (const [left, right] of [[0, 1], [2, 3]] as const) {
+                expect(Math.abs(boxes[left].top - boxes[right].top), `entries ${left + 1} and ${right + 1} share a row`).toBeLessThan(1);
+                expect(boxes[right].left - boxes[left].right, `entries ${left + 1} and ${right + 1}'s targets never meet`).toBeGreaterThanOrEqual(0);
+            }
+        });
+    }
+});
 
 // Work's revision marker (#171, B3): the list carries the revision its entries came from, as Home's main (B6) and the
 // series page's main (B4) do, for B12's freshness rows.
@@ -509,45 +567,72 @@ test.describe('at 320 px with 200% text', () => {
 
 // #171 (B3), from the old Work browser suite: a missing pointer gives #21's 500 with Try again and no path, and once
 // the pointer is back, Try again brings the entries back with no reload. It needs a server that has never loaded a
-// revision: one that has serves its last revision while the pointer is missing (lib/catalog/public-reader.ts).
+// revision: one that has serves its last revision while the pointer is missing (lib/catalog/public-reader.ts). So it
+// has a catalog and a server of its own, and the rest of the file never sees its pointer go.
 test.describe('with the pointer missing', () => {
-    test('Work is the 500 with Try again and no path, and once the pointer is back Try again shows the entries, without a reload', async ({ page }) => {
-        test.setTimeout(HOOK_TIMEOUT + 60_000);
-        if (!catalog) throw new Error('The catalog was not built');
-        const active = catalogPaths(catalog.root).active;
-        // Moved aside, never deleted, and moved back in the finally whatever happens.
-        const aside = `${active}.aside-${test.info().parallelIndex}`;
+    const MISSING = [
+        { slug: 'cove', title: 'Fixture cove' },
+        { slug: 'dune', title: 'Fixture dune' },
+    ] as const;
+    const missingId = (n: number) => `ph_00000000-0000-4000-8000-${String(n + 301).padStart(12, '0')}`;
+    let own: TestCatalog | undefined;
+    let missing: CatalogServer | undefined;
+    let active = '';
+    let aside = '';
+
+    test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        // Under Playwright's own output folder, which it clears itself, so nothing here deletes it.
+        own = await createTestCatalog({
+            root: test.info().outputPath(`missing-pointer-${Date.now()}`),
+            seed: 47,
+            withAssets: true,
+            photos: [0, 1].map((n) => ({ id: missingId(n), width: 900, height: 600 })),
+            series: MISSING.map((series, n) => ({ id: `ser_e2e-${series.slug}`, ...series, photoIds: [missingId(n)] })),
+            seriesOrder: MISSING.map((series) => `ser_e2e-${series.slug}`),
+        });
+        const outcome = await publish({ dataRoot: own.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
+        expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+        active = catalogPaths(own.root).active;
+        aside = `${active}.aside`;
+        // Moved aside, never deleted, before the server ever reads it.
         fs.renameSync(active, aside);
-        let missing: CatalogServer | undefined;
-        try {
-            const base = Number(process.env.E2E_CATALOG_PORT);
-            missing = await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + 30 + test.info().parallelIndex : undefined, { unavailable: true });
-            const response = await page.request.get(`${missing.origin}/work`);
-            expect(response.status()).toBe(500);
-            const body = await response.text();
-            for (const leak of [catalog.root, path.basename(catalog.root), 'catalog/active', 'ENOENT', 'active-unreadable', 'CatalogUnavailableError']) {
-                expect(body, `the 500 says nothing of ${leak}`).not.toContain(leak);
-            }
+        // Above the ports the file's own servers take when E2E_CATALOG_PORT pins them, one per worker, as
+        // curator-login.spec.ts does.
+        const base = Number(process.env.E2E_CATALOG_PORT);
+        const port = Number.isInteger(base) && base > 0 ? base + 1 + test.info().config.workers + test.info().parallelIndex : undefined;
+        missing = await startCatalogServer(own.root, port, { unavailable: true });
+    });
 
-            await page.goto(`${missing.origin}/work`);
-            await waitForHydration(page);
-            const tryAgain = page.getByRole('main').getByRole('button', { name: 'Try again' });
-            await expect(tryAgain).toBeVisible();
-            await expect(entries(page)).toHaveCount(0);
-            await expect(page.getByRole('main')).not.toContainText(catalog.root);
-            // A mark on this document: a reload would drop it.
-            await page.evaluate(() => Object.assign(window, { workSameDocument: true }));
+    test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        await missing?.stop();
+    });
 
-            fs.renameSync(aside, active);
-            await tryAgain.click();
-            await expect(entries(page)).toHaveCount(PUBLISHED.length);
-            await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bodies of work');
-            for (const [index, series] of PUBLISHED.entries()) await expect(entries(page).nth(index)).toHaveAccessibleName(series.title);
-            await expect(page).toHaveURL(`${missing.origin}/work`);
-            expect(await page.evaluate(() => (window as { workSameDocument?: boolean }).workSameDocument), 'Try again kept the document').toBe(true);
-        } finally {
-            if (fs.existsSync(aside)) fs.renameSync(aside, active);
-            await missing?.stop();
+    test('Work is the 500 with Try again and no path, and once the pointer is back Try again shows the entries, without a reload', async ({ page }) => {
+        if (!own || !missing) throw new Error('The missing-pointer server did not start');
+        const response = await page.request.get(`${missing.origin}/work`);
+        expect(response.status()).toBe(500);
+        const body = await response.text();
+        for (const leak of [own.root, path.basename(own.root), 'catalog/active', 'ENOENT', 'active-unreadable', 'CatalogUnavailableError']) {
+            expect(body, `the 500 says nothing of ${leak}`).not.toContain(leak);
         }
+
+        await page.goto(`${missing.origin}/work`);
+        await waitForHydration(page);
+        const tryAgain = page.getByRole('main').getByRole('button', { name: 'Try again' });
+        await expect(tryAgain).toBeVisible();
+        await expect(entries(page)).toHaveCount(0);
+        await expect(page.getByRole('main')).not.toContainText(own.root);
+        // A mark on this document: a reload would drop it.
+        await page.evaluate(() => Object.assign(window, { workSameDocument: true }));
+
+        fs.renameSync(aside, active);
+        await tryAgain.click();
+        await expect(entries(page)).toHaveCount(MISSING.length);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bodies of work');
+        for (const [index, series] of MISSING.entries()) await expect(entries(page).nth(index)).toHaveAccessibleName(series.title);
+        await expect(page).toHaveURL(`${missing.origin}/work`);
+        expect(await page.evaluate(() => (window as { workSameDocument?: boolean }).workSameDocument), 'Try again kept the document').toBe(true);
     });
 });

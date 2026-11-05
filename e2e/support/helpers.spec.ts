@@ -570,6 +570,22 @@ test.describe('a stretched link, measured through { pseudo: "::after" }', () => 
         await expect(expectTabOrderMatchesVisualOrder(page, links)).rejects.toThrow(/Row-major visual order/);
     });
 
+    test('expectNotObscured samples the inset ring on the ::after, so a fixed bar over its edge fails, and one clear of it passes', async ({ page }) => {
+        const bar = (height: number) => `<div id="bar" style="position: fixed; left: 0; right: 0; top: 0; height: ${height}px; z-index: 2; background: #222"></div>`;
+        // The card's ::after starts 24 px down, its link 160 px down: a 40 px bar covers the ring's top edge, not the link.
+        await load(page, `${bar(40)}<div class="cards">${card('One')}</div>`, CARD_STYLE);
+        await expect(expectNotObscured(page.getByRole('link'), page.locator('#bar'), AFTER)).rejects.toThrow(/must be fully clear/);
+        await load(page, `${bar(10)}<div class="cards">${card('One')}</div>`, CARD_STYLE);
+        await expectNotObscured(page.getByRole('link'), page.locator('#bar'), AFTER);
+    });
+
+    test("expectNoFadeOnBlur fails a ::after whose ring fades out", async ({ page }) => {
+        await load(page, `<div class="cards">${card('One')}</div>`, `${CARD_STYLE} .card a::after { transition: outline 1s; } .card a:focus-visible::after { transition: none; }`);
+        await expect(expectNoFadeOnBlur(page.getByRole('link'), AFTER)).rejects.toThrow(/must drop its focus ring at once on blur/);
+        await load(page, `<div class="cards">${card('One')}</div>`, CARD_STYLE);
+        await expectNoFadeOnBlur(page.getByRole('link'), AFTER);
+    });
+
     test('checkSurface passes stretched entries with { pseudo: "::after" }', async ({ page }) => {
         await load(page, `<div class="cards">${card('One', true)}${card('Two')}${card('Three')}</div>`, CARD_STYLE);
         await checkSurface(page, { entries: page.getByRole('link'), pseudo: '::after' });

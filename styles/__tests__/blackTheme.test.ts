@@ -78,11 +78,19 @@ describe("Black's pages", () => {
 
     it("draws the focus ring on Work and the series cover inside, above the print, with the outline kept for forced colours", () => {
         // Work's is every theme's since #171 (B3): the token, inset on the title link's ::after over the whole entry, a
-        // layer above the print. Black adds no ring of its own there, and its room is none, so the target is the entry.
+        // layer above the print. The target reaches past the copy by the ring's width and offset at least, or by the
+        // surround's room where that's more, so the ring never paints over the text (B3's review, 1). Black's covers
+        // meet the screen's edge, so its target can't grow sideways: it clears the copy below only, and adds no ring.
         const work = blackRules('components/work/SeriesCatalog.module.css');
-        expect(Object.keys(work).filter((selector) => /focus|::after/.test(selector))).toEqual([]);
+        expect(Object.keys(work).filter((selector) => /focus|::after/.test(selector))).toEqual([":global(html[data-theme='black']) .link::after"]);
+        expect(work[":global(html[data-theme='black']) .link::after"]).toEqual({ inset: '0 0 calc(-1 * (var(--focus-ring-width) + var(--focus-ring-offset)))' });
         const shared = allRules('components/work/SeriesCatalog.module.css');
-        expect(shared['.link::after']).toMatchObject({ content: "''", position: 'absolute', 'z-index': '1', inset: 'calc(-1 * var(--work-room))' });
+        expect(shared['.link::after']).toMatchObject({
+            content: "''",
+            position: 'absolute',
+            'z-index': '1',
+            inset: 'calc(-1 * max(var(--work-room), var(--focus-ring-width) + var(--focus-ring-offset)))',
+        });
         expect(shared['.entry .link:focus-visible']).toEqual({ outline: 'none', 'box-shadow': 'none' });
         expect(shared['.entry .link:focus-visible::after']).toMatchObject({
             outline: 'var(--focus-ring-width) solid var(--focus-ring-light)',

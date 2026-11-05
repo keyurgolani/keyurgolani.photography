@@ -118,7 +118,8 @@ describe('the public reader', { timeout: 60_000 }, () => {
         const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         expect(await loadActiveCatalog(root)).toEqual({ state: 'unavailable', reason: 'active-unreadable' });
         expect(await loadActiveCatalog(root)).toEqual({ state: 'unavailable', reason: 'active-unreadable' });
-        // The one log line names the reason, never a path.
+        // One line, when reads start failing, naming the reason and never a path.
+        expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{ event: 'catalog.read.failed', reason: 'active-unreadable', error: 'missing' }]);
         expect(errors.mock.calls.join('\n')).not.toContain(root);
 
         fs.renameSync(aside, catalogPaths(root).active);

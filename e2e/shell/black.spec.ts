@@ -118,9 +118,12 @@ for (const viewport of VIEWPORTS) {
         await page.keyboard.press('Tab');
         await entry.evaluate((el) => (el as HTMLElement).focus({ preventScroll: true }));
         await expectStretchedRing(entry, 'a Work entry');
-        // Forced colours drop the band, and the outline then shows in the system's colour.
+        // Forced colours drop the band, and the outline then shows, solid at 3 px, in the system's colour.
         await page.emulateMedia({ forcedColors: 'active' });
-        expect((await measure(entry, { pseudo: '::after' })).outline.alpha, "a Work entry's ring in forced colours").toBeGreaterThan(0);
+        const forced = await measure(entry, { pseudo: '::after' });
+        expect(forced.boxShadow, "a Work entry's band in forced colours").toBe('none');
+        expect(forced.outline, "a Work entry's ring in forced colours").toMatchObject({ style: 'solid', width: 3 });
+        expect(forced.outline.alpha, "a Work entry's ring in forced colours").toBeGreaterThan(0);
         await page.emulateMedia({ forcedColors: 'none' });
         await page.goto(`/work/${HOME_SERIES.slug}`);
         await waitForHydration(page);

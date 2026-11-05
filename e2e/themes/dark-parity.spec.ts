@@ -798,18 +798,32 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
  * - RETAGGED: the head's entry box is walked as the `a` it replaces, so the cover, the copy and everything under them
  *   keep today's paths, and their styles and boxes are compared as before;
  * - FOLDED: the title link is left out of both walks, with no layout change, since it adds no element the base had.
- *   Its own paint must equal its h2's (computed.ts's FOLD_PAINT): the same ink and type, and no fill, line, outline,
- *   band or decoration of its own. Its ::after is the target and the ring, which work.spec.ts checks in every theme.
+ *   Its own paint must equal its h2's (computed.ts's FOLD_PAINT): the same ink and type, no margin or padding, and no
+ *   fill, line, outline, band, decoration, clip, mask or compositing of its own. Its ::before and ::after are read
+ *   too, and paint nothing at rest. The ::after is the target, and in `work-focus` the ring, pinned to its values in
+ *   Dark as a departure of its own (B3's review, 2). work.spec.ts checks the target and the ring in every theme.
  */
 const WORK_ENTRY = 'main > ul > li > div:has(> div > h2 > a)';
 const RETAGGED: { url: string; selector: string; as: string; why: string }[] = [
     { url: '/work', selector: WORK_ENTRY, as: 'a', why: "#171 (B3): Work's entry box, the stretched link's, where today's entry link was" },
 ];
-const FOLDED: { url: string; selector: string; why: string }[] = [
-    { url: '/work', selector: `${WORK_ENTRY} > div > h2 > a`, why: "#171 (B3): Work's title link, its h2's one child, painting as the h2" },
+const FOLDED: { url: string; selector: string; why: string; focus?: { page: string; after: Record<string, string>; why: string } }[] = [
+    {
+        url: '/work',
+        selector: `${WORK_ENTRY} > div > h2 > a`,
+        why: "#171 (B3): Work's title link, its h2's one child, painting as the h2",
+        // The focused link's ::after draws the token inset, in Dark's white and black: the issue's "with the focus ring
+        // inset", where today's ring was the entry link's own, outside it (WORK_ENTRIES' work-focus departure).
+        focus: {
+            page: 'work-focus',
+            after: { 'outline-style': 'solid', 'outline-width': '3px', 'outline-offset': '-3px', 'outline-color': 'rgb(255, 255, 255)', 'box-shadow': 'rgb(0, 0, 0) 0px 0px 0px 6px inset' },
+            why: "#171 (B3): a focused Work entry's ring, inset on its title link's ::after",
+        },
+    },
 ];
 const retagFor = (pair: Pair) => RETAGGED.filter((entry) => entry.url === pair.url).map(({ selector, as }) => ({ selector, as }));
-const foldFor = (pair: Pair) => FOLDED.filter((entry) => entry.url === pair.url).map(({ selector }) => selector);
+const foldFor = (pair: Pair) =>
+    FOLDED.filter((entry) => entry.url === pair.url).map(({ selector, focus }) => ({ selector, ...(focus && (focus.page === pair.name || focus.page === pair.stateOf) && { focused: { '::after': focus.after } }) }));
 
 /**
  * #171 (B3), the two sanctioned departures on Work's entries, each named per entry (the visitor fixture has two
@@ -1090,7 +1104,7 @@ test.afterAll(async () => {
             '',
             `Walked under the tag it replaces, so its subtree keeps the base's paths: ${RETAGGED.map((entry) => `\`${entry.selector}\` as \`${entry.as}\` on ${entry.url} (${entry.why})`).join('; ')}.`,
             '',
-            `Left out of both walks in place, its own paint checked against its parent's: ${FOLDED.map((entry) => `\`${entry.selector}\` on ${entry.url} (${entry.why})`).join('; ')}.`,
+            `Left out of both walks in place, its own paint and its pseudo-elements' checked against its parent's: ${FOLDED.map((entry) => `\`${entry.selector}\` on ${entry.url} (${entry.why})${entry.focus ? `, with its focused ::after pinned in ${entry.focus.page} to ${Object.entries(entry.focus.after).map(([name, value]) => `${name}: ${value}`).join(', ')} (${entry.focus.why})` : ''}`).join('; ')}.`,
             '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
@@ -1164,6 +1178,10 @@ test.describe('the visitor site', () => {
             await revealChrome(page);
             await hoverOn(homeNext(page));
         }, SETTLED],
+        // The title link Work folds into its h2 (B3's review, 2 and 3): a paint on its ::after at rest, or a padding of its
+        // own, must fail as a style, though neither element is walked.
+        ["a folded link's ::after painting at rest", '/work', 'main ul li h2 a::after{background:rgb(255 0 0/.5)!important}', undefined, undefined],
+        ["a folded link's padding", '/work', 'main ul li h2 a{padding-left:1px!important}', undefined, undefined],
         // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
         ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
     ] as const) {
