@@ -181,7 +181,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
     const loaded = useRef<Loaded>(view);
     const busy = useRef(false);
     const focusAfter = useRef<string | null>(null);
-    /** The old first entry and its top in the view before a page went in above it. */
+    /** The old first entry and its top in the view before something above it changed: Show earlier's loading line, its Try again, the page before. */
     const anchor = useRef<{ id: string; top: number } | null>(null);
     const controllers = useRef(new Set<AbortController>());
     // The continuation endpoint as this site serves it: the public one, or a preview's mirror (#16).
@@ -217,6 +217,22 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
     }, [recordExtent]);
 
     /**
+     * Hold the first loaded entry where it is in the view through the next
+     * commit, which the layout effect below makes up by scrolling. Called
+     * before every state change that can change what sits above the entries.
+     * Show earlier's loading line, which keeps its line box while its label
+     * is hidden, goes in above them on the press and out when the answer
+     * comes. Measured each time, so a scroll by the visitor while the page
+     * loads stands.
+     */
+    const holdFirstEntry = useCallback(() => {
+        if (anchor.current !== null) return;
+        const first = loaded.current.entries[0];
+        const node = first === undefined ? null : document.getElementById(`photo-${first.photoId}`);
+        anchor.current = node === null ? null : { id: node.id, top: node.getBoundingClientRect().top };
+    }, []);
+
+    /**
      * Put a page in when it continues the sequence on its side: Show more's
      * has to start right after the last entry, Show earlier's end right
      * before the first. A page that doesn't (a repeat, a gap) is dropped.
@@ -231,8 +247,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
                 next = { ...current, entries: [...current.entries, ...answer.entries], nextHref: answer.nextHref };
             } else {
                 if (lastOf(answer.entries) !== firstOf(current.entries) - 1) return false;
-                const old = document.getElementById(`photo-${current.entries[0].photoId}`);
-                anchor.current = old === null ? null : { id: old.id, top: old.getBoundingClientRect().top };
+                holdFirstEntry();
                 next = { ...current, entries: [...answer.entries, ...current.entries], prevHref: answer.prevHref };
             }
             loaded.current = next;
@@ -240,7 +255,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
             recordExtent({ first: firstOf(next.entries), last: lastOf(next.entries) });
             return true;
         },
-        [recordExtent],
+        [recordExtent, holdFirstEntry],
     );
 
     const request = useCallback(
@@ -265,10 +280,12 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
             if (pageHref === null || busy.current) return;
             const { from, to } = rangeOf(direction, loaded.current.entries, total);
             busy.current = true;
+            holdFirstEntry();
             setLoading(direction);
             const answer = await request(pageHref);
             busy.current = false;
             if (answer === null) return;
+            holdFirstEntry();
             setLoading(null);
             const mayFocus = focusIsFree(buttons.current[direction]);
             if (answer.kind === 'ok' && place(direction, answer)) {
@@ -287,7 +304,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
             setFailed(direction);
             setMessage(failureText(from, to));
         },
-        [place, request, total],
+        [place, request, total, holdFirstEntry],
     );
 
     // Back: load the pages this history entry had, on either side of the server's page, for this revision and series only.
@@ -316,6 +333,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
                 }
             }
             busy.current = false;
+            holdFirstEntry();
             setRestoring(null);
             if (stop?.kind === 'stale') {
                 setMessage(SERIES_UPDATED);
@@ -331,14 +349,15 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
             cancelled = true;
             busy.current = false;
         };
-    }, [revisionId, slug, total, place, request]);
+    }, [revisionId, slug, total, place, request, holdFirstEntry]);
 
     // After the restore's last page is in the DOM, so #5's return finds its photograph.
     useEffect(() => {
         if (restoresEnded > 0) section.current?.dispatchEvent(new CustomEvent(SERIES_RESTORED_EVENT, { bubbles: true }));
     }, [restoresEnded]);
 
-    // A page went in above: put the old first entry back where it was in the view, before the browser paints.
+    // Something above changed (a page, the loading line, Try again): put the old first entry back where it was in the view, before the browser paints.
+    // After every commit, so no hold outlives the commit it was taken for.
     useLayoutEffect(() => {
         const held = anchor.current;
         if (held === null) return;
@@ -347,7 +366,7 @@ export default function SeriesSequence({ revisionId, slug, href, entries: server
         if (old === null) return;
         const moved = old.getBoundingClientRect().top - held.top;
         if (moved !== 0) window.scrollBy({ top: moved, left: 0, behavior: 'instant' });
-    }, [view]);
+    });
 
     useEffect(() => {
         const id = focusAfter.current;
