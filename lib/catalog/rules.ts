@@ -679,8 +679,9 @@ const SLICE_A_RULES: RuleDefinition[] = [
         },
     },
     // #5: a rename keeps every inbound link. Both rules compare against what's live, not the stored revision alone,
-    // so they're editorial: a rollback across a rename asks for an accept, as the owner's call on his own addresses,
-    // and photos verify's verdict on a revision never depends on which one is live.
+    // so they're editorial: a rollback across a rename asks for an accept, as the owner's call on his own addresses.
+    // They say nothing without a live revision to compare against, which is why callers that judge a revision on its
+    // own, recover() and photos verify, pass no `replaces`.
     {
         id: 'route.slug-change',
         severity: 'error',
@@ -689,16 +690,31 @@ const SLICE_A_RULES: RuleDefinition[] = [
         check: (ctx) => {
             const live = liveContent(ctx);
             if (!live) return [];
-            const before = new Map(live.series.map((series) => [series.id, series.slug]));
+            const before = new Map(live.series.map((series) => [series.id, series]));
             return ctx.candidate.series.flatMap((series) => {
-                const old = before.get(series.id);
-                if (old === undefined || old === series.slug || series.slugAliases.includes(old)) return [];
-                return [{
-                    record: seriesRecord(series.id),
-                    field: 'slug',
-                    message: `The address changes from /work/${old} to /work/${series.slug}, and nothing keeps /work/${old}, so every link to it would break.`,
-                    hint: `Add ${old} to slugAliases with photos edit ${series.id}, so /work/${old} leads to the new address.`,
-                }];
+                const was = before.get(series.id);
+                if (was === undefined || was.slug === series.slug) return [];
+                // A rename keeps the old slug and every old address the series had, so a second rename can't drop
+                // the first one's. Dropping an alias with no rename stays allowed: that's how an address moves on.
+                const kept = (slug: string) => slug === series.slug || series.slugAliases.includes(slug);
+                const findings: RuleFinding[] = [];
+                if (!kept(was.slug)) {
+                    findings.push({
+                        record: seriesRecord(series.id),
+                        field: 'slug',
+                        message: `The address changes from /work/${was.slug} to /work/${series.slug}, and nothing keeps /work/${was.slug}, so every link to it would break.`,
+                        hint: `Add ${was.slug} to slugAliases with photos edit ${series.id}, so /work/${was.slug} leads to the new address.`,
+                    });
+                }
+                for (const alias of was.slugAliases.filter((slug) => !kept(slug))) {
+                    findings.push({
+                        record: seriesRecord(series.id),
+                        field: 'slugAliases',
+                        message: `The rename drops /work/${alias}, an old address of this series, so every link to it would break.`,
+                        hint: `Keep ${alias} in slugAliases beside ${was.slug} with photos edit ${series.id}.`,
+                    });
+                }
+                return findings;
             });
         },
     },

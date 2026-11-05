@@ -494,8 +494,11 @@ export interface RestoreAddresses {
 
 const NO_ADDRESSES: RestoreAddresses = { live: [], target: [] };
 
-/** "Salt Roads'", "Dawn's". */
-const possessive = (name: string) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+/** "Salt Roads'", "FILMS'", "Dawn's", and inside a closing quote or bracket, "(Dawn's)". */
+function possessive(name: string): string {
+    const [, base, closing] = /^([\s\S]*?)(["'\u2019\u201d)\]}\u00bb]*)$/.exec(name) ?? [name, name, ''];
+    return `${base}${/s$/i.test(base) ? "'" : "'s"}${closing}`;
+}
 
 type FlaggedIssue = Pick<Issue, 'code' | 'record'> & Partial<Pick<Issue, 'field'>>;
 
@@ -521,9 +524,14 @@ function addressWords(code: string, issues: readonly FlaggedIssue[], seriesName:
     const live = addresses.live.find((series) => series.id === id);
     const target = addresses.target.find((series) => series.id === id);
     if (renamed) {
-        return live && target && live.slug !== target.slug
-            ? `${owner}: it changes from /work/${live.slug} to /work/${target.slug} without keeping the old one`
-            : `${owner}: it changes without keeping the old one`;
+        if (!live || !target || live.slug === target.slug) return `${owner}: it changes without keeping the old one`;
+        const change = `${owner}: it changes from /work/${live.slug} to /work/${target.slug}`;
+        // Every live address the target holds neither as its slug nor as an old one.
+        const dropped = [live.slug, ...live.slugAliases].filter((slug) => slug !== target.slug && !target.slugAliases.includes(slug));
+        if (dropped.length === 1 && dropped[0] === live.slug) return `${change} without keeping the old one`;
+        if (dropped.length === 0) return `${change} without keeping an old one`;
+        const list = dropped.map((slug) => `/work/${slug}`);
+        return `${change} without keeping ${list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : list[0]}`;
     }
     // The address the flagged field holds on the target, and the series that has it live.
     const fields = flagged.map((issue) => issue.field);

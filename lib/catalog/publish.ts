@@ -294,8 +294,21 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
  * compare against and stay quiet.
  */
 export function validateStored(root: string, revision: RevisionFile, registry: Registry | null, replaces?: RevisionFile | null): { validation: Activation['validation']; issues: Issue[] } {
-    const issues = runRules({ candidate: revision.content, authored: null, active: revision, ...(replaces === undefined ? {} : { replaces }), registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } });
+    const issues = acceptHints(runRules({ candidate: revision.content, authored: null, active: revision, ...(replaces === undefined ? {} : { replaces }), registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } }));
     return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
+}
+
+/**
+ * A stored revision can't be edited, so an editorial rule's hint, which
+ * names the fix a publish takes, is wrong for it: the way past one is an
+ * accept. Each editorial issue gets that hint instead; integrity ones keep
+ * theirs.
+ */
+export function acceptHints(issues: readonly Issue[]): Issue[] {
+    const editorial = new Set(registeredRules().filter((rule) => rule.rollbackClass === 'editorial').map((rule) => rule.id));
+    return issues.map((issue) => (editorial.has(issue.code)
+        ? { ...issue, hint: `A rollback brings this back only once you accept it: --accept ${issue.code} with photos rollback, or its box in Restore on the Publish screen.` }
+        : issue));
 }
 
 /**
