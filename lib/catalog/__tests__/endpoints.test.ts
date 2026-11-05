@@ -31,7 +31,7 @@ function routeFiles(): Map<string, string> {
 /** ci/check-prerender.mjs's DYNAMIC_PATHS, read as text: lib/ may not import ci/, which the image build drops. */
 function dynamicPaths(): string[] {
     const source = fs.readFileSync(path.join(REPO_ROOT, 'ci', 'check-prerender.mjs'), 'utf8');
-    const list = /export const DYNAMIC_PATHS = (\[[^\]]*\]);/.exec(source)?.[1];
+    const list = /^export const DYNAMIC_PATHS = (\[.*\]);$/m.exec(source)?.[1];
     if (!list) throw new Error('ci/check-prerender.mjs has no DYNAMIC_PATHS list');
     return JSON.parse(list.replaceAll("'", '"')) as string[];
 }
