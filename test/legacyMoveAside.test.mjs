@@ -5,26 +5,37 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CACHE_FOLDER, DERIVATIVE_FOLDERS } from '../lib/derivativeFolders.mjs';
-import { buildLegacyManifest, legacyManifestUsedFile, sealLegacyManifest, writeLegacyManifest } from '../lib/identity/legacy-derivatives';
+import { buildLegacyManifest, sealLegacyManifest, writeLegacyManifest } from '../lib/identity/legacy-derivatives';
 
 // scripts/host/legacy-move-aside.sh (#15, v2.0.0 A12) moves the legacy
 // derivative folders a watcher before v1.7.0 wrote out of the photo library,
-// to a folder beside it on the same filesystem. It runs on the host, against
-// the owner's originals, and a folder's name is never enough to move it: on a
-// case-insensitive disk `medium` is also the owner's `Medium` album. So it
-// moves only folders the manifest `photos legacy-derivatives` writes vouches
-// for, and only while each still lists exactly what the manifest holds. These
-// tests run only on temp folders: a temp library, and a temp data root beside
-// it for the manifest.
+// to a folder beside it on the same filesystem. It runs on the host, as the
+// owner and never as root, against his originals, and a folder's name is
+// never enough to move it: on a case-insensitive disk `medium` is also the
+// owner's `Medium` album. So it moves only folders the manifest
+// `photos legacy-derivatives` writes vouches for, and only while each still
+// lists exactly what the manifest holds. These tests run only on temp
+// folders: a temp library, a temp data root beside it for the manifest, and a
+// temp XDG_STATE_HOME for the used record.
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPT = path.join(REPO_ROOT, 'scripts', 'host', 'legacy-move-aside.sh');
+const SCRIPT_TEXT = fs.readFileSync(SCRIPT, 'utf8');
 const NAMES = [...Object.keys(DERIVATIVE_FOLDERS), CACHE_FOLDER];
 
+const image = (width, format) => sharp({ create: { width, height: Math.round(width * 0.75), channels: 3, background: '#406080' } })[format]().toBuffer();
+const WEBP = [await image(40, 'webp'), await image(64, 'webp')];
+const AVIF = [await image(40, 'avif'), await image(64, 'avif')];
+const LQIP = `data:image/webp;base64,${WEBP[0].toString('base64')}`;
+
 const roots = [];
+/** The test's XDG_STATE_HOME, inside its first temp folder. */
+let state = null;
 afterEach(() => {
+  state = null;
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -32,6 +43,7 @@ afterEach(() => {
 function tempRoot() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-move-aside-')));
   roots.push(root);
+  state ??= path.join(root, 'state');
   return root;
 }
 
@@ -51,8 +63,9 @@ function caseInsensitive(dir) {
 
 /**
  * A library under `parent` with originals at its root and in a series, and
- * all eight legacy folders, each holding only derivatives of the root
- * originals, `cache/dynamic/` as the old image route named its files.
+ * all eight legacy folders as the v1.x pipeline wrote them for the root
+ * originals: real WebP and AVIF files, LQIP data URLs, and in `cache/` the
+ * old image route's files and the pipeline's set records.
  */
 function fullLibrary(parent) {
   const library = path.join(parent, 'photos');
@@ -60,11 +73,15 @@ function fullLibrary(parent) {
   write(path.join(library, 'b.png'), crypto.randomBytes(1024));
   write(path.join(library, 'trip', 'c.jpg'), crypto.randomBytes(1024));
   for (const [folder, extension] of Object.entries(DERIVATIVE_FOLDERS)) {
-    write(path.join(library, folder, `a${extension}`), crypto.randomBytes(512));
-    write(path.join(library, folder, `b${extension}`), crypto.randomBytes(300));
+    ['a', 'b'].forEach((base, n) => {
+      const bytes = extension === '.txt' ? LQIP : extension === '.avif' ? AVIF[n] : WEBP[n];
+      write(path.join(library, folder, `${base}${extension}`), bytes);
+    });
   }
-  write(path.join(library, CACHE_FOLDER, 'dynamic', 'a-400-75.webp'), crypto.randomBytes(700));
-  write(path.join(library, CACHE_FOLDER, 'dynamic', 'b-1920-60.avif'), crypto.randomBytes(500));
+  write(path.join(library, CACHE_FOLDER, 'dynamic', 'a-400-75.webp'), WEBP[0]);
+  write(path.join(library, CACHE_FOLDER, 'dynamic', 'b-1920-60.avif'), AVIF[1]);
+  write(path.join(library, CACHE_FOLDER, 'set-sources', 'a.json'), '{"source":"a.jpg"}\n');
+  write(path.join(library, CACHE_FOLDER, 'set-sources', 'b.json'), '{"source":"b.png","complete":false}\n');
   return library;
 }
 
@@ -104,9 +121,10 @@ function realBin(name) {
 }
 const BASH = realBin('bash');
 
-/** Runs the script. An env value of undefined unsets that variable. */
+/** Runs the script with the test's state folder. An env value of undefined unsets that variable. */
 function run(args, env = {}, cwd = undefined) {
-  const merged = { ...process.env, ...env };
+  if (state === null) throw new Error('run() needs a tempRoot() first, for XDG_STATE_HOME');
+  const merged = { ...process.env, XDG_STATE_HOME: state, ...env };
   for (const [key, value] of Object.entries(merged)) if (value === undefined) delete merged[key];
   const result = spawnSync(BASH, [SCRIPT, ...args], { encoding: 'utf8', cwd, env: merged });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -119,16 +137,33 @@ async function manifestFor(library, { clock } = {}) {
   return writeLegacyManifest(dataRoot, await buildLegacyManifest(library, clock ? { clock } : {}));
 }
 
+const usedFile = () => path.join(state, 'photos', 'legacy-derivatives.used');
+
+/** The move-back.sh text a run printed. */
+function wayBack(stdout) {
+  const lines = stdout.split('\n');
+  const start = lines.indexOf('--- move-back.sh ---');
+  const end = lines.indexOf('--- end of move-back.sh ---');
+  if (start < 0 || end < start) throw new Error(`no move-back.sh in:\n${stdout}`);
+  return lines.slice(start + 1, end).join('\n');
+}
+const runText = (text, args = [], env = {}) => spawnSync('sh', ['-c', text, 'move-back.sh', ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+
+/** The rename helper, as the script runs it. */
+const HELPER = SCRIPT_TEXT.match(/<<'HELPER' \|\| true\n([\s\S]*?)\nHELPER\n/)?.[1];
+
 /** A sh `case` pattern that matches exactly `file`, which holds no single quote. */
 const caseOf = (file) => `'${file}'`;
 
 /**
  * Stubs in a bin folder ahead of PATH. `stat` answers for the paths in
  * `devices` (a device ID), `ids` (a full `dev:inode`) and `statFails`, and
- * passes the rest to the real one; `df` gives the paths in `mounts` a mount
- * of their own; `perl` fails its `perlFailsOn`th rename.
+ * passes the rest to the real one. `df` gives the paths in `mounts` a mount
+ * of their own. `perl` fails its `perlFailsOn`th rename and runs
+ * `beforeRename` (shell) before its first. `id` says `uid`. `sudo` records
+ * its arguments and runs `beforeSudo` first, then runs them as this user.
  */
-function stubs(root, { devices = {}, ids = {}, statFails = [], mounts = [], perlFailsOn = 0 } = {}) {
+function stubs(root, { devices = {}, ids = {}, statFails = [], mounts = [], perlFailsOn = 0, beforeRename = '', uid = null, sudo = false, beforeSudo = '' } = {}) {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const stub = (name, body) => {
@@ -144,9 +179,14 @@ function stubs(root, { devices = {}, ids = {}, statFails = [], mounts = [], perl
   const dfCases = mounts.map((file) => `  ${caseOf(file)}) echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo "stubfs 1 1 1 1% $last"; exit 0 ;;\n`).join('');
   stub('df', `for last; do :; done\ncase "$last" in\n${dfCases}esac\nexec ${realBin('df')} "$@"\n`);
   const count = path.join(bin, 'rename-calls');
-  stub('perl', `case "$2" in *rename*)\n  n=$(cat '${count}' 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > '${count}'\n  if [ "$n" -eq ${perlFailsOn} ]; then echo 'stubbed rename failure' >&2; exit 1; fi ;;\nesac\nexec ${realBin('perl')} "$@"\n`);
-  return { PATH: `${bin}:${process.env.PATH}` };
+  stub('perl', `case "$2" in *LEGACY_RENAME_HELPER*)\n  n=$(cat '${count}' 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > '${count}'\n  if [ "$n" -eq 1 ]; then\n${beforeRename || '    :'}\n  fi\n  if [ "$n" -eq ${perlFailsOn} ]; then echo 'stubbed rename failure' >&2; exit 1; fi ;;\nesac\nexec ${realBin('perl')} "$@"\n`);
+  if (uid !== null) stub('id', `[ "$1" = -u ] && { echo ${uid}; exit 0; }\nexec ${realBin('id')} "$@"\n`);
+  // Each call's arguments end in NUL, and each call in \x01, since the helper's code spans lines.
+  if (sudo) stub('sudo', `printf '%s\\0' "$@" >> '${path.join(bin, 'sudo-calls')}'; printf '\\001' >> '${path.join(bin, 'sudo-calls')}'\n${beforeSudo}\nexec "$@"\n`);
+  const calls = path.join(bin, 'sudo-calls');
+  return { PATH: `${bin}:${process.env.PATH}`, sudoCalls: () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').split('\x01').filter(Boolean).map((call) => call.split('\0').slice(0, -1)) : []) };
 }
+const envOf = ({ PATH }) => ({ PATH });
 
 /** A PATH holding links to the given tools only. */
 function onlyTools(root, name, tools) {
@@ -155,10 +195,7 @@ function onlyTools(root, name, tools) {
   for (const tool of tools) fs.symlinkSync(realBin(tool), path.join(bin, tool));
   return { PATH: bin };
 }
-const SCRIPT_TOOLS = ['stat', 'df', 'du', 'awk', 'date', 'dirname', 'basename', 'mkdir', 'cat', 'perl'];
-
-/** Runs `lines` with bash, as the owner would paste them. */
-const runLines = (lines) => spawnSync(BASH, ['-c', lines.join('\n')], { encoding: 'utf8' });
+const SCRIPT_TOOLS = ['stat', 'df', 'du', 'awk', 'date', 'dirname', 'basename', 'mkdir', 'cat', 'sed', 'id', 'perl'];
 
 /** `text` as a literal inside a RegExp. */
 const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -169,14 +206,20 @@ const today = () => {
 };
 const asideOf = (library) => `${library}.legacy-derivatives-${today()}`;
 const AFTER_APPLY = ['legacy-derivatives.used', 'move-back.sh'];
+const idOf = (file) => {
+  const stat = fs.lstatSync(file);
+  return `${stat.dev}:${stat.ino}`;
+};
 
 // Each test runs the real script, often several times, so a loaded machine gets 30 s a test.
 describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
-  it('names exactly the eight folders lib/derivativeFolders.mjs lists, in its order', () => {
-    const text = fs.readFileSync(SCRIPT, 'utf8');
-    const list = text.match(/^NAMES=\(([^)]*)\)/m);
+  it('names exactly the eight folders lib/derivativeFolders.mjs lists, in its order, in the script and in its helper', () => {
+    const list = SCRIPT_TEXT.match(/^NAMES=\(([^)]*)\)/m);
     expect(list, 'a NAMES=(...) line').not.toBeNull();
     expect(list[1].trim().split(/\s+/)).toEqual(NAMES);
+    expect(HELPER, 'the helper').toBeDefined();
+    expect(HELPER.match(/my @eight = qw\(([^)]*)\);/)[1].split(/\s+/)).toEqual(NAMES);
+    expect(HELPER).not.toContain("'");
   });
 
   it("keeps the default aside folder out of the image's build context and out of git", () => {
@@ -186,7 +229,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
   });
 
   it('has no delete in it: no rm, unlink, rmdir, shred or find -delete', () => {
-    const code = fs.readFileSync(SCRIPT, 'utf8').split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+    const code = SCRIPT_TEXT.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
     expect(code).not.toMatch(/\b(?:rm|unlink|rmdir|shred)\b|-delete\b/);
     // The pattern catches the spellings that dodge a plain `rm `.
     for (const probe of ['\\rm -rf x', '"rm" x', 'command rm x', 'find . -delete']) expect(probe).toMatch(/\b(?:rm|unlink|rmdir|shred)\b|-delete\b/);
@@ -206,7 +249,21 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     expect(tree(root)).toEqual(before);
   });
 
-  it('is a dry run by default: what moves and what stays, each mv with its size, the total and the way back, and it writes nothing', async () => {
+  it('refuses to run as root, with nothing written', async () => {
+    const root = tempRoot();
+    const library = fullLibrary(root);
+    const manifest = await manifestFor(library);
+    const before = tree(root);
+    const { status, stderr } = run(['--manifest', manifest, '--apply', library], envOf(stubs(root, { uid: 0 })));
+    expect(status).toBe(1);
+    expect(stderr).toMatch(/not as root.*Nothing was moved/s);
+    const after = tree(root);
+    delete after.bin;
+    for (const key of Object.keys(after)) if (key.startsWith(`bin${path.sep}`)) delete after[key];
+    expect(after).toEqual(before);
+  });
+
+  it('is a dry run by default: what moves and what stays, each mv with its size, the total and move-back.sh, and it writes nothing', async () => {
     const root = tempRoot();
     const library = fullLibrary(root);
     write(path.join(library, 'medium', 'holiday.jpg'), crypto.randomBytes(64));
@@ -215,28 +272,39 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     const { status, stdout, stderr } = run(['--manifest', manifest, library]);
     expect(status, stderr).toBe(0);
     expect(tree(root)).toEqual(before);
+    expect(fs.existsSync(state)).toBe(false);
     const dest = asideOf(library);
     expect(fs.existsSync(dest)).toBe(false);
     const moving = NAMES.filter((name) => name !== 'medium');
     for (const name of moving) {
       expect(stdout).toMatch(new RegExp(`^mv ${literal(`'${library}/${name}' '${dest}/${name}'`)} +# [0-9.]+ [kMG]B$`, 'm'));
-      expect(stdout).toContain(`mv '${dest}/${name}' '${library}/${name}'`);
+      expect(wayBack(stdout)).toContain(`# mv '${dest}/${name}' '${library}/${name}'`);
     }
     // At a glance: each moving folder with its count and first names, each staying one with why.
     expect(stdout).toMatch(/^Moves aside, 7 folders:$/m);
-    expect(stdout).toMatch(/^ {2}thumbnails: 2 files, such as a\.webp, b\.webp$/m);
-    expect(stdout).toMatch(/^ {2}cache: 2 files, such as dynamic\/a-400-75\.webp, dynamic\/b-1920-60\.avif$/m);
+    expect(stdout).toMatch(/^ {2}thumbnails moves aside: 2 files, such as a\.webp, b\.webp$/m);
+    expect(stdout).toMatch(/^ {2}cache moves aside: 4 files, such as dynamic\/a-400-75\.webp, dynamic\/b-1920-60\.avif, set-sources\/a\.json, \.\.\.$/m);
     expect(stdout).toMatch(/^Stays, 1 folder:$/m);
-    expect(stdout).toMatch(/^ {2}medium: medium\/holiday\.jpg has an original's extension$/m);
+    expect(stdout).toMatch(/^ {2}medium stays: medium\/holiday\.jpg has an original's extension$/m);
     expect(stdout).not.toMatch(/^mv '[^']*\/medium'/m);
     expect(stdout).toMatch(/^Total: 7 folders, [0-9.]+ [kMG]B/m);
     expect(stdout).toMatch(/Dry run: nothing was moved/);
   });
 
-  it('--apply moves exactly the eight names, every file byte-identical, and its way back puts them back', async () => {
+  it("says, in the ruling's words, which folders stay because their originals are nested", async () => {
+    const root = tempRoot();
+    const library = fullLibrary(root);
+    write(path.join(library, 'medium', 'c.webp'), WEBP[0]);
+    const { status, stdout } = run(['--manifest', await manifestFor(library), library]);
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/^ {2}medium stays: its originals are nested, so nothing vouches for it$/m);
+  });
+
+  it('--apply moves exactly the eight names, every file byte-identical, records the manifest in the state folder, and its way back puts them back', async () => {
     const root = tempRoot();
     const library = fullLibrary(root);
     const manifest = await manifestFor(library);
+    const dataBefore = tree(path.dirname(manifest));
     const before = tree(library);
     const { status, stdout, stderr } = run(['--manifest', manifest, '--apply', library]);
     expect(stderr).toBe('');
@@ -249,12 +317,16 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     for (const name of AFTER_APPLY) delete aside[name];
     expect(aside).toEqual(moved);
     expect(tree(library)).toEqual(Object.fromEntries(Object.entries(before).filter(([relative]) => !(relative in moved))));
+    // The used record is the owner's, in his state folder, and nothing in the data root changed.
+    const digest = JSON.parse(fs.readFileSync(manifest, 'utf8')).digest;
+    expect(fs.readFileSync(usedFile(), 'utf8')).toBe(`${digest}\n`);
+    expect(fs.statSync(usedFile()).mode & 0o777).toBe(0o600);
+    expect(tree(path.dirname(manifest))).toEqual(dataBefore);
+    expect(fs.readFileSync(path.join(dest, 'move-back.sh'), 'utf8')).toBe(`${wayBack(stdout)}\n`);
 
     // The printed way back, run as printed.
-    const back = stdout.split('\n').filter((line) => line.includes(`mv '${dest}/`));
-    expect(back).toHaveLength(8);
-    const result = runLines(back);
-    expect(result.status).toBe(0);
+    const result = runText(wayBack(stdout));
+    expect(result.status, result.stderr).toBe(0);
     expect(tree(library)).toEqual(before);
     expect(fs.readdirSync(dest).sort()).toEqual(AFTER_APPLY);
   });
@@ -271,12 +343,15 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     const file = path.join(asideOf(library), 'move-back.sh');
     expect(stdout).toContain(file);
     expect(fs.statSync(file).mode & 0o777).toBe(0o644);
-    const result = spawnSync(BASH, [file], { encoding: 'utf8' });
+    const result = spawnSync('sh', [file], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
+    expect(snapshot(library)).toEqual(before);
+    // Run twice, it moves nothing more.
+    expect(spawnSync('sh', [file], { encoding: 'utf8' }).status).toBe(0);
     expect(snapshot(library)).toEqual(before);
   });
 
-  it("prints a way back that won't move a folder into one the library holds again", async () => {
+  it("writes a way back that won't move a folder into one the library holds again", async () => {
     const root = tempRoot();
     const library = fullLibrary(root);
     const { status, stdout } = run(['--manifest', await manifestFor(library), '--apply', library]);
@@ -284,9 +359,9 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     const dest = asideOf(library);
     // As after restoring a backup made before the move.
     write(path.join(library, 'lqip', 'restored.txt'), 'x');
-    const back = stdout.split('\n').filter((line) => line.includes(`mv '${dest}/`));
-    const result = runLines(back);
-    expect(result.stderr).toMatch(/lqip/);
+    const result = runText(wayBack(stdout));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/lqip exists/);
     expect(fs.readdirSync(path.join(library, 'lqip'))).toEqual(['restored.txt']);
     expect(fs.readdirSync(dest).sort()).toEqual(['lqip', ...AFTER_APPLY].sort());
     expect(fs.readdirSync(library).sort()).toEqual(['a.jpg', 'b.png', ...NAMES, 'trip'].sort());
@@ -296,12 +371,12 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     const root = tempRoot();
     const library = path.join(root, 'photos');
     write(path.join(library, 'a.jpg'), crypto.randomBytes(256));
-    write(path.join(library, 'trip', 'thumbnails', 'a.webp'), crypto.randomBytes(256));
+    write(path.join(library, 'trip', 'thumbnails', 'a.webp'), WEBP[0]);
     write(path.join(library, 'medium'), crypto.randomBytes(64));
-    write(path.join(root, 'elsewhere', 'a.webp'), crypto.randomBytes(64));
+    write(path.join(root, 'elsewhere', 'a.webp'), WEBP[0]);
     fs.symlinkSync(path.join(root, 'elsewhere'), path.join(library, 'optimized'));
-    write(path.join(library, 'thumbnails.old', 'a.webp'), crypto.randomBytes(64));
-    write(path.join(library, 'lqip', 'a.txt'), 'data:image/webp;base64,AAAA');
+    write(path.join(library, 'thumbnails.old', 'a.webp'), WEBP[0]);
+    write(path.join(library, 'lqip', 'a.txt'), LQIP);
     const manifest = await manifestFor(library);
     const before = tree(root);
     const { status, stdout, stderr } = run(['--manifest', manifest, '--apply', library]);
@@ -313,8 +388,8 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     for (const kept of ['photos/trip/thumbnails/a.webp', 'photos/medium', 'photos/optimized', 'photos/thumbnails.old/a.webp', 'elsewhere/a.webp']) {
       expect(after[kept], kept).toBe(before[kept]);
     }
-    expect(stdout).toMatch(/medium.*isn't a folder/);
-    expect(stdout).toMatch(/optimized.*symlink/);
+    expect(stdout).toMatch(/medium stays: medium isn't a folder/);
+    expect(stdout).toMatch(/optimized stays: optimized is a symlink/);
   });
 
   it('says so and moves nothing when the library holds none of the names, manifest or not', () => {
@@ -334,8 +409,8 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const root = tempRoot();
       const library = path.join(root, 'photos');
       write(path.join(library, 'a.jpg'), crypto.randomBytes(512));
-      write(path.join(library, 'thumbnails', 'a.webp'), crypto.randomBytes(256));
-      write(path.join(library, 'lqip', 'a.txt'), 'data:image/webp;base64,AAAA');
+      write(path.join(library, 'thumbnails', 'a.webp'), WEBP[0]);
+      write(path.join(library, 'lqip', 'a.txt'), LQIP);
       extra(library);
       const owned = Object.fromEntries(Object.entries(snapshot(library)).filter(([relative]) => !['thumbnails', 'lqip'].includes(relative.split(path.sep)[0])));
       const manifest = await manifestFor(library);
@@ -352,7 +427,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       if (!caseInsensitive(tempRoot())) ctx.skip();
       const stdout = await owner((library) => {
         write(path.join(library, 'Medium', 'portrait.jpg'), crypto.randomBytes(512));
-        write(path.join(library, 'Medium', 'a.webp'), crypto.randomBytes(128));
+        write(path.join(library, 'Medium', 'a.webp'), WEBP[0]);
       });
       expect(stdout).not.toMatch(/[Mm]edium'/);
     });
@@ -360,7 +435,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     it('an album named Cache, on a case-insensitive disk', async (ctx) => {
       if (!caseInsensitive(tempRoot())) ctx.skip();
       const stdout = await owner((library) => {
-        write(path.join(library, 'Cache', 'dynamic', 'a-400-75.webp'), crypto.randomBytes(128));
+        write(path.join(library, 'Cache', 'dynamic', 'a-400-75.webp'), WEBP[0]);
         write(path.join(library, 'Cache', 'street.jpg'), crypto.randomBytes(512));
       });
       expect(stdout).not.toMatch(/[Cc]ache'/);
@@ -369,15 +444,15 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     it('an album named medium exactly, holding originals', async () => {
       const stdout = await owner((library) => {
         write(path.join(library, 'medium', 'portrait.jpg'), crypto.randomBytes(512));
-        write(path.join(library, 'medium', 'a.webp'), crypto.randomBytes(128));
+        write(path.join(library, 'medium', 'a.webp'), WEBP[0]);
       });
       expect(stdout).not.toMatch(/^mv '[^']*\/medium'/m);
-      expect(stdout).toMatch(/medium: .*has an original's extension/);
+      expect(stdout).toMatch(/medium stays: .*has an original's extension/);
     });
 
     it('an album holding files that look like a marker or a manifest', async () => {
       const stdout = await owner((library) => {
-        write(path.join(library, 'optimized', 'a.webp'), crypto.randomBytes(128));
+        write(path.join(library, 'optimized', 'a.webp'), WEBP[0]);
         write(path.join(library, 'optimized', 'legacy-derivatives.json'), '{"schemaVersion":1,"folders":[]}');
         write(path.join(library, 'optimized', '.kgp-legacy'), 'legacy');
         write(path.join(library, 'trip', 'legacy-derivatives.json'), '{}');
@@ -385,7 +460,28 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
         write(path.join(library, 'trip', 'b.jpg'), crypto.randomBytes(512));
       });
       expect(stdout).not.toMatch(/^mv '[^']*\/optimized'/m);
-      expect(stdout).toMatch(/optimized: /);
+      expect(stdout).toMatch(/optimized stays: /);
+    });
+
+    it.each([
+      ['an album by the exact name', 'thumbnails'],
+      ['an album by the name in another case', 'Thumbnails'],
+    ])('swapped in for a checked folder between the check and its rename: %s', async (_label, albumName) => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const album = path.join(root, 'album');
+      write(path.join(album, 'portrait.jpg'), crypto.randomBytes(512));
+      const albumBefore = snapshot(album);
+      const parked = path.join(root, 'parked-thumbnails');
+      // Just before the first rename: the checked folder goes, and an album takes its place.
+      const env = stubs(root, { beforeRename: `    ${realBin('mv')} '${path.join(library, 'thumbnails')}' '${parked}' && ${realBin('mv')} '${album}' '${path.join(library, albumName)}'` });
+      const { status, stderr } = run(['--manifest', manifest, '--apply', library], envOf(env));
+      expect(status).toBe(1);
+      expect(stderr).toMatch(/thumbnails.*Nothing further was moved/s);
+      expect(fs.readdirSync(library)).toContain(albumName);
+      expect(snapshot(path.join(library, albumName))).toEqual(albumBefore);
+      expect(fs.readdirSync(asideOf(library)).sort()).toEqual(AFTER_APPLY);
     });
   });
 
@@ -425,18 +521,18 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expectRefused(root, ['--manifest', manifest, '--apply', library], /digest/);
     });
 
-    it('when it names another library', async () => {
+    it('when it names another library, with the Docker Desktop hint', async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
       const other = fullLibrary(path.join(root, 'other'));
-      expectRefused(root, ['--manifest', await manifestFor(other), '--apply', library], /another library/);
+      expectRefused(root, ['--manifest', await manifestFor(other), '--apply', library], /another library.*Docker Desktop.*Linux host with a bind mount/s);
     });
 
     it('when a folder it vouches for changed since', async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
-      write(path.join(library, 'thumbnails', 'new.webp'), crypto.randomBytes(64));
+      write(path.join(library, 'thumbnails', 'new.webp'), WEBP[0]);
       expectRefused(root, ['--manifest', manifest, '--apply', library], /thumbnails changed.*new\.webp/s);
       const other = tempRoot();
       const second = fullLibrary(other);
@@ -445,22 +541,44 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expectRefused(other, ['--manifest', secondManifest, '--apply', second], /lqip changed/);
     });
 
-    it('when it was used for an earlier --apply, until it is written again', async () => {
+    it('when it, or any copy of it, was used for an earlier --apply, until it is written again', async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
       const first = run(['--manifest', manifest, '--to', path.join(root, 'aside-1'), '--apply', library]);
       expect(first.status, first.stderr).toBe(0);
-      const dataRoot = path.dirname(path.dirname(manifest));
-      const digest = JSON.parse(fs.readFileSync(manifest, 'utf8')).digest;
-      expect(fs.readFileSync(legacyManifestUsedFile(dataRoot), 'utf8').split('\n')).toContain(digest);
-      expect(fs.readFileSync(path.join(root, 'aside-1', 'legacy-derivatives.used'), 'utf8').trim()).toBe(digest);
-      expect(spawnSync(BASH, [path.join(root, 'aside-1', 'move-back.sh')], { encoding: 'utf8' }).status).toBe(0);
+      expect(spawnSync('sh', [path.join(root, 'aside-1', 'move-back.sh')], { encoding: 'utf8' }).status).toBe(0);
       expectRefused(root, ['--manifest', manifest, '--to', path.join(root, 'aside-2'), '--apply', library], /used for an earlier --apply.*again/s);
+      // A copy of the same manifest elsewhere is the same manifest.
+      const copy = path.join(root, 'copy-of-manifest.json');
+      fs.copyFileSync(manifest, copy);
+      expectRefused(root, ['--manifest', copy, '--to', path.join(root, 'aside-2'), '--apply', library], /used for an earlier --apply/);
       const fresh = await manifestFor(library, { clock: () => Date.now() + 1000 });
       const again = run(['--manifest', fresh, '--to', path.join(root, 'aside-2'), '--apply', library]);
       expect(again.status, again.stderr).toBe(0);
       expect(fs.readdirSync(path.join(root, 'aside-2'))).toContain('thumbnails');
+    });
+
+    it('when the used record is a symlink, leaving its target as it was', async () => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const target = path.join(root, 'target.txt');
+      write(target, 'not to be written\n');
+      fs.mkdirSync(path.dirname(usedFile()), { recursive: true });
+      fs.symlinkSync(target, usedFile());
+      expectRefused(root, ['--manifest', manifest, '--apply', library], /symlink|plain file/);
+      expect(fs.readFileSync(target, 'utf8')).toBe('not to be written\n');
+    });
+
+    it('when its copy is inside the library, with nothing written', async () => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const copy = path.join(library, 'trip', 'legacy-derivatives.json');
+      fs.copyFileSync(manifest, copy);
+      expectRefused(root, ['--manifest', copy, '--apply', library], /manifest .* is inside the library/);
+      expect(fs.existsSync(state)).toBe(false);
     });
 
     it('when it is not one photos legacy-derivatives wrote', async () => {
@@ -535,10 +653,9 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     it('whose ancestor stat reports as the library, so only the dev:inode walk can tell', () => {
       const root = tempRoot();
       const library = fullLibrary(root);
-      const stat = fs.statSync(library);
       const other = path.join(root, 'other');
       fs.mkdirSync(other);
-      const env = stubs(root, { ids: { [other]: `${stat.dev}:${stat.ino}` } });
+      const env = envOf(stubs(root, { ids: { [other]: idOf(library) } }));
       expectRefused(root, [library, '--to', path.join(other, 'aside'), '--apply'], /is the library or inside it/, env);
     });
 
@@ -547,7 +664,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const library = fullLibrary(root);
       const deep = path.join(root, 'x', 'y');
       fs.mkdirSync(deep, { recursive: true });
-      const env = stubs(root, { statFails: [path.join(root, 'x')] });
+      const env = envOf(stubs(root, { statFails: [path.join(root, 'x')] }));
       expectRefused(root, [library, '--to', path.join(deep, 'aside'), '--apply'], /device and inode of .*\/x\./, env);
     });
 
@@ -590,7 +707,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const root = tempRoot();
       const library = path.join(root, 'photos');
       write(path.join(library, 'a.jpg'), crypto.randomBytes(64));
-      write(path.join(library, 'thumbnails', 'a.webp'), crypto.randomBytes(64));
+      write(path.join(library, 'thumbnails', 'a.webp'), WEBP[0]);
       const dest = path.join(root, 'aside');
       write(path.join(dest, 'medium', 'old.webp'), 'x');
       expectRefused(root, ['--manifest', await manifestFor(library), library, '--to', dest, '--apply'], /already holds medium/);
@@ -617,7 +734,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const library = fullLibrary(root);
       const other = path.join(root, 'other-disk');
       fs.mkdirSync(other);
-      const env = stubs(root, { devices: { [other]: 999999 } });
+      const env = envOf(stubs(root, { devices: { [other]: 999999 } }));
       expectRefused(root, [library, '--to', path.join(other, 'aside'), '--apply'], /another filesystem/, env);
       expectRefused(root, [library, '--to', path.join(other, 'aside')], /another filesystem/, env);
     });
@@ -627,14 +744,14 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const library = fullLibrary(root);
       const other = path.join(root, 'bind-mount');
       fs.mkdirSync(other);
-      expectRefused(root, [library, '--to', path.join(other, 'aside'), '--apply'], /another filesystem/, stubs(root, { mounts: [other] }));
+      expectRefused(root, [library, '--to', path.join(other, 'aside'), '--apply'], /another filesystem/, envOf(stubs(root, { mounts: [other] })));
     });
 
     it('for a legacy folder that is a mount point of its own', async () => {
       const root = tempRoot();
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
-      expectRefused(root, ['--manifest', manifest, '--apply', library], /cache is on another filesystem/, stubs(root, { devices: { [path.join(library, 'cache')]: 999999 } }));
+      expectRefused(root, ['--manifest', manifest, '--apply', library], /cache is on another filesystem/, envOf(stubs(root, { devices: { [path.join(library, 'cache')]: 999999 } })));
     });
 
     it('when a path holds a newline', async () => {
@@ -645,7 +762,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expectRefused(root, ['--manifest', await manifestFor(plain), '--to', path.join(root, 'aside\nhere'), '--apply', plain], /newline/);
     });
 
-    it('on a host without perl, which the manifest check and the rename-only move need', () => {
+    it('on a host without perl, which the manifest check and the checked renames need', () => {
       const root = tempRoot();
       const library = fullLibrary(root);
       expectRefused(root, ['--apply', library], /perl/, onlyTools(root, 'no-perl', SCRIPT_TOOLS.filter((tool) => tool !== 'perl')));
@@ -658,14 +775,14 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
       const before = snapshot(library);
-      const { status, stderr } = run(['--manifest', manifest, '--apply', library], stubs(root, { perlFailsOn: 3 }));
+      const { status, stderr } = run(['--manifest', manifest, '--apply', library], envOf(stubs(root, { perlFailsOn: 3 })));
       expect(status).toBe(1);
       expect(stderr).toMatch(/Stopped/);
       expect(stderr).toMatch(/thumbnails medium/);
-      expect(stderr).toMatch(/Run photos legacy-derivatives again/);
+      expect(stderr).toMatch(/Run photos legacy-derivatives --stdout again/);
       const dest = asideOf(library);
       expect(fs.readdirSync(dest).sort()).toEqual(['medium', ...AFTER_APPLY, 'thumbnails'].sort());
-      const result = spawnSync(BASH, [path.join(dest, 'move-back.sh')], { encoding: 'utf8' });
+      const result = spawnSync('sh', [path.join(dest, 'move-back.sh')], { encoding: 'utf8' });
       expect(result.status, result.stderr).toBe(0);
       expect(snapshot(library)).toEqual(before);
     });
@@ -675,7 +792,7 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
       const before = tree(library);
-      const { status, stderr } = run(['--manifest', manifest, '--apply', library], stubs(root, { perlFailsOn: 1 }));
+      const { status, stderr } = run(['--manifest', manifest, '--apply', library], envOf(stubs(root, { perlFailsOn: 1 })));
       expect(status).toBe(1);
       expect(stderr).toMatch(/Nothing was moved/);
       expect(stderr).toMatch(/safe to leave/);
@@ -683,20 +800,129 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
       expect(tree(library)).toEqual(before);
     });
 
-    it('writes sudo mv into the way back only when run through sudo, with sudo on PATH', async () => {
+    it('stops on permission denied as the owner, explains the .. entry, and points to --rename-as-root', async (ctx) => {
+      if (process.getuid?.() === 0) ctx.skip();
       const root = tempRoot();
       const library = fullLibrary(root);
       const manifest = await manifestFor(library);
-      const back = (env) => run(['--manifest', manifest, library], env).stdout.split('\n').filter((line) => line.startsWith('if '));
-      const withSudo = stubs(root);
-      write(path.join(root, 'bin', 'sudo'), '#!/bin/sh\nexec "$@"\n');
-      fs.chmodSync(path.join(root, 'bin', 'sudo'), 0o755);
-      expect(back({ ...withSudo, SUDO_USER: 'owner' }).every((line) => line.includes('; else sudo mv '))).toBe(true);
-      expect(back({ ...withSudo, SUDO_USER: undefined }).some((line) => line.includes('sudo'))).toBe(false);
-      const noSudo = onlyTools(root, 'tools-without-sudo', SCRIPT_TOOLS);
-      const lines = back({ ...noSudo, SUDO_USER: 'owner' });
-      expect(lines).toHaveLength(8);
-      expect(lines.some((line) => line.includes('sudo'))).toBe(false);
+      const before = tree(library);
+      fs.chmodSync(library, 0o555);
+      let result;
+      try {
+        result = run(['--manifest', manifest, '--apply', library]);
+      } finally {
+        fs.chmodSync(library, 0o755);
+      }
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/Permission denied/);
+      expect(result.stderr).toMatch(/write permission on the folder itself, to update its \.\. entry/);
+      expect(result.stderr).toMatch(/--rename-as-root/);
+      expect(tree(library)).toEqual(before);
+    });
+
+    it('with --rename-as-root, runs only the helper through sudo, with the checked paths and ids', async () => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const stub = stubs(root, { sudo: true });
+      const { status, stderr } = run(['--manifest', manifest, '--apply', '--rename-as-root', library], envOf(stub));
+      expect(status, stderr).toBe(0);
+      const dest = asideOf(library);
+      const calls = stub.sudoCalls();
+      expect(calls).toHaveLength(8);
+      calls.forEach((call, n) => {
+        expect(call.slice(0, 2)).toEqual(['perl', '-e']);
+        expect(call[2]).toBe(HELPER);
+        expect(call.slice(3)).toEqual(['--', 'forward', manifest, library, idOf(library), dest, idOf(dest), NAMES[n], idOf(path.join(dest, NAMES[n]))]);
+      });
+      expect(fs.readdirSync(dest).sort()).toEqual([...NAMES, ...AFTER_APPLY].sort());
+      // Nothing else ran as root: the way back and the used record are the owner's.
+      expect(fs.statSync(path.join(dest, 'move-back.sh')).uid).toBe(process.getuid());
+      expect(fs.statSync(usedFile()).uid).toBe(process.getuid());
+    });
+
+    it('with --rename-as-root, a swap between the check and the elevated rename is refused by the helper', async () => {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const album = path.join(root, 'album');
+      write(path.join(album, 'portrait.jpg'), crypto.randomBytes(512));
+      const albumBefore = snapshot(album);
+      const marker = path.join(root, 'swapped');
+      const stub = stubs(root, { sudo: true, beforeSudo: `[ -e '${marker}' ] || { : > '${marker}'; ${realBin('mv')} '${path.join(library, 'thumbnails')}' '${path.join(root, 'parked')}'; ${realBin('mv')} '${album}' '${path.join(library, 'thumbnails')}'; }` });
+      const { status, stderr } = run(['--manifest', manifest, '--apply', '--rename-as-root', library], envOf(stub));
+      expect(status).toBe(1);
+      expect(stderr).toMatch(/not the folder that was checked.*Nothing further was moved/s);
+      expect(snapshot(path.join(library, 'thumbnails'))).toEqual(albumBefore);
+      expect(fs.readdirSync(asideOf(library)).sort()).toEqual(AFTER_APPLY);
+    });
+  });
+
+  describe('the rename helper, which may run as root, trusts none of its arguments', () => {
+    /** A library, its manifest, and an empty aside folder, with the ids the owner's check records. */
+    async function setUp() {
+      const root = tempRoot();
+      const library = fullLibrary(root);
+      const manifest = await manifestFor(library);
+      const aside = path.join(root, 'aside');
+      fs.mkdirSync(aside);
+      const elsewhere = path.join(root, 'elsewhere');
+      write(path.join(elsewhere, 'thumbnails', 'x.webp'), WEBP[0]);
+      const ok = ['forward', manifest, library, idOf(library), aside, idOf(aside), 'thumbnails', idOf(path.join(library, 'thumbnails'))];
+      return { root, library, manifest, aside, elsewhere, ok };
+    }
+    const helper = (args) => spawnSync(realBin('perl'), ['-e', HELPER, '--', ...args], { encoding: 'utf8' });
+
+    function expectHelperRefused(root, args, pattern) {
+      const before = tree(root);
+      const result = helper(args);
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toMatch(pattern);
+      expect(tree(root)).toEqual(before);
+    }
+
+    it('refuses a destination outside the aside folder', async () => {
+      const { root, elsewhere, ok } = await setUp();
+      const args = [...ok];
+      args[4] = elsewhere;
+      expectHelperRefused(root, args, /is not the folder that was checked/);
+      const inside = [...ok];
+      inside[4] = path.join(ok[2], 'trip');
+      expectHelperRefused(root, inside, /is not the folder that was checked/);
+    });
+
+    it('refuses a source outside the library root', async () => {
+      const { root, elsewhere, ok } = await setUp();
+      const args = [...ok];
+      args[2] = elsewhere;
+      expectHelperRefused(root, args, /not the folder that was checked|not the library the manifest names/);
+      const forged = [...ok];
+      forged[2] = elsewhere;
+      forged[3] = idOf(elsewhere);
+      expectHelperRefused(root, forged, /not the library the manifest names/);
+    });
+
+    it('refuses a name that differs from the checked one, case included', async () => {
+      const { root, ok } = await setUp();
+      for (const name of ['Thumbnails', 'medium', 'trip', '../trip']) {
+        const args = [...ok];
+        args[6] = name;
+        expectHelperRefused(root, args, /not one of the eight|not the folder that was checked/);
+      }
+    });
+
+    it('refuses a destination that already exists', async () => {
+      const { root, aside, ok } = await setUp();
+      fs.mkdirSync(path.join(aside, 'thumbnails'));
+      expectHelperRefused(root, ok, /exists/);
+    });
+
+    it('moves the checked folder when every check holds', async () => {
+      const { library, aside, ok } = await setUp();
+      const result = helper(ok);
+      expect(result.status, result.stderr).toBe(0);
+      expect(fs.existsSync(path.join(library, 'thumbnails'))).toBe(false);
+      expect(fs.readdirSync(path.join(aside, 'thumbnails')).sort()).toEqual(['a.webp', 'b.webp']);
     });
   });
 
@@ -711,9 +937,8 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     expect(status, stderr).toBe(0);
     const dest = asideOf(library);
     expect(fs.readdirSync(dest).sort()).toEqual([...NAMES, ...AFTER_APPLY].sort());
-    const back = stdout.split('\n').filter((line) => line.startsWith('if '));
-    expect(back).toHaveLength(8);
-    expect(runLines(back).status).toBe(0);
+    const result = runText(wayBack(stdout));
+    expect(result.status, result.stderr).toBe(0);
     expect(tree(library)).toEqual(before);
   });
 
@@ -729,22 +954,23 @@ describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
     expect(fs.readdirSync(asideOf(library))).toContain('lqip');
   });
 
-  it('refuses, and says to use sudo, when it can not read into a folder the manifest vouches for', async () => {
-    if (process.getuid?.() === 0) return;
+  it('refuses when it can not read into a folder the manifest vouches for', async (ctx) => {
+    if (process.getuid?.() === 0) ctx.skip();
     const root = tempRoot();
     const library = fullLibrary(root);
     const manifest = await manifestFor(library);
     const locked = path.join(library, 'cache', 'dynamic');
     const before = tree(root);
     fs.chmodSync(locked, 0o000);
+    let result;
     try {
-      // It can't check what it can't list, so it never guesses a size for it.
-      const { status, stdout, stderr } = run(['--manifest', manifest, library]);
-      expect(status, stdout).toBe(1);
-      expect(stderr).toMatch(/Can't read cache\/dynamic.*sudo.*Nothing was moved/s);
+      // It can't check what it can't list, so it never guesses.
+      result = run(['--manifest', manifest, library]);
     } finally {
       fs.chmodSync(locked, 0o755);
     }
+    expect(result.status, result.stdout).toBe(1);
+    expect(result.stderr).toMatch(/Can't read cache\/dynamic.*Nothing was moved/s);
     expect(tree(root)).toEqual(before);
   });
 });
