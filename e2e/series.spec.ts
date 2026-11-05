@@ -260,8 +260,11 @@ test('the page opens with the title, the statement as text, the derived facts ap
 
 test('an All work link sits above the title, and another after the sequence', async ({ page }) => {
     await openHarbor(page);
-    const links = page.getByRole('main').getByRole('link', { name: 'All work', exact: true });
+    const links = page.getByRole('main').getByRole('link', { name: /^All work/ });
     await expect(links).toHaveCount(2);
+    // Both go to /work, so the top one's name says where, to keep every name unique (the contract's rule 2).
+    await expect(links.first()).toHaveAccessibleName('All work, back to the series list');
+    await expect(links.last()).toHaveAccessibleName('All work');
     for (const index of [0, 1]) await expect(links.nth(index)).toHaveAttribute('href', '/work');
     const top = await links.first().boundingBox();
     const title = await page.getByRole('main').getByRole('heading', { level: 1 }).boundingBox();
@@ -286,7 +289,7 @@ test.describe('with JavaScript disabled', () => {
         expect(await cover.getAttribute('src')).toMatch(new RegExp(`^/media/${P[1]}/`));
         await expect(entries(page)).toHaveCount(HARBOR.length);
         for (const [index, photoId] of HARBOR.entries()) await expect(entries(page).nth(index)).toHaveAttribute('href', viewerPath(photoId));
-        await expect(main.getByRole('link', { name: 'All work', exact: true })).toHaveCount(2);
+        await expect(main.getByRole('link', { name: /^All work/ })).toHaveCount(2);
         await expect(main).toHaveAttribute('data-catalog-revision', revisionId ?? '');
     });
 });
@@ -402,7 +405,7 @@ test('the page passes the #1 checks, with SiteNav outside main, Work current, an
     await openHarbor(page);
     await checkSurface(page, {
         entries: entries(page),
-        controls: [primary(page).locator('a, button'), page.locator('#series-cover'), page.getByRole('main').getByRole('link', { name: 'All work', exact: true })],
+        controls: [primary(page).locator('a, button'), page.locator('#series-cover'), page.getByRole('main').getByRole('link', { name: /^All work/ })],
     });
     await expectHoverRulesGated(page);
     await expect(page.locator('main nav')).toHaveCount(0);

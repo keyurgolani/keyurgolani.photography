@@ -18,6 +18,12 @@ export interface SeriesPageProps {
 /** Interface copy for the derived facts, apart from the authored text. */
 export const FACTS_HEADING = 'From the published photographs';
 export const ALL_WORK = 'All work';
+/**
+ * The top All work link's name (#5). Both links go to /work, and the contract's rule 2 gives every control a name of
+ * its own, so the top one says where it goes. It starts with the visible words (WCAG 2.5.3), and the end one keeps
+ * plain ALL_WORK.
+ */
+export const ALL_WORK_TOP_NAME = `${ALL_WORK}, back to the series list`;
 
 /** The derived facts, each with where it came from, so none reads as authored copy. */
 function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
@@ -84,7 +90,7 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                 <header className={styles.header}>
                     {/* A paragraph, not a nav: SiteNav is the page's one navigation landmark. */}
                     <p className={styles.back}>
-                        <Link href={page.workHref} className={styles.allWork}>
+                        <Link href={page.workHref} className={styles.allWork} aria-label={ALL_WORK_TOP_NAME}>
                             {ALL_WORK}
                         </Link>
                     </p>
