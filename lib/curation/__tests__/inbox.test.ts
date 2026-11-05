@@ -8,6 +8,7 @@ import { setDataDir, writeDataRootMarker } from '../../../test/helpers/tempDataR
 import { authoredRecordDir, readAuthoredRecord } from '../../catalog/working-layer';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../../catalog/working-layer-writer';
 import { writeDecision } from '../../identity/decisions';
+import { writeWatcherHeartbeat } from '../../identity/heartbeat';
 import { profileIdOf } from '../../identity/ids';
 import { PROFILE_1 } from '../../identity/profile';
 import { identityPaths, readRegistry, writeRegistry } from '../../identity/registry';
@@ -116,6 +117,31 @@ describe('loadInbox', () => {
         const view = await loadInbox(null);
         expect(view).toMatchObject({ state: 'not-ready', message: expect.stringMatching(/uninitialized/) });
         expect(JSON.stringify(view)).not.toContain(root);
+    });
+
+    it("says whether the watcher checks in: no heartbeat, a fresh one, or one over 5 minutes old (#14)", async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-watcher-'));
+        cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+        writeDataRootMarker(root);
+        cleanups.push(setDataDir(root));
+        const beat = (at: number) => writeWatcherHeartbeat(root, { pid: 1, hostname: 'fixture', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: new Date(at).toISOString(), legacyDerivatives: false });
+        expect(ready(await loadInbox(null)).watcher).toEqual({ state: 'missing' });
+        await beat(Date.now() - 30_000);
+        expect(ready(await loadInbox(null)).watcher).toEqual({ state: 'running' });
+        const stale = Date.now() - 12 * 60_000;
+        await beat(stale);
+        const view = ready(await loadInbox(null));
+        expect(view.watcher).toEqual({ state: 'stale', heartbeatAt: new Date(stale).toISOString(), ageMs: expect.any(Number) });
+        expect((view.watcher as { ageMs: number }).ageMs).toBeGreaterThanOrEqual(12 * 60_000);
+        // Ahead of this clock by more than 5 minutes reads as stale too: after a clock step back, a dead watcher would look alive.
+        await beat(Date.now() + 10 * 60_000);
+        expect(ready(await loadInbox(null)).watcher).toMatchObject({ state: 'stale', ageMs: expect.any(Number) });
+        expect((ready(await loadInbox(null)).watcher as { ageMs: number }).ageMs).toBeLessThan(0);
+        // A heartbeat file that can't be used reads as none, and its reason, which names the data root, stays out.
+        fs.writeFileSync(path.join(root, 'status', 'watcher.json'), '{"heartbeatAt": ');
+        const broken = ready(await loadInbox(null));
+        expect(broken.watcher).toEqual({ state: 'missing' });
+        expect(JSON.stringify(broken)).not.toContain(root);
     });
 
     it('lists every type, those that need judgment first, and counts what waits on the watcher', async () => {

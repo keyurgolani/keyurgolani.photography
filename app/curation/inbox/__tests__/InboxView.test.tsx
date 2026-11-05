@@ -53,6 +53,7 @@ vi.mock('../actions', () => {
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
+const { default: WatcherNotice } = await import('../WatcherNotice');
 const { navigation, rememberedRow, rememberRow } = await import('../journey');
 
 beforeEach(() => {
@@ -1419,5 +1420,31 @@ describe('the two scrolling panels', () => {
         renderInbox();
         expect(screen.getAllByRole('region', { name: 'Curation inbox' })).toHaveLength(1);
         expect(screen.getAllByRole('region', { name: 'Item details' })).toHaveLength(1);
+    });
+});
+
+describe('the watcher notice (#14)', () => {
+    const AT = '2026-02-01T00:00:00.000Z';
+
+    it('shows nothing while the watcher checks in', () => {
+        const { container } = render(<WatcherNotice watcher={{ state: 'running' }} />);
+        expect(container).toBeEmptyDOMElement();
+    });
+
+    it('warns, with the time, when the heartbeat is over 5 minutes old', () => {
+        render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 }} />);
+        const notice = screen.getByRole('status');
+        expect(notice).toHaveTextContent(`The watcher last checked in 12 min ago, at ${humanTime(AT)}. New photographs won't appear here until it runs again.`);
+        expect(within(notice).getByText(humanTime(AT))).toHaveAttribute('dateTime', AT);
+    });
+
+    it('says when the heartbeat is stamped ahead of the clock, which hides whether the watcher runs', () => {
+        render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: -10 * 60_000 }} />);
+        expect(screen.getByRole('status')).toHaveTextContent(`The watcher's last check-in, ${humanTime(AT)}, is ahead of this server's clock, so the Inbox can't tell whether it runs. New photographs won't appear here until it does.`);
+    });
+
+    it('warns when there is no heartbeat at all', () => {
+        render(<WatcherNotice watcher={{ state: 'missing' }} />);
+        expect(screen.getByRole('status')).toHaveTextContent("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
     });
 });
