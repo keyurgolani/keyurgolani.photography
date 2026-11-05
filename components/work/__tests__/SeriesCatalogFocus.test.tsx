@@ -33,6 +33,17 @@ function entryBox(top: number, bottom: number) {
     vi.spyOn(HTMLLIElement.prototype, 'getBoundingClientRect').mockReturnValue({ top, bottom, left: 0, right: 375, width: 375, height: bottom - top, x: 0, y: top, toJSON: () => ({}) });
 }
 
+/**
+ * Whether a link matches :focus-visible, as the browser decides from how focus came: by the keyboard, or by a click or
+ * a tap. jsdom has no such model, so each case says which it is.
+ */
+function focusVisible(visible: boolean) {
+    const matches = HTMLAnchorElement.prototype.matches;
+    vi.spyOn(HTMLAnchorElement.prototype, 'matches').mockImplementation(function (this: HTMLAnchorElement, selector: string) {
+        return selector === ':focus-visible' ? visible : matches.call(this, selector);
+    });
+}
+
 const saved = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
 let scrollIntoView: Mock<(options?: ScrollIntoViewOptions | boolean) => void>;
 
@@ -56,6 +67,7 @@ describe('Work\'s entry on keyboard focus', () => {
     ])('brings the whole entry into view, nearest and at once, when its link takes keyboard focus and the entry %s', (_, top, bottom) => {
         render(<SeriesCatalog work={work} />);
         entryBox(top, bottom);
+        focusVisible(true);
         focus(2);
         expect(link(2)).toHaveFocus();
         expect(scrollIntoView).toHaveBeenCalledTimes(1);
@@ -67,6 +79,7 @@ describe('Work\'s entry on keyboard focus', () => {
     it('leaves the scroll alone when the whole entry is on screen already', () => {
         render(<SeriesCatalog work={work} />);
         entryBox(100, 700);
+        focusVisible(true);
         focus(2);
         expect(link(2)).toHaveFocus();
         expect(scrollIntoView).not.toHaveBeenCalled();
@@ -75,10 +88,7 @@ describe('Work\'s entry on keyboard focus', () => {
     it('never scrolls for focus that isn\'t keyboard focus, a click or a tap, even with the entry above the screen', () => {
         render(<SeriesCatalog work={work} />);
         entryBox(-300, 200);
-        const matches = HTMLAnchorElement.prototype.matches;
-        vi.spyOn(HTMLAnchorElement.prototype, 'matches').mockImplementation(function (this: HTMLAnchorElement, selector: string) {
-            return selector === ':focus-visible' ? false : matches.call(this, selector);
-        });
+        focusVisible(false);
         focus(2);
         expect(link(2)).toHaveFocus();
         expect(scrollIntoView).not.toHaveBeenCalled();
@@ -87,6 +97,7 @@ describe('Work\'s entry on keyboard focus', () => {
     it('still prefetches the entry\'s series on that focus', () => {
         render(<SeriesCatalog work={work} />);
         entryBox(-300, 200);
+        focusVisible(true);
         focus(3);
         expect(router.prefetch.mock.calls).toEqual([['/work/entry-3']]);
         expect(scrollIntoView.mock.contexts[0]).toBe(entryOf(3));
