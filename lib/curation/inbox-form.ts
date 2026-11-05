@@ -211,6 +211,8 @@ const PAGE_WORDING: [RegExp, string][] = [
 
 /** Refusals 14-1 words with IDs, in the page's words. The page already says which item. */
 const REFUSAL_WORDING: [RegExp, (match: RegExpMatchArray) => string][] = [
+    // A8 review S2: bulk Leave unassigned on an item with a series saved on it.
+    [/has the series \S+ saved on it, so leaving it unassigned would drop that choice/, () => 'This item has a series saved on it, so Leave unassigned would drop that choice. Open it to approve it into that series, or change it there. Nothing was written.'],
     [/is already in .*an approval doesn't take a photograph out of a series/, () => "This photograph is already in a series, and approving doesn't take it out of one. Keep its series to approve it. Nothing was written."],
     [/can't be read, so nothing shows whether one holds/, () => "A series can't be read, so nothing shows whether one still holds this photograph. Nothing was written."],
     [/^There is no series /, () => "That series isn't in the working layer any more. Refresh the inbox. Nothing was written."],
@@ -376,7 +378,11 @@ function bindDone(event: CurationEvent, notes: readonly string[]): string {
 let serial = 0;
 
 /** Run one inbox action from its form. Never throws for anything the form or the data holds; every answer is a state the page shows, with no host path in it. */
-export async function runInboxAction(kind: InboxActionKind, form: unknown, options: { actor?: string; clock?: () => number; waitMs?: number } = {}): Promise<InboxActionState> {
+export async function runInboxAction(
+    kind: InboxActionKind,
+    form: unknown,
+    options: { actor?: string; clock?: () => number; waitMs?: number; /** A8 review S2: an approval refuses an item with a series saved on it. */ keepSavedSeries?: boolean } = {},
+): Promise<InboxActionState> {
     serial += 1;
     const answer = (status: Exclude<InboxActionState, { status: 'idle' }>['status'], eventId: string | null, message: string, field?: FormField): InboxActionState => {
         return { status, action: kind, eventId, message: scrub(message, [dataRootStatus().root, configuredLibraryRoot()]), ...(field ? { field } : {}), serial };
@@ -399,7 +405,7 @@ export async function runInboxAction(kind: InboxActionKind, form: unknown, optio
     try {
         switch (kind) {
             case 'approve':
-                outcome = await approveEvent({ ...input, choices: choicesFrom(form, 'approve'), keepPlaced: true });
+                outcome = await approveEvent({ ...input, choices: choicesFrom(form, 'approve'), keepPlaced: true, ...(options.keepSavedSeries ? { keepSavedSeries: true } : {}) });
                 break;
             case 'edit':
                 outcome = await editEvent({ ...input, choices: choicesFrom(form, 'edit') });

@@ -335,7 +335,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                         assetRevision: fact.assetRevision,
                         sourceFingerprint: fingerprintOf(fact.assetRevision),
                         derivedFacts,
-                        suggestions: context ? suggestForNew({ ...context, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFacts.capturedDate ?? null, producedAt }) : current.suggestions,
+                        suggestions: context ? suggestForNew({ ...context, photoId: fact.photoId, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFacts.capturedDate ?? null, producedAt }) : current.suggestions,
                         lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
                         factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
                     };
@@ -393,7 +393,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 try {
                     id = eventIdOf(eventKey(type, fact));
                     const suggestions: Suggestions = type === 'new' && context
-                        ? suggestForNew({ ...context, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFactsOf(fact, registry).capturedDate ?? null, producedAt })
+                        ? suggestForNew({ ...context, photoId: fact.photoId, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFactsOf(fact, registry).capturedDate ?? null, producedAt })
                         : { series: null, placement: null };
                     fresh = newEvent(fact, type, registry, suggestions);
                 } catch {

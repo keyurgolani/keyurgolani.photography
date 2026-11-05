@@ -101,15 +101,20 @@ export function ageLabel(readAt: string, observedAt: string): string {
     return `Opened ${ageText(Math.max(0, now - then))} ago`;
 }
 
+/** The types bulk Decide later takes (A8 review S1): never the library item, a replacement, a missing source or an identity question. */
+export const BULK_DEFER_TYPES: ReadonlySet<CurationEventType> = new Set(['new', 'processing-failure']);
+
 /**
- * Which bulk action a row's item could take, as the writers decide it before their lock: Decide later takes an open
- * or failed item (deferEvent()'s states), and Leave unassigned a new photograph's open or deferred item that no
- * series holds now (an approval never takes a photograph out of one). The server checks each again, version and all.
+ * Which bulk action a row's item could take, as the writers decide it before their lock. Decide later takes a new
+ * photograph's or an unreadable file's open or failed item (A8 review S1): the others say what they do to the draft
+ * or the library, and are each decided on their own. Leave unassigned takes a new photograph's open or deferred item
+ * that no series holds now (an approval never takes a photograph out of one) and that has no series saved on it,
+ * which it would drop (S2). The server checks each again, version and all.
  */
-export function bulkChoices(item: Pick<InboxItem, 'type' | 'status' | 'group'>): { defer: boolean; unassigned: boolean } {
+export function bulkChoices(item: Pick<InboxItem, 'type' | 'status' | 'group' | 'seriesChosen'>): { defer: boolean; unassigned: boolean } {
     return {
-        defer: item.status === 'open' || item.status === 'failed',
-        unassigned: item.type === 'new' && (item.status === 'open' || item.status === 'deferred') && item.group !== 'placed' && item.group !== 'unplaced',
+        defer: BULK_DEFER_TYPES.has(item.type) && (item.status === 'open' || item.status === 'failed'),
+        unassigned: item.type === 'new' && (item.status === 'open' || item.status === 'deferred') && item.group !== 'placed' && item.group !== 'unplaced' && !item.seriesChosen,
     };
 }
 

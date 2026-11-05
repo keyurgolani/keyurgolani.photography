@@ -32,6 +32,7 @@ import {
     type ResolvedCause,
     type SeriesOption,
 } from './inbox-view';
+import { cursorIssued, readArrivals } from './arrivals';
 import { ANY_QUERY, matchesQuery, type InboxQuery } from './inbox-list';
 import { libraryCauseText } from './library';
 import { readDraftPlan } from './pins';
@@ -88,6 +89,8 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         placedBy: placed,
         unplacedSeries: unplaced,
         observedAt: event.observedAt,
+        // A saved series, not a saved "Leave unassigned", which Leave unassigned keeps.
+        seriesChosen: typeof event.edits?.seriesId === 'string',
     };
 }
 
@@ -461,6 +464,8 @@ async function watcherOf(root: string): Promise<InboxWatcher> {
  * page and the summary route (#14, A8) both read the inbox through this, so they count alike.
  */
 async function readItems(root: string) {
+    // The sequence first: an item that arrives between the two reads is counted on the next check, never skipped.
+    const arrivals = await readArrivals(root);
     const { events, problems } = await listEvents(root);
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
@@ -475,7 +480,7 @@ async function readItems(root: string) {
         placed: placements.placed.size,
         unplaced: placements.unplaced.size,
     };
-    return { events, problems, registry, placements, items, counts };
+    return { events, problems, registry, placements, items, counts, arrivals };
 }
 
 export interface LoadInboxOptions {
@@ -500,7 +505,7 @@ export async function loadInbox(selectedId: string | null, options: LoadInboxOpt
     const root = status.root;
     const readAt = new Date((options.now ?? Date.now)()).toISOString();
     const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
-    const { events, problems, registry, placements, items, counts } = await readItems(root);
+    const { events, problems, registry, placements, items, counts, arrivals } = await readItems(root);
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const { series, problem } = await seriesOptions(root);
 
@@ -514,6 +519,7 @@ export async function loadInbox(selectedId: string | null, options: LoadInboxOpt
         state: 'ready',
         watcher: await watcherOf(root),
         readAt,
+        cursor: arrivals.cursor,
         activeRevisionId: active,
         ...counts,
         placementUnknown: placements.unknown !== null,
@@ -532,16 +538,22 @@ export async function loadInbox(selectedId: string | null, options: LoadInboxOpt
  * has open, its version and status, so the page can tell it changed. It names no path, file or photo, and writes
  * nothing. A data root that isn't ready is `not-ready`, with nothing else read.
  */
-export async function loadInboxSummary(itemId: string | null, options: Pick<LoadInboxOptions, 'now'> = {}): Promise<InboxSummary> {
+export async function loadInboxSummary(itemId: string | null, options: Pick<LoadInboxOptions, 'now'> & { since?: number | null } = {}): Promise<InboxSummary> {
     const status = dataRootStatus();
     if (status.state !== 'ready' || status.root === null) return { state: 'not-ready' };
     const root = status.root;
     const readAt = new Date((options.now ?? Date.now)()).toISOString();
-    const { events, problems, counts } = await readItems(root);
+    const { events, problems, counts, items, arrivals } = await readItems(root);
+    const since = options.since ?? null;
+    // A8 review, 4a: only a cursor this server issued, so a forged or future one is refused, not read as zero arrivals.
+    if (since !== null && !cursorIssued(since, arrivals)) return { state: 'bad-cursor' };
+    const arrived = since === null ? null : items.filter((item) => item.group === 'judgment' && (arrivals.seqOf.get(item.id) ?? 0) > since).length;
     const open = itemId !== null && EVENT_ID_RE.test(itemId) ? events.find((event) => event.id === itemId) : undefined;
     return {
         state: 'ready',
         readAt,
+        cursor: arrivals.cursor,
+        arrived,
         ...counts,
         total: events.length,
         unreadable: problems.length,

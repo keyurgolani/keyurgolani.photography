@@ -175,6 +175,14 @@ describe('Leave unassigned and a saved series (S2)', () => {
         expect(state.results.map((result) => [result.eventId, result.status])).toEqual([[a, 'refused'], [b, 'done']]);
         expect(state.results[0].message).toMatch(/series saved on it/);
         expect((await readEvent(f.root, a))).toMatchObject({ status: 'open', version: 2 });
+        // A saved "Leave unassigned" is the same choice, so it's offered and goes through.
+        const c = await served({ fresh: 1 });
+        await createCurationSink({ root: c.root, logger: quiet })([c.fact('new', c.fresh[0])]);
+        const kept = newId(c, c.fresh[0]);
+        expect(await editEvent({ root: c.root, eventId: kept, expectedVersion: 1, expectedBase: null, actor: 'curator:web', choices: { seriesId: null } })).toMatchObject({ ok: true });
+        expect(readyView(await loadInbox(null)).items.find((entry) => entry.id === kept)?.seriesChosen).toBe(false);
+        expect(answers(await runInboxBulk('unassigned', bulkForm([`${kept}:2`]))).status).toBe('done');
+        cleanups.push(setDataDir(f.root));
         // The writer's own check, so a series saved after the page loaded is refused too.
         expect(await approveEvent({ root: f.root, eventId: a, expectedVersion: 2, expectedBase: null, actor: 'curator:web', choices: { seriesId: null }, keepPlaced: true, keepSavedSeries: true })).toMatchObject({ ok: false, code: 'refused' });
     });
@@ -243,7 +251,7 @@ describe('writers at once (S6)', () => {
         const edits: { id: string; text: string; result: Promise<ActionOutcome> }[] = [];
         const bulks: Promise<InboxBulkState>[] = [];
         for (const [index, eventId] of ids.entries()) {
-            work.push(sink([f.fact('new', f.fresh[index])]));
+            work.push(Promise.resolve(sink([f.fact('new', f.fresh[index])])));
             const text = `Concurrent ${index}.`;
             const result = editEvent({ root: f.root, eventId, expectedVersion: 1, expectedBase: null, actor: `curator:${index}`, waitMs: 60_000, choices: { description: { kind: 'described', text } } });
             edits.push({ id: eventId, text, result });
