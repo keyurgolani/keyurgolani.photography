@@ -99,20 +99,24 @@ const origin = () => {
     return server.origin;
 };
 
-/**
- * A phone's user agent for the phone widths: Pixel 7's, as every other phone context in the suite has (the mobile
- * project, first-viewport.spec.ts's phone). With isMobile and Chromium's own desktop user agent, which no visitor's
- * phone sends, each fresh context here fetched the eager images at w1920 first, at a desktop-wide viewport, then again
- * at the rung their sizes ask for at 390 px. The Pixel 7 profile, on the same build in the same run, fetched each once.
- */
+/** A phone's user agent for the phone widths: Pixel 7's, as every other phone context in the suite has. */
 const PHONE_UA = devices['Pixel 7'].userAgent;
+
+/**
+ * Each width's own screen, the size of its viewport. browser.newContext() fills every option a context leaves out
+ * from the project's `use`, and the desktop project's is Desktop Chrome's, whose screen is 1920x1080. A phone context
+ * without a screen was a 390 px viewport on a 1920 px screen: Chromium's preload scanner resolves `width=device-width`
+ * to the screen's width, so it fetched every eager image at w1920 before the page, laid out at 390, fetched the rung
+ * its sizes ask for (CI runs 42014654268 and 42025281109). No phone has a screen wider than its viewport.
+ */
+const screenOf = (viewport: { width: number; height: number }) => ({ viewport, screen: viewport });
 
 // Dark, as the suite's own projects paint it (playwright.config.ts), so Home's slide is the viewport.
 const WIDTHS = {
-    390: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: PHONE_UA, colorScheme: 'dark' },
-    768: { viewport: { width: 768, height: 1024 }, deviceScaleFactor: 2, isMobile: false, hasTouch: true, colorScheme: 'dark' },
-    1280: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
-    1440: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
+    390: { ...screenOf({ width: 390, height: 844 }), deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: PHONE_UA, colorScheme: 'dark' },
+    768: { ...screenOf({ width: 768, height: 1024 }), deviceScaleFactor: 2, isMobile: false, hasTouch: true, colorScheme: 'dark' },
+    1280: { ...screenOf({ width: 1280, height: 800 }), deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
+    1440: { ...screenOf({ width: 1440, height: 900 }), deviceScaleFactor: 1, isMobile: false, hasTouch: false, colorScheme: 'dark' },
 } satisfies Record<number, BrowserContextOptions>;
 type Width = keyof typeof WIDTHS;
 
@@ -299,7 +303,7 @@ test('Work: the first two covers load at once, only the first at high priority, 
 });
 
 test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more than the 800w rung (#3)', async ({ browser }) => {
-    const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: PHONE_UA, colorScheme: 'dark' });
+    const context = await browser.newContext({ ...screenOf({ width: 375, height: 812 }), deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: PHONE_UA, colorScheme: 'dark' });
     const page = await context.newPage();
     const fetched: { photoId: string; rung: number }[] = [];
     page.on('request', (request) => {
@@ -321,6 +325,20 @@ test('Work at 375 px and DPR 2: no landscape or portrait cover asks for more tha
         }
     } finally {
         await context.close();
+    }
+});
+
+// A phone applies `width=device-width` only once it has read the viewport meta, so a preload or an image before it would
+// be picked at the default 980 px layout. Each preload's imagesizes matching its <picture> is first-viewport.spec.ts's
+// and ResponsivePhoto.test.tsx's.
+test('each server HTML puts the viewport meta before every image preload, source and img', async ({ request }) => {
+    for (const path of [...PATHS.home, ...PATHS.work, ...PATHS.series]) {
+        const html = await (await request.get(`${origin()}${path}`)).text();
+        const viewport = html.search(/<meta\b[^>]*\bname="viewport"/i);
+        expect(viewport, `${path} has a viewport meta`).toBeGreaterThan(-1);
+        const first = html.search(/<link\b[^>]*\bas="image"|<source\b|<img\b/i);
+        expect(first, `${path} has an image`).toBeGreaterThan(-1);
+        expect(viewport, `${path}: the viewport meta at ${viewport}, the first image preload, source or img at ${first}`).toBeLessThan(first);
     }
 });
 
