@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { deleteCalls, scanSource, sourceFiles, type DeleteCall } from './helpers/deleteCalls';
+import { callersAcross, callSites, deleteCalls, scanSource, sourceFiles, type DeleteCall } from './helpers/deleteCalls';
 import { REPO_ROOT } from './helpers/runTsx';
 
 /**
@@ -30,35 +30,38 @@ interface Allowed {
 }
 
 const ALLOWLIST: readonly Allowed[] = [
-    // runGc's apply path, the one place bytes a tombstone took down go, and only on `photos gc --apply <digest>`.
-    { file: 'lib/catalog/retention.ts', fn: 'removeSetAside', calls: 1, reason: "GC's tombstoned delete: a manifest-only asset folder it set aside as .gc-<r>-<uuid> this run and checked again" },
-    { file: 'lib/catalog/retention.ts', fn: 'runGc.held', calls: 2, reason: "GC's abandoned-staging and orphan-candidate deletes, each rechecked under its locks just before" },
+    // runGc's apply path, the one place a tombstoned folder's bytes go.
+    { file: 'lib/catalog/retention.ts', fn: 'removeSetAside', calls: 1, reason: "only on the owner's photos gc --apply <digest>: GC's tombstoned delete, of a manifest-only asset folder it set aside as .gc-<r>-<prefix>-<uuid> this run and checked again" },
+    { file: 'lib/catalog/retention.ts', fn: 'runGc.collectTombstoned', calls: 2, reason: "only on photos gc --apply, and only in tests: the hooks.remove seam a test sets in place of removeSetAside" },
+    { file: 'lib/catalog/retention.ts', fn: 'runGc.held', calls: 2, reason: "only on photos gc --apply <digest>: GC's abandoned-staging and orphan-candidate deletes, each rechecked under its locks just before" },
     // Storage pruning.
-    { file: 'lib/storage/document.ts', fn: 'pruneVersions.remove', calls: 1, reason: 'drops a versioned document folder\'s oldest version files beyond the retained count, only names it wrote' },
+    { file: 'lib/storage/document.ts', fn: 'pruneVersions.remove', calls: 1, reason: "on every versioned write: drops a versioned document folder's oldest version files beyond the retained count, only names it wrote" },
+    { file: 'lib/storage/document.ts', fn: 'pruneVersions', calls: 2, reason: 'on every versioned write: its calls to its own remove(), for swept temps and versions past the retained count' },
     // Temp and probe cleanup.
-    { file: 'lib/storage/config.ts', fn: 'sweepProbes', calls: 1, reason: "removes a .link-probe- file a killed process on this host left in the data root" },
-    { file: 'lib/storage/config.ts', fn: 'linkProblem', calls: 1, reason: 'removes the hard-link probe file and its link it just made' },
-    { file: 'lib/curation/auth/credential-cli.ts', fn: 'writeOwnerOnly', calls: 1, reason: 'removes its own temp file when the rename into place fails' },
-    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicWriteFile', calls: 1, reason: 'removes its own temp file when the write fails' },
-    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicCreateFile', calls: 1, reason: 'removes its own temp file once the hard link is made or refused' },
-    { file: 'lib/storage/document.ts', fn: 'writeVersionedDocument', calls: 1, reason: 'removes its own temp file once the version is linked into place' },
+    { file: 'lib/storage/config.ts', fn: 'sweepProbes', calls: 1, reason: 'on every data-root write check: removes a .link-probe- file a killed process on this host left in the data root' },
+    { file: 'lib/storage/config.ts', fn: 'linkProblem', calls: 1, reason: 'on every data-root write check: removes the hard-link probe file and its link it just made' },
+    { file: 'lib/curation/auth/credential-cli.ts', fn: 'writeOwnerOnly', calls: 1, reason: 'when the owner writes a curator credential: removes its own temp file when the rename into place fails' },
+    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicWriteFile', calls: 1, reason: 'on every atomic write: removes its own temp file when the write fails' },
+    { file: 'lib/storage/atomicWrite.ts', fn: 'atomicCreateFile', calls: 1, reason: 'on every create-once write: removes its own temp file once the hard link is made or refused' },
+    { file: 'lib/storage/document.ts', fn: 'writeVersionedDocument', calls: 1, reason: 'on every versioned write: removes its own temp file once the version is linked into place' },
     // Locks: the lock files the app's own locks create.
-    { file: 'lib/storage/lock.ts', fn: 'withLock.breakExpired', calls: 2, reason: 'removes a lock file whose lease expired, after moving it aside' },
-    { file: 'lib/storage/lock.ts', fn: 'withLock.tryCreate', calls: 1, reason: 'removes its own half-made lock file' },
-    { file: 'lib/storage/lock.ts', fn: 'withLock.release', calls: 1, reason: 'removes the lock file it holds, on release' },
+    { file: 'lib/storage/lock.ts', fn: 'withLock.breakExpired', calls: 2, reason: 'whenever a lock is taken over: removes a lock file whose lease expired, after moving it aside' },
+    { file: 'lib/storage/lock.ts', fn: 'withLock.tryCreate', calls: 1, reason: 'whenever a lock is taken: removes its own half-made lock file' },
+    { file: 'lib/storage/lock.ts', fn: 'withLock.release', calls: 1, reason: 'whenever a lock is released: removes the lock file it holds' },
     // Staging and build leftovers: what a derivative build itself wrote under staging/.
-    { file: 'lib/identity/derivatives.ts', fn: 'removeAbandonedStaging', calls: 1, reason: "the watcher's start clears a killed build's staging/<id>/, under its build lock, never assets/" },
-    { file: 'lib/identity/derivatives.ts', fn: 'buildDerivativeSet', calls: 1, reason: 'a build that fails removes its own staging folder' },
-    { file: 'lib/storage/publish.ts', fn: 'publishDirectory', calls: 1, reason: 'drops the staging copy when another writer already published the same set' },
+    { file: 'lib/identity/derivatives.ts', fn: 'clearStagingEntry', calls: 2, reason: "at watcher start (removeAbandonedStaging, from lib/identity/worker.ts): removes only direct children of staging/ that belong to builds that never published; follows no symlink, so an entry that is a symlink is unlinked as a link, never followed; and stays inside staging/ by dev:inode, each target's parent staging/'s own, re-checked right before the delete" },
+    { file: 'lib/identity/derivatives.ts', fn: 'buildDerivativeSet', calls: 1, reason: 'when a derivative build fails: removes its own staging folder' },
+    { file: 'lib/storage/publish.ts', fn: 'publishDirectory', calls: 1, reason: 'when a build publishes a set another writer already published: drops its own staging copy' },
     // Files the app made and has moved or finished with.
-    { file: 'lib/identity/decisions.ts', fn: 'settleDecisions', calls: 1, reason: 'removes a rejected decision file from identity/decisions/ once its contents are written to rejected/' },
-    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: 1, reason: "removes photos edit's own working copy when the editor fails" },
-    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: 1, reason: "removes photos edit's own working copy once the edit is saved" },
-    { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: 1, reason: 'the test catalog helper removes the temp folder it created' },
+    { file: 'lib/identity/decisions.ts', fn: 'settleDecisions', calls: 1, reason: 'on each identity pass that rejects a decision: removes the decision file from identity/decisions/ once its contents are written to rejected/' },
+    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord', calls: 1, reason: "when photos edit's editor fails: removes photos edit's own working copy" },
+    { file: 'lib/catalog/edit-record.ts', fn: 'runEditRecord.done', calls: 1, reason: "when photos edit saves: removes photos edit's own working copy" },
+    { file: 'lib/catalog/edit-record.ts', fn: 'shellEditor', calls: 1, reason: "when the owner runs photos edit: runs the owner's $VISUAL or $EDITOR, a script that isn't a literal, on photos edit's own working copy" },
+    { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: 1, reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
     // Legacy derivatives, until A12 fences or removes them.
-    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: 1, reason: 'legacy derivative temp files', until: 'A12' },
-    { file: 'utils/imageOptimizer.ts', fn: 'purgeDynamicCache', calls: 1, reason: 'legacy dynamic-cache files for a rebuilt set', until: 'A12' },
-    { file: 'utils/imageOptimizer.ts', fn: 'forgetSetSource', calls: 1, reason: "a legacy set's source record", until: 'A12' },
+    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: 1, reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
+    { file: 'utils/imageOptimizer.ts', fn: 'purgeDynamicCache', calls: 1, reason: 'inside the photo library, until A12: legacy dynamic-cache files, when a legacy set is rebuilt', until: 'A12' },
+    { file: 'utils/imageOptimizer.ts', fn: 'forgetSetSource', calls: 1, reason: "inside the photo library, until A12: a legacy set's source record, when its set may no longer be its own", until: 'A12' },
 ];
 
 const SCANNED = sourceFiles(['lib', 'app', 'components', 'utils', 'scripts'], ['proxy.ts', 'instrumentation.ts']);
@@ -95,10 +98,20 @@ describe('the delete-call rail', () => {
         expect(ALLOWLIST.filter((entry) => !found.has(key(entry))).map(key)).toEqual([]);
     });
 
-    it('gives every entry a reason, and allows the legacy imageOptimizer deletes only until A12', () => {
-        for (const entry of ALLOWLIST) expect(entry.reason, key(entry)).toMatch(/\S{3}/);
-        expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').every((entry) => entry.until === 'A12')).toBe(true);
+    it('gives every entry a reason that says when it runs, and allows the legacy imageOptimizer deletes only inside the photo library until A12', () => {
+        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)/;
+        for (const entry of ALLOWLIST) expect(entry.reason, key(entry)).toMatch(WHEN);
+        expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').every((entry) => entry.until === 'A12' && entry.reason.startsWith('inside the photo library, until A12'))).toBe(true);
         expect(ALLOWLIST.filter((entry) => entry.until !== undefined).every((entry) => entry.file === 'utils/imageOptimizer.ts')).toBe(true);
+    });
+
+    it('pins who calls each wrapper a delete sits in (item 17)', () => {
+        expect(callersAcross(SCANNED, 'removeSetAside')).toEqual(['lib/catalog/retention.ts runGc.collectTombstoned']);
+        expect(callersAcross(SCANNED, 'collectTombstoned')).toEqual(['lib/catalog/retention.ts runGc.held']);
+        expect(callersAcross(SCANNED, 'removeAbandonedStaging').map((site) => site.split(' ')[0])).toEqual(['lib/identity/worker.ts']);
+        expect(callersAcross(SCANNED, 'clearStagingEntry')).toEqual(['lib/identity/derivatives.ts removeAbandonedStaging']);
+        expect(callersAcross(SCANNED, 'pruneVersions')).toEqual(['lib/storage/document.ts writeVersionedDocument']);
+        expect(callSites('lib/catalog/retention.ts', 'removeSetAside')).toHaveLength(1);
     });
 
     it('catches a stray delete in every form, the positive control', () => {
@@ -110,13 +123,49 @@ describe('the delete-call rail', () => {
             ['tidyUpSync', 'fs.unlinkSync'],
             ['tidyUpSync', "fs['rmSync']"],
             ['viaImport', 'rm'],
-            ['viaShell', 'execSync("rm -rf  ")'],
-            ['viaShell', 'spawn("rm")'],
-            ['viaShell', '-delete'],
+            ['viaShell', 'execSync runs rm'],
+            ['viaShell', 'spawn runs rm'],
+            ['viaShell', 'spawn runs find -delete'],
             ['passedOn', 'fs.promises.unlink'],
         ]);
         // And the rail fails on it, as it would on any file in the tree.
         const allowed = new Set(ALLOWLIST.map(key));
         expect(found.filter((call) => !allowed.has(key(call)))).toHaveLength(found.length);
+    });
+
+    it("catches each form the second review found it missed, the positive control for item 16", () => {
+        const fixture = 'test/fixtures/deleteRail/strayForms.ts';
+        const found = scanSource(fixture, fs.readFileSync(path.join(REPO_ROOT, fixture), 'utf8'));
+        expect(found.map((call) => [call.fn, call.call])).toEqual([
+            ['viaArrayElement', 'spawnSync runs rm'],
+            ['viaArrayElement', 'execFileSync runs rm'],
+            ['viaComputedCommand', "cp.spawn with a command that isn't a literal"],
+            ['viaComputedCommand', "cp.exec with a command that isn't a literal"],
+            ['viaShellScript', "spawnSync runs a shell script that isn't a literal"],
+            ['viaGitAndFind', 'execFileSync runs git clean'],
+            ['viaGitAndFind', 'cp.execSync runs git clean'],
+            ['viaGitAndFind', 'spawnSync runs find -delete'],
+            ['viaComputedAccess', "fs.promises['unlink']"],
+            ['viaComputedAccess', 'computed access fsp[name]'],
+            ['viaComputedAccess', 'Reflect.get(fs, …)'],
+            ['viaExtraNames', 'fse.remove'],
+            ['viaExtraNames', 'fse.removeSync'],
+            ['viaExtraNames', 'fse.emptyDir'],
+            ['viaExtraNames', 'fse.emptyDirSync'],
+            ['Janitor.sweep', 'fs.rmSync'],
+        ]);
+    });
+
+    it('bans the deleting packages by module name, default imports, require and import() included', () => {
+        const fixture = 'test/fixtures/deleteRail/strayModules.ts.txt';
+        const found = scanSource(fixture, fs.readFileSync(path.join(REPO_ROOT, fixture), 'utf8'));
+        expect(found.map((call) => [call.fn, call.call])).toEqual([
+            ['<module>', 'module rimraf'],
+            ['<module>', 'module del'],
+            ['<module>', 'module fs-extra'],
+            ['<module>', 'module trash'],
+            ['<module>', 'module fs-extra'],
+            ['later', 'module rimraf'],
+        ]);
     });
 });

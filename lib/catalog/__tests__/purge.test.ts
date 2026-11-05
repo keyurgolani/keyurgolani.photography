@@ -42,7 +42,6 @@ afterEach(() => {
 
 afterAll(() => {
     cleanupPurgeTemplates();
-    fs.rmSync(library, { recursive: true, force: true });
 });
 
 /** Another asset revision of `photoId` in the registry, as a replacement adds one. No set is built for it. */

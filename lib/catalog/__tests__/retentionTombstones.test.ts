@@ -11,6 +11,7 @@ import { versionFile, versionText } from '../../storage/document';
 import type { CurationEvent } from '../../curation/events';
 import { runStatusCommand } from '../owner-status';
 import { runPurge, runRevoke } from '../purge';
+import { CATALOG_LOCK } from '../repository';
 import { runPurgeCommand, purgeArgs } from '../purge-cli';
 import { references } from '../references';
 import { GC_EXIT_CODES, runGc, type GcOptions, type GcResult } from '../retention';
@@ -56,7 +57,6 @@ afterEach(() => {
 
 afterAll(() => {
     cleanupPurgeTemplates();
-    fs.rmSync(library, { recursive: true, force: true });
 });
 
 async function fixture(): Promise<PurgeFixture> {
@@ -362,7 +362,6 @@ describe('GC and the photo library', { timeout: 120_000 }, () => {
         const built = await fixture();
         await purgeD(built);
         const library = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-library-'));
-        cleanups.push(() => fs.rmSync(library, { recursive: true, force: true }));
         fs.mkdirSync(path.join(library, 'thumbnails'));
         fs.writeFileSync(path.join(library, 'original.jpg'), "the owner's original");
         fs.writeFileSync(path.join(library, 'thumbnails', 'original.webp'), 'a legacy derivative');
@@ -378,7 +377,6 @@ describe('GC and the photo library', { timeout: 120_000 }, () => {
         const built = await fixture();
         await purgeD(built);
         const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-outside-'));
-        cleanups.push(() => fs.rmSync(outside, { recursive: true, force: true }));
         fs.writeFileSync(path.join(outside, 'keep.jpg'), 'not GC\'s');
         const folder = path.join(built.root, folderOf(built, built.d));
         fs.renameSync(folder, `${folder}.moved`);
@@ -487,16 +485,41 @@ describe("GC's per-run markers and revoke (S1)", { timeout: 120_000 }, () => {
         expect(refused.message).toContain(`${folderOf(built, built.d)}, ${folderOf(built, built.d, D2)}`);
     });
 
-    it('refuses a revoke when a recorded folder changed since the run began', async () => {
-        const built = await fixture();
+    /** Purge D, plan, and stop the apply after its marker is written, with `change` made to D's set first. */
+    async function changedAfterMarker(built: PurgeFixture, change: (set: string, file: string) => void): Promise<string> {
         const id = await purgeD(built);
         const planned = await gc(built.root, PAST_GRACE);
         await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { beforeDelete: () => {
             const set = path.join(built.root, folderOf(built, built.d), built.profileId);
-            const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json');
-            fs.appendFileSync(path.join(set, file), 'x');
+            const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json').sort();
+            change(set, file);
             throw new Error('stop after the change');
         } } });
+        expect(markers(built.root, id)).toHaveLength(1);
+        return id;
+    }
+
+    it('lets a revoke through when a recorded folder only grew: a longer file, an extra file, a newer change (item 13)', async () => {
+        const built = await fixture();
+        const id = await changedAfterMarker(built, (set, file) => {
+            fs.appendFileSync(path.join(set, file), 'x');
+            fs.writeFileSync(path.join(set, 'owner-extra.txt'), 'an extra file');
+        });
+        expect((await revoke(built, id)).outcome).toBe('REVOKED');
+    });
+
+    it('refuses a revoke when a listed file of a recorded folder is shorter than recorded (item 13)', async () => {
+        const built = await fixture();
+        const id = await changedAfterMarker(built, (set, file) => fs.truncateSync(path.join(set, file), 10));
+        const refused = await revoke(built, id);
+        expect(refused.outcome).toBe('ALREADY_COLLECTED');
+        expect(refused.message).toContain(folderOf(built, built.d));
+    });
+
+    it('refuses a revoke when a listed file of a recorded folder is missing (item 13)', async () => {
+        const built = await fixture();
+        const elsewhere = fs.mkdtempSync(path.join(path.dirname(built.root), 'moved-'));
+        const id = await changedAfterMarker(built, (set, file) => fs.renameSync(path.join(set, file), path.join(elsewhere, file)));
         const refused = await revoke(built, id);
         expect(refused.outcome).toBe('ALREADY_COLLECTED');
         expect(refused.message).toContain(folderOf(built, built.d));
@@ -596,7 +619,8 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
         } });
         expect(result.outcome).toBe('NOW_PROTECTED');
         expect(GC_EXIT_CODES[result.outcome]).toBe(4);
-        expect(asides).toEqual([expect.stringMatching(new RegExp(`^assets/${built.d}/\\.gc-${built.first[built.d]}-[0-9a-f-]{36}$`))]);
+        // The run's digest prefix is in the name, so a revoke can tie the folder to this run's marker.
+        expect(asides).toEqual([expect.stringMatching(new RegExp(`^assets/${built.d}/\\.gc-${built.first[built.d]}-${planned.plan?.digest.slice(3, 19)}-[0-9a-f-]{36}$`))]);
         expect(result.message).toContain(`the open Inbox item ${event} names it`);
         expect(result.deleted).toEqual([]);
         // Back where it was, byte for byte. Only the Inbox item and GC's marker are new.
@@ -608,7 +632,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
 
     it('leaves the folder aside, says so, and exits 4 when it cannot put it back', async () => {
         const built = await fixture();
-        await purgeD(built);
+        const id = await purgeD(built);
         const planned = await gc(built.root, PAST_GRACE);
         let aside = '';
         const original = assetsOf(built.root);
@@ -622,13 +646,27 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
             },
         } });
         expect(exitCode).toBe(4);
-        expect(out.join('\n')).toContain(aside);
+        const whole = `set aside whole at ${aside}: rename it back to ${folderOf(built, built.d)}, then revoke`;
+        expect(out.join('\n')).toContain(whole);
         // Everything that was in it is in the folder set aside, byte for byte.
         const moved = assetsOf(built.root);
         for (const [file, value] of original) {
             if (!file.startsWith(`${folderOf(built, built.d)}/`)) continue;
             expect(moved.get(file.replace(folderOf(built, built.d), aside)), file).toBe(value);
         }
+
+        // Item 12: a whole folder set aside isn't permanent. Revoke, status --check and the plan all say how to bring it back.
+        const refused = await revoke(built, id);
+        expect(refused.outcome).toBe('SET_ASIDE');
+        expect(refused.message).toContain(whole);
+        expect(refused.message).not.toMatch(/permanent/);
+        const status = await runStatusCommand({ dataRoot: built.root }, { check: true });
+        expect(status.output).toContain(whole);
+        expect((await command(built.root, [], PAST_GRACE)).out.join('\n')).toContain(whole);
+        // Done as it says, by renames only, the revoke goes through.
+        fs.renameSync(path.join(built.root, folderOf(built, built.d)), path.join(path.dirname(built.root), 'in-the-way-moved'));
+        fs.renameSync(path.join(built.root, aside), path.join(built.root, folderOf(built, built.d)));
+        expect((await revoke(built, id)).outcome).toBe('REVOKED');
     });
 
     it("reports a leftover .gc- folder in the dry run and photos status --check, and never deletes one it didn't make", async () => {
@@ -641,7 +679,7 @@ describe('GC sets a folder aside, checks again, then deletes (S4)', { timeout: 1
         const { out } = await command(built.root, [], PAST_GRACE);
         expect(out.join('\n')).toContain(relative);
         const planned = await gc(built.root, PAST_GRACE);
-        expect(planned.plan?.leftovers).toEqual([relative]);
+        expect(planned.plan?.leftovers.map((each) => each.path)).toEqual([relative]);
         await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
         expect(snapshot(built.root)).toEqual(before);
         const status = await runStatusCommand({ dataRoot: built.root }, { check: true });
@@ -658,13 +696,14 @@ describe('a delete that fails partway (S5)', { timeout: 120_000 }, () => {
         let n = 0;
         const out: string[] = [];
         const exitCode = await runGcCommand(built.root, { apply: planned.plan?.digest }, { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet, waitMs: 200, hooks: {
-            remove: async (target) => {
+            // GC's own delete does the deleting: the test makes no delete call of its own.
+            remove: async (target, removeAt) => {
                 n += 1;
-                if (n === 1) return fs.promises.rm(target, { recursive: true, force: true });
+                if (n === 1) return removeAt(target);
                 // Half of it goes, then the delete fails.
                 const set = path.join(target, built.profileId);
                 const [file] = fs.readdirSync(set).filter((name) => name !== 'manifest.json');
-                fs.rmSync(path.join(set, file));
+                await removeAt(path.join(set, file));
                 throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
             },
         } });
@@ -675,7 +714,11 @@ describe('a delete that fails partway (S5)', { timeout: 120_000 }, () => {
         // The rerun lists what is left and deletes none of it.
         const rerun = await gc(built.root, PAST_GRACE);
         expect(rerun.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
-        expect(rerun.plan?.leftovers).toEqual([expect.stringMatching(new RegExp(`^assets/${built.d}/\\.gc-${D2}-`))]);
+        expect(rerun.plan?.leftovers).toEqual([expect.objectContaining({ path: expect.stringMatching(new RegExp(`^assets/${built.d}/\\.gc-${D2}-`)), state: 'partial' })]);
+        // Item 12: only what's left of a partial delete is permanent, and every place says so.
+        const permanent = /partly deleted.*permanent/;
+        expect((await command(built.root, [], PAST_GRACE)).out.join('\n')).toMatch(permanent);
+        expect((await runStatusCommand({ dataRoot: built.root }, { check: true })).output).toMatch(permanent);
         const before = snapshot(built.root);
         await gc(built.root, PAST_GRACE, { apply: rerun.plan?.digest });
         expect(snapshot(built.root)).toEqual(before);
@@ -758,7 +801,7 @@ describe('the fail-safes that had no test (S7)', { timeout: 120_000 }, () => {
 });
 
 describe('when restore stops being possible, in words (S8)', { timeout: 120_000 }, () => {
-    const PERMANENT = /photos gc --apply deletes .*After that the takedown is permanent.*can never be rolled back to.*only a backup of the data root brings/;
+    const PERMANENT = /photos gc --apply deletes .*Once photos gc --apply has deleted a folder a tombstone lists, that takedown is permanent.*can never be rolled back to.*only a backup of the data root brings/;
 
     it("says it in the dry run's kept line for a tombstone still in its grace", async () => {
         const built = await fixture();
@@ -819,5 +862,149 @@ describe('gc without --apply only lists (coordinator line 9)', { timeout: 120_00
         expect(out.filter((line) => line.startsWith('Delete ')).map((line) => line.split(':')[0])).toEqual(['Delete staging/killed-build', `Delete ${folderOf(built, built.d)}`]);
         expect(snapshot(built.root)).toEqual(before);
         expect(stamps(built.root)).toEqual(times);
+    });
+});
+
+describe('every stop after the rename puts the folder back (item 14, and the locks)', { timeout: 120_000 }, () => {
+    async function stoppedAfterRename(hooks: (built: PurgeFixture) => GcOptions['hooks']) {
+        const built = await fixture();
+        await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        const before = assetsOf(built.root);
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: hooks(built) });
+        return { built, before, result };
+    }
+
+    it('puts it back when a stop comes between the last check and the delete', async () => {
+        const { built, before, result } = await stoppedAfterRename(() => ({ beforeRemove: () => {
+            throw new Error('a fault just before the delete');
+        } }));
+        expect(GC_EXIT_CODES[result.outcome]).toBe(4);
+        expect(result.deleted).toEqual([]);
+        expect(result.message).toContain(`GC put ${folderOf(built, built.d)} back`);
+        expect(assetsOf(built.root)).toEqual(before);
+    });
+
+    it('checks it still holds its locks between the rename and the delete, and puts the folder back when it lost one', async () => {
+        const { built, before, result } = await stoppedAfterRename((each) => ({ beforeRemove: () => {
+            // Another process broke this run's lease and took the lock: a new file at the same path.
+            const lockFile = path.join(each.root, 'locks', `${CATALOG_LOCK}.lock`);
+            fs.renameSync(lockFile, `${lockFile}.broken`);
+            const now = new Date().toISOString();
+            fs.writeFileSync(lockFile, `${JSON.stringify({ owner: 'other', hostname: 'other-host', pid: 1, acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 })}\n`);
+        } }));
+        expect(result.outcome).toBe('LOCK_LOST');
+        expect(result.message).toContain(`GC put ${folderOf(built, built.d)} back`);
+        expect(assetsOf(built.root)).toEqual(before);
+    });
+
+    it("exits 4 and names the folder when what is set aside isn't the folder it moved, and puts nothing in its place", async () => {
+        let aside = '';
+        let moved = '';
+        const { built, before, result } = await stoppedAfterRename((each) => ({ beforeRemove: (_entry, at) => {
+            aside = path.relative(fs.realpathSync(each.root), at).split(path.sep).join('/');
+            moved = path.join(path.dirname(each.root), 'swapped-out');
+            fs.renameSync(at, moved);
+            fs.mkdirSync(at);
+        } }));
+        expect(GC_EXIT_CODES[result.outcome]).toBe(4);
+        expect(result.message).toContain(aside);
+        expect(result.deleted).toEqual([]);
+        expect(fs.existsSync(path.join(built.root, folderOf(built, built.d)))).toBe(false);
+        // What GC set aside is whole where the swap put it.
+        const whole = snapshot(moved);
+        for (const [file, value] of before) {
+            if (file.startsWith(`${folderOf(built, built.d)}/`)) expect(whole.get(file.slice(folderOf(built, built.d).length + 1)), file).toBe(value);
+        }
+    });
+});
+
+describe("the library guard's identity half, as a bind mount looks (item 15)", { timeout: 120_000 }, () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    /** Make statSync report `as`'s dev and inode for `file`, as a bind mount of `as` at `file` would. Every other path stats as it is. */
+    function bindMount(file: string, as: string): void {
+        const real = fs.statSync;
+        const fake = real(as);
+        const target = fs.realpathSync(file);
+        vi.spyOn(fs, 'statSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+            const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+            if (typeof each !== 'string' || path.resolve(each) !== target || !stat) return stat;
+            return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { dev: fake.dev, ino: fake.ino });
+        }) as typeof fs.statSync);
+    }
+
+    it('refuses a target inside the library by identity, the paths apart: the library is the photo folder bound elsewhere', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        const elsewhere = fs.mkdtempSync(path.join(path.dirname(built.root), 'bound-library-'));
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', elsewhere);
+        bindMount(elsewhere, path.join(built.root, 'assets', built.d));
+        const before = snapshot(built.root);
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
+        expect(result.outcome).toBe('UNSAFE_PATH');
+        expect(result.message).toMatch(/photo library/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('refuses a target that holds the library by identity, the paths apart: a folder above the library is the target bound elsewhere', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        const above = fs.mkdtempSync(path.join(path.dirname(built.root), 'bound-above-'));
+        const library = path.join(above, 'library');
+        fs.mkdirSync(library);
+        vi.stubEnv('PHOTOGRAPHY_LIBRARY_DIR', library);
+        bindMount(above, path.join(built.root, folderOf(built, built.d)));
+        const before = snapshot(built.root);
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
+        expect(result.outcome).toBe('UNSAFE_PATH');
+        expect(result.message).toMatch(/holds the photo library/);
+        expect(snapshot(built.root)).toEqual(before);
+    });
+});
+
+describe("manifests account for every byte, and the window after the rename is closed (item 19)", { timeout: 120_000 }, () => {
+    async function listedFile(built: PurgeFixture): Promise<string> {
+        const set = path.join(built.root, folderOf(built, built.d), built.profileId);
+        const manifest = await readDirectoryManifest(set);
+        if (!manifest) throw new Error('No manifest.');
+        return path.join(set, manifestFiles(manifest)[0].name);
+    }
+
+    it("keeps a folder whose listed file has a derivative's name and size but other bytes", async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const file = await listedFile(built);
+        fs.writeFileSync(file, Buffer.alloc(fs.statSync(file).size, 7));
+        const before = snapshot(built.root);
+        const planned = await gc(built.root, PAST_GRACE);
+        expect(planned.plan?.kept).toContainEqual(expect.objectContaining({ path: folderOf(built, built.d), reason: 'unexpected-content', detail: path.relative(built.root, file).split(path.sep).join('/') }));
+        await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest });
+        expect(snapshot(built.root)).toEqual(before);
+    });
+
+    it('keeps a folder whose listed file has another link, such as an owner file hard-linked in', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const file = await listedFile(built);
+        const owners = fs.mkdtempSync(path.join(path.dirname(built.root), 'owner-'));
+        fs.linkSync(file, path.join(owners, 'my-copy.webp'));
+        const planned = await gc(built.root, PAST_GRACE);
+        expect(planned.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
+        expect(planned.plan?.kept).toContainEqual(expect.objectContaining({ path: folderOf(built, built.d), reason: 'unexpected-content' }));
+    });
+
+    it('checks the folder set aside again before the delete, and puts it back when an owner file appeared in it', async () => {
+        const built = await fixture();
+        await purgeD(built);
+        const planned = await gc(built.root, PAST_GRACE);
+        const result = await gc(built.root, PAST_GRACE, { apply: planned.plan?.digest, hooks: { afterAside: (_entry, aside) => {
+            fs.writeFileSync(path.join(aside, 'owner-notes.txt'), "the owner's notes");
+        } } });
+        expect(result.outcome).toBe('PLAN_CHANGED');
+        expect(result.deleted).toEqual([]);
+        expect(fs.readFileSync(path.join(built.root, folderOf(built, built.d), 'owner-notes.txt'), 'utf8')).toBe("the owner's notes");
     });
 });

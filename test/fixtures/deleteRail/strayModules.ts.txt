@@ -1,0 +1,9 @@
+// The delete rail's module-name control (test/deleteRail.test.ts): deleting
+// packages, by import, default import, require and dynamic import. Kept as
+// .txt so tsc doesn't try to resolve them. Nothing imports or runs it.
+import rimraf from 'rimraf';
+import { deleteAsync } from 'del';
+import * as fse from 'fs-extra';
+import trash from 'trash';
+const again = require('fs-extra');
+export const later = () => import('rimraf');

@@ -103,13 +103,17 @@ export async function buildPurgeFixture(seed: number, root: string): Promise<Omi
 const templates = new Map<number, Promise<Omit<PurgeFixture, 'root'> & { root: string }>>();
 const templateDirs: string[] = [];
 
-/** Remove the templates this file built. Call it from afterAll. */
+/**
+ * Forget the templates this file built. Call it from afterAll. It deletes
+ * nothing: these tests make no delete call of their own, so every temp folder
+ * stays where the run's TMPDIR put it, for the owner to move to the Trash.
+ */
 export function cleanupPurgeTemplates(): void {
-    for (const dir of templateDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    templateDirs.splice(0);
     templates.clear();
 }
 
-/** A fresh copy of the fixture for `seed`, built once per test file. The caller cleans it up. */
+/** A fresh copy of the fixture for `seed`, built once per test file. Its cleanup() leaves the folder in place, as cleanupPurgeTemplates() does. */
 export async function purgeFixture(seed: number): Promise<PurgeFixture & { cleanup(): void }> {
     if (!templates.has(seed)) {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'purge-template-'));
@@ -120,7 +124,7 @@ export async function purgeFixture(seed: number): Promise<PurgeFixture & { clean
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'purge-fixture-'));
     const root = path.join(dir, 'data');
     fs.cpSync(template.root, root, { recursive: true, preserveTimestamps: true });
-    return { ...template, root, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+    return { ...template, root, cleanup: () => undefined };
 }
 
 /** A tombstone written straight to disk, as purge would, to set up what purge itself refuses. */

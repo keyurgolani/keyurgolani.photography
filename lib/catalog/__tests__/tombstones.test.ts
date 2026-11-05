@@ -38,7 +38,6 @@ afterEach(() => {
 
 afterAll(() => {
     cleanupPurgeTemplates();
-    fs.rmSync(library, { recursive: true, force: true });
 });
 
 async function fixture(): Promise<PurgeFixture> {
@@ -84,7 +83,7 @@ describe('readTombstones()', { timeout: 120_000 }, () => {
             fs.writeFileSync(file, JSON.stringify({ tombstoneId: one.tombstoneId, planDigest: digest, startedAt: '2026-10-09T00:00:00.000Z', paths }));
             return path.relative(built.root, file).split(path.sep).join('/');
         };
-        const good = { path: `assets/${built.d}/${built.first[built.d]}`, bytes: 10, newestMs: 1 };
+        const good = { path: `assets/${built.d}/${built.first[built.d]}`, bytes: 10, newestMs: 1, files: [{ name: `${built.profileId}/manifest.json`, bytes: 300 }, { name: `${built.profileId}/w400.webp`, bytes: 10 }] };
         marker([good]);
         expect((await readTombstones(built.root)).tombstones[0].collected.map((each) => each.paths)).toEqual([[good]]);
         for (const bad of [
@@ -93,6 +92,8 @@ describe('readTombstones()', { timeout: 120_000 }, () => {
             [{ ...good, path: `assets/${built.d}/${built.first[built.d]}/${built.profileId}` }],
             [{ ...good, path: `assets/${built.c}/${built.first[built.c]}` }],
             [good.path],
+            [{ ...good, files: [{ name: '../../identity/registry', bytes: 1 }] }],
+            [{ ...good, files: [{ name: `${built.profileId}/w400.webp`, bytes: -1 }] }],
             [],
         ]) {
             const file = marker(bad);
