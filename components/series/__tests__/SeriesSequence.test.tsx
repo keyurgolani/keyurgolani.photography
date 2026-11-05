@@ -446,6 +446,52 @@ describe('SeriesSequence on a deep entry (?photo=, B5)', () => {
         expect(window.history.state[SERIES_PAGES_KEY]).toEqual({ revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 200 });
     });
 
+    it('holds the old first entry at its offset from the press to the page landing, across the loading line that goes in above it', async () => {
+        // A layout with what sits above the entries: Show earlier's block (75 px), its loading line while
+        // it loads (31 px, LoadingState's hidden label keeps its line box), and the window's own scroll.
+        let scrolled = 0;
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const index = [...document.querySelectorAll('[id^="photo-"]')].indexOf(this);
+            const block = document.querySelector('[data-continuation-earlier]') === null ? 0 : 75;
+            const loadingLine = document.querySelector('[data-continuation-earlier] [role="status"]') === null ? 0 : 31;
+            const top = index === -1 ? 0 : 120 + block + loadingLine + 50 * index - scrolled;
+            return { top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+        });
+        window.scrollBy = vi.fn(({ top }: ScrollToOptions) => {
+            scrolled += top ?? 0;
+        }) as unknown as typeof window.scrollBy;
+        deep();
+        const before = link(101)?.getBoundingClientRect().top;
+        earlier().focus();
+        fireEvent.click(earlier());
+        expect(screen.getByText('Loading photographs 1 to 100')).toBeInTheDocument();
+        expect(link(101)?.getBoundingClientRect().top, 'while the page loads').toBe(before);
+        await flush();
+        expect(positions()).toHaveLength(200);
+        expect(link(101)?.getBoundingClientRect().top, 'once the page is in').toBe(before);
+    });
+
+    it('holds the old first entry when the loading line goes and Try again comes in its place', async () => {
+        let scrolled = 0;
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const index = [...document.querySelectorAll('[id^="photo-"]')].indexOf(this);
+            const loadingLine = document.querySelector('[data-continuation-earlier] [role="status"]') === null ? 0 : 31;
+            const top = index === -1 ? 0 : 195 + loadingLine + 50 * index - scrolled;
+            return { top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+        });
+        window.scrollBy = vi.fn(({ top }: ScrollToOptions) => {
+            scrolled += top ?? 0;
+        }) as unknown as typeof window.scrollBy;
+        fetch.mockImplementation(async () => json({}, 500));
+        deep();
+        const before = link(101)?.getBoundingClientRect().top;
+        earlier().focus();
+        fireEvent.click(earlier());
+        await flush();
+        expect(screen.getByRole('button', { name: 'Try again: photographs 1 to 100' })).toBeInTheDocument();
+        expect(link(101)?.getBoundingClientRect().top).toBe(before);
+    });
+
     it('takes only the page before from an earlier page, never its next', async () => {
         fetch.mockImplementation(async (url) => (String(url) === PAGE_1 ? json({ revisionId: REVISION, entries: range(1, 100), prevHref: null, nextHref: '/api/catalog/series/fixture-long/pages/ELSEWHERE' }) : pageAnswer(String(url))));
         deep();
