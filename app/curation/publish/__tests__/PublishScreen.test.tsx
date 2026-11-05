@@ -88,7 +88,7 @@ describe('PublishScreen', () => {
     it('offers Use the published value as a native button named for the record, in a form the action reads', async () => {
         const { default: PublishScreen } = await import('../PublishScreen');
         render(<PublishScreen view={view} previewHref="/curation/preview/x" openFix={null} action={action} />);
-        const button = screen.getByRole('button', { name: /^Use the published value\s*: the order of Salt Roads$/ });
+        const button = screen.getByRole('button', { name: /^Use the published value\s*: the order of Salt Roads, from Pier lamps' move$/ });
         expect(button).toHaveAttribute('type', 'submit');
         const formElement = button.closest('form') as HTMLFormElement;
         expect(new FormData(formElement).get('intent')).toBe('use-published');

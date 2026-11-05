@@ -67,3 +67,8 @@ export function textDiff(before: string | null, after: string | null): TextPart[
     flush();
     return parts;
 }
+
+/** What a part shows: a change of spacing alone says so in words, never as an empty mark (A9 review). */
+export function shownText(part: TextPart): string {
+    return part.type !== 'same' && part.text.trim() === '' ? 'whitespace changed' : part.text;
+}

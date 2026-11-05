@@ -1,13 +1,13 @@
 'use client';
 
 import { Fragment, useActionState, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from 'react';
-import { Check, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, Sparkles, Undo2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, Sparkles, Undo2, UploadCloud, type LucideIcon } from 'lucide-react';
 import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
 import PreviewFrame from '@/components/curation/PreviewFrame';
 import { PublishAnswerContext } from './HistoryContext';
 import { localize } from '@/lib/curation/publish-history';
-import { jumpTo } from './jump';
+import { jumpTo, openAncestors } from './jump';
 import {
     displayFacts,
     IDLE_STATE,
@@ -30,7 +30,7 @@ import {
     type WatchAnswer,
 } from '@/lib/curation/publish-facts';
 import { createWatch, watchNews } from '@/lib/curation/publish-watch';
-import type { TextPart } from '@/lib/curation/text-diff';
+import { shownText, type TextPart } from '@/lib/curation/text-diff';
 import styles from './publish.module.css';
 
 /**
@@ -160,7 +160,7 @@ function Words({ parts, side }: { parts: TextPart[]; side: 'before' | 'after' })
                     return (
                         <del key={index} className={styles.removed}>
                             <span className={curator.visuallyHidden}>removed: </span>
-                            {part.text}
+                            {shownText(part)}
                         </del>
                     );
                 }
@@ -168,7 +168,7 @@ function Words({ parts, side }: { parts: TextPart[]; side: 'before' | 'after' })
                     return (
                         <ins key={index} className={styles.added}>
                             <span className={curator.visuallyHidden}>added: </span>
-                            {part.text}
+                            {shownText(part)}
                         </ins>
                     );
                 }
@@ -242,6 +242,8 @@ interface FixContext {
     /** The browser's time zone once the page runs, UTC before: the ledger's days read in it, as History's do. */
     zone: string;
     open: string | null;
+    /** The fix the URL opened (`?fix=`), so a collapsed group holding it renders open without JavaScript (A9 review). */
+    initialOpen: string | null;
     busy: boolean;
     /** `intent`: which fix was refused, so its own strip shows it (A9: a row can carry two). */
     refusal: { rowId: string; text: string; intent: Intent | null } | null;
@@ -480,6 +482,9 @@ function Row({ row, facts, ctx }: { row: LedgerRow; facts: DisplayFacts; ctx: Fi
 export const GROUP_COLLAPSE_AFTER = 50;
 
 function Group({ heading, rows, tone, facts, ctx }: { heading: string; rows: LedgerRow[]; tone: 'authored' | 'derived' | 'health'; facts: DisplayFacts; ctx: FixContext }) {
+    const holds = ctx.initialOpen !== null && rows.some((row) => row.id === ctx.initialOpen);
+    // Whether the disclosure is open, for its summary's words; the element itself holds the state.
+    const [shown, setShown] = useState(holds);
     if (rows.length === 0) return null;
     const list = (
         <ul className={styles.rows}>
@@ -495,8 +500,11 @@ function Group({ heading, rows, tone, facts, ctx }: { heading: string; rows: Led
             </h3>
             {rows.length > GROUP_COLLAPSE_AFTER ? (
                 // A link to a row inside opens it (jump.ts), and so does find in page.
-                <details className={styles.collapse}>
-                    <summary className={styles.collapseSummary}>Show all {rows.length} changes in this group</summary>
+                <details className={styles.collapse} open={holds || undefined} onToggle={(event) => setShown(event.currentTarget.open)}>
+                    <summary className={styles.collapseSummary}>
+                        <ChevronDown size={16} aria-hidden="true" className={styles.chevron} />
+                        {shown ? `Hide the ${rows.length} changes in this group` : `Show all ${rows.length} changes in this group`}
+                    </summary>
                     {list}
                 </details>
             ) : (
@@ -621,7 +629,7 @@ function ActionBar({ view, facts, pending, sent, ctx, historyParams }: { view: S
         return (
             <div className={styles.actions} data-sticky-bar="">
                 <div className={styles.buttons}>
-                    <a className={`${curator.linkButton} ${styles.primaryLink}`} href="/curation/publish">
+                    <a id="load-updated" className={`${curator.linkButton} ${styles.primaryLink}`} href="/curation/publish">
                         <RefreshCw size={16} aria-hidden="true" />
                         Load the updated ledger
                     </a>
@@ -738,6 +746,8 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
     const [watchLine, setWatchLine] = useState('');
     const [baseMoved, setBaseMoved] = useState<RevisionFacts | null>(null);
     const announced = useRef(new Set<string>());
+    const viewNow = useRef(view);
+    viewNow.current = view;
     const pendingNow = useRef(pending);
     pendingNow.current = pending;
     const answerKind = state.result?.kind;
@@ -750,14 +760,28 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
     const [focusFix, setFocusFix] = useState(0);
     const facts = displayFacts(view, state.result, previewHref, pointerMoved ? null : baseMoved);
 
+    // A9 review: a press takes the region, and what the watch said before it isn't said again once the answer lands.
+    useEffect(() => {
+        if (pending) setWatchLine('');
+    }, [pending]);
+
+    // A9 review: Base moved takes Validate and Publish away; focus that was on one goes to Load the updated ledger.
+    useEffect(() => {
+        if (!baseMoved) return;
+        const active = document.activeElement;
+        if (active === null || active === document.body || !active.isConnected) document.getElementById('load-updated')?.focus();
+    }, [baseMoved]);
+
     useEffect(() => {
         if (!watch || view.kind !== 'ledger' || pointerMoved) return;
         const watcher = createWatch({
             check: () => watch({ draftId: view.draftId, active: view.active.revisionId }),
             onAnswer: (answer) => {
-                const news = watchNews(view, answer, announced.current);
+                // The page's rows as they are now: a fix reloads them without a new draft, so the watch keeps running.
+                const news = watchNews(viewNow.current, answer, announced.current);
                 for (const key of news.stale) announced.current.add(key);
                 if (news.baseMoved) setBaseMoved(news.baseMoved);
+                // Only new news changes the line, so the region never says the same thing twice.
                 if (news.line) setWatchLine(news.line);
             },
             now: () => Date.now(),
@@ -777,8 +801,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
             document.removeEventListener('visibilitychange', wake);
             window.removeEventListener('focus', wake);
         };
-        // The page's view is fixed for its life; a new one (after a fix reloads the ledger) starts a new watch.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // A new draft or live revision starts a new watch; the rows it judges against come from viewNow.
     }, [watch, view.draftId, view.active.revisionId, view.kind, pointerMoved]);
     const busy = pending;
     const zone = useSyncExternalStore(never, browserZone, serverZone);
@@ -793,11 +816,15 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
         view,
         zone,
         open,
+        initialOpen: openFix,
         busy,
         refusal,
         dispatch,
         onOpen: (rowId, from) => {
             openedFrom.current = from;
+            // A9 review: a row in a collapsed group opens it, so the fix's heading can take focus.
+            const row = document.getElementById(rowId);
+            if (row) openAncestors(row);
             setOpen(rowId);
             setFocusFix((count) => count + 1);
         },

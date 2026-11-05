@@ -1,5 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
-import { computeAccessibleName } from 'dom-accessibility-api';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readAuthoredRecord } from '@/lib/catalog/working-layer';
 import { writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
@@ -105,7 +104,17 @@ describe('the review fixes on the screen', () => {
         const blocking = rowsOf(busyView).filter((row) => row.blocks);
         expect(blocking.filter((row) => row.usePublished).length).toBeGreaterThanOrEqual(4);
         const { container } = render(<PublishScreen view={busyView} previewHref="/curation/preview/x" openFix={null} action={action} />);
-        const names = [...container.querySelectorAll('button, a[href], summary')].map((element) => computeAccessibleName(element));
+        // Testing Library's own name computation, the one getByRole uses, collected through its name filter.
+        const names: string[] = [];
+        for (const role of ['button', 'link'] as const) {
+            within(container).queryAllByRole(role, {
+                name: (name) => {
+                    names.push(name);
+                    return true;
+                },
+            });
+        }
+        expect(names.length).toBeGreaterThan(8);
         const counts = new Map<string, number>();
         for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
         expect([...counts].filter(([, count]) => count > 1)).toEqual([]);

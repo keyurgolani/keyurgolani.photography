@@ -192,7 +192,15 @@ class FixRefused extends Error {}
  * nothing was written. The stamp's base is the live revision the page
  * compared against, so a fix refuses once the pointer has moved since.
  */
-async function stamp<T>(previous: PublishState, form: FormData, intent: Intent, rowId: string, what: string, write: (root: string, base: string | null) => Promise<T>, done: (written: T) => Answer = () => ({ kind: 'fixed', rowId })): Promise<PublishState> {
+async function stamp<T>(
+    previous: PublishState,
+    form: FormData,
+    intent: Intent,
+    rowId: string,
+    what: string,
+    write: (root: string, base: string | null) => Promise<T>,
+    done: (written: T) => Answer = () => ({ kind: 'fixed', rowId }),
+): Promise<PublishState> {
     const status = dataRootStatus({ write: true });
     if (status.state !== 'ready' || status.root === null) return next(previous, intent, { kind: 'fix-refused', rowId, text: "The data root isn't ready, so nothing was written." });
     const pageActive = previewDraftId(text(form, 'active'));
@@ -207,7 +215,9 @@ async function stamp<T>(previous: PublishState, form: FormData, intent: Intent, 
         if (error instanceof AuthoredWriteError && error.code === 'VERSION_CONFLICT') return refused(previous, intent, rowId, what);
         if (error instanceof AuthoredWriteError && error.code === 'AUTHORED_LOCKED') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'Another write holds the working catalog, so nothing was written. Try again in a moment.' });
         console.error('[curation] A Publish screen review could not be written:', error);
-        return next(previous, intent, { kind: 'fix-refused', rowId, text: "The review couldn't be written, so nothing changed. The server log names what failed." });
+        // The failure names the action that failed (A9 review).
+        const failed = intent === 'use-published' ? "The published value couldn't be written" : "The review couldn't be written";
+        return next(previous, intent, { kind: 'fix-refused', rowId, text: `${failed}, so nothing changed. The server log names what failed.` });
     }
     // A fix changes the review context, so the page reads the ledger again and the curator validates again.
     revalidatePath('/curation/publish');
@@ -319,12 +329,19 @@ async function putBackPublished(previous: PublishState, form: FormData): Promise
  * A9's watch: the open page asks every 60 s, and when its tab comes back,
  * which rows are stale now and whether the live revision moved
  * (lib/curation/publish-watch.ts bounds it). requireCurator() first, as
- * every action here; it reads the data root as the page does and writes
- * nothing. Input the page didn't send, or a catalog that can't be read,
+ * every action here; its refusal answers `signed-out` and reads nothing.
+ * It reads the data root as the page does and writes nothing. Input the page didn't send, or a catalog that can't be read,
  * answers `unavailable`, which the watch backs off from.
  */
 export async function watchPublish(input: { draftId: unknown; active: unknown } | null): Promise<WatchAnswer> {
-    await requireCurator();
+    try {
+        await requireCurator();
+    } catch (error) {
+        // The boundary refused (a session that ended, say): nothing is read, and the answer is quiet, since a background
+        // check must never swap the page for a not-found while an edit is open (A9 review). Anything else is thrown.
+        if (isBoundaryRefusal(error)) return { kind: 'signed-out' };
+        throw error;
+    }
     const draftId = previewDraftId(typeof input === 'object' && input !== null && typeof input.draftId === 'string' ? input.draftId : null);
     const active = previewDraftId(typeof input === 'object' && input !== null && typeof input.active === 'string' ? input.active : null);
     if (draftId === null || active === null) return { kind: 'unavailable' };
@@ -339,6 +356,12 @@ export async function watchPublish(input: { draftId: unknown; active: unknown } 
         console.error('[curation] The Publish screen could not check the catalog again:', error);
         return { kind: 'unavailable' };
     }
+}
+
+/** requireCurator()'s refusals: notFound(), or a redirect to the login. */
+function isBoundaryRefusal(error: unknown): boolean {
+    const digest = typeof error === 'object' && error !== null && 'digest' in error ? String((error as { digest: unknown }).digest) : '';
+    return digest.startsWith('NEXT_HTTP_ERROR_FALLBACK;404') || digest.startsWith('NEXT_REDIRECT');
 }
 
 /** The screen's one action: the form's `intent` picks Validate, Publish, or a review fix. */

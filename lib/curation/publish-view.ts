@@ -224,7 +224,8 @@ function publishedFixFor(change: CatalogChange, input: LedgerInput, names: Names
     if (!offer.ok) return null;
     const { target } = offer;
     const name = names.record(change.record);
-    const label = `the ${fieldName({ record: change.record, field: target.field })} of ${name}`;
+    const part = rowPart(change, input, names);
+    const label = `the ${fieldName({ record: change.record, field: target.field })} of ${name}${part ? `, from ${part}` : ''}`;
     const note = target.field === 'photoIds' ? `This puts back the whole published order of ${name}.` : target.field === 'chapters' ? `This puts back every published chapter of ${name}.` : undefined;
     return { kind: target.record.kind, id: target.record.id, field: target.field, version: target.version, valueHash: target.valueHash, record: label, ...(note ? { note } : {}) };
 }
@@ -524,7 +525,7 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
             version: record.version,
             hashes: Object.fromEntries(fields.map((field) => [field, hashValue(valueOf(record, field))])),
         };
-        return { type: 'restamp', record: actionName(change, first, names), label, target, field: fieldName(first) };
+        return { type: 'restamp', record: actionName(change, first, names, input), label, target, field: fieldName(first) };
     }
     return { type: 'hint', text: HINT_ONLY[first.reason ?? 'no-record'] ?? 'Review the change with the photos command, then validate again.' };
 }
@@ -551,9 +552,34 @@ export function fieldName(entry: Pick<FieldReviewState, 'record' | 'field'>): st
 }
 
 /** What a stamp action's accessible name adds: "Pier lamps position in Salt Roads", or "the short statement of Low Tide Hours". */
-function actionName(change: CatalogChange, entry: FieldReviewState, names: Names): string {
+function actionName(change: CatalogChange, entry: FieldReviewState, names: Names, input: Pick<LedgerInput, 'active' | 'candidate'>): string {
     if (change.record.kind === 'series' && change.field.startsWith('photoIds[')) return `${names.photo(change.field.slice('photoIds['.length, -1))} position in ${names.series(change.record.id)}`;
-    return `the ${fieldName(entry)} of ${names.record(entry.record)}`;
+    // A9 review: rows that rest on one field, as a series' chapter rows do, each name their own part, so no two controls share a name.
+    const part = rowPart(change, input, names);
+    return `the ${fieldName(entry)} of ${names.record(entry.record)}${part ? `, ${part}` : ''}`;
+}
+
+/** "Pier lamps'", "chapter Dawn's". */
+const possessive = (name: string) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+
+/** What one row of a field with several says on its own: "Pier lamps' move", "chapter Dawn's new title". Null for a row about the whole field. */
+function rowPart(change: CatalogChange, input: Pick<LedgerInput, 'active' | 'candidate'>, names: Names): string | null {
+    if (change.record.kind !== 'series') return null;
+    if (change.field.startsWith('photoIds[')) return `${possessive(names.photo(change.field.slice('photoIds['.length, -1)))} move`;
+    const chapterId = chapterIdOf(change.field);
+    if (chapterId === null) return null;
+    const chapterIn = (content: LedgerInput['active'] | LedgerInput['candidate']) => content.series.find((series) => series.id === change.record.id)?.chapters.find((chapter) => chapter.id === chapterId);
+    const title = chapterIn(input.candidate)?.title ?? chapterIn(input.active)?.title ?? chapterId;
+    switch (change.category) {
+        case 'new':
+            return `new chapter ${title}`;
+        case 'removed':
+            return `removed chapter ${title}`;
+        case 'moved':
+            return `${possessive(`chapter ${title}`)} new start`;
+        default:
+            return `${possessive(`chapter ${title}`)} new title`;
+    }
 }
 
 /** The blocker list's link for a row's fix. */

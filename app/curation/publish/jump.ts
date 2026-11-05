@@ -10,8 +10,12 @@ export function jumpTo(event: MouseEvent<HTMLAnchorElement>, id: string): void {
     const target = document.getElementById(id);
     if (!target) return;
     event.preventDefault();
-    // A9: a row in a collapsed group opens it first, so focus lands on something shown.
-    for (let details = target.closest('details'); details; details = details.parentElement?.closest('details') ?? null) details.open = true;
+    openAncestors(target);
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: 'start', behavior: 'instant' });
+}
+
+/** A9: open every collapsed group around `element`, so focus lands on something shown. */
+export function openAncestors(element: Element): void {
+    for (let details = element.closest('details'); details; details = details.parentElement?.closest('details') ?? null) details.open = true;
 }

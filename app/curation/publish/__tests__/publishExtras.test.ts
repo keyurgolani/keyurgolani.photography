@@ -108,7 +108,7 @@ describe('the rows (A9)', () => {
     it('offers Use the published value on the stale order, with the record in its name, and on nothing that is reviewed or a suggestion', async () => {
         const screen = await view();
         const moved = rowAbout(screen, MOVED);
-        expect(moved.usePublished).toMatchObject({ kind: 'series', id: SALT_ROADS, field: 'photoIds', record: 'the order of Salt Roads' });
+        expect(moved.usePublished).toMatchObject({ kind: 'series', id: SALT_ROADS, field: 'photoIds', record: "the order of Salt Roads, from Pier lamps' move" });
         expect(moved.usePublished?.note).toBe('This puts back the whole published order of Salt Roads.');
         const others = rowsOf(screen).filter((row) => row.id !== moved.id && row.usePublished);
         expect(others).toEqual([]);

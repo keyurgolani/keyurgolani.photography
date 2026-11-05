@@ -922,6 +922,8 @@
   display: flex;
   min-height: 44px;
   align-items: center;
+  gap: 0.4rem;
+  list-style: none;
   color: var(--gah-ink-soft);
   font-size: var(--gah-type-ui);
   cursor: pointer;
@@ -939,4 +941,18 @@
 .reverted:focus {
   outline: none;
   box-shadow: none !important;
+}
+
+/* The summary's own marker is replaced by a chevron that turns when the group opens (A9 review). */
+.collapseSummary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  flex: none;
+  transform: rotate(-90deg);
+}
+
+.collapse[open] > .collapseSummary .chevron {
+  transform: none;
 }
