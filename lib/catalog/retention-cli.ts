@@ -32,6 +32,7 @@ const KEPT_TEXT: Record<GcKeptReason, string> = {
     'named-by-last-publish': 'the last publish names it',
     'tombstone-within-grace': `taken down less than 7 days ago; photos purge --revoke takes it back until photos gc --apply deletes it. ${PERMANENT_TEXT.replace(/\.$/, '')}`,
     'unexpected-content': "taken down, but it holds a file a build didn't make, so GC deletes none of it",
+    'set-aside-leftover': 'taken down, but a stopped photos gc --apply run left this asset revision set aside, so GC plans nothing over it until the owner settles that',
     'active-revision': 'taken down, but the live revision shows it',
     'working-layer-series': "taken down, but a draft series lists it at this asset revision",
     'open-inbox': 'taken down, but an open Inbox item names it',

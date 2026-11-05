@@ -31,16 +31,18 @@ export interface DeleteCall {
 }
 
 const DELETE_NAMES = new Set(['rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync', 'rimraf', 'rimrafSync', 'unlinkat', 'remove', 'removeSync', 'emptyDir', 'emptyDirSync']);
-/** Packages whose job is deleting files. Any import of one is a delete. */
-const DELETE_MODULES = new Set(['rimraf', 'del', 'fs-extra', 'trash']);
+/** Packages whose job is deleting files, and any subpath of one. Any import, re-export or require of one is a delete. */
+const DELETE_MODULE_RE = /^(?:rimraf|del|fs-extra|trash)(?:\/|$)/;
 const PROCESS_MODULES = new Set(['child_process', 'node:child_process']);
 const FS_MODULES = new Set(['fs', 'node:fs', 'fs/promises', 'node:fs/promises']);
 const PROCESS_NAMES = new Set(['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']);
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', '/bin/sh', '/bin/bash', '/bin/zsh']);
-/** `rm` as a shell command, bare or by path. */
-const SHELL_RM = /^(?:\/(?:usr\/)?bin\/)?rm$|(?:^|[\s;&|(`])(?:\/(?:usr\/)?bin\/)?rm\s/;
-/** `git clean`. */
-const GIT_CLEAN = /(?:^|[\s;&|(`])git\s+clean\b/;
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish']);
+/** Interpreters, and the flags that take a script to run. */
+const INTERPRETERS: Record<string, readonly string[]> = { node: ['-e', '--eval', '-p', '--print'], perl: ['-e', '-E'], python: ['-c'], python3: ['-c'], ruby: ['-e'], bun: ['-e', '--eval'], deno: ['eval'] };
+/** `rm`, `rmdir` or `unlink` as a shell command: bare, by path, escaped with `\`, or quoted. */
+const SHELL_DELETE = /(?:^|[\s;&|(`])\\?(["']?)(?:\/(?:usr\/)?bin\/)?(rm|rmdir|unlink)\1(?=$|[\s;&|)])/;
+/** `git`, with any options, then `clean`. */
+const GIT_CLEAN = /(?:^|[\s;&|(`])git\b[^;&|\n]*?\sclean\b/;
 /** `find ... -delete`. */
 const FIND_DELETE = /(?:^|\s)-delete\b/;
 const SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
@@ -97,11 +99,11 @@ function allStrings(nodes: readonly ts.Node[]): string[] {
     return found;
 }
 
-/** The module a `require('x')` or `import('x')` call names, or null. */
-function requiredModule(node: ts.Node): string | null {
-    if (!ts.isCallExpression(node) || !isLiteral(node.arguments[0])) return null;
-    if (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require')) return node.arguments[0].text;
-    return null;
+/** `node` without what wraps it: parentheses, `await`, `as` and `!`. */
+function bare(node: ts.Expression): ts.Expression {
+    let current = node;
+    while (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current) || ts.isAsExpression(current) || ts.isNonNullExpression(current)) current = current.expression;
+    return current;
 }
 
 export function parse(file: string, text: string): ts.SourceFile {
@@ -109,112 +111,226 @@ export function parse(file: string, text: string): ts.SourceFile {
     return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind);
 }
 
-/** The names a file binds to child_process and to fs: named imports by their local name, and namespaces and defaults. */
-function bindings(source: ts.SourceFile): { processNames: Set<string>; processObjects: Set<string>; fsObjects: Set<string> } {
-    const processNames = new Set<string>();
-    const processObjects = new Set<string>();
-    const fsObjects = new Set<string>(['fs', 'fsp']);
-    const bind = (module: string, clause: { name?: ts.Identifier; namespace?: string; named: { local: string; imported: string }[] }) => {
-        if (PROCESS_MODULES.has(module)) {
-            if (clause.name) processObjects.add(clause.name.text);
-            if (clause.namespace) processObjects.add(clause.namespace);
-            for (const { local, imported } of clause.named) if (PROCESS_NAMES.has(imported)) processNames.add(local);
-        }
-        if (FS_MODULES.has(module)) {
-            if (clause.name) fsObjects.add(clause.name.text);
-            if (clause.namespace) fsObjects.add(clause.namespace);
-            for (const { local, imported } of clause.named) if (imported === 'promises') fsObjects.add(local);
+/** What a file binds to child_process, to fs, and to a `require` made by `createRequire()`. */
+interface Bindings {
+    processNames: Set<string>;
+    processObjects: Set<string>;
+    fsObjects: Set<string>;
+    requireNames: Set<string>;
+}
+
+/** A call that loads a module: `require(x)`, `import(x)`, a `createRequire()` require, or `createRequire(…)(x)`. Null for any other call. */
+function loader(node: ts.Node, known: Bindings): { kind: 'require' | 'import()'; specifier: ts.Expression | undefined } | null {
+    if (!ts.isCallExpression(node)) return null;
+    const callee = node.expression;
+    if (callee.kind === ts.SyntaxKind.ImportKeyword) return { kind: 'import()', specifier: node.arguments[0] };
+    if (ts.isIdentifier(callee) && (callee.text === 'require' || known.requireNames.has(callee.text))) return { kind: 'require', specifier: node.arguments[0] };
+    if (ts.isCallExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'createRequire') return { kind: 'require', specifier: node.arguments[0] };
+    return null;
+}
+
+/** The module a loading call names as a literal, or null. */
+function loadedModule(node: ts.Node, known: Bindings): string | null {
+    const loaded = loader(ts.isExpression(node) ? bare(node) : node, known);
+    return loaded && isLiteral(loaded.specifier) ? loaded.specifier.text : null;
+}
+
+/** Whether `node` is fs, `fs.promises`, an alias of either, or a `require('fs')`. */
+function isFsObject(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return known.fsObjects.has(expression.text);
+    if (ts.isPropertyAccessExpression(expression) && expression.name.text === 'promises') return isFsObject(expression.expression, known);
+    return FS_MODULES.has(loadedModule(expression, known) ?? '');
+}
+
+/** Whether `node` is child_process, an alias of it, or a `require('child_process')`. */
+function isProcessObject(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return known.processObjects.has(expression.text);
+    return PROCESS_MODULES.has(loadedModule(expression, known) ?? '');
+}
+
+/** Whether `node` names a child_process function: `spawn`, `cp.exec`, or one bound from either. */
+function isProcessFunction(node: ts.Expression, known: Bindings): boolean {
+    const expression = bare(node);
+    if (ts.isIdentifier(expression)) return known.processNames.has(expression.text);
+    return ts.isPropertyAccessExpression(expression) && PROCESS_NAMES.has(expression.name.text) && isProcessObject(expression.expression, known);
+}
+
+/** The key a binding element takes: `rm` for `{ rm }`, `{ rm: r }` and `{ ['rm']: r }`, or null for a computed key that isn't a literal. */
+function bindingKey(element: ts.BindingElement, source: ts.SourceFile): string | null {
+    const key = element.propertyName ?? element.name;
+    if (ts.isComputedPropertyName(key)) return isLiteral(key.expression) ? key.expression.text : null;
+    return key.getText(source);
+}
+
+/**
+ * Every name a file binds to child_process, to fs, and to a `createRequire()`
+ * require, through imports, `import x = require()`, `require()`, `await
+ * import()`, destructuring, plain aliases and `promisify()`, until nothing
+ * new turns up.
+ */
+function bindings(source: ts.SourceFile): Bindings {
+    const known: Bindings = { processNames: new Set(), processObjects: new Set(), fsObjects: new Set(['fs', 'fsp']), requireNames: new Set() };
+    const size = () => known.processNames.size + known.processObjects.size + known.fsObjects.size + known.requireNames.size;
+    const bindModule = (module: string, name: ts.BindingName | undefined, named: { local: string; imported: string }[], namespace?: string) => {
+        const objects = PROCESS_MODULES.has(module) ? known.processObjects : FS_MODULES.has(module) ? known.fsObjects : null;
+        if (objects === null) return;
+        if (name && ts.isIdentifier(name)) objects.add(name.text);
+        if (namespace) objects.add(namespace);
+        for (const { local, imported } of named) {
+            if (PROCESS_MODULES.has(module) && PROCESS_NAMES.has(imported)) known.processNames.add(local);
+            if (FS_MODULES.has(module) && imported === 'promises') known.fsObjects.add(local);
         }
     };
+    const destructured = (pattern: ts.BindingName) => (ts.isObjectBindingPattern(pattern) ? pattern.elements.map((each) => ({ local: each.name.getText(source), imported: bindingKey(each, source) ?? '' })) : []);
     const visit = (node: ts.Node) => {
         if (ts.isImportDeclaration(node) && isLiteral(node.moduleSpecifier) && node.importClause) {
             const { name, namedBindings } = node.importClause;
-            bind(node.moduleSpecifier.text, {
+            bindModule(
+                node.moduleSpecifier.text,
                 name,
-                namespace: namedBindings && ts.isNamespaceImport(namedBindings) ? namedBindings.name.text : undefined,
-                named: namedBindings && ts.isNamedImports(namedBindings) ? namedBindings.elements.map((each) => ({ local: each.name.text, imported: (each.propertyName ?? each.name).text })) : [],
-            });
+                namedBindings && ts.isNamedImports(namedBindings) ? namedBindings.elements.map((each) => ({ local: each.name.text, imported: (each.propertyName ?? each.name).text })) : [],
+                namedBindings && ts.isNamespaceImport(namedBindings) ? namedBindings.name.text : undefined,
+            );
+        }
+        if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && isLiteral(node.moduleReference.expression)) {
+            bindModule(node.moduleReference.expression.text, node.name, []);
         }
         if (ts.isVariableDeclaration(node) && node.initializer) {
-            const module = requiredModule(node.initializer);
-            if (module !== null) {
-                bind(module, {
-                    name: ts.isIdentifier(node.name) ? node.name : undefined,
-                    named: ts.isObjectBindingPattern(node.name) ? node.name.elements.map((each) => ({ local: each.name.getText(source), imported: (each.propertyName ?? each.name).getText(source) })) : [],
-                });
+            const init = bare(node.initializer);
+            const module = loadedModule(init, known);
+            if (module !== null) bindModule(module, node.name, destructured(node.name));
+            if (ts.isCallExpression(init) && ts.isIdentifier(init.expression) && init.expression.text === 'createRequire' && ts.isIdentifier(node.name)) known.requireNames.add(node.name.text);
+            if (ts.isCallExpression(init) && ts.isIdentifier(init.expression) && init.expression.text === 'promisify' && init.arguments[0] && isProcessFunction(init.arguments[0], known) && ts.isIdentifier(node.name)) known.processNames.add(node.name.text);
+            if (isProcessObject(init, known)) {
+                if (ts.isIdentifier(node.name)) known.processObjects.add(node.name.text);
+                for (const { local, imported } of destructured(node.name)) if (PROCESS_NAMES.has(imported)) known.processNames.add(local);
+            }
+            if (isProcessFunction(init, known) && ts.isIdentifier(node.name)) known.processNames.add(node.name.text);
+            if (isFsObject(init, known)) {
+                if (ts.isIdentifier(node.name)) known.fsObjects.add(node.name.text);
+                for (const { local, imported } of destructured(node.name)) if (imported === 'promises') known.fsObjects.add(local);
             }
         }
         ts.forEachChild(node, visit);
     };
-    visit(source);
-    return { processNames, processObjects, fsObjects };
+    for (let before = -1; before !== size();) {
+        before = size();
+        visit(source);
+    }
+    return known;
 }
 
-/** Why a child_process call deletes, or might: it runs rm, git clean or find -delete, or what it runs isn't a literal. Null when it plainly doesn't. */
+/** A process call's options, its last argument when that is an object literal. */
+function optionsOf(node: ts.CallExpression): ts.ObjectLiteralExpression | null {
+    const last = node.arguments[node.arguments.length - 1];
+    return last && node.arguments.length > 1 && ts.isObjectLiteralExpression(last) ? last : null;
+}
+
+/** Whether a process call's options turn `shell` on, or might. */
+function shellOn(node: ts.CallExpression): boolean {
+    const options = optionsOf(node);
+    const shell = options?.properties.find((each) => ts.isPropertyAssignment(each) && each.name.getText() === 'shell');
+    return shell !== undefined && ts.isPropertyAssignment(shell) && shell.initializer.kind !== ts.SyntaxKind.FalseKeyword;
+}
+
+/**
+ * Why a child_process call deletes, or might, or can't be read: it runs rm,
+ * rmdir, unlink, git clean or find -delete in any of its arguments, or what
+ * it runs isn't a literal. Null when it plainly doesn't. A form it can't
+ * resolve fails the rail closed (#181's A10 review, item 24).
+ */
 function processReason(node: ts.CallExpression): string | null {
-    const strings = allStrings(node.arguments);
-    const [command, list] = node.arguments;
+    const options = optionsOf(node);
+    const args = node.arguments.filter((each) => each !== options);
+    const strings = allStrings(args);
+    const deleting = strings.map((text) => SHELL_DELETE.exec(text)).find((match) => match !== null);
+    if (deleting) return `runs ${deleting[2]}`;
+    const [command, list] = args;
     const commandText = isLiteral(command) ? command.text : null;
-    const listed = list && ts.isArrayLiteralExpression(list) ? list.elements : [];
-    const literals = listed.flatMap((each) => (isLiteral(each) ? [each.text] : []));
-    if (strings.some((text) => SHELL_RM.test(text))) return 'runs rm';
-    if (strings.some((text) => GIT_CLEAN.test(text)) || (commandText === 'git' && literals.includes('clean'))) return 'runs git clean';
+    let elements: readonly ts.Expression[] = list && ts.isArrayLiteralExpression(list) ? list.elements : [];
+    const listLiteral = list === undefined || ts.isArrayLiteralExpression(list);
+    const words = elements.flatMap((each) => (isLiteral(each) ? [each.text] : []));
+    if (strings.some((text) => GIT_CLEAN.test(text)) || (commandText !== null && path.posix.basename(commandText) === 'git' && words.includes('clean'))) return 'runs git clean';
     if (strings.some((text) => FIND_DELETE.test(text))) return 'runs find -delete';
     if (commandText === null) return "with a command that isn't a literal";
-    if (SHELLS.has(commandText)) {
-        const index = listed.findIndex((each) => isLiteral(each) && /^-\w*c\w*$/.test(each.text));
-        if (index >= 0 && !isLiteral(listed[index + 1])) return "runs a shell script that isn't a literal";
+    let runs = path.posix.basename(commandText);
+    if (!listLiteral && (runs === 'git' || runs === 'env' || SHELLS.has(runs) || runs in INTERPRETERS)) return `runs ${runs} with arguments that aren't a literal list`;
+    if (runs === 'env') {
+        // `env [-i] [NAME=value…] command args…`: judge what it runs.
+        const at = elements.findIndex((each) => !isLiteral(each) || (!each.text.startsWith('-') && !each.text.includes('=')));
+        const next = at >= 0 ? elements[at] : undefined;
+        if (next === undefined) return null;
+        if (!isLiteral(next)) return "runs env with a command that isn't a literal";
+        runs = path.posix.basename(next.text);
+        elements = elements.slice(at + 1);
     }
+    const scriptFlags = SHELLS.has(runs) ? null : INTERPRETERS[runs];
+    if (SHELLS.has(runs) || scriptFlags) {
+        const flag = elements.findIndex((each) => isLiteral(each) && (scriptFlags ? scriptFlags.includes(each.text) : /^-\w*c\w*$/.test(each.text)));
+        if (flag >= 0 && !isLiteral(elements[flag + 1])) return SHELLS.has(runs) ? "runs a shell script that isn't a literal" : `runs a ${runs} script that isn't a literal`;
+        if (elements.some((each) => !isLiteral(each))) return `runs ${runs} with arguments that aren't literals`;
+    }
+    if (shellOn(node) && (!listLiteral || elements.some((each) => !isLiteral(each)))) return "with shell: true and arguments that aren't literals";
     return null;
 }
 
 /** Every delete call in one source text. `file` is how findings name it. */
 export function scanSource(file: string, text: string): DeleteCall[] {
     const source = parse(file, text);
-    const { processNames, processObjects, fsObjects } = bindings(source);
+    const known = bindings(source);
     const found: DeleteCall[] = [];
     const add = (node: ts.Node, call: string) => {
         found.push({ file, fn: enclosingFunction(node), call, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
     };
-    const isProcessCall = (node: ts.CallExpression) => {
-        const callee = node.expression;
-        if (ts.isIdentifier(callee)) return processNames.has(callee.text);
-        if (!ts.isPropertyAccessExpression(callee) || !PROCESS_NAMES.has(callee.name.text)) return false;
-        const object = callee.expression;
-        return (ts.isIdentifier(object) && processObjects.has(object.text)) || PROCESS_MODULES.has(requiredModule(object) ?? '');
-    };
-    const isFsObject = (node: ts.Expression) => (ts.isIdentifier(node) && fsObjects.has(node.text)) || (ts.isPropertyAccessExpression(node) && node.name.text === 'promises' && ts.isIdentifier(node.expression) && fsObjects.has(node.expression.text));
     /** Strings a process call's arguments hold are judged there, once. */
     const inProcessArgs = new Set<ts.Node>();
+    const isCallee = (node: ts.Node) => ts.isCallExpression(node.parent) && node.parent.expression === node;
     const visit = (node: ts.Node) => {
-        const module = ts.isImportDeclaration(node) && isLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && isLiteral(node.moduleReference.expression) ? node.moduleReference.expression.text : requiredModule(node);
-        if (module !== null && DELETE_MODULES.has(module)) add(node, `module ${module}`);
+        let module: string | null = null;
+        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && isLiteral(node.moduleSpecifier)) module = node.moduleSpecifier.text;
+        else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && isLiteral(node.moduleReference.expression)) module = node.moduleReference.expression.text;
+        else module = loadedModule(node, known);
+        if (module !== null && DELETE_MODULE_RE.test(module)) add(node, `module ${module}`);
+        const loading = loader(node, known);
+        if (loading && !isLiteral(loading.specifier)) add(node, `${loading.kind} of a module that isn't a literal`);
         if (ts.isCallExpression(node)) {
             const name = calleeName(node.expression);
             if (name !== null && DELETE_NAMES.has(name)) add(node, node.expression.getText(source));
-            if (isProcessCall(node)) {
+            if (isProcessFunction(node.expression, known)) {
                 const reason = processReason(node);
                 if (reason) add(node, `${node.expression.getText(source)} ${reason}`);
                 node.arguments.forEach((argument) => inProcessArgs.add(argument));
             }
             const callee = node.expression;
-            if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect' && node.arguments[0] && isFsObject(node.arguments[0])) {
+            if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect' && node.arguments[0] && isFsObject(node.arguments[0], known)) {
                 add(node, `${callee.getText(source)}(${node.arguments[0].getText(source)}, …)`);
             }
         } else if (ts.isPropertyAccessExpression(node) && DELETE_NAMES.has(node.name.text)) {
             // Passed on as a value, such as `.then(fs.promises.rm)`, rather than called here.
-            const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
-            if (!called) add(node, node.getText(source));
+            if (!isCallee(node)) add(node, node.getText(source));
         } else if (ts.isElementAccessExpression(node)) {
-            const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
             const key = node.argumentExpression;
-            if (isLiteral(key) && DELETE_NAMES.has(key.text) && !called) add(node, node.getText(source));
-            else if (!isLiteral(key) && isFsObject(node.expression)) add(node, `computed access ${node.getText(source)}`);
-        } else if ((ts.isImportSpecifier(node) || ts.isBindingElement(node)) && DELETE_NAMES.has((node.propertyName ?? node.name).getText(source))) {
-            add(node, `${ts.isImportSpecifier(node) ? 'import' : 'destructure'} ${node.getText(source)}`);
+            if (isLiteral(key) && DELETE_NAMES.has(key.text) && !isCallee(node)) add(node, node.getText(source));
+            else if (!isLiteral(key) && isFsObject(node.expression, known)) add(node, `computed access ${node.getText(source)}`);
+        } else if (ts.isImportSpecifier(node) && DELETE_NAMES.has((node.propertyName ?? node.name).getText(source))) {
+            add(node, `import ${node.getText(source)}`);
+        } else if (ts.isBindingElement(node)) {
+            const key = bindingKey(node, source);
+            const from = ts.isVariableDeclaration(node.parent.parent) ? node.parent.parent.initializer : undefined;
+            if (key !== null && DELETE_NAMES.has(key)) add(node, `destructure ${node.getText(source)}`);
+            else if (key === null && from && isFsObject(from, known)) add(node, `computed destructure ${node.getText(source)}`);
         } else if (!inProcessArgs.has(node)) {
             const text = stringText(node);
             if (text !== null && FIND_DELETE.test(text)) add(node, '-delete');
+        }
+        // A child_process function handed on to anything but promisify(), which the bindings follow, can't be read.
+        if ((ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) && !isCallee(node) && isProcessFunction(node as ts.Expression, known)) {
+            const parent = node.parent;
+            const declared = ts.isImportSpecifier(parent) || ts.isBindingElement(parent) || ((ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isFunctionDeclaration(parent) || ts.isPropertySignature(parent)) && parent.name === node) || (ts.isPropertyAccessExpression(parent) && parent.name === node);
+            const promisified = ts.isCallExpression(parent) && ts.isIdentifier(parent.expression) && parent.expression.text === 'promisify';
+            if (!declared && !promisified) add(node, `passes on ${node.getText(source)}`);
         }
         if (inProcessArgs.has(node)) ts.forEachChild(node, (child) => void inProcessArgs.add(child));
         ts.forEachChild(node, visit);
@@ -225,7 +341,7 @@ export function scanSource(file: string, text: string): DeleteCall[] {
 
 /** Every delete call in a shell script, line by line. */
 function scanShell(file: string, text: string): DeleteCall[] {
-    return text.split('\n').flatMap((line, index) => (!/^\s*#/.test(line) && (SHELL_RM.test(line.trim()) || FIND_DELETE.test(line)) ? [{ file, fn: '<shell>', call: line.trim(), line: index + 1 }] : []));
+    return text.split('\n').flatMap((line, index) => (!/^\s*#/.test(line) && (SHELL_DELETE.test(line.trim()) || FIND_DELETE.test(line)) ? [{ file, fn: '<shell>', call: line.trim(), line: index + 1 }] : []));
 }
 
 /** Every source file under `dirs` and every one of `files`, tests and test fixtures left out, relative to the repository root. */

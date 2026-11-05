@@ -433,7 +433,7 @@ export interface SetAsideFolder {
 
 /** The one sentence for a folder set aside, wherever it's reported. */
 export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state'>): string {
-    if (folder.state === 'whole') return `set aside whole at ${folder.path}: rename it back to ${folder.original}, then revoke`;
+    if (folder.state === 'whole') return `set aside whole at ${folder.path}: rename it back to ${folder.original}, then revoke, or rerun photos gc to finish the takedown`;
     if (folder.state === 'partial') return `${folder.path} is what is left of ${folder.original}, partly deleted by photos gc --apply: that takedown is permanent, and only a backup of the data root brings it back`;
     return `${folder.path} was set aside by photos gc --apply, which never deletes it, and no marker says what it held`;
 }
@@ -466,7 +466,7 @@ export async function setAsideFolders(root: string, read?: TombstoneRead): Promi
             const match = SET_ASIDE_RE.exec(entry.name);
             const original = match ? `assets/${photo.name}/${match[1]}` : `assets/${photo.name}/?`;
             const recorded = match
-                ? tombstones.tombstones.flatMap((each) => each.collected).filter((marker) => marker.planDigest.slice(3, 19) === match[2]).flatMap((marker) => marker.paths).find((each) => each.path === original)
+                ? tombstones.tombstones.flatMap((each) => each.collected).filter((marker) => digestPrefix(marker.planDigest) === match[2]).flatMap((marker) => marker.paths).find((each) => each.path === original)
                 : undefined;
             let state: SetAsideFolder['state'] = 'unknown';
             if (recorded && entry.isDirectory()) state = (await holdsRecorded(path.join(store, photo.name, entry.name), recorded.files)) ? 'whole' : 'partial';

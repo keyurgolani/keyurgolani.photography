@@ -193,14 +193,16 @@ export async function removeAbandonedStaging(root: string, { leaseMs, logger = c
  * Remove one direct child of `staging/`, checked in the same tick as its
  * delete: `staging/` is still the folder `staging` describes, by dev and
  * inode and no symlink, and the entry is a symlink, unlinked as a link, or a
- * real folder, removed without following any link in it. Anything else is
- * left. Throws when `staging/` changed. Returns whether it removed it.
+ * real folder on `staging/`'s own device, removed without following any
+ * link in it. Anything else is left. Throws when `staging/` changed. Returns whether it removed it.
  */
 async function clearStagingEntry(dir: string, name: string, staging: fs.Stats): Promise<boolean> {
     const now = fs.lstatSync(dir);
     if (now.isSymbolicLink() || now.dev !== staging.dev || now.ino !== staging.ino) throw new Error('staging/ is no longer the folder that was listed, so nothing more was removed');
     const target = path.join(dir, name);
     const entry = fs.lstatSync(target);
+    // A direct child lives on staging/'s own device: one on another is a mount, which the clear never reaches into.
+    if (entry.dev !== staging.dev) throw new Error(`staging/${name} is on another device than staging/, so it was left`);
     if (entry.isSymbolicLink()) {
         await fs.promises.unlink(target);
         return true;

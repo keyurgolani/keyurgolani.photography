@@ -197,6 +197,8 @@ describe('the delete-call rail', () => {
             ['viaDynamicModule', "import() of a module that isn't a literal"],
             ['viaDynamicModule', 'module rimraf/dist/sync'],
             ['viaDynamicModule', 'module del'],
+            // A child_process function handed on, which it can't follow.
+            ['viaHandOff', 'passes on cp.execSync'],
         ]);
     });
 

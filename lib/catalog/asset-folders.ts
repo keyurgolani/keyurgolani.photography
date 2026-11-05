@@ -81,7 +81,10 @@ async function soleFileDigest(file: string, bytes: number): Promise<string | nul
     try {
         const stat = await handle.stat();
         if (!stat.isFile() || stat.nlink !== 1 || stat.size !== bytes) return null;
-        return createHash('sha256').update(await handle.readFile()).digest('hex');
+        // Streamed, so a large derivative is never held whole in memory.
+        const hash = createHash('sha256');
+        for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk as Buffer);
+        return hash.digest('hex');
     } finally {
         await handle.close();
     }

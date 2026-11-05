@@ -207,13 +207,26 @@ const NOTHING = ' Nothing was written.';
 
 
 /**
- * How a folder a GC run recorded is now. `standing`: there, with every file
- * the run recorded present and no shorter. `aside`: not so in its place, but
- * set aside whole by that run, at `aside`. `reached`: gone, or a recorded
+ * How a folder a GC run recorded is now. `aside`: set aside whole by that
+ * run, at `aside`, whatever is in its place. `standing`: in its place, with
+ * every file the run recorded present and no shorter. `reached`: gone, or a recorded
  * file is missing or cut short, so the delete reached it. Extra files and a
  * newer change don't count (#181's A10 review, item 13).
  */
 async function recordedState(root: string, recorded: CollectedPath, planDigest: string): Promise<{ state: 'standing' | 'reached' } | { state: 'aside'; aside: string }> {
+    // A whole folder the run set aside comes first (item 21): whatever is in its place, the owner renames it back, then revokes.
+    const [, photoId, assetRevision] = recorded.path.split('/');
+    const photoDir = path.join(root, 'assets', photoId);
+    const prefix = `${setAsideName(assetRevision, planDigest, '')}`;
+    let names: fs.Dirent[] = [];
+    try {
+        names = await fs.promises.readdir(photoDir, { withFileTypes: true });
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw error;
+    }
+    for (const entry of names.filter((each) => each.isDirectory() && each.name.startsWith(prefix)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        if (await holdsRecorded(path.join(photoDir, entry.name), recorded.files)) return { state: 'aside', aside: `assets/${photoId}/${entry.name}` };
+    }
     const dir = path.join(root, ...recorded.path.split('/'));
     let stat: fs.Stats | null = null;
     try {
@@ -221,21 +234,7 @@ async function recordedState(root: string, recorded: CollectedPath, planDigest: 
     } catch (error) {
         if (!hasErrorCode(error, 'ENOENT')) throw error;
     }
-    if (stat !== null && stat.isDirectory() && !stat.isSymbolicLink() && (await holdsRecorded(dir, recorded.files))) return { state: 'standing' };
-    // Gone from its place, or something else is there: the run may have set it aside whole and stopped.
-    const [, photoId, assetRevision] = recorded.path.split('/');
-    const photoDir = path.join(root, 'assets', photoId);
-    const prefix = setAsideName(assetRevision, planDigest, '').slice(0, -1);
-    let names: fs.Dirent[] = [];
-    try {
-        names = await fs.promises.readdir(photoDir, { withFileTypes: true });
-    } catch (error) {
-        if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw error;
-    }
-    for (const entry of names.filter((each) => each.isDirectory() && each.name.startsWith(`${prefix}-`)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-        if (await holdsRecorded(path.join(photoDir, entry.name), recorded.files)) return { state: 'aside', aside: `assets/${photoId}/${entry.name}` };
-    }
-    return { state: 'reached' };
+    return { state: stat !== null && stat.isDirectory() && !stat.isSymbolicLink() && (await holdsRecorded(dir, recorded.files)) ? 'standing' : 'reached' };
 }
 
 /** What every folder `markers` recorded is now: those a delete reached, and those set aside whole, sorted. */
@@ -249,8 +248,8 @@ async function recordedFolders(root: string, markers: TombstoneEntry['collected'
             if (now.state === 'aside') aside.set(recorded.path, now.aside);
         }
     }
-    // A folder one run set aside whole and another reached is reached.
-    for (const folder of reached) aside.delete(folder);
+    // A folder some run set aside whole can come back, whatever another run's marker found where it was (item 21).
+    for (const folder of aside.keys()) reached.delete(folder);
     return { reached: [...reached].sort(), aside: [...aside].sort().map(([original, at]) => ({ original, path: at })) };
 }
 

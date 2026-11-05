@@ -110,6 +110,8 @@ export type GcKeptReason =
     | 'tombstone-within-grace'
     /** A tombstoned asset folder holding something its manifests don't list, such as an owner's file. GC deletes none of it. */
     | 'unexpected-content'
+    /** A tombstoned asset folder whose asset revision has a `.gc-<r>-…` folder a stopped run left: GC plans nothing over it. */
+    | 'set-aside-leftover'
     /** A tombstoned asset folder #15's always-protected set names, by the source that names it. */
     | 'active-revision'
     | 'working-layer-series'
@@ -138,7 +140,7 @@ export interface GcKept {
     reason: GcKeptReason;
     /** `tombstoned` only: the standing tombstones that list it. */
     tombstoneIds?: string[];
-    /** For `unexpected-content`: the first path in it its manifests don't account for, relative to the data root. */
+    /** For `unexpected-content`: the first path in it its manifests don't account for. For `set-aside-leftover`: the `.gc-` folder. Relative to the data root. */
     detail?: string;
 }
 
@@ -449,7 +451,8 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
     const live = await liveReferences(root);
     const tombstones = await readTombstones(root);
     assertTombstonesRead(tombstones);
-    const assets = await assetPlan(realRoot, [...found, ...live], tombstones, now);
+    const leftovers = await setAsideFolders(realRoot, tombstones);
+    const assets = await assetPlan(realRoot, [...found, ...live], tombstones, now, leftovers);
     toDelete.push(...assets.delete);
     kept.push(...assets.kept);
     const deleteBytes = toDelete.reduce((sum, entry) => sum + entry.bytes, 0);
@@ -464,7 +467,7 @@ async function scan(root: string, realRoot: string, now: number, leaseMs: number
         tombstones: tombstones.tombstones.filter((entry) => entry.revoked === null).length,
         bytes: { delete: deleteBytes, unreferenced: assets.unreferenced.reduce((sum, set) => sum + set.bytes, 0), protected: assets.protectedBytes },
         assetsNote: assets.note,
-        leftovers: await setAsideFolders(realRoot, tombstones),
+        leftovers,
         digest: planDigest(GC_GRACE_MS, toDelete),
     };
 }
@@ -532,7 +535,7 @@ async function assetFolders(realRoot: string): Promise<{ folders: AssetFolder[];
  * profile, or when every such tombstone is 7 days old or less. Otherwise it
  * goes, whatever older revisions, candidates or the photo's own record say.
  */
-async function assetPlan(realRoot: string, refs: readonly AssetReference[], tombstones: TombstoneRead, now: number) {
+async function assetPlan(realRoot: string, refs: readonly AssetReference[], tombstones: TombstoneRead, now: number, leftovers: readonly SetAsideFolder[]) {
     const toDelete: GcEntry[] = [];
     const kept: GcKept[] = [];
     const unreferenced: GcUnreferenced[] = [];
@@ -585,6 +588,12 @@ async function assetPlan(realRoot: string, refs: readonly AssetReference[], tomb
         if (past.length === 0) {
             keep('tombstone-within-grace');
             count('tombstone-within-grace', folder.bytes);
+            continue;
+        }
+        // A stopped run's .gc- folder for this asset revision, whole or not, waits for the owner: nothing is planned over it (item 21).
+        const left = leftovers.find((each) => each.original === folder.path);
+        if (left) {
+            keep('set-aside-leftover', left.path);
             continue;
         }
         // Only what a build made: a folder its manifests don't account for stays whole.
@@ -782,6 +791,9 @@ function assertSetAside(realRoot: string, aside: string, checked: Checked): void
     if (stat.isSymbolicLink() || !stat.isDirectory() || stat.dev !== checked.dev || stat.ino !== checked.ino) throw new UnsafePathError(posix(path.relative(realRoot, aside)), 'is not the folder GC set aside');
 }
 
+/** putBack()'s answer when what is at the aside path isn't the folder GC moved. */
+const NOT_OURS = 'not-ours';
+
 /**
  * Put a folder set aside back where it was. Null when it's back, else why it
  * isn't. Only the very folder GC moved goes back, by dev and inode: anything
@@ -790,7 +802,7 @@ function assertSetAside(realRoot: string, aside: string, checked: Checked): void
 function putBack(aside: string, checked: Checked): string | null {
     try {
         const stat = fs.lstatSync(aside);
-        if (stat.isSymbolicLink() || !stat.isDirectory() || stat.dev !== checked.dev || stat.ino !== checked.ino) return 'what is there is not the folder GC set aside';
+        if (stat.isSymbolicLink() || !stat.isDirectory() || stat.dev !== checked.dev || stat.ino !== checked.ino) return NOT_OURS;
         fs.renameSync(aside, checked.target);
         return null;
     } catch (error) {
@@ -994,7 +1006,7 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
             // What is set aside is still what was checked: an owner's file that came in since keeps it.
             const content = await manifestContent(aside, entry.path, photoId, assetRevision);
             if (!content.listed || canonicalJson(content.files) !== canonicalJson(entry.files ?? []) || (await folderFacts(aside)).newestMs !== entry.newestMs) {
-                throw new EntryChangedError(`${entry.path} changed after GC set it aside${content.listed ? '' : `: it holds ${content.unexpected.replace(relative(aside), entry.path)}, which its manifests don't list`}.`);
+                throw new EntryChangedError(`${entry.path} changed after GC set it aside${content.listed ? '' : `: it holds ${content.unexpected}, which its manifests don't list`}.`);
             }
             await hooks.beforeRemove?.(entry, aside);
             if (!(await stillHeld(locks))) throw new LockLostError();
@@ -1004,8 +1016,11 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
             const stuck = putBack(aside, checked);
             const why = error instanceof ProtectedNowError ? error.message : error instanceof LockLostError ? 'GC lost the catalog or authored lock.' : sentence(error instanceof EntryChangedError || error instanceof UnsafePathError ? error.message.replace(/ Nothing was deleted\.$/, '') : errorText(error, [realRoot, root]));
             if (stuck !== null) {
-                // Exit 4 either way, and the owner learns where the folder is.
-                return finish(error instanceof ProtectedNowError ? 'NOW_PROTECTED' : 'STORAGE_ERROR', `${why} GC couldn't put ${entry.path} back (${stuck}), so it is ${whole}. GC never deletes it. GC stopped there.${deletedSoFar()}`);
+                // Exit 4 either way, and the owner learns where the folder is, or that what is there isn't it.
+                const where = stuck === NOT_OURS
+                    ? `GC can't find the folder it set aside; what is at ${relative(aside)} isn't it.`
+                    : `GC couldn't put ${entry.path} back (${stuck}), so it is ${whole}. GC never deletes it.`;
+                return finish(error instanceof ProtectedNowError ? 'NOW_PROTECTED' : 'STORAGE_ERROR', `${why} ${where} GC stopped there.${deletedSoFar()}`);
             }
             const back = `GC put ${entry.path} back and stopped there.${deletedSoFar()}`;
             if (error instanceof ProtectedNowError) return finish('NOW_PROTECTED', `${why} ${back} Run the dry run again.`);

@@ -95,13 +95,19 @@ export async function viaFsAliases(name: string): Promise<void> {
     await promises[name as 'rm']('x');
     const { ['rm']: r } = fsp;
     await r('x');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- the rail's positive control: a form it must catch
     Reflect.get(require('fs'), name);
 }
 
 export async function viaDynamicModule(name: string): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- the rail's positive control: a form it must catch
     require(name);
     await import(name);
     const load = createRequire(import.meta.url);
     load('rimraf/dist/sync');
     createRequire(import.meta.url)('del');
+}
+
+export function viaHandOff(hand: (run: (command: string) => unknown) => void): void {
+    hand(cp.execSync);
 }
