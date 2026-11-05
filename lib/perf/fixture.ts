@@ -19,7 +19,8 @@ import { buildTestCatalog, type TestCatalogContent, type TestCatalogOptions, typ
  * there, and every series record from the seed and its index, never from the
  * photo count. So `{ photos: 500 }` keeps the 100 series, their copy and
  * covers, and the featured 100, and shrinks the rest, which is what the scale
- * test compares. Three things are held still for e2e/first-viewport.spec.ts,
+ * test compares. The long series shrinks to 98 there, so it has no photograph
+ * 600, and the Viewer's real-length figure goes with it. Three things are held still for e2e/first-viewport.spec.ts,
  * which sizes the first viewport on this library: no cover is a panorama or
  * shown whole, the featured series holds no panorama, and its first two
  * photographs, Home's eager pair and the Viewer's lead there, are plain 3:2
@@ -113,7 +114,10 @@ const VOWELS = 'aeiou';
 /**
  * Seeded prose of exactly `length` characters: syllables in words, with a
  * full stop now and then. Random syllables gzip worse than real prose, so
- * every number built on them errs high. No digits, so no camera token.
+ * the copy errs high. Not every number does: each record carries the test
+ * catalog's 10 px placeholder LQIP, smaller than a real one, so a model that
+ * ships one (Home's opening, a series cover) errs low by that much. No
+ * digits, so no camera token.
  */
 function prose(random: () => number, length: number): string {
     const pick = (from: string) => from[Math.floor(random() * from.length)];

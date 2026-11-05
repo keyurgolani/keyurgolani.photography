@@ -24,9 +24,10 @@
  * Home ships the ordered ID list of every featured series, since v1.5.0
  * plays them all as one loop, at about 22 B gzip a photograph on the
  * fixture, plus the three records around the opening one. So Home's 50 KiB
- * holds about HOME_ID_LIST_PHOTOS (2,300) featured photographs in total,
- * across all featured series, whatever their number (limit 25). Past that,
- * `photos validate` warns.
+ * holds about HOME_ID_LIST_PHOTOS (2,000) featured photographs in total,
+ * across all featured series, whatever their number (limit 25). The fixture
+ * reaches about 2,300; the line keeps a tenth of room for real copy. Past
+ * the budget, `photos validate` warns.
  */
 
 export const KIB = 1024;
@@ -74,11 +75,12 @@ export type Screen = keyof typeof SCREEN_BUDGETS;
 export type BrowserScreen = Exclude<Screen, 'seriesContinuationPage'>;
 
 /**
- * Featured photographs, across every featured series, that Home's 50 KiB
- * holds: limit 25, from the fixture's ID cost. budgets.test.ts checks the
- * fixture still reaches it, and `photos validate` prints the library's own.
+ * About how many featured photographs, across every featured series, Home's
+ * 50 KiB holds: limit 25. A documented estimate, not a budget. The fixture's
+ * ID cost gives about 2,300, and budgets.test.ts checks this stays at least a
+ * tenth under that. `photos validate` prints the library's own cost.
  */
-export const HOME_ID_LIST_PHOTOS = 2_300;
+export const HOME_ID_LIST_PHOTOS = 2_000;
 
 /** The browser's two profiles: a phone at 390×844 (DPR 3, touch) and a desktop at 1440×900 (DPR 2), from #6's refined table. */
 export type BrowserProfile = 'phone' | 'desktop';
