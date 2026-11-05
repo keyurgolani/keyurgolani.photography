@@ -99,7 +99,8 @@ describe('event keys', () => {
     });
 
     it('refuse a record from a newer build', () => {
-        expect(parseEvent({ schemaVersion: 2 })).toMatchObject({ ok: false, reason: 'unknown-schema-version' });
+        expect(parseEvent({ schemaVersion: 3 })).toMatchObject({ ok: false, reason: 'unknown-schema-version' });
+        expect(parseEvent({ schemaVersion: 2 })).toMatchObject({ ok: false, reason: 'invalid' });
         expect(parseEvent({ schemaVersion: 1 })).toMatchObject({ ok: false, reason: 'invalid' });
     });
 });

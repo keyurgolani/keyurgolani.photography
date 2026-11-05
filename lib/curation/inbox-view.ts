@@ -300,9 +300,12 @@ export interface InboxDetail extends InboxItem {
  * `gone` and `moved` a failed build that built, whose photograph the registry dropped, or whose file moved on.
  * `identified` and `unheld` are an ambiguous item #10 no longer holds in doubt (#14), because a photograph has its
  * bytes or because the file changed or left, and `superseded` a replacement whose source changed again first.
+ * A5's: `reverted` a replacement whose source went back to earlier bytes, `withdrawn` a missing photograph nothing
+ * lists, `split` a replacement whose file became its own photograph, and `restored` a new photograph whose bytes
+ * brought an archived one back.
  */
 export type ResolvedCause =
-    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' }
+    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' }
     | { kind: 'merged'; into: string | null };
 
 /**
@@ -360,6 +363,14 @@ export function resolvedResponse(cause: ResolvedCause | null, type: CurationEven
             return "The file changed or left the library, so there's nothing left to decide here.";
         case 'superseded':
             return 'The file changed again before this version was built, so the newer replacement item reviews it instead.';
+        case 'reverted':
+            return 'The file went back to an earlier version, so there is nothing new here to confirm.';
+        case 'withdrawn':
+            return 'No published revision or draft series lists the photograph, so its file going takes nothing down.';
+        case 'split':
+            return "The file is its own photograph now, and that photograph's new item reviews it.";
+        case 'restored':
+            return 'This file brought the archived photograph back under its old ID, so its own item places it.';
         default:
             return 'The watcher closed it. History says what it found.';
     }

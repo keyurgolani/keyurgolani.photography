@@ -112,6 +112,13 @@ export interface IdentityFact {
     samePathAs?: string;
     revert?: boolean;
     reason?: ProcessingFailure;
+    /**
+     * A5 (#17): for a `new` file with other pixels, the missing photo it may
+     * be, by the same file name or the same capture time. Only a suggestion:
+     * nothing binds it until the curator does.
+     */
+    suggestedFor?: string;
+    suggestedBy?: 'basename' | 'capture-time';
 }
 
 export interface Registry {

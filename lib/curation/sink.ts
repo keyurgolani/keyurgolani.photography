@@ -14,6 +14,8 @@ import {
     KEPT_FACT_IDS,
     REOPEN_REASONS,
     SAME_BYTES_BACK,
+    type Comparison,
+    type ComparisonSide,
     type CurationEvent,
     type CurationEventType,
     type DerivedFacts,
@@ -63,9 +65,53 @@ function derivedFactsOf(fact: IdentityFact, registry: Registry | null): DerivedF
         ...(fact.samePathAs === undefined ? {} : { samePathAs: fact.samePathAs }),
         ...(fact.revert === undefined ? {} : { revert: fact.revert }),
         ...(fact.reason === undefined ? {} : { failure: fact.reason }),
+        // #17, A5: a suggestion only, for the missing item's bind.
+        ...(typeof fact.suggestedFor === 'string' && PHOTO_ID_RE.test(fact.suggestedFor) && (fact.suggestedBy === 'basename' || fact.suggestedBy === 'capture-time')
+            ? { suggestedFor: fact.suggestedFor, suggestedBy: fact.suggestedBy }
+            : {}),
         // Only #10's public tier. GPS, the full timestamp, artist, and copyright stay in the registry.
         ...(revision ? { capturedDate: revision.derived.capturedDate?.value ?? null, width: revision.width, height: revision.height, sourceFormat: revision.sourceFormat } : {}),
     };
+}
+
+/** One side of a replacement's comparison, from #10's record of the revision, or null when the registry has none. */
+function sideOf(registry: Registry | null, photoId: string, assetRevision: string): ComparisonSide | null {
+    const revision = registry?.photos[photoId]?.revisions[assetRevision];
+    if (!revision) return null;
+    const { width, height } = revision;
+    const sized = width !== null && height !== null;
+    return {
+        assetRevision,
+        width,
+        height,
+        aspectRatio: sized ? Math.round((width / height) * 10_000) / 10_000 : null,
+        orientation: !sized ? null : width > height ? 'landscape' : width < height ? 'portrait' : 'square',
+        // The public tier's date only: the full timestamp is curator-only EXIF, which stays in the registry.
+        capturedAt: revision.derived.capturedDate?.value ?? null,
+        bytes: revision.sourceBytes,
+    };
+}
+
+/** How far the aspect ratio may move before a replacement's review is told to look (#17, A5): 1%. */
+export const ASPECT_CHANGE = 0.01;
+
+/**
+ * A replacement's bytes against the revision the photo record pins (#17,
+ * A5), with a note when the aspect ratio moves over 1% or the orientation
+ * flips between landscape and portrait. Null with no record, with the record
+ * on these bytes, as after a revert, or with either revision unknown.
+ */
+export function comparisonOf(registry: Registry | null, photoId: string, pinned: string | null, assetRevision: string): Comparison | null {
+    if (pinned === null || pinned === assetRevision) return null;
+    const before = sideOf(registry, photoId, pinned);
+    const after = sideOf(registry, photoId, assetRevision);
+    if (before === null || after === null) return null;
+    const notes: Comparison['notes'] = [];
+    // From the exact sizes, not the rounded ratios.
+    if (before.width && before.height && after.width && after.height && Math.abs((after.width / after.height) / (before.width / before.height) - 1) > ASPECT_CHANGE) notes.push('aspect-ratio');
+    const flat = (side: ComparisonSide) => (side.orientation === 'square' ? null : side.orientation);
+    if (flat(before) !== null && flat(after) !== null && flat(before) !== flat(after)) notes.push('orientation');
+    return { before, after, notes };
 }
 
 interface SuggestContext {
@@ -138,7 +184,7 @@ function reopenReasonOf(type: CurationEventType, event: CurationEvent): string |
     if (close?.action !== 'close' || close.by !== 'watcher' || close.reason === undefined) return null;
     const cause = closeCauseOf(close.reason);
     if (type === 'ambiguous' && (cause === 'identified' || cause === 'unheld')) return REOPEN_REASONS.held;
-    if (type === 'replacement' && (cause === 'superseded' || cause === 'moved')) return REOPEN_REASONS.back;
+    if (type === 'replacement' && (cause === 'superseded' || cause === 'moved' || cause === 'reverted')) return REOPEN_REASONS.back;
     return null;
 }
 
@@ -206,6 +252,11 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     throw error;
                 }
             };
+            /**
+             * The revision the photo record pins, or null for no record. The comparison it feeds is for the review
+             * only, so a record that can't be read, for any reason, gives none and fails nothing.
+             */
+            const pinnedOf = (photoId: string): Promise<string | null> => readAuthoredRecord(root, 'photo', photoId).then((record) => record?.assetRevision ?? null, () => null);
             const readOrSkip = (eventId: string) => readEvent(root, eventId).catch((error: unknown) => {
                 if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
                 throw error;
@@ -315,6 +366,11 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 } catch {
                     skip(fact, 'it does not make a valid inbox event');
                     continue;
+                }
+                if (type === 'replacement' && fact.photoId !== null) {
+                    // #17, A5: what the review compares, against what the draft pins as the item opens.
+                    const comparison = comparisonOf(registry, fact.photoId, await pinnedOf(fact.photoId), fact.assetRevision);
+                    if (comparison !== null) fresh = { ...fresh, derivedFacts: { ...fresh.derivedFacts, comparison } };
                 }
                 let existing: CurationEvent | null;
                 try {

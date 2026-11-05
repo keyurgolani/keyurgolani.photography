@@ -243,24 +243,33 @@ describe('the same bytes back', { timeout: 60_000 }, () => {
     it.each([
         ['at its path', 'harbor/third.jpg'],
         ['at a new path', 'harbor/third-moved.jpg'],
-    ])('open the item again for a draft photo nothing shows, back %s and then gone again', async (_label, back) => {
+    ])('withdraw a draft photo nothing lists each time it goes, and open its new item when it is back %s', async (_label, back) => {
         const w = await world();
         const R_PATH = 'harbor/third.jpg';
         fs.writeFileSync(w.lib.file(R_PATH), images.third);
         const r = (await w.pass()).find((fact) => fact.type === 'new')?.photoId as string;
         const id = missingEventId(r, (await w.registry()).photos[r].source.observedRevision);
+        const fresh = (await listEvents(w.root)).events.find((event) => event.type === 'new' && event.photoId === r) as CurationEvent;
         fs.rmSync(w.lib.file(R_PATH));
         await w.pass();
-        expect(await w.event(id)).toMatchObject({ status: 'open', photoId: r });
+        // A5: no revision or series lists R, so its going takes nothing down, and there is nothing to place.
+        const withdrawn = await w.event(id);
+        expect(withdrawn).toMatchObject({ status: 'resolved', photoId: r });
+        expect(withdrawn.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', resolution: 'withdrawn' });
+        expect((await w.event(fresh.id)).decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', resolution: 'withdrawn' });
         fs.writeFileSync(w.lib.file(back), images.third);
         await w.pass();
-        expectClosedAsBack(await w.event(id));
-        // Nothing shows R, so only the sources sink's rule opens its item again.
+        expect(await w.event(id)).toMatchObject({ status: 'resolved', version: withdrawn.version });
+        const reopened = await w.event(fresh.id);
+        expect(reopened).toMatchObject({ status: 'open' });
+        expect(reopened.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher' });
         fs.rmSync(w.lib.file(back));
         await w.pass();
-        const item = await w.event(id);
-        expect(item.status).toBe('open');
-        expect(item.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: 'The source went missing again.' });
+        // The same evidence again folds into the withdrawn item, which stays as it was.
+        const again = await w.event(id);
+        expect(again).toMatchObject({ status: 'resolved' });
+        expect(again.decisions).toEqual(withdrawn.decisions);
+        expect((await w.event(fresh.id)).decisions.at(-1)).toMatchObject({ action: 'close', resolution: 'withdrawn' });
     });
 });
 
@@ -725,11 +734,14 @@ describe('a file copied over another photo', { timeout: 60_000 }, () => {
         expect(registry.photos[r]).toMatchObject({ sourceHealth: 'missing' });
         expect(registry.photos[r].mergedInto).toBeUndefined();
         expect((await w.event(w.missingId)).status).toBe('resolved');
-        // R keeps its own items: none closes saying a bind gave its bytes away, and its disappearance gets one.
+        // R keeps its own items: none closes saying a bind gave its bytes away. Nothing lists R, so its going
+        // withdraws them (A5) instead of asking for a bind or an archive.
         const rNew = await w.event(rItem.id);
-        expect(rNew.status).not.toBe('resolved');
         expect(JSON.stringify(rNew.decisions)).not.toContain('A bind gave these bytes');
-        expect(await w.event(missingEventId(r, rRevision))).toMatchObject({ status: 'open', photoId: r });
+        expect(rNew.decisions.at(-1)).toMatchObject({ action: 'close', resolution: 'withdrawn' });
+        const rMissing = await w.event(missingEventId(r, rRevision));
+        expect(rMissing).toMatchObject({ status: 'resolved', photoId: r });
+        expect(rMissing.decisions.at(-1)).toMatchObject({ action: 'close', resolution: 'withdrawn' });
     });
 });
 
@@ -1411,7 +1423,9 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
         const { r, job } = await failedR(w);
         fs.rmSync(w.lib.file(R_PATH));
         await w.pass();
+        // A failed build still asks for judgment, so R's missing item isn't withdrawn (A5 review) and archive still settles it.
         const missing = await w.event(missingEventId(r, job.assetRevision));
+        expect(missing.status).toBe('open');
         expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
         expect((await w.event(failureEventId(r, job.assetRevision))).status).toBe('failed');
         expect(await w.pass()).toEqual([]);

@@ -1074,21 +1074,21 @@ describe('an older revision\'s bytes', { timeout: 60_000 }, () => {
         expect((await photoRecord(w)).assetRevision).toBe(w.b);
     });
 
-    it('that the photo record still pins confirm with nothing written', async () => {
+    it('that the photo record still pins close both items as reverted, with nothing to confirm', async () => {
         const w = await world();
         await w.build(w.job(w.b));
         fs.writeFileSync(w.lib.file(P_PATH), images.original);
         await w.pass();
         const revert = await w.event(replacementEventId(w.p, w.a));
         expect(revert.candidate).toMatchObject({ state: 'ready' });
-        // B's item is moot now: the source holds A again, so the watcher closed it as moved (#183), and confirm refuses it.
+        // B's item is moot now: the source holds A again, which the record pins, so the watcher closed it as
+        // reverted (A5, which A1's review asked to name better than moved), and confirm refuses it. So does A's own.
         const stale = await w.event();
-        expect(stale.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.moved });
-        expect(await confirm(w, stale)).toMatchObject({ ok: false, code: 'refused' });
+        expect(stale.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.reverted, resolution: 'reverted' });
+        expect(revert.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.reverted, resolution: 'reverted' });
         const authored = treeBytes(path.join(w.root, 'authored'));
-        const result = await confirm(w, revert);
-        expect(result).toMatchObject({ ok: true, event: { status: 'approved', decisions: [{ action: 'confirm', writes: [] }] } });
-        expect(result.ok && result.notes.join(' ')).toMatch(/already pins/);
+        expect(await confirm(w, stale)).toMatchObject({ ok: false, code: 'refused' });
+        expect(await confirm(w, revert)).toMatchObject({ ok: false, code: 'refused' });
         expect(treeBytes(path.join(w.root, 'authored'))).toEqual(authored);
     });
 });
@@ -1355,7 +1355,8 @@ describe('a replacement superseded by newer bytes (#17)', { timeout: 60_000 }, (
         expect(back.status).toBe('open');
         expect(back.candidate).toBeUndefined();
         expect(back.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: REOPEN_REASONS.back });
-        expect((await w.event(replacementEventId(w.p, c))).decisions.at(-1)).toMatchObject({ action: 'close', reason: CLOSE_REASONS.moved });
+        // Going back to B reverts C (A5): its close says so, rather than moved.
+        expect((await w.event(replacementEventId(w.p, c))).decisions.at(-1)).toMatchObject({ action: 'close', reason: CLOSE_REASONS.reverted, resolution: 'reverted' });
         expect(await openReplacements(w)).toEqual([w.eventId]);
         expect(await w.build(w.job(w.b))).toMatchObject({ status: 'ready' });
         expect(await w.event()).toMatchObject({ status: 'open', candidate: { state: 'ready' } });

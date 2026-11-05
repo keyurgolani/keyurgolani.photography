@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ASSET_REVISION_RE, PHOTO_ID_RE, PROFILE_ID_RE } from '../identity/ids';
 import type { IdentityFact, IdentityFactType, Registry } from '../identity/types';
 import { SERIES_ID_RE } from '../catalog/schema';
+import { v1Reads } from './events-v1';
 
 /**
  * Curation events: the inbox items #10's facts open. One event per
@@ -14,7 +15,16 @@ import { SERIES_ID_RE } from '../catalog/schema';
  * library-relative, as #10's facts carry them.
  */
 
-export const CURATION_SCHEMA_VERSION = 1;
+/**
+ * Version 2 (A5, v2.0.0) adds the resolutions, the `resolve` and
+ * `confirm-missing` actions, the restore and resolve fields on a decision,
+ * and the comparison and suggestion facts. A build reads every version up to
+ * its own. Each version file is stamped with the oldest version that reads
+ * it (schemaVersionFor()), so after an image rollback v1.7.x keeps reading
+ * every item that holds nothing new, and reads the rest as a newer build's
+ * (`unknown-schema-version`) rather than as damaged. It never writes those.
+ */
+export const CURATION_SCHEMA_VERSION = 2;
 
 export const EVENT_TYPES = ['new', 'replacement', 'missing', 'reappeared', 'ambiguous', 'processing-failure'] as const;
 export type CurationEventType = (typeof EVENT_TYPES)[number];
@@ -26,11 +36,28 @@ export type CurationEventStatus = (typeof EVENT_STATUSES)[number];
 /**
  * `confirm` is #17's "Confirm new asset revision", for a replacement. `bind`
  * and `archive` are #17's "Bind an intentional replacement" and "Archive
- * after removing series references", for a missing source. `close` is the
- * watcher's, when it resolves an item.
+ * after removing series references", for a missing source; `bind` also
+ * answers an ambiguous item with the photograph its file is (`to`). `close`
+ * is the watcher's, when it resolves an item. Version 2 adds `resolve`, the
+ * curator's answer to an ambiguous item (`--as new` or `--as replacement-of`)
+ * or to a replacement whose file is really another photograph (`--as new`),
+ * and `confirm-missing`, the curator's word that a missing source is gone on
+ * purpose, which writes the item and nothing else.
  */
-export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'close'] as const;
+export const ACTIONS = ['edit', 'approve', 'defer', 'dismiss', 'retry', 'reopen', 'confirm', 'bind', 'archive', 'close', 'resolve', 'confirm-missing'] as const;
 export type CurationAction = (typeof ACTIONS)[number];
+
+/**
+ * What the watcher's close says became of an item, recorded on the close
+ * from version 2 (A5). `reverted`: a replacement whose source went back to
+ * older bytes. `withdrawn`: a missing photograph no revision or series lists.
+ * `split`: a replacement whose file became its own photograph, after
+ * `resolve --as new`. `restored`: a new photograph whose bytes brought an
+ * archived one back under its old ID, after approving it. The closes before
+ * version 2 say what they are in their reason only (closeCauseOf()).
+ */
+export const RESOLUTIONS = ['reverted', 'withdrawn', 'split', 'restored'] as const;
+export type Resolution = (typeof RESOLUTIONS)[number];
 
 /** `evt_` plus 24 hex of the SHA-256 of the event's key. Event folders are named only by this. */
 export const EVENT_ID_RE = /^evt_[0-9a-f]{24}$/;
@@ -102,6 +129,33 @@ export type CuratorEdits = z.infer<typeof editsSchema>;
 
 export const FAILURE_REASONS = ['unsupported-format', 'digest-collision', 'undecodable'] as const;
 
+/**
+ * One side of a replacement's comparison (#17, A5): oriented size, aspect
+ * ratio (width over height, to 4 places), orientation by that size, the
+ * public tier's capture date, and the source's bytes.
+ */
+export const comparisonSideSchema = z.strictObject({
+    assetRevision: z.string().regex(ASSET_REVISION_RE),
+    width: z.number().int().positive().nullable(),
+    height: z.number().int().positive().nullable(),
+    aspectRatio: z.number().positive().nullable(),
+    orientation: z.enum(['landscape', 'portrait', 'square']).nullable(),
+    capturedAt: z.iso.date().nullable(),
+    bytes: z.number().int().nonnegative(),
+});
+export type ComparisonSide = z.infer<typeof comparisonSideSchema>;
+
+/** What a replacement's review should look at: the aspect ratio moving over 1%, or the orientation flipping. */
+export const COMPARISON_NOTES = ['aspect-ratio', 'orientation'] as const;
+
+/** A replacement's bytes against the revision the photo record pinned when it opened (#17, A5). */
+export const comparisonSchema = z.strictObject({
+    before: comparisonSideSchema,
+    after: comparisonSideSchema,
+    notes: z.array(z.enum(COMPARISON_NOTES)),
+});
+export type Comparison = z.infer<typeof comparisonSchema>;
+
 /** Facts the watcher saw. Curator-only, but never GPS or any other curator-only EXIF, and never an absolute path. */
 export const derivedFactsSchema = z.strictObject({
     factType: z.enum(['new', 'renamed', 'reappeared', 'replaced', 'metadata-changed', 'ambiguous', 'missing', 'processing-failed']),
@@ -119,6 +173,11 @@ export const derivedFactsSchema = z.strictObject({
     width: z.number().int().positive().nullable().optional(),
     height: z.number().int().positive().nullable().optional(),
     sourceFormat: z.string().optional(),
+    /** Version 2: a replacement's before and after (A5). */
+    comparison: comparisonSchema.optional(),
+    /** Version 2: the missing photograph #10 suggests a new file is, by its file name or its capture time (A5). */
+    suggestedFor: photoId.optional(),
+    suggestedBy: z.enum(['basename', 'capture-time']).optional(),
 });
 export type DerivedFacts = z.infer<typeof derivedFactsSchema>;
 
@@ -141,6 +200,14 @@ export const decisionSchema = z.strictObject({
     fromRevision: z.string().regex(ASSET_REVISION_RE).optional(),
     /** For a bind: the library-relative path the #10 `bind` decision gives the photo. */
     path: libraryPath.optional(),
+    /** Version 2. For the watcher's close: what became of the item (RESOLUTIONS). */
+    resolution: z.enum(RESOLUTIONS).optional(),
+    /** Version 2. For a resolve: the curator's answer. */
+    resolveAs: z.enum(['new', 'replacement-of']).optional(),
+    /** Version 2. For a resolve `--as replacement-of`, or a bind `--to`: the photograph the file is given to. */
+    to: photoId.optional(),
+    /** Version 2. For an approve: the archived photograph the #10 `restore` decision brings back with these bytes. */
+    restores: photoId.optional(),
 });
 export type CurationDecision = z.infer<typeof decisionSchema>;
 
@@ -165,7 +232,7 @@ export const candidateSchema = z.strictObject({
 export type Candidate = z.infer<typeof candidateSchema>;
 
 export const curationEventSchema = z.strictObject({
-    schemaVersion: z.literal(CURATION_SCHEMA_VERSION),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     /** Compare-and-swap counter: the version file it was read from. */
     version: z.number().int().positive(),
     id: z.string().regex(EVENT_ID_RE),
@@ -202,6 +269,18 @@ export function parseEvent(value: unknown): ParsedEvent {
     const parsed = curationEventSchema.safeParse(value);
     if (parsed.success) return { ok: true, event: parsed.data };
     return { ok: false, reason: 'invalid', issues: parsed.error.issues.slice(0, 5).map((issue) => `${issue.path.join('.') || '(record)'}: ${issue.message}`) };
+}
+
+/**
+ * The oldest schema version that reads `event` as it is: 1 only when a
+ * frozen copy of v1.7.0's schema (lib/curation/events-v1.ts), enum values
+ * included, parses it as version 1, else 2. The repository stamps each
+ * version file with it, so v1.7.x, after an image rollback, reads what it
+ * can, and reads the rest as a newer build's. A new type, status, action,
+ * field, or enum value is stamped 2 by itself.
+ */
+export function schemaVersionFor(event: CurationEvent): 1 | 2 {
+    return v1Reads({ ...event, schemaVersion: 1 }) ? 1 : 2;
 }
 
 /** The source fingerprint for an asset revision: `fp_` plus its 64 hex. */
@@ -335,18 +414,43 @@ export const CLOSE_REASONS = {
     unheld: 'The file changed or left the library, so nothing is in doubt.',
     /** #17: a replacement whose derivative set the writer refused because the source moved on to newer bytes. */
     superseded: 'The source changed again before this derivative set was built, so the newer replacement item is the one to review.',
+    /** A5 (#14): a replacement whose source went back to older bytes, so these are no longer the file's. */
+    reverted: 'The source went back to an earlier version, so these bytes are no longer the file.',
+    /** A5 (#17): a missing photograph that no catalog revision and no draft series lists. */
+    withdrawn: 'No catalog revision or draft series lists the photograph, so its file going missing takes nothing down.',
+    /** A5 (#17): a replacement whose file `curation resolve --as new` made its own photograph. */
+    split: (photoId: string) => `The file is its own photograph now, ${photoId}, whose new item reviews it.`,
+    /** A5 (#17): a new photograph whose bytes brought back an archived one under its old ID, after approving it. */
+    restored: (photoId: string) => `These bytes brought back the archived photograph ${photoId} under its old ID.`,
 } as const;
 
-/** The watcher's reopen reasons for the items CLOSE_REASONS' `identified`, `unheld`, `superseded` and a replacement's `moved` closed (lib/curation/sink.ts). */
+/**
+ * The watcher's reopen reasons for the items CLOSE_REASONS' `identified`, `unheld`, `superseded` and a replacement's
+ * `moved` and `reverted` closed (lib/curation/sink.ts), and for a new photograph's item `archived` closed, once a
+ * restore brings the photograph back (lib/curation/sources.ts).
+ */
 export const REOPEN_REASONS = {
     held: '#10 holds this file in doubt again.',
     back: 'The source holds these bytes again.',
+    restored: 'The photograph is restored under its old ID, so it can be placed again.',
 } as const;
 
-export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded';
+/** The watcher's close that settled a resolved item, with its cause, or null. */
+export function watcherCloseOf(event: Pick<CurationEvent, 'status' | 'decisions'>): { decision: CurationDecision; cause: CloseCause | null } | null {
+    if (event.status !== 'resolved') return null;
+    const decision = event.decisions.at(-1);
+    if (decision?.action !== 'close' || decision.by !== 'watcher' || decision.reason === undefined) return null;
+    return { decision, cause: decision.resolution ?? closeCauseOf(decision.reason) };
+}
+
+export type CloseCause = 'same-file' | 'other-bytes' | 'merged' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | Resolution;
 
 /** Which of CLOSE_REASONS a watcher's close reason is, or null for any other text. */
 export function closeCauseOf(reason: string): CloseCause | null {
+    if (reason === CLOSE_REASONS.reverted) return 'reverted';
+    if (reason === CLOSE_REASONS.withdrawn) return 'withdrawn';
+    if (/^The file is its own photograph now, .+, whose new item reviews it\.$/.test(reason)) return 'split';
+    if (/^These bytes brought back the archived photograph .+ under its old ID\.$/.test(reason)) return 'restored';
     if (reason === CLOSE_REASONS.archived) return 'archived';
     if (reason === CLOSE_REASONS.gone) return 'gone';
     if (reason === CLOSE_REASONS.moved) return 'moved';
