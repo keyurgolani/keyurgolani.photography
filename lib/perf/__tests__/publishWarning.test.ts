@@ -1,9 +1,12 @@
 // @vitest-environment node
+import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runTsx, type TsxRun } from '../../../test/helpers/runTsx';
+import { REPO_ROOT, runTsx, type TsxRun } from '../../../test/helpers/runTsx';
+import { writeAuthoredRecord } from '../../catalog/working-layer-writer';
+import { readWorkingLayer } from '../../catalog/working-layer';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../../catalog/testing';
 import type { CatalogBudgetMeasurement } from '../catalog-budgets';
-import { budgetLines } from '../catalog-budgets';
+import { budgetLines, childArgv } from '../catalog-budgets';
 import { KIB } from '../budgets';
 import { BUDGET_VARIANT_BYTES } from '../fixture';
 
@@ -24,7 +27,10 @@ async function fixture(options: TestCatalogOptions): Promise<TestCatalog> {
     return catalog;
 }
 
-const validate = (root: string): Promise<TsxRun> => runTsx('scripts/photos.ts', ['validate'], { env: { PHOTOGRAPHY_DATA_DIR: root, PHOTOS_ACTOR: undefined } });
+const validate = (root: string, env: Record<string, string> = {}): Promise<TsxRun> => runTsx('scripts/photos.ts', ['validate'], { env: { PHOTOGRAPHY_DATA_DIR: root, PHOTOS_ACTOR: undefined, ...env } });
+
+/** A stand-in child that answers JSON of the wrong shape (lib/perf/__tests__/fixtures). */
+const WRONG_SHAPE_CHILD = 'lib/perf/__tests__/fixtures/wrong-shape-child.mjs';
 
 /** Seeded syllables, which gzip about as badly as prose can. */
 function noise(length: number, seed = 9): string {
@@ -64,6 +70,48 @@ describe('photos validate', { timeout: 120_000 }, () => {
 
     it('says when the sizes couldn\'t be measured, and keeps validate\'s exit code', () => {
         expect(budgetLines(new Error('the child exited 1'))).toEqual(['Budgets: not measured (the child exited 1).']);
+    });
+
+    it('prints the sizes on stderr beside the issues when validation fails, and still exits 1', async () => {
+        const catalog = await fixture({ seed: 1103, photos: 3, series: 1 });
+        const photo = (await readWorkingLayer(catalog.root)).photos[0];
+        await writeAuthoredRecord({ ...photo, alt: null }, { expectedVersion: photo.version, root: catalog.root });
+        const run = await validate(catalog.root);
+        expect(run.code).toBe(1);
+        expect(run.stderr).toMatch(/^\[photos\] VALIDATION_FAILED: /m);
+        expect(run.stderr).toMatch(/^Budgets \(gzip, lib\/perf\/budgets\.ts\):$/m);
+        expect(run.stderr).toMatch(/^ {2}Work: \d+\.\d KiB of 100 KiB, 1 series$/m);
+        expect(run.stdout).not.toContain('Budgets');
+    });
+
+    it('says the sizes weren\'t measured, and exits 0, when the child answers JSON of the wrong shape', async () => {
+        const catalog = await fixture({ seed: 1104, photos: 3, series: 1 });
+        const run = await validate(catalog.root, { PHOTOS_BUDGETS_CHILD: WRONG_SHAPE_CHILD });
+        expect(run.code, run.stderr).toBe(0);
+        expect(run.stdout).toMatch(/^Budgets: not measured \(.+\)\.$/m);
+        expect(run.stdout).not.toContain('Budgets (gzip');
+    });
+});
+
+describe('the measuring child', () => {
+    it('runs with this process\'s Node flags but no inspector, which would take the parent\'s port', () => {
+        expect(childArgv(['--import', 'tsx', '--inspect', '--inspect-brk=9230', '--inspect-port=0', '--enable-source-maps'])).toEqual(['--import', 'tsx', '--enable-source-maps', '--conditions=react-server']);
+    });
+
+    it('answers a bad input with one line on stderr naming no absolute path, and exits 1', async () => {
+        const run = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+            const child = spawn(process.execPath, ['--import', 'tsx', '--conditions=react-server', 'lib/perf/budgets-cli.ts'], { cwd: REPO_ROOT });
+            let stderr = '';
+            child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+            child.once('error', reject);
+            child.once('close', (code) => resolve({ code, stderr }));
+            child.stdin.end('{"content": {}, "meta": {}}');
+        });
+        expect(run.code).toBe(1);
+        expect(run.stderr.trimEnd().split('\n')).toHaveLength(1);
+        expect(run.stderr).toMatch(/^budgets-cli: \w*Error: /);
+        expect(run.stderr).not.toContain(REPO_ROOT);
+        expect(run.stderr).not.toMatch(/(?:^|\s)\/(?:Users|home|private|tmp|app)\//);
     });
 });
 

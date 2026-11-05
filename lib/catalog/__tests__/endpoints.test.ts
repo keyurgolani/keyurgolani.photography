@@ -14,13 +14,21 @@ import { CATALOG_ENDPOINTS, type CatalogEndpoint } from '../endpoints';
 /** The folders a catalog JSON route can live in: the public API, and #16's preview of it. */
 const TREES = ['app/api/catalog', 'app/curation/preview/[draftId]/site/api/catalog'];
 
-/** Every route.ts under the catalog trees, as the path Next serves it at. */
+/** A route handler's file: route.ts, or any extension Next takes for one. */
+const isRouteFile = (name: string) => /^route\.(?:[cm]?[jt]sx?)$/.test(name);
+
+/** The HTTP methods `source` exports, as a function or a const. */
+function exportedMethods(source: string): string[] {
+    return [...source.matchAll(/^export (?:(?:async )?function |const |let )(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)\b/gm)].map((match) => match[1]);
+}
+
+/** Every route file under the catalog trees, as the path Next serves it at. */
 function routeFiles(): Map<string, string> {
     const found = new Map<string, string>();
     for (const tree of TREES) {
         const dir = path.join(REPO_ROOT, tree);
         for (const relative of fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
-            if (path.basename(relative) !== 'route.ts') continue;
+            if (!isRouteFile(path.basename(relative))) continue;
             const file = path.join(tree, relative);
             found.set(`/${path.dirname(file).split(path.sep).slice(1).join('/')}`, file);
         }
@@ -42,6 +50,12 @@ const endpoint = (route: string): CatalogEndpoint | undefined => CATALOG_ENDPOIN
 describe('the catalog endpoint inventory', () => {
     const files = routeFiles();
 
+    it('takes every form a route can come in', () => {
+        expect(['route.ts', 'route.tsx', 'route.js', 'route.mjs'].map(isRouteFile)).toEqual([true, true, true, true]);
+        expect(['route.test.ts', 'routes.ts', 'page.tsx'].map(isRouteFile)).toEqual([false, false, false]);
+        expect(exportedMethods('export async function GET() {}\nexport function HEAD() {}\nexport const POST = handler;\nexport const dynamic = 1;\n')).toEqual(['GET', 'HEAD', 'POST']);
+    });
+
     it('finds the catalog routes on disk', () => {
         expect(files.size).toBeGreaterThanOrEqual(6);
         expect([...files.keys()]).toContain('/api/catalog/series/[slug]/pages/[cursor]');
@@ -62,7 +76,7 @@ describe('the catalog endpoint inventory', () => {
         if (!file) throw new Error(`${route} is listed but has no route.ts`);
         const source = sourceOf(file);
         // Methods: exactly the handlers the file exports.
-        expect([...source.matchAll(/^export (?:async )?function (GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)\b/gm)].map((match) => match[1]), route).toEqual([entry.method]);
+        expect(exportedMethods(source), route).toEqual([entry.method]);
         // Query: exactly the parameters it reads.
         expect([...new Set([...source.matchAll(/searchParams\.(?:get|getAll|has)\('([^']+)'\)/g)].map((match) => match[1]))].sort(), route).toEqual([...entry.query].sort());
         // Per request, never cached by a CDN or a build.
@@ -92,7 +106,7 @@ describe('the catalog endpoint inventory', () => {
         for (const entry of CATALOG_ENDPOINTS.filter((candidate) => candidate.audience === 'curator-preview')) expect(entry.path.startsWith('/curation/')).toBe(true);
     });
 
-    it('holds the continuation pages, Home\'s later records, and the Viewer\'s peek to their screens\' budgets', () => {
+    it('names the budget each public route\'s 200 is held to, which budgets.test.ts measures', () => {
         expect(Object.fromEntries(CATALOG_ENDPOINTS.filter((entry) => entry.audience === 'public').map((entry) => [entry.path, [entry.method, entry.query, entry.budget, entry.cache]]))).toEqual({
             '/api/catalog/series/[slug]/pages/[cursor]': ['GET', [], 'seriesContinuationPage', 'catalog-validators'],
             '/api/catalog/home/series/[seriesId]/photos/[photoId]': ['GET', ['revision'], 'home', 'catalog-validators'],

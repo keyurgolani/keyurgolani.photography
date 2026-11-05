@@ -8,7 +8,7 @@ import { PHOTO_ID_RE } from '../../identity/ids';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../../identity/variants';
 import { homeRouteOf, homeSeriesPhotosOf, type PublishedHome } from '../../catalog/projections/home';
 import type { PublishedSeriesPage } from '../../catalog/projections/series';
-import type { PublishedViewerPhoto } from '../../catalog/projections/viewer';
+import { viewerPeekFrom, type PublishedViewerPhoto } from '../../catalog/projections/viewer';
 import type { WorkCatalog } from '../../catalog/projections/work';
 import { createCatalogReader, createRouteBuilder, type CatalogReader } from '../../catalog/reader';
 import { buildTestCatalog, createTestCatalog, type TestCatalogContent } from '../../catalog/testing';
@@ -108,7 +108,7 @@ afterAll(() => {
         'largest: records': records,
         'raw KiB': (size.bytes / KIB).toFixed(1),
         'gzip KiB': (size.gzipBytes / KIB).toFixed(1),
-        'budget KiB': SCREEN_BUDGETS[screen].gzipBytes / KIB,
+        'budget KiB': SCREEN_BUDGETS[screen === 'viewerPeek' ? 'viewer' : screen].gzipBytes / KIB,
         note,
     }));
     console.info(`#6 budget fixture: ${fixture.content.photos.length} photos, ${fixture.content.series.length} series, built in ${buildMs} ms`);
@@ -380,12 +380,14 @@ describe('payloads on the 5,000-photo fixture', () => {
             }
             return lengths;
         };
+        const walked = new Map(fixture.content.series.map((series) => [series.slug, pagesOf(series.slug)]));
         for (const series of fixture.content.series) {
-            const lengths = pagesOf(series.slug);
+            const lengths = walked.get(series.slug)!;
             expect(lengths.reduce((sum, length) => sum + length, 0), series.slug).toBe(series.photoIds.length);
             expect(lengths.length, series.slug).toBe(Math.ceil(series.photoIds.length / SCREEN_BUDGETS.seriesFirstPage.photoRecords));
         }
-        expect(pagesOf(fixture.content.series[1].slug)).toEqual(Array.from({ length: 12 }, () => 100));
+        expect(walked.get(fixture.content.series[1].slug)).toEqual(Array.from({ length: 12 }, () => 100));
+        expect([...walked.values()].reduce((sum, lengths) => sum + lengths.length - 1, 0)).toBe(22);
     });
 
     it('Series: a full page of very long copy still fits the byte bound', async () => {
@@ -440,6 +442,25 @@ describe('payloads on the 5,000-photo fixture', () => {
     });
 });
 
+describe('the Viewer\'s peek', () => {
+    it('answers every photograph with a body, as /api/catalog/series/<slug>/photos/<photoId> sends it, within the Viewer\'s budget', async () => {
+        const load = async () => ({ state: 'ok' as const, reader });
+        let largest = 0;
+        for (const series of fixture.content.series) {
+            for (const photoId of series.photoIds) {
+                const result = await viewerPeekFrom(load, series.slug, photoId, fixture.revisionId);
+                if (result.kind !== 'ok') throw new Error(`Expected a peek at ${photoId}, got ${result.kind}`);
+                expect(imagesIn(result.peek), photoId).toHaveLength(SCREEN_BUDGETS.viewer.photoRecords);
+                const { gzipBytes } = payloadSize(result.peek);
+                expect(gzipBytes, photoId).toBeLessThanOrEqual(SCREEN_BUDGETS.viewer.gzipBytes);
+                largest = Math.max(largest, gzipBytes);
+            }
+        }
+        // measureCatalogBudgets() measures the same body, so photos validate warns on it too.
+        expect(measured.screens.viewerPeek.largest).toMatchObject({ budget: 'viewer', gzipBytes: largest });
+    }, 60_000);
+});
+
 describe('measureCatalogBudgets()', () => {
     it('measures every model a screen can serve, keeps the largest of each, and finds none over on the fixture', () => {
         const continuationPages = fixture.content.series.reduce((sum, series) => sum + Math.ceil(series.photoIds.length / 100) - 1, 0);
@@ -449,6 +470,7 @@ describe('measureCatalogBudgets()', () => {
             seriesFirstPage: 100,
             seriesContinuationPage: continuationPages,
             viewer: 5_000,
+            viewerPeek: 5_000,
         });
         expect(measured.revisionId).toBe(fixture.revisionId);
         expect(measured.over).toEqual([]);
@@ -521,7 +543,8 @@ describe('real-length figures (gap 33)', () => {
         expect(measured.home!.featuredPhotos).toBe(FEATURED_PHOTOS);
         expect(measured.home!.bytesPerPhoto).toBeGreaterThan(10);
         expect(measured.home!.bytesPerPhoto).toBeLessThan(40);
-        expect(measured.home!.photosAtBudget).toBeGreaterThanOrEqual(HOME_ID_LIST_PHOTOS);
+        // A documented estimate with room: the fixture's own capacity is at least a tenth over it.
+        expect(HOME_ID_LIST_PHOTOS).toBeLessThanOrEqual(0.9 * measured.home!.photosAtBudget);
     });
 });
 

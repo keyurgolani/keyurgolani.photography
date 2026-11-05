@@ -5,7 +5,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BROWSER_BUDGETS, FIRST_IMAGE_MS, KIB, SCREEN_BUDGETS } from '../budgets';
 import type { CatalogBudgetMeasurement } from '../catalog-budgets';
-import { browserChecks, catalogSection, parseBudgetsArgs, PERF_REPORT_FILE, writePerfReport, type PerfReport } from '../report';
+import { BUDGET_VARIANT_BYTES } from '../fixture';
+import { browserChecks, browserFailures, catalogSection, declaredMediaBytes, openingPhotoId, parseBudgetsArgs, PERF_REPORT_FILE, reportMarkdown, writePerfReport, type BrowserRow, type PerfReport } from '../report';
 
 // `npm run test:budgets`' report (#6 item 14): `.perf/report.json`, each
 // value beside its budget, from the catalog layer and the browser layer.
@@ -33,6 +34,7 @@ const MEASUREMENT: CatalogBudgetMeasurement = {
         seriesFirstPage: { count: 100, largest: row('seriesFirstPage', 12, 100, 'fixture-02') },
         seriesContinuationPage: { count: 0, largest: null },
         viewer: { count: 5_000, largest: row('viewer', 0.7, 10, 'ph_x') },
+        viewerPeek: { count: 5_000, largest: { ...row('viewer', 0.5, 10, 'ph_y'), screen: 'viewerPeek' } },
     },
     over: [row('work', 120, 100, '100 series')],
     home: { featuredPhotos: 100, bytesPerPhoto: 20, photosAtBudget: 2_500 },
@@ -46,6 +48,7 @@ describe('catalogSection()', () => {
             { screen: 'work', subject: '100 series', models: 1, gzipKiB: 120, budgetKiB: 100, over: true },
             { screen: 'seriesFirstPage', subject: 'fixture-02', models: 100, gzipKiB: 12, budgetKiB: 100, over: false },
             { screen: 'viewer', subject: 'ph_x', models: 5_000, gzipKiB: 0.7, budgetKiB: 10, over: false },
+            { screen: 'viewerPeek', subject: 'ph_y', models: 5_000, gzipKiB: 0.5, budgetKiB: 10, over: false },
         ]);
         expect(section.over).toBe(1);
         expect(section.home).toEqual(MEASUREMENT.home);
@@ -83,9 +86,11 @@ describe('browserChecks()', () => {
 
 describe('parseBudgetsArgs()', () => {
     it('defaults to the 5,000-photograph fixture on port 3200', () => {
-        expect(parseBudgetsArgs([])).toEqual({ dataRoot: null, photos: 5_000, port: 3200 });
-        expect(parseBudgetsArgs(['--photos', '500'])).toEqual({ dataRoot: null, photos: 500, port: 3200 });
-        expect(parseBudgetsArgs(['--data-root', 'copy'], { BUDGETS_PORT: '3210' })).toEqual({ dataRoot: path.resolve('copy'), photos: 5_000, port: 3210 });
+        expect(parseBudgetsArgs([])).toEqual({ dataRoot: null, photos: 5_000, port: 3200, build: false });
+        expect(parseBudgetsArgs(['--photos', '500'])).toEqual({ dataRoot: null, photos: 500, port: 3200, build: false });
+        expect(parseBudgetsArgs(['--data-root', 'copy'], { BUDGETS_PORT: '3210' })).toEqual({ dataRoot: path.resolve('copy'), photos: 5_000, port: 3210, build: false });
+        // --build makes a fresh production build even when .next holds one.
+        expect(parseBudgetsArgs(['--build', '--photos', '500'])).toEqual({ dataRoot: null, photos: 500, port: 3200, build: true });
     });
 
     it('refuses what it can\'t use', () => {
@@ -93,6 +98,59 @@ describe('parseBudgetsArgs()', () => {
         expect(() => parseBudgetsArgs(['--data-root'])).toThrow(/--data-root/);
         expect(() => parseBudgetsArgs(['--data-root', 'a', '--photos', '500'])).toThrow(/--photos/);
         expect(() => parseBudgetsArgs(['--watch'])).toThrow(/--watch/);
+    });
+});
+
+describe('the fixture\'s media in the browser', () => {
+    it('counts a /media request at the bytes the fixture declares for its rung and format, and nothing else', () => {
+        const media = '/media/ph_0b6f5d0e-3a8b-4c2d-9e1f-2a3b4c5d6e7f/sha256-abc/p1';
+        expect(declaredMediaBytes(`${media}/w1920.avif`)).toBe(BUDGET_VARIANT_BYTES.w1920.avif);
+        expect(declaredMediaBytes(`${media}/w400.webp`)).toBe(BUDGET_VARIANT_BYTES.w400.webp);
+        expect(declaredMediaBytes(`${media}/w640.avif`)).toBeNull();
+        expect(declaredMediaBytes('/about/portrait/0123/w400.avif')).toBeNull();
+    });
+
+    it('names the opening photograph from the preload\'s srcset', () => {
+        const id = 'ph_0b6f5d0e-3a8b-4c2d-9e1f-2a3b4c5d6e7f';
+        expect(openingPhotoId(`/media/${id}/sha256-abc/p1/w400.avif 400w, /media/${id}/sha256-abc/p1/w800.avif 800w`)).toBe(id);
+        expect(openingPhotoId('/about/portrait/0123/w400.avif 400w')).toBeNull();
+        expect(openingPhotoId(null)).toBeNull();
+    });
+});
+
+describe('browserFailures()', () => {
+    const over: BrowserRow = { screen: 'home', profile: 'phone', metric: 'documentBytes', value: 200 * KIB, budget: 130 * KIB, over: true };
+    const fine: BrowserRow = { ...over, value: 1, over: false };
+
+    it('names each row over budget in fixture mode, and a crash beside them when rows are missing', () => {
+        expect(browserFailures({ mode: 'fixture', exitCode: 1, rows: [over, fine], expectedRows: 2 })).toEqual(['home/phone documentBytes: 204800 against 133120']);
+        expect(browserFailures({ mode: 'fixture', exitCode: 1, rows: [over], expectedRows: 2 })).toEqual(['home/phone documentBytes: 204800 against 133120', 'the browser layer exited 1 with 1 of 2 rows']);
+        expect(browserFailures({ mode: 'fixture', exitCode: 1, rows: [fine, fine], expectedRows: 2 })).toEqual(['the browser layer exited 1 with 2 of 2 rows']);
+        expect(browserFailures({ mode: 'fixture', exitCode: 0, rows: [fine, fine], expectedRows: 2 })).toEqual([]);
+    });
+
+    it('fails nothing on a budget in report mode, but still a run that didn\'t finish', () => {
+        expect(browserFailures({ mode: 'report', exitCode: 0, rows: [over, fine], expectedRows: 2 })).toEqual([]);
+        expect(browserFailures({ mode: 'report', exitCode: 1, rows: [over], expectedRows: 2 })).toEqual(['the browser layer exited 1 with 1 of 2 rows']);
+    });
+});
+
+describe('reportMarkdown()', () => {
+    it('gives the step summary each value beside its budget, and what failed', () => {
+        const report: PerfReport = {
+            generatedAt: '2026-11-05T00:00:00.000Z',
+            mode: 'fixture',
+            library: { photos: 5_000, series: 100, revisionId: 'rev_x' },
+            catalog: catalogSection(MEASUREMENT),
+            browser: browserChecks('home', 'desktop', { documentBytes: 40 * KIB, eagerImageBytes: 700 * KIB, eagerImages: 2, otherImageBytes: 10 * KIB, firstImageMs: 12 }),
+            failed: ['work 100 series: 122880 B gzip, over 102400'],
+        };
+        const markdown = reportMarkdown(report);
+        expect(markdown).toContain('### #6 budgets: fixture, 5,000 photographs in 100 series');
+        expect(markdown).toContain('| work | 100 series | 1 | 120 | 100 | **over** |');
+        expect(markdown).toContain('| home | desktop | eagerImageBytes | 700 KiB | 750 KiB | |');
+        expect(markdown).toContain('| home | desktop | firstImageMs | 12 ms | 1000 ms | |');
+        expect(markdown).toContain('- work 100 series: 122880 B gzip, over 102400');
     });
 });
 
@@ -105,5 +163,7 @@ describe('writePerfReport()', () => {
         const file = await writePerfReport(root, report);
         expect(file).toBe(path.join(root, '.perf', 'report.json'));
         expect(JSON.parse(await fs.promises.readFile(file, 'utf8'))).toEqual(report);
+        // Beside it, the step summary CI appends.
+        expect(await fs.promises.readFile(path.join(root, '.perf', 'report.md'), 'utf8')).toBe(reportMarkdown(report));
     });
 });

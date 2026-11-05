@@ -53,7 +53,22 @@ describe('npm run test:budgets', () => {
     expect(runs.filter((line) => line === 'npm run test:budgets')).toHaveLength(1);
     // The job is one the CI result needs, so a failed budget fails the pull request.
     expect(workflow).toMatch(/needs: \[[^\]]*\be2e\b[^\]]*\]/);
-    // The report goes up with the Playwright report when the job fails.
-    expect(workflow).toMatch(/path: \|\n\s+playwright-report\/\n\s+test-results\/\n\s+\.perf\//);
+    // Its own ceiling, so a hang fails the step and the uploads after it still run, inside a job with room for it.
+    expect(workflow).toMatch(/- name: Check #6's budgets\n\s+timeout-minutes: 12\n\s+run: npm run test:budgets\n/);
+    expect(workflow).toMatch(/\n {2}e2e:\n(?:.*\n)*? {4}timeout-minutes: 55\n/);
+    expect(workflow).not.toContain('about 19 minutes');
+  });
+
+  it('uploads the report and puts its numbers in the step summary, pass or fail', async () => {
+    const workflow = await read('.github/workflows/ci.yml');
+    expect(workflow).toMatch(/- if: always\(\)\n\s+name: Summarize #6's budgets\n\s+run: cat \.perf\/report\.md >> "\$GITHUB_STEP_SUMMARY" \|\| true\n/);
+    expect(workflow).toMatch(/- if: always\(\)\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: budgets-report\n\s+path: \.perf\/report\.json\n\s+if-no-files-found: ignore\n/);
+  });
+
+  it('smoke-checks the second bundle in the image, and that photos validate prints budgets from it', async () => {
+    const smoke = await read('ci/smoke-watcher-once.sh');
+    expect(smoke).toContain('for (const script of ["imageWatcher", "photos", "watcherHealth", "budgets-cli"])');
+    expect(smoke).toMatch(/in_watcher node dist\/scripts\/photos\.mjs validate 2>&1/);
+    expect(smoke).toContain("'Budgets (gzip'");
   });
 });
