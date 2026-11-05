@@ -1,19 +1,22 @@
 import { expect, type Locator } from '@playwright/test';
 import { waitForHydration } from './hydration';
-import { measure, type Box, type Measurement } from './measure';
+import { measure, type Box, type Measurement, type PseudoOption } from './measure';
 
 /** Slack for clientWidth and clientHeight, which round to whole px. */
 const SLACK = 0.5;
 /** Spacing in CSS px between the ring samples expectNotObscured checks. */
 const STEP = 2;
 
-/** Focuses the target unless it already has focus, and measures it once it matches :focus-visible. */
-async function focusAndMeasure(target: Locator): Promise<Measurement> {
+/**
+ * Focuses the target unless it already has focus, and measures it once it matches :focus-visible: its own box, or with
+ * `pseudo` the pseudo-element that draws its target and ring, as a stretched link's ::after does.
+ */
+async function focusAndMeasure(target: Locator, options: PseudoOption = {}): Promise<Measurement> {
     await waitForHydration(target.page());
     if (!(await target.evaluate((el) => el === document.activeElement))) {
         await target.focus();
     }
-    const measured = await measure(target);
+    const measured = await measure(target, options);
     expect(measured.focused, `${target} should take focus`).toBe(true);
     expect(measured.focusVisible, `${target} should match :focus-visible once focused`).toBe(true);
     return measured;
@@ -42,21 +45,33 @@ function declaredFades({ property, duration, delay }: Measurement['transition'])
 
 /** A spread-only shadow layer as getComputedStyle serializes it: color, 0px 0px 0px, spread, and no inset. */
 const BAND = /^(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px(?:,|$)/;
+/** The same layer, inset. */
+const INSET_BAND = /^(rgba?\([^)]*\)) 0px 0px 0px (\d+(?:\.\d+)?)px inset(?:,|$)/;
+/** How much of the dark band an inset ring shows inside its outline: the token's 3 px offset. */
+const INSET_BAND_SHOWN = 3;
 
 /**
  * The token's band: the first box-shadow layer is --focus-ring-dark, spread
  * at least as far as the outline offset so it fills the gap. A shadow rule
  * that lands after the token, such as a Tailwind dark: or hover: variant,
- * replaces the whole list and drops it.
+ * replaces the whole list and drops it. An inset ring (a negative offset,
+ * as a stretched target draws, contract rule 4) has the same two colors the
+ * other way in: the outline at the edge, and an inset band that shows at
+ * least the token's 3 px inside it.
  */
 function bandProblems({ boxShadow, bandColor, outline }: Measurement): string[] {
     if (!bandColor) return ['no --focus-ring-dark is in scope, so the focus token is missing'];
-    const band = BAND.exec(boxShadow);
-    if (!band) return [`box-shadow is "${boxShadow}", which doesn't start with the token's ${bandColor} band`];
+    const inset = outline.offset < 0;
+    const band = (inset ? INSET_BAND : BAND).exec(boxShadow);
+    if (!band) return [`box-shadow is "${boxShadow}", which doesn't start with the token's ${bandColor} band${inset ? ', inset' : ''}`];
     const [, color, spread] = band;
     const problems: string[] = [];
     if (color !== bandColor) problems.push(`the band is ${color}, not the token's ${bandColor}`);
-    if (parseFloat(spread) < outline.offset) problems.push(`the band spreads ${spread}px, short of the ${outline.offset}px outline offset`);
+    if (inset) {
+        // The outline's inner edge lies -offset px inside the box, and the band has to reach past it.
+        const needed = -outline.offset + INSET_BAND_SHOWN;
+        if (parseFloat(spread) < needed) problems.push(`the inset band spreads ${spread}px, short of the ${needed}px past the outline it needs`);
+    } else if (parseFloat(spread) < outline.offset) problems.push(`the band spreads ${spread}px, short of the ${outline.offset}px outline offset`);
     return problems;
 }
 
@@ -66,8 +81,8 @@ function bandProblems({ boxShadow, bandColor, outline }: Measurement): string[] 
  * in reads as its start value, so a running transition fails here, and so
  * does one the computed style declares for the ring or opacity.
  */
-export async function expectFocusRingVisible(target: Locator): Promise<void> {
-    const measured = await focusAndMeasure(target);
+export async function expectFocusRingVisible(target: Locator, options: PseudoOption = {}): Promise<void> {
+    const measured = await focusAndMeasure(target, options);
     const { outline, faded, transitions, transition } = measured;
     const problems: string[] = [];
     if (outline.style === 'none') {
@@ -81,7 +96,7 @@ export async function expectFocusRingVisible(target: Locator): Promise<void> {
     const fading = transitions.filter((property) => RING_PROPERTY.test(property));
     if (fading.length > 0) problems.push(`the ring transitions in (${fading.join(', ')}), so it needs transition: none`);
     problems.push(...declaredFades(transition).map((fade) => `${fade}, so it needs transition: none`));
-    expect(problems, `Focus ring on ${target} must be visible`).toEqual([]);
+    expect(problems, `Focus ring on ${target}${options.pseudo ?? ''} must be visible`).toEqual([]);
 }
 
 /**
@@ -90,22 +105,24 @@ export async function expectFocusRingVisible(target: Locator): Promise<void> {
  * transition-all, keeps the old ring fading while the next control shows
  * its own, so two controls look focused.
  */
-export async function expectNoFadeOnBlur(target: Locator): Promise<void> {
-    await focusAndMeasure(target);
-    const fading = await target.evaluate((el) => {
+export async function expectNoFadeOnBlur(target: Locator, options: PseudoOption = {}): Promise<void> {
+    await focusAndMeasure(target, options);
+    const fading = await target.evaluate((el, pseudo) => {
         (el as HTMLElement).blur();
-        return el
-            .getAnimations()
+        // A pseudo-element's animations are the document's, with the element and the pseudo as their target.
+        return (pseudo
+            ? document.getAnimations().filter((animation) => animation.effect instanceof KeyframeEffect && animation.effect.target === el && animation.effect.pseudoElement === pseudo)
+            : el.getAnimations())
             .filter((animation): animation is CSSTransition => animation instanceof CSSTransition && animation.playState === 'running')
             .map((transition) => transition.transitionProperty);
-    });
+    }, options.pseudo ?? null);
     const ring = fading.filter((property) => /^(outline(-[a-z]+)?|box-shadow)$/.test(property));
     expect(ring, `${target} must drop its focus ring at once on blur, so it can't transition these`).toEqual([]);
 }
 
 /** Contract rule 4: no overflow ancestor clips the focus ring. */
-export async function expectRingNotClipped(target: Locator): Promise<void> {
-    const { ring, clips } = await focusAndMeasure(target);
+export async function expectRingNotClipped(target: Locator, options: PseudoOption = {}): Promise<void> {
+    const { ring, clips } = await focusAndMeasure(target, options);
     const cuts: string[] = [];
     for (const { label, box, x, y } of clips) {
         const sides = [
@@ -116,7 +133,7 @@ export async function expectRingNotClipped(target: Locator): Promise<void> {
         ].filter(Boolean);
         if (sides.length > 0) cuts.push(`${label} cuts ${sides.join(', ')}`);
     }
-    expect(cuts, `No overflow ancestor may clip the focus ring on ${target}`).toEqual([]);
+    expect(cuts, `No overflow ancestor may clip the focus ring on ${target}${options.pseudo ?? ''}`).toEqual([]);
 }
 
 interface Cover {
@@ -152,14 +169,13 @@ function onCover({ box, radii }: Cover, { x, y }: { x: number; y: number }): boo
  * shape it shows, not its whole box. A solid outer box-shadow band, such as a
  * Tailwind `ring-4`, paints past the box, so the cover grows by the widest one.
  */
-async function chromeBoxes(target: Locator, chrome: readonly Locator[]): Promise<Cover[]> {
+async function chromeBoxes(target: Locator, chrome: readonly Locator[], box: Box): Promise<Cover[]> {
     const handle = await target.elementHandle();
     try {
         const covers: Cover[] = [];
         for (const locator of chrome) {
             expect(await locator.count(), `Chrome ${locator} should match an element`).toBeGreaterThan(0);
-            const found = await locator.evaluateAll((elements, focused) => {
-                const own = focused.getBoundingClientRect();
+            const found = await locator.evaluateAll((elements, [focused, own]) => {
                 const paintsBeneath = (el: Element, r: DOMRect) => {
                     const left = Math.max(r.left, own.left);
                     const right = Math.min(r.right, own.right);
@@ -245,7 +261,7 @@ async function chromeBoxes(target: Locator, chrome: readonly Locator[]): Promise
                         else node.setAttribute('style', style);
                     }
                 }
-            }, handle);
+            }, [handle, box] as const);
             covers.push(...found);
         }
         return covers;
@@ -277,10 +293,11 @@ function perimeter({ left, top, right, bottom }: Box): { x: number; y: number }[
  * fully clear case the ring's outer edge too. Chrome that paints beneath the
  * element hides none of it.
  */
-export async function expectNotObscured(target: Locator, chrome: Locator | readonly Locator[]): Promise<void> {
-    const { box, ring, viewport } = await focusAndMeasure(target);
-    const covers = await chromeBoxes(target, [chrome].flat());
-    const band = (box.left - ring.left) / 2;
+export async function expectNotObscured(target: Locator, chrome: Locator | readonly Locator[], options: PseudoOption = {}): Promise<void> {
+    const { box, ring, viewport, outline } = await focusAndMeasure(target, options);
+    const covers = await chromeBoxes(target, [chrome].flat(), box);
+    // The middle of what the ring paints: half way out past the box, or for an inset ring half way into its outline.
+    const band = outline.offset < 0 ? outline.offset + outline.width / 2 : (box.left - ring.left) / 2;
     const middle = perimeter({ left: box.left - band, top: box.top - band, right: box.right + band, bottom: box.bottom + band });
     const hiddenBy = ({ x, y }: { x: number; y: number }) => {
         if (x < 0 || x > viewport.width || y < 0 || y > viewport.height) return 'outside the viewport';
