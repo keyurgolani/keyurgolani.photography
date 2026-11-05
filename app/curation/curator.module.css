@@ -787,6 +787,23 @@ p.fieldError {
   font-weight: 500;
 }
 
+/* #14: the watcher warning, a full-width strip under the header, above the list and the item, in the alert tone. */
+.watcherNotice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.625rem var(--site-gutter);
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.watcherNotice svg {
+  margin-top: 0.15rem;
+  color: var(--curator-tone-alert-ink);
+}
+
 /* The answer an approval or Decide later brought to the page it opened: the
    done tone, its check, one sentence and the way back, in one row when it
    fits. In the list it needs the list's own inset. */

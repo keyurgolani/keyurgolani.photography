@@ -1,4 +1,5 @@
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
+import { heartbeatStale, watcherHeartbeatAge } from '../identity/heartbeat';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import type { ProfileEntry, Registry } from '../identity/types';
@@ -23,6 +24,7 @@ import {
     type InboxDetail,
     type InboxItem,
     type InboxView,
+    type InboxWatcher,
     type BindWaiting,
     type ItemGroup,
     type ReplacementDraft,
@@ -446,6 +448,13 @@ async function seriesOptions(root: string): Promise<{ series: SeriesOption[]; pr
  * decision opens no next item). A data root that isn't ready is
  * `not-ready`, and nothing else is read.
  */
+/** #14: the watcher's heartbeat as the Inbox's warning reads it. A reason names the data root, so it stays out. */
+async function watcherOf(root: string): Promise<InboxWatcher> {
+    const heartbeat = await watcherHeartbeatAge(root);
+    if (!heartbeat.found) return { state: 'missing' };
+    return heartbeatStale(heartbeat.ageMs) ? { state: 'stale', heartbeatAt: heartbeat.heartbeatAt, ageMs: heartbeat.ageMs } : { state: 'running' };
+}
+
 export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     const status = dataRootStatus();
     if (status.state !== 'ready' || status.root === null) {
@@ -471,6 +480,7 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
 
     return {
         state: 'ready',
+        watcher: await watcherOf(root),
         activeRevisionId: active,
         needsJudgment: items.filter((item) => item.group === 'judgment').length,
         waiting: items.filter((item) => item.group === 'waiting').length,

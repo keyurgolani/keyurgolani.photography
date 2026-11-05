@@ -125,7 +125,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
 }
 
 function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): Extract<InboxView, { state: 'ready' }> {
-    return { state: 'ready', activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const tree = (v: ReturnType<typeof view>, listView = false) => (
@@ -1425,6 +1425,8 @@ describe('the two scrolling panels', () => {
 
 describe('the watcher notice (#14)', () => {
     const AT = '2026-02-01T00:00:00.000Z';
+    /** In the browser's own zone, as LocalTime shows it once the page runs. */
+    const local = () => humanTime(AT, Intl.DateTimeFormat().resolvedOptions().timeZone);
 
     it('shows nothing while the watcher checks in', () => {
         const { container } = render(<WatcherNotice watcher={{ state: 'running' }} />);
@@ -1433,18 +1435,18 @@ describe('the watcher notice (#14)', () => {
 
     it('warns, with the time, when the heartbeat is over 5 minutes old', () => {
         render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 }} />);
-        const notice = screen.getByRole('status');
-        expect(notice).toHaveTextContent(`The watcher last checked in 12 min ago, at ${humanTime(AT)}. New photographs won't appear here until it runs again.`);
-        expect(within(notice).getByText(humanTime(AT))).toHaveAttribute('dateTime', AT);
+        const notice = screen.getByRole('region', { name: 'Watcher' });
+        expect(notice).toHaveTextContent(`The watcher last checked in 12 min ago, at ${local()}. New photographs won't appear here until it runs again.`);
+        expect(within(notice).getByText(local())).toHaveAttribute('dateTime', AT);
     });
 
     it('says when the heartbeat is stamped ahead of the clock, which hides whether the watcher runs', () => {
         render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: -10 * 60_000 }} />);
-        expect(screen.getByRole('status')).toHaveTextContent(`The watcher's last check-in, ${humanTime(AT)}, is ahead of this server's clock, so the Inbox can't tell whether it runs. New photographs won't appear here until it does.`);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent(`The watcher's last check-in, ${local()}, is ahead of this server's clock, so the Inbox can't tell whether it runs. New photographs won't appear here until it does.`);
     });
 
     it('warns when there is no heartbeat at all', () => {
         render(<WatcherNotice watcher={{ state: 'missing' }} />);
-        expect(screen.getByRole('status')).toHaveTextContent("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
     });
 });
