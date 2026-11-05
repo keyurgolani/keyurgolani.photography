@@ -3,6 +3,7 @@ import { CATALOG_ORIGIN, HOME_SERIES } from '../support/catalog-home';
 import { waitForHydration } from '../support/hydration';
 import { measure } from '../support/measure';
 import { expect, test } from '../support/test';
+import { failImage } from '../support/failImage';
 
 // Black, OLED (the OLED spec, round 2, approved for build): the screen's own black and nothing else, on the pages next
 // has. The photographs meet the screen's edge on Work and a series' head, the nav has no bar or hairline, the KG mark
@@ -184,8 +185,9 @@ test("the series cover's hover mark draws above the print, and a missing photogr
     expect(hover.zIndex).toBe('1');
     expect(hover.shadow).toMatch(/rgba\(255, 255, 255, 0\.4\).*inset/);
     // A thumbnail whose image fails: the box keeps its edge and its diagonal in the strong rule (C2-6.5).
-    await page.locator('section[aria-labelledby="series-sequence"] ol li a img').first().dispatchEvent('error');
     const missing = page.locator('section[aria-labelledby="series-sequence"] [data-photo="unavailable"]').first();
+    // Its WebP retry fails too (#6, B8).
+    await failImage(page, 'section[aria-labelledby="series-sequence"] ol li a img', missing);
     await expect(missing).toHaveCount(1);
     const paint = await missing.evaluate((el) => ({ image: getComputedStyle(el).backgroundImage, shadow: getComputedStyle(el).boxShadow }));
     expect(paint.image, 'the diagonal').toContain('rgba(255, 255, 255, 0.4)');

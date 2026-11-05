@@ -114,7 +114,7 @@ test.describe('the intercepted Viewer over the series page', () => {
         await openSeries(page);
         await expect(cover(page)).toHaveAttribute('href', viewerPath(COVER));
         const offset = await enter(page, cover(page), COVER);
-        await expect(dialog(page)).toHaveAccessibleName(new RegExp(`Photograph 3 of ${COUNT}$`));
+        await expect(dialog(page)).toHaveAccessibleName(new RegExp(`photograph 3 of ${COUNT}$`));
         await page.keyboard.press('Escape');
         await expectReturned(page, cover(page), offset);
     });

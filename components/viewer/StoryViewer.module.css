@@ -198,6 +198,16 @@
   white-space: nowrap;
 }
 
+/* The heading's spoken position (#7), read after the series title. sr-only takes it out of flow at its static place,
+   past the title's ellipsis on a long one, where it would widen the page: here it stays in the line, 1 px wide with a
+   -1 px margin, so it takes no room, and the heading's overflow clips it. */
+.series > .spokenPosition {
+  position: static;
+  display: inline-block;
+  margin: 0 -1px 0 0;
+  vertical-align: top;
+}
+
 .position {
   margin: 0;
   color: var(--cc-label);

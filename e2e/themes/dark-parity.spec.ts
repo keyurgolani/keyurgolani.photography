@@ -8,6 +8,7 @@ import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/
 import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
+import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
@@ -549,11 +550,24 @@ const inboxIn = async (page: Page) => {
 };
 const inboxRow = (page: Page) => page.locator('main ul a[data-row]').first();
 const inboxRefresh = (page: Page) => page.getByRole('button', { name: 'Refresh inbox' });
-/** The cover's image fails, as a broken file would, and the cover keeps its box with the missing-image edge. */
+/** The cover's image fails, as a broken file would (its WebP retry too), and the cover keeps its box with the missing-image edge. */
 const failCover = async (page: Page) => {
-    await page.locator('main figure a img').first().dispatchEvent('error');
+    await failImage(page, 'main figure a img', page.locator('main figure [data-photo="unavailable"]'));
     await expect(page.locator('main figure [data-photo="unavailable"]')).toHaveCount(1);
 };
+
+/**
+ * The Viewer header's spoken position, which moved into the heading (#175, B8): the base's screen-reader-only span
+ * after the padded numbers, gone in the head. Screen-reader only, so neither build gives it room; the padded
+ * numbers, the heading and the header around them are still compared.
+ */
+const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr-only', why: '#175 (B8): the position is said in the heading' }];
+/**
+ * A sanctioned departure (#175, B8): a Viewer photograph whose file failed says "This photograph could not be
+ * loaded.", shows its alt and offers Retry, where the base had the missing-image label alone. The box is left out
+ * with its contents; the stage, the moves and the reading area around it are still compared.
+ */
+const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"]', why: '#175 (B8): a failed photograph says so, with its alt and Retry' };
 
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true, glass: true },
@@ -568,7 +582,7 @@ const VISITOR: Pair[] = [
         url: series,
         act: async (page) => {
             await toSequence(page);
-            await page.locator('section[aria-labelledby="series-sequence"] ol li a img').first().dispatchEvent('error');
+            await failImage(page, 'section[aria-labelledby="series-sequence"] ol li a img', page.locator('[data-photo="unavailable"]'));
             await expect(page.locator('[data-photo="unavailable"]')).toHaveCount(1);
         },
     },
@@ -632,14 +646,15 @@ const VISITOR: Pair[] = [
             await focusInPlace(page.locator('main figure a').first());
         },
     },
-    { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` },
+    { name: 'viewer', url: `${series}/photo/${HOME_OPENING}`, leaveOut: VIEWER_POSITION },
     // The Viewer's other states (#126's review, L2): another photograph, zoomed, a print that fails, and the modal
     // opened from a series, with its ::backdrop. The modal's styles load with its shell, not the series page
     // (components/viewer/viewerShellLoader.ts), so the open modal is checked against today's too.
-    { name: 'viewer-second', url: `${series}/photo/${HOME_PHOTO_IDS[1]}` },
+    { name: 'viewer-second', url: `${series}/photo/${HOME_PHOTO_IDS[1]}`, leaveOut: VIEWER_POSITION },
     {
         name: 'viewer-zoomed',
         url: `${series}/photo/${HOME_OPENING}`,
+        leaveOut: VIEWER_POSITION,
         act: async (page) => {
             await page.locator('[data-surface="viewer"] > header').getByRole('button', { name: 'Zoom' }).click();
             await expect(page.locator('[data-zoomed]')).toHaveCount(1);
@@ -648,14 +663,16 @@ const VISITOR: Pair[] = [
     {
         name: 'viewer-missing',
         url: `${series}/photo/${HOME_OPENING}`,
+        leaveOut: [...VIEWER_POSITION, VIEWER_FAILED_BOX],
         act: async (page) => {
-            await page.locator('[data-viewer-current] img').first().dispatchEvent('error');
+            await failImage(page, '[data-viewer-current] img', page.locator('[data-surface="viewer"] [data-photo="unavailable"]'));
             await expect(page.locator('[data-surface="viewer"] [data-photo="unavailable"]')).toHaveCount(1);
         },
     },
     {
         name: 'viewer-modal',
         url: series,
+        leaveOut: VIEWER_POSITION,
         act: async (page) => {
             await page.locator('main figure a').first().click();
             await expect(page.getByRole('dialog')).toBeVisible();
@@ -665,6 +682,7 @@ const VISITOR: Pair[] = [
     {
         name: 'viewer-modal-sequence',
         url: series,
+        leaveOut: VIEWER_POSITION,
         act: async (page) => {
             await toSequence(page);
             await page.locator('section[aria-labelledby="series-sequence"] ol li a').first().click();
@@ -841,6 +859,8 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
     // After Enter the series, its last child, so nothing before it in the story changes its path.
     { selector: '[data-chrome-region="story"] > div > a[href="/work"]:last-child', why: "#4 (B7): Home's All bodies of work link after Enter the series" },
+    // Screen-reader only (position: absolute, clipped), so it takes no room in either build.
+    { selector: '[data-surface="viewer"] header h1 > span.sr-only', why: '#175 (B8): the Viewer heading says "{series}, photograph N of T"' },
 ];
 
 /**

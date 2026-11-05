@@ -85,7 +85,7 @@ export default function ViewerChrome({ state, mode, headingId, zoomed, onZoom, a
                     {/* "{series title}, photograph 3 of 12" (#7). The image says "Photograph N of T" for a photograph named by its place, so this doesn't. */}
                     <h1 className={styles.series}>
                         {seriesTitle}
-                        {!namedByPlace && <span className="sr-only">{`, ${headingPosition(position, total)}`}</span>}
+                        {!namedByPlace && <span className={`sr-only ${styles.spokenPosition}`}>{`, ${headingPosition(position, total)}`}</span>}
                     </h1>
                     {/* The padded numbers are for the eye, to the digits of the total: the heading says the place in words. */}
                     <p className={styles.position}>

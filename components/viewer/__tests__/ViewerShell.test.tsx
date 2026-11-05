@@ -271,7 +271,7 @@ describe('ViewerShell, on a page', () => {
     it('sends whole server HTML: the photograph renders the header and the steps until the shell takes them', () => {
         const html = renderToString(<ViewerShell mode="page">{photo(1)}</ViewerShell>);
         expect(html.match(/<header/g)).toHaveLength(1);
-        expect(html).toMatch(/<h1[^>]*>Fixture series<span class="sr-only">, photograph 1 of 3<\/span><\/h1>/);
+        expect(html).toMatch(/<h1[^>]*>Fixture series<span class="sr-only[^"]*">, photograph 1 of 3<\/span><\/h1>/);
         expect(html).toContain('01 / 03');
         // Before hydration, a direction with a photograph is a link, so it works without the shell.
         expect(html).toMatch(new RegExp(`<a(?=[^>]*aria-label="Next photograph")(?=[^>]*href="${photoHref(2)}")`));

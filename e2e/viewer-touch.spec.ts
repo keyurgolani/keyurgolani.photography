@@ -38,7 +38,7 @@ function runsOn(testInfo: TestInfo, ...projects: string[]): void {
 async function openPage(page: Page, photoId: string): Promise<void> {
     await page.goto(`${origin()}${href(photoId)}`);
     await waitForHydration(page);
-    await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture harbor');
+    await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(/^Fixture harbor, photograph \d of 3$/);
 }
 
 /**
@@ -191,7 +191,7 @@ test.describe('swipe', () => {
             await expect(button(page, 'Close')).toBeFocused();
             await swipe(page, -150);
             await expectStill(page, P[1], 2);
-            await expect(dialog(page)).toHaveAccessibleName(/Photograph 2 of 3$/);
+            await expect(dialog(page)).toHaveAccessibleName(/photograph 2 of 3$/);
             // showModal() put focus on Close, and a swipe never moves it.
             await expect(button(page, 'Close')).toBeFocused();
             await button(page, 'Close').tap();
@@ -691,8 +691,9 @@ test.describe('the fixed stage (9a)', () => {
             await page.goto(`${origin()}${href(SHAPES[0], 'shapes')}`);
             await waitForHydration(page);
             const title = header(page).getByRole('heading', { level: 1 });
-            await expect(title).toHaveText(SHAPES_TITLE);
-            await expect(title).toHaveAccessibleName(SHAPES_TITLE);
+            // Whole for screen readers, with the place after it (#7).
+            await expect(title).toHaveText(`${SHAPES_TITLE}, photograph 1 of 3`);
+            await expect(title).toHaveAccessibleName(`${SHAPES_TITLE}, photograph 1 of 3`);
             const line = await title.evaluate((element) => ({
                 height: element.getBoundingClientRect().height,
                 lineHeight: parseFloat(getComputedStyle(element).lineHeight),
@@ -827,7 +828,7 @@ test.describe('double-tap', () => {
         ] as const) {
             await page.goto(`${origin()}${href(P[3], 'ridge')}`);
             await waitForHydration(page);
-            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture ridge');
+            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture ridge, photograph 1 of 1');
             await settled(page);
             const frame = stage(page).locator('figure');
             const fitted = await frame.boundingBox();

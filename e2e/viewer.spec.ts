@@ -1,4 +1,4 @@
-import type { Page, Request } from '@playwright/test';
+import type { Locator, Page, Request } from '@playwright/test';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
@@ -32,10 +32,34 @@ const next = (page: Page) => page.getByRole('main').getByRole('button', { name: 
 const technical = (page: Page) => page.getByRole('main').getByRole('button', { name: /^(Show|Hide) technical details$/ });
 const photograph = (page: Page) => page.getByRole('main').locator('picture img');
 
+/** The header's heading as a screen reader hears it (#7): "{series title}, photograph N of T". */
+const seriesHeading = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, photograph \\d+ of \\d+$`);
+
 async function openViewer(page: Page, photoId: string): Promise<void> {
     await page.goto(`${origin()}${href(photoId)}`);
     await waitForHydration(page);
-    await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture harbor');
+    await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(seriesHeading('Fixture harbor'));
+}
+
+/**
+ * Everything on the page the browser keeps in place while it scrolls (fixed or sticky), marked, for checkSurface's
+ * chrome: none may cover a control's focus ring. The Viewer has none of its own today (#7, decided: no sticky
+ * header, since the fixed stage keeps the controls in view), so this catches one added later.
+ */
+async function fixedChrome(page: Page): Promise<Locator[]> {
+    const count = await page.evaluate(() => {
+        let found = 0;
+        for (const element of document.body.querySelectorAll('*')) {
+            const { position } = getComputedStyle(element);
+            const pinned = (position === 'fixed' || position === 'sticky') && element.localName !== 'dialog';
+            if (pinned) {
+                element.setAttribute('data-e2e-fixed', '');
+                found += 1;
+            } else element.removeAttribute('data-e2e-fixed');
+        }
+        return found;
+    });
+    return count === 0 ? [] : [page.locator('[data-e2e-fixed]')];
 }
 
 /** The image URLs a page asked for, so a test can see none went past /media. */
@@ -51,7 +75,7 @@ test('a direct load renders the whole Viewer: series, position, photograph, auth
     const response = await request.get(`${origin()}${href(P[0])}`, { maxRedirects: 0 });
     expect(response.status()).toBe(200);
     const html = await response.text();
-    expect(html).toMatch(/<h1[^>]*>Fixture harbor<\/h1>/);
+    expect(html).toMatch(/<h1[^>]*>Fixture harbor<span class="sr-only[^"]*">, photograph 1 of 3<\/span><\/h1>/);
     expect(html).toContain('01 / 03');
     expect(html).toContain('Fixture authored caption.');
 
@@ -62,7 +86,8 @@ test('a direct load renders the whole Viewer: series, position, photograph, auth
     await expect(close(page)).toHaveAttribute('href', `/work/harbor?photo=${P[0]}`);
     await expect(page.getByRole('heading', { level: 2 })).toHaveText('Fixture harbor at dusk');
     await expect(page.getByText('Fixture authored caption.')).toBeVisible();
-    await expect(page.getByText('Fixture description of the harbor.', { exact: true })).toBeVisible();
+    // With a caption the reading area shows only the caption (#7): the description is the image's alt, said once.
+    await expect(page.getByText('Fixture description of the harbor.', { exact: true })).toHaveCount(0);
     await expect(page.locator('nav[aria-label="Primary"]')).toHaveCount(0);
     await expect(page.locator('[data-surface="viewer"]')).toHaveCount(1);
     await expect(photograph(page)).toHaveAttribute('alt', 'Fixture description of the harbor.');
@@ -280,7 +305,7 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
             const at = `${size.width} by ${size.height}, ${mix.name}`;
             await page.goto(`${origin()}${href(mix.photoId, mix.slug)}`);
             await waitForHydration(page);
-            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(mix.series);
+            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(seriesHeading(mix.series));
             const line = await titleLine(page);
             const pieces = await foldPieces(page);
             // The facts-only photograph's reading area is its toggle alone.
@@ -423,12 +448,45 @@ test('the header\'s Close icon and Zoom label sit on the gutter Previous and Nex
     expect(edges.innerWidth - edges.zoomBox, 'Zoom\'s ring stays on screen').toBeGreaterThanOrEqual(edges.ring);
 });
 
-test('the Viewer passes the #1 checks, and its controls reflow', async ({ page }) => {
+test('the Viewer passes the #1 checks with its fixed chrome, at both scroll ends and at 320 px with 200% text, and its controls reflow', async ({ page }) => {
     await openViewer(page, P[1]);
     const controls = [close(page), zoom(page), previous(page), next(page), technical(page)];
-    await checkSurface(page, { controls });
+    // No fixed element covers a control (#7): checked at the top of the page and scrolled to its end.
+    for (const end of ['top', 'bottom'] as const) {
+        await page.evaluate((to) => window.scrollTo(0, to === 'top' ? 0 : document.documentElement.scrollHeight), end);
+        await checkSurface(page, { controls, chrome: await fixedChrome(page) });
+    }
     await expectHoverRulesGated(page);
     await expectReflow(page.locator('[data-surface="viewer"] a, [data-surface="viewer"] button:not([disabled])'));
+
+    // And at 320 px with 200% text, where the header wraps and the page scrolls most.
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+    try {
+        for (const end of ['top', 'bottom'] as const) {
+            await page.evaluate((to) => window.scrollTo(0, to === 'top' ? 0 : document.documentElement.scrollHeight), end);
+            await checkSurface(page, { controls, chrome: await fixedChrome(page) });
+        }
+    } finally {
+        await page.evaluate(() => document.documentElement.style.removeProperty('font-size'));
+    }
+});
+
+test('a screen reader hears the description once, from the image, on a direct load with and without a caption (bug 9)', async ({ page }) => {
+    // P[0] has a caption, so the reading area shows only the caption. P[1] has none, so the reading area shows the
+    // description too, hidden from a screen reader with its label.
+    for (const [photoId, description] of [
+        [P[0], 'Fixture description of the harbor.'],
+        [P[1], 'Fixture description of photograph 0002.'],
+    ] as const) {
+        await openViewer(page, photoId);
+        await expect(photograph(page)).toHaveAttribute('alt', description);
+        const tree = await page.locator('body').ariaSnapshot();
+        const lines = tree.split('\n').filter((line) => line.includes(description));
+        expect(lines, photoId).toHaveLength(1);
+        expect(lines[0], photoId).toMatch(new RegExp(`^\\s*- img "${description.replace(/[.]/g, '\\.')}"`));
+        await expect(page.getByRole('main').getByText('Description', { exact: true }), photoId).toHaveCount(photoId === P[1] ? 1 : 0);
+    }
 });
 
 test('Tab runs Close, Zoom, Previous, Next, and the technical toggle, and Enter and Space work on each', async ({ page }) => {
@@ -489,8 +547,9 @@ test('the technical details open apart from the photograph, and the first photog
     await expect(panel).toBeHidden();
     await toggle.click();
     await expect(panel).toBeVisible();
-    await expect(panel.locator('dt')).toHaveText(['Camera make', 'Camera', 'Aperture', 'ISO']);
-    await expect(panel.locator('dd')).toHaveText(['Fixture Make', 'Fixture Model', '2.8', '200']);
+    // One Camera row, the make said once (the model starts with it), and each fact in its unit (#7).
+    await expect(panel.locator('dt')).toHaveText(['Camera', 'Aperture', 'ISO']);
+    await expect(panel.locator('dd')).toHaveText(['Fixture Model', 'f/2.8', '200']);
     const [image, facts] = await Promise.all([photograph(page).boundingBox(), panel.boundingBox()]);
     if (!image || !facts) throw new Error('No box');
     const overlap = Math.min(image.y + image.height, facts.y + facts.height) - Math.max(image.y, facts.y);
@@ -516,6 +575,53 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     expect(await page.locator('meta[name="description"]').getAttribute('content')).toBe('Fixture authored caption.');
     expect(await meta('og:image')).toMatch(new RegExp(`^${SITE_URL}/media/${P[0]}/sha256-[0-9a-f]{64}/p_[0-9a-f]+/w1200\\.webp$`));
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');
+    // The revision the page came from, neither seen nor heard, for #12's freshness checks (B8, read in B12).
+    await expect(page.locator('meta[name="catalog-revision"]')).toHaveCount(1);
+    expect(await page.locator('meta[name="catalog-revision"]').getAttribute('content')).toMatch(/^rev_[0-9a-f]{64}$/);
+});
+
+test('a failed AVIF file retries once with WebP, and the photograph shows (#6)', async ({ page }) => {
+    const asked: string[] = [];
+    await page.route(`**/media/${P[0]}/**`, (route) => {
+        const { pathname } = new URL(route.request().url());
+        asked.push(pathname);
+        return pathname.endsWith('.avif') ? route.fulfill({ status: 404, body: '' }) : route.continue();
+    });
+    await openViewer(page, P[0]);
+    await expect.poll(() => photograph(page).evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    expect(await photograph(page).evaluate((image: HTMLImageElement) => new URL(image.currentSrc).pathname)).toMatch(/\.webp$/);
+    await expect(page.locator('[data-surface="viewer"] [data-photo="unavailable"]')).toHaveCount(0);
+    // One AVIF try, then WebP: no second AVIF request for the photograph.
+    expect(asked.filter((path) => path.endsWith('.avif')).length).toBeLessThanOrEqual(2);
+    expect(asked.some((path) => path.endsWith('.webp'))).toBe(true);
+});
+
+test('a failed photograph says so, keeps its alt, and Retry loads the same variant again (#7)', async ({ page }) => {
+    let failing = true;
+    const asked: string[] = [];
+    await page.route(`**/media/${P[1]}/**`, (route) => {
+        asked.push(new URL(route.request().url()).pathname);
+        return failing ? route.fulfill({ status: 404, body: '' }) : route.continue();
+    });
+    await openViewer(page, P[1]);
+    const missing = page.locator('[data-surface="viewer"] [data-photo="unavailable"]');
+    await expect(missing).toContainText('This photograph could not be loaded.');
+    await expect(missing).toContainText('Fixture description of photograph 0002.');
+    // The failed box carries the alt, so the reading area's copy stays hidden: heard once (bug 9).
+    const tree = await page.locator('body').ariaSnapshot();
+    expect(tree.split('\n').filter((line) => line.includes('Fixture description of photograph 0002.'))).toHaveLength(1);
+    // The same rung as the failed request, in WebP or AVIF.
+    const rung = (path: string) => /\/(w\d+)\.(?:avif|webp)$/.exec(path)?.[1];
+    const failedRung = rung(asked[asked.length - 1]);
+    failing = false;
+    const retry = missing.getByRole('button', { name: 'Retry' });
+    await retry.focus();
+    await retry.press('Enter');
+    await expect.poll(() => photograph(page).evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    await expect(missing).toHaveCount(0);
+    expect(rung(new URL(await photograph(page).evaluate((image: HTMLImageElement) => image.currentSrc)).pathname)).toBe(failedRung);
+    // Focus stays in the Viewer, on the photograph's box, not dropped to the page.
+    expect(await page.evaluate(() => document.activeElement?.hasAttribute('data-viewer-current') ?? false)).toBe(true);
 });
 
 /** Each theme's Viewer (spec §3 and §5, R2-P1-1): its ground and ink, and whether it keeps today's bands. */
