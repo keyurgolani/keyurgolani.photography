@@ -26,7 +26,7 @@ import {
 import { photoHolders, type ReferenceCache } from './holders';
 import { boundSources, openMassMissing } from './library';
 import { EventUnusableError, InvalidEventError, listEvents, readEvent, readRulesFile, RulesFileError, withCurationLock, writeEvent } from './repository';
-import { loadRules, suggestForNew, type LoadedRules } from './suggest';
+import { loadRules, suggestForNew, type LoadedRules, type SeriesMember } from './suggest';
 
 /**
  * The watcher's curation sink: each of #10's committed facts opens or
@@ -122,9 +122,19 @@ interface SuggestContext {
     rules: LoadedRules;
     knownSeries: Set<string>;
     seriesTitles: Map<string, string>;
+    seriesMembers: Map<string, SeriesMember[]>;
 }
 
-async function suggestContext(root: string, logger: Logger): Promise<SuggestContext> {
+/**
+ * #14 (A8): a series photograph's capture date for the insertion suggestion, from #10's public tier for the bytes its
+ * source holds now. Null when the registry can't say, which places it as undated.
+ */
+function memberDate(registry: Registry | null, photoId: string): string | null {
+    const photo = registry !== null && Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
+    return photo?.revisions[photo.source.observedRevision]?.derived.capturedDate?.value ?? null;
+}
+
+async function suggestContext(root: string, logger: Logger, registry: Registry | null): Promise<SuggestContext> {
     let rules: LoadedRules;
     try {
         rules = loadRules(await readRulesFile(root));
@@ -138,6 +148,7 @@ async function suggestContext(root: string, logger: Logger): Promise<SuggestCont
         rules,
         knownSeries: new Set(series.map((entry) => entry.id)),
         seriesTitles: new Map(series.filter((entry) => entry.title).map((entry) => [entry.id, entry.title])),
+        seriesMembers: new Map(series.map((entry) => [entry.id, entry.photoIds.map((photoId) => ({ photoId, capturedDate: memberDate(registry, photoId) }))])),
     };
 }
 
@@ -225,7 +236,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
 
         const registry = await readRegistry(root).catch(() => null);
         // A replacement may move a new item to new bytes, and its suggestions with it.
-        const context = relevant.some(({ type }) => type === 'new' || type === 'replacement') ? await suggestContext(root, logger) : null;
+        const context = relevant.some(({ type }) => type === 'new' || type === 'replacement') ? await suggestContext(root, logger, registry) : null;
         const producedAt = new Date(clock()).toISOString();
         const referenceCache: ReferenceCache = {};
 

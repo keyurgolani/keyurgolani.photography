@@ -82,7 +82,7 @@ describe('curation show and the item commands', () => {
         expect(shown.output).toContain(`${event.id}, version 1: new, open`);
         expect(shown.output).toContain(`Stable photo identity: ${f.fresh[0]}, source present`);
         expect(shown.output).toMatch(/Reviewable suggestion \(generated, not reviewed\):\n {2}Suggested series: ser_fixture-01 \(high, rules@[0-9a-f]{12}, /);
-        expect(shown.output).toContain('Proposed sequence position: the end (low, placement@1');
+        expect(shown.output).toContain('Proposed sequence position: the end (medium, placement@2');
         expect(shown.output).toContain('Draft description: none suggested.');
         expect(shown.output).toContain('Your edits: none.');
         expect(shown.output).toContain('Published references: none');
