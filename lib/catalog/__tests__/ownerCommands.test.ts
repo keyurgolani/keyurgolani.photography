@@ -74,7 +74,7 @@ describe('photos status', () => {
         expect(text).toContain('Unassigned: 1 photo in the library that no series lists');
         expect(text).toContain('Watcher heartbeat: 60 s ago (2026-10-24T12:00:00.000Z)');
         // #17: the inbox's open missing sources and failures, none here.
-        expect(text).toContain('Inbox: 0 missing sources, 0 failures open');
+        expect(text).toContain('Inbox: 0 need review, 0 missing sources, 0 failures, 0 ambiguous, 0 stale');
     });
 
     it('never says nothing is published on a data root that has published, even with no revision to name', async () => {
@@ -98,7 +98,7 @@ describe('photos status', () => {
         const result = await runStatusCommand({ dataRoot: catalog.root }, { json: true });
         const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
         expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working', 'inbox']);
-        expect(status.inbox).toEqual({ missing: [], failed: [], unreadable: 0 });
+        expect(status.inbox).toEqual({ counts: { needsReview: 0, missing: 0, failed: 0, ambiguous: 0, stale: 0 }, missing: [], failed: [], ambiguous: [], stale: [], unreadable: 0, placementUnknown: false });
         expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
     });

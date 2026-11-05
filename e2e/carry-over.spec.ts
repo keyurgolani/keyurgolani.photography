@@ -108,6 +108,7 @@ test('the Inbox asks about the photograph added after the launch and the ones no
     await signIn(page, curator.origin, curator.passphrase);
     await page.goto(`${curator.origin}/curation/inbox`);
     await waitForHydration(page);
+    await expect(page.getByRole('region', { name: 'Watcher' })).toHaveCount(0);
     const list = page.getByRole('list', { name: 'Requires judgment' });
     // later.jpg came after the launch. unready.jpg and thumbless.jpg were accepted by name, and broken.jpg wasn't on the
     // site, so the carry-over left their items as they were.

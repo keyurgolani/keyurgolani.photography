@@ -3,6 +3,7 @@ import CuratorHeader from '../CuratorHeader';
 import styles from '../curator.module.css';
 import InboxDetailView from './InboxDetailView';
 import InboxList from './InboxList';
+import WatcherNotice from './WatcherNotice';
 import { requireCurator } from '@/lib/curation/auth';
 import { loadInbox } from '@/lib/curation/inbox';
 import type { InboxView } from '@/lib/curation/inbox-view';
@@ -54,11 +55,15 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
                     </a>
                 </main>
             ) : (
-                // A phone shows one side at a time (owner, 2026-10-25): the list, or the item the URL names. A wide screen shows both.
-                <main className={styles.body} data-view={item === null ? 'list' : 'item'}>
-                    <InboxList view={view} listView={item === null} />
-                    <InboxDetailView view={view} />
-                </main>
+                <>
+                    {/* #14: new photographs don't arrive while the watcher is down, so the Inbox says so above both sides. */}
+                    <WatcherNotice watcher={view.watcher} />
+                    {/* A phone shows one side at a time (owner, 2026-10-25): the list, or the item the URL names. A wide screen shows both. */}
+                    <main className={styles.body} data-view={item === null ? 'list' : 'item'}>
+                        <InboxList view={view} listView={item === null} />
+                        <InboxDetailView view={view} />
+                    </main>
+                </>
             )}
         </div>
     );

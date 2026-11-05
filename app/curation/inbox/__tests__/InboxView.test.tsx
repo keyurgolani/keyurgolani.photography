@@ -53,6 +53,7 @@ vi.mock('../actions', () => {
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
+const { default: WatcherNotice } = await import('../WatcherNotice');
 const { navigation, rememberedRow, rememberRow } = await import('../journey');
 
 beforeEach(() => {
@@ -124,7 +125,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
 }
 
 function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): Extract<InboxView, { state: 'ready' }> {
-    return { state: 'ready', activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const tree = (v: ReturnType<typeof view>, listView = false) => (
@@ -1419,5 +1420,53 @@ describe('the two scrolling panels', () => {
         renderInbox();
         expect(screen.getAllByRole('region', { name: 'Curation inbox' })).toHaveLength(1);
         expect(screen.getAllByRole('region', { name: 'Item details' })).toHaveLength(1);
+    });
+});
+
+describe('the watcher notice (#14)', () => {
+    const AT = '2026-02-01T00:00:00.000Z';
+    /** In the browser's own zone, as LocalTime shows it once the page runs. */
+    const local = () => humanTime(AT, Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+    it('shows nothing while the watcher checks in', () => {
+        const { container } = render(<WatcherNotice watcher={{ state: 'running' }} />);
+        expect(container).toBeEmptyDOMElement();
+    });
+
+    it('warns, with the time, when the heartbeat is over 5 minutes old', () => {
+        render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 }} />);
+        const notice = screen.getByRole('region', { name: 'Watcher' });
+        expect(notice).toHaveTextContent(`The watcher last checked in 12 min ago, at ${local()}. New photographs won't appear here until it runs again.`);
+        expect(within(notice).getByText(local())).toHaveAttribute('dateTime', AT);
+    });
+
+    it('says when the heartbeat is stamped ahead of the clock, which hides whether the watcher runs', () => {
+        render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: -10 * 60_000 }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent(`The watcher's last check-in, ${local()}, is ahead of this server's clock, so the Inbox can't tell whether it runs. New photographs won't appear here until it does.`);
+    });
+
+    it('warns when there is no heartbeat at all', () => {
+        render(<WatcherNotice watcher={{ state: 'missing' }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
+    });
+
+    it('takes the id the item view points at, so a phone on a deep link can reach it (review)', () => {
+        render(<WatcherNotice watcher={{ state: 'missing' }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveAttribute('id', 'watcher');
+        expect(screen.getByRole('region', { name: 'Watcher' })).not.toHaveAttribute('aria-live');
+    });
+
+    it("points at the warning from inside the item, which a phone's #item link scrolls to past it (review)", () => {
+        render(<InboxDetailView view={view({ watcher: { state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 } })} />);
+        const item = document.getElementById('item')!;
+        const pointer = within(item).getByRole('link', { name: "The watcher isn't checking in" });
+        expect(pointer).toHaveAttribute('href', '#watcher');
+        expect(pointer.closest('p')).toHaveTextContent("The watcher isn't checking in, so new photographs won't appear here until it runs.");
+        expect(pointer.closest('[aria-live]')).toBeNull();
+    });
+
+    it('says nothing about the watcher inside the item while it checks in', () => {
+        render(<InboxDetailView view={view()} />);
+        expect(within(document.getElementById('item')!).queryByRole('link', { name: /watcher/ })).toBeNull();
     });
 });

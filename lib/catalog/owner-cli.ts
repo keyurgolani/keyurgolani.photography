@@ -216,26 +216,24 @@ export function issueLines(issues: readonly Issue[], rest: string): string[] {
 /** What the first publish asks of the owner, as the README's "Curating the catalog" lists it. */
 const LAUNCH_CHECKLIST = [
     'Launch checklist, from the README\'s "Curating the catalog":',
-    "  - The cutover milestone has shipped: Home, Work, the series pages, and the Viewer read the catalog (#4, #3, #5, #7), and #15's 15-1 and 15-2 are in, so a rollback works.",
-    '  - Viewer hardening (#9) is recommended first.',
     '  - A preview looks right: copies of this data root and the library, the copy published and served on 127.0.0.1 on another port.',
     '    Use a separate container or a source checkout, never the compose services, and check that publish names the copy. The README says how.',
 ];
 
 /**
- * The first publish's impact. Before the launch, with the checklist and the
- * command that publishes exactly the candidate shown, so a working layer
- * that changes in between stops it. After it, only what it replaced.
+ * The first publish's impact: how many photographs the first revision puts
+ * on the site. Before the launch, with the checklist and the command that
+ * publishes exactly the candidate shown, so a working layer that changes in
+ * between stops it. After it, only what it put there. There's been no legacy
+ * site to compare with since v1.6.0, so it names none; `launch.gone` is
+ * carry-over's GONE_COUNT guard's, not the owner's.
  */
 function launchLines(result: PublishResult): string[] {
     if (!result.launch) return [];
-    const { published, gone } = result.launch;
-    if (result.outcome === 'PUBLISHED') return [`Launch: this revision replaced the legacy Home and Gallery with ${count(published, 'photograph')}.`];
+    const { published } = result.launch;
+    if (result.outcome === 'PUBLISHED') return [`Launch: this first revision put ${count(published, 'photograph')} on the site.`];
     if (result.outcome !== 'LAUNCH_CONFIRMATION_REQUIRED' && result.outcome !== 'DRY_RUN_OK') return [];
-    const leaving = gone === 0
-        ? 'Every photograph the legacy site lists is in it.'
-        : `${count(gone, 'photograph')} the legacy site lists ${gone === 1 ? "isn't" : "aren't"} in it, so ${gone === 1 ? 'it leaves' : 'they leave'} the site.`;
-    const lines = [`Launch: this revision replaces the legacy Home and Gallery with ${count(published, 'photograph')}. ${leaving}`, ...LAUNCH_CHECKLIST];
+    const lines = [`Launch: this first revision puts ${count(published, 'photograph')} on the site.`, ...LAUNCH_CHECKLIST];
     if (result.candidateId) lines.push(`To publish exactly this candidate, run publish again with --confirm-launch --expect ${result.candidateId}. --expect stops it if the working layer changes before then.`);
     return lines;
 }

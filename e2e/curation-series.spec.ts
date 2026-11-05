@@ -15,6 +15,7 @@ import { checkSurface } from './support/surface';
 import { waitForHydration } from './support/hydration';
 import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
+import { keepWatcherAlive } from './support/watcher';
 
 // #150: the curator's Series screen on #1's projects. Each project's worker builds its own published fixture, two
 // published series and two approved photographs in none, then serves it twice from the harness's build: once as the
@@ -55,7 +56,17 @@ test.beforeAll(async () => {
     const catalog = await createTestCatalog({ root, seed: 150, withAssets: true, photos: 6, series: [{ ...HARBOR, photos: 3 }, { ...COAST, photos: 1 }] });
     const outcome = await publish({ dataRoot: root, actor: 'e2e', reason: 'series fixture', confirmLaunch: true, logger: { log: () => undefined } });
     if (outcome.outcome !== 'PUBLISHED') throw new Error(`The series fixture didn't publish: ${outcome.outcome}: ${outcome.message}`);
-    fixture = { root, library, photos: catalog.photos.map((photo) => photo.id), cleanup: () => fs.rmSync(temp, { recursive: true, force: true }) };
+    // The watcher's heartbeat, kept fresh, so the Inbox this spec opens shows no watcher warning (#14).
+    const watcher = await keepWatcherAlive(root);
+    fixture = {
+        root,
+        library,
+        photos: catalog.photos.map((photo) => photo.id),
+        cleanup: () => {
+            watcher.stop();
+            fs.rmSync(temp, { recursive: true, force: true });
+        },
+    };
     // E2E_CURATION_PORT pins two ports per worker, for a machine that hands out ranges.
     const base = Number(process.env.E2E_CURATION_PORT);
     const pinned = Number.isInteger(base) && base > 0 ? base + 2 * test.info().parallelIndex : undefined;
@@ -136,6 +147,7 @@ test.beforeEach(async ({ page }) => {
 
 test('the header leads to Series, which lists the working layer and passes the #1 checks', async ({ page }) => {
     await open(page, '/curation/inbox');
+    await expect(page.getByRole('region', { name: 'Watcher' })).toHaveCount(0);
     const screens = page.getByRole('navigation', { name: 'Curation' });
     await screens.getByRole('link', { name: 'Series' }).click();
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/series`);

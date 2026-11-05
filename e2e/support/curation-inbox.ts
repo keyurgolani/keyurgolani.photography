@@ -11,6 +11,7 @@ import { createCurationSink } from '../../lib/curation/sink';
 import { readRegistry, writeRegistry } from '../../lib/identity/registry';
 import type { IdentityFact, IdentityFactType } from '../../lib/identity/types';
 import { assetDir } from '../../lib/media/path';
+import { keepWatcherAlive, type WatcherBeat } from './watcher';
 
 /**
  * The Inbox e2e's data: a published catalog (one published series, one
@@ -52,6 +53,8 @@ export interface InboxFixture {
     library: string;
     /** Each photograph's asset revision, from the registry. */
     revisionOf(photoId: string): string;
+    /** The watcher's heartbeat, kept fresh (#14). A spec stops it to see the Inbox's warning. */
+    watcher: WatcherBeat;
     cleanup(): Promise<void>;
 }
 
@@ -79,6 +82,7 @@ export async function createInboxFixture(): Promise<InboxFixture> {
         fs.mkdirSync(path.dirname(path.join(library, sourcePath)), { recursive: true });
         fs.writeFileSync(path.join(library, sourcePath), 'fixture source bytes');
     }
+    const watcher = await keepWatcherAlive(root);
     return {
         catalog,
         root,
@@ -88,7 +92,11 @@ export async function createInboxFixture(): Promise<InboxFixture> {
             if (!record) throw new Error(`No fixture photo ${photoId}`);
             return record.source.observedRevision;
         },
-        cleanup: async () => fs.rmSync(temp, { recursive: true, force: true }),
+        watcher,
+        cleanup: async () => {
+            watcher.stop();
+            fs.rmSync(temp, { recursive: true, force: true });
+        },
     };
 }
 

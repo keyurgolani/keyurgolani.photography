@@ -143,14 +143,16 @@ export interface PublishOptions {
     authoredWaitMs?: number;
 }
 
-/** What a first publish replaces, for its confirmation and its dry run. */
+/** What a first publish puts on the site, for its confirmation and its dry run. */
 export interface LaunchImpact {
     /** Photographs the candidate publishes. */
     published: number;
     /**
-     * Photographs the legacy site counts as on it (legacySitePhotos()) that the candidate leaves out. They leave the
-     * site at launch. It counts by the registry: a photo hidden behind another's shared legacy set isn't on the site,
-     * but one whose legacy derivatives aren't all built still counts, so a missing or empty library can't lower it.
+     * Photographs a library the legacy site served still counts as on it (legacySitePhotos()) that the candidate
+     * leaves out. Only `photos carry-over`'s GONE_COUNT guard reads it, so nothing it didn't name by `--allow-missing`
+     * is lost at the launch; publish prints no such count, and a fresh library counts 0. It counts by the registry: a
+     * photo hidden behind another's shared legacy set isn't counted, but one whose legacy derivatives aren't all built
+     * still is, so a missing or empty library can't lower it.
      */
     gone: number;
 }
@@ -641,7 +643,7 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
     return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery, issues };
 }
 
-/** What a first activation takes away: photographs the legacy site counts as on it that the candidate doesn't publish. */
+/** A first activation's count, and for carry-over's GONE_COUNT guard, what a legacy-era library loses: see LaunchImpact. */
 function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): LaunchImpact {
     // Only the case-folding of shared legacy sets reads the library, so a publisher without one still counts, never lower.
     const { onSite } = legacySitePhotos(registry, configuredLibraryRoot());
@@ -795,7 +797,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         if (errors > 0) throw new Stop('VALIDATION_FAILED', `${errors} ${errors === 1 ? 'error blocks' : 'errors block'} the publish.`);
         await step(6);
 
-        // 7. The first activation replaces the legacy site.
+        // 7. The first activation is the launch, which the owner confirms.
         const activations = await listActivations(root);
         if (lastCommitted(activations) === null) {
             const registered = new Set(registeredRules().map((rule) => rule.id));
@@ -803,9 +805,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             if (missingRules.length > 0) throw new Stop('LAUNCH_RULES_MISSING', `The first publish needs these rules registered: ${missingRules.join(', ')}.`, { missingRules });
             result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
             if (!confirmLaunch && !dryRun) {
-                const { published, gone } = result.launch;
-                const leaving = gone > 0 ? `, and ${photographs(gone)} the legacy site lists ${gone === 1 ? 'leaves' : 'leave'} it` : '';
-                throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish: ${photographs(published)} ${published === 1 ? 'replaces' : 'replace'} the legacy Home and Gallery${leaving}. Confirm the launch to go ahead.`);
+                throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish, which puts ${photographs(result.launch.published)} on the site. Confirm the launch to go ahead.`);
             }
         }
         await step(7);

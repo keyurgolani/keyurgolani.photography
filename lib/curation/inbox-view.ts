@@ -441,10 +441,19 @@ export function replacementHint(replacement: ReplacementDraft | null): string {
 /** What Decide later answers when the draft moved after the confirm (the `refuses` plan): what changed, and what to do. */
 export const MOVED_ANSWER = "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Nothing was written. Set its version with photos edit, or dismiss this item.";
 
+/**
+ * #14: whether the watcher checks in, from its heartbeat in the data root.
+ * `stale` is over 5 minutes old, or stamped that far ahead of the server's
+ * clock (negative `ageMs`). `missing` is no heartbeat, or one that can't be
+ * used. The Inbox warns on either, since new photographs don't arrive then.
+ */
+export type InboxWatcher = { state: 'running' } | { state: 'stale'; heartbeatAt: string; ageMs: number } | { state: 'missing' };
+
 export type InboxView =
     | { state: 'not-ready'; message: string }
     | {
           state: 'ready';
+          watcher: InboxWatcher;
           /** The active revision every action is checked against. Null before the first publish. */
           activeRevisionId: string | null;
           needsJudgment: number;
@@ -593,6 +602,20 @@ export function humanDate(date: string): string | null {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
     const month = match ? MONTHS[Number(match[2]) - 1] : undefined;
     return match && month ? `${Number(match[3])} ${month} ${match[1]}` : null;
+}
+
+/**
+ * How long ago, in the CLI's and the Inbox's short words: `under a minute`,
+ * `N min` below an hour, `N h` below two days, then `N days`. Rounded down,
+ * so a stale heartbeat never reads younger than it is.
+ */
+export function ageText(ms: number): string {
+    const minutes = Math.floor(Math.abs(ms) / 60_000);
+    if (minutes < 1) return 'under a minute';
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours} h`;
+    return `${Math.floor(hours / 24)} days`;
 }
 
 /**

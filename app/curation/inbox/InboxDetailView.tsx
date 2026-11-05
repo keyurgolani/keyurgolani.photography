@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { ArrowLeft, Check } from 'lucide-react';
 import styles from '../curator.module.css';
 import ArrivalStrip from './ArrivalStrip';
+import { WatcherPointer } from './WatcherNotice';
 import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
 import LandOnItem from './LandOnItem';
@@ -201,6 +202,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         <section className={styles.detail} id="item" aria-labelledby="item-heading">
             <LandOnItem targetId="item" focusId="item-heading" />
             <BackToInbox itemId={detail.id} />
+            {/* #14: on a phone a deep link lands here, past the watcher warning, so the item points back to it. */}
+            <WatcherPointer watcher={view.watcher} />
             {/* What the last approval or Decide later did, above the photograph and the form, when it opened this item. */}
             <ArrivalStrip key={detail.id} itemId={detail.id} />
             <div className={styles.photo}>

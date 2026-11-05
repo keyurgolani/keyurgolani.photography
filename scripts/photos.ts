@@ -35,12 +35,19 @@
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
  *
- *   npx tsx scripts/photos.ts status [--json]
+ *   npx tsx scripts/photos.ts status [--json] [--check]
  *     The data root, the catalog mode and active revision, the last publish,
  *     registry counts, the working layer's records, how many photos no series
  *     lists and how many have no reviewed description, the curation inbox's
- *     open missing sources and failures (#17), and the watcher's heartbeat.
- *     Exits 1 unless the data root is ready and everything reads.
+ *     counts (what needs review, and the open missing, failed, ambiguous and
+ *     stale items, each listed, a missing one with its age), and the
+ *     watcher's heartbeat. Exits 1 unless the data root is ready and
+ *     everything reads. --check is for a monitor: it also exits 1 on an open
+ *     missing, failed or ambiguous item, an inbox item it can't read, a
+ *     failed last watcher pass, a watcher that has got no pass through for
+ *     over 30 minutes, or a heartbeat over 5 minutes old, and prints why;
+ *     --json then adds a `check` object with a code for each, and stays JSON
+ *     if status itself fails.
  *
  *   npx tsx scripts/photos.ts list [--unassigned] [--json]
  *     Every photo the registry holds, but not archived ones, with its library
@@ -63,9 +70,10 @@
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
  *   npx tsx scripts/photos.ts carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
- *     One-time setup for a new data root, before the launch publish: put
- *     every photo the legacy Gallery lists into one published series,
- *     Gallery, in its order, featured and alone in Work's order. The photos
+ *     One-time setup before the launch publish, only on a library the
+ *     legacy site served; a fresh library skips it. It puts every photo the
+ *     legacy Gallery lists into one published series, Gallery, in its
+ *     order, featured and alone in Work's order. The photos
  *     keep the names the Gallery gives them, "Photograph N of T", with no
  *     description, and their records say they were carried over. Without
  *     --apply it writes nothing and prints the plan. It refuses a working
@@ -113,9 +121,9 @@
  *     its revision, and make that revision active. The actor is --actor or
  *     PHOTOS_ACTOR, and one is required. --reason defaults to publish.
  *     --expect stops unless the candidate has that ID, and --dry-run stops
- *     after validation. The first publish replaces the legacy Home and
- *     Gallery, so it needs --confirm-launch, and prints what changes: a
- *     one-time setup step for a new data root, never a routine publish.
+ *     after validation. The first publish is the launch, so it needs
+ *     --confirm-launch, and prints how many photographs it puts on the site:
+ *     a one-time setup step for a new data root, never a routine publish.
  *     --reprofile moves every photograph the watcher can rebuild to the
  *     current profile: run identity reprofile --all first. Exits 0 when
  *     published, unchanged, or a dry run passes, 1 on validation errors, 2
@@ -316,12 +324,12 @@ const USAGE = `Usage:
   ${PROGRAM} identity archive <photoId> [--reason <text>]
   ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
   ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]
-  ${PROGRAM} status [--json]
+  ${PROGRAM} status [--json] [--check]
   ${PROGRAM} list [--unassigned] [--json]
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
   ${PROGRAM} carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
-        One-time setup for a new data root, before the launch publish.
+        One-time setup before the launch publish, only on a library the legacy site served; a fresh library skips it.
   ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
@@ -336,7 +344,7 @@ const USAGE = `Usage:
   ${PROGRAM} series featured (<seriesId>... | --clear) [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
-        --confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site.
+        --confirm-launch is for the launch publish only, a one-time setup step for a new data root, never a routine publish.
   ${PROGRAM} diff [--json]
   ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
         Marks the rows photos diff printed reviewed, each named, and rows that share a stamp together; there is no --all.
@@ -625,9 +633,9 @@ function ownerRoot(): string | number {
 }
 
 async function statusCommand(args: string[]): Promise<number> {
-    const { values } = parseFlags({ args, options: { json: { type: 'boolean' } } });
+    const { values } = parseFlags({ args, options: { json: { type: 'boolean' }, check: { type: 'boolean' } } });
     // status is the diagnostic command, so it reports even with no data root.
-    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json }));
+    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check }));
 }
 
 async function listCommand(args: string[]): Promise<number> {

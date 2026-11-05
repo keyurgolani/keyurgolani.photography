@@ -104,8 +104,9 @@ describe('photos validate', { timeout: 120_000 }, () => {
         expect(usage.code).toBe(2);
         expect(usage.stderr).toContain('Usage:');
         // #118: the carry-over and the launch publish are a new data root's one-time setup, not routine curation.
-        expect(usage.stderr).toMatch(/carry-over \[--apply[^\n]*\n +One-time setup for a new data root, before the launch publish\./);
-        expect(usage.stderr).toMatch(/publish \[--actor[^\n]*\n +--confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site\./);
+        expect(usage.stderr).toMatch(/carry-over \[--apply[^\n]*\n +One-time setup before the launch publish, only on a library the legacy site served; a fresh library skips it\./);
+        expect(usage.stderr).toMatch(/publish \[--actor[^\n]*\n +--confirm-launch is for the launch publish only, a one-time setup step for a new data root, never a routine publish\./);
+        expect(usage.stderr).not.toMatch(/legacy site\.|replaces the legacy/);
     });
 });
 
@@ -124,15 +125,15 @@ describe('photos publish', { timeout: 120_000 }, () => {
         const catalog = await fixture(104);
         const unconfirmed = await photos(catalog.root, ['publish'], { PHOTOS_ACTOR: 'cli-test' });
         expect(unconfirmed.code).toBe(3);
-        expect(unconfirmed.stderr).toContain('[photos] LAUNCH_CONFIRMATION_REQUIRED: This is the first publish: 3 photographs replace the legacy Home and Gallery.');
-        expect(unconfirmed.stderr).toContain('Launch: this revision replaces the legacy Home and Gallery with 3 photographs. Every photograph the legacy site lists is in it.');
+        expect(unconfirmed.stderr).toContain('[photos] LAUNCH_CONFIRMATION_REQUIRED: This is the first publish, which puts 3 photographs on the site. Confirm the launch to go ahead.');
+        expect(unconfirmed.stderr).toContain('Launch: this first revision puts 3 photographs on the site.');
         expect(unconfirmed.stderr).toContain(`To publish exactly this candidate, run publish again with --confirm-launch --expect ${catalog.revisionId}.`);
 
         const published = await photos(catalog.root, ['publish', '--confirm-launch', '--expect', catalog.revisionId, '--reason', 'launch'], { PHOTOS_ACTOR: 'cli-test' });
         expect(published.code, published.stderr).toBe(0);
         expect(published.stdout).toContain(`[photos] PUBLISHED: Published ${catalog.revisionId} as revision 1.`);
         expect(published.stdout).toContain(`Active: ${catalog.revisionId}, revision 1`);
-        expect(published.stdout).toContain('Launch: this revision replaced the legacy Home and Gallery with 3 photographs.');
+        expect(published.stdout).toContain('Launch: this first revision put 3 photographs on the site.');
         expect(published.stdout).not.toContain('checklist');
         expect(eventsOf(published.stdout).map((entry) => entry.event)).toEqual(['catalog.publish.started', 'catalog.publish.validated', 'catalog.publish.activated']);
         expect((await listActivations(catalog.root))[0]).toMatchObject({ actor: 'cli-test', reason: 'launch' });

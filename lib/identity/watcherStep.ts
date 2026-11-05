@@ -111,6 +111,8 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     let lastPassAt: string | null = null;
     let lastPassResult: PassResult | null = null;
     let passStartedAt: string | null = null;
+    // When a pass last got through the library (committed, or refused an empty one), and the start before the first.
+    let lastProgressAt = iso(clock());
     let running: Promise<PassReport> | null = null;
     let waiting: Promise<PassReport> | null = null;
 
@@ -130,7 +132,7 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
     async function writeHeartbeat(status: DataRootStatus): Promise<void> {
         if (status.root === null || (status.state !== 'ready' && status.state !== 'uninitialized')) return;
         try {
-            await writeWatcherHeartbeat(status.root, { pid, hostname, lastPassAt, lastPassResult, passStartedAt, heartbeatAt: iso(clock()), legacyDerivatives: false });
+            await writeWatcherHeartbeat(status.root, { pid, hostname, lastPassAt, lastPassResult, passStartedAt, heartbeatAt: iso(clock()), lastProgressAt, legacyDerivatives: false });
             heartbeatWarned = false;
         } catch (error) {
             if (!heartbeatWarned) logger.warn(`[identity] Could not write status/watcher.json: ${errorText(error)}`);
@@ -230,6 +232,8 @@ export function createIdentityStep(options: IdentityStepOptions = {}): IdentityS
             passStartedAt = null;
         }
         lastPassAt = iso(clock());
+        // A locked, failed, or off pass got nowhere, so photos status --check measures a stall from the last one that did.
+        if (report.status === 'committed' || report.status === 'refused') lastProgressAt = lastPassAt;
         await writeHeartbeat(status);
         return report;
     }
