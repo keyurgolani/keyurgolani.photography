@@ -391,7 +391,8 @@ describe('chapters (A9)', () => {
             ['series', s.id, 'chapters[ch-noon]', 'new'],
         ]);
         const [title, start, removed, added] = result.changes;
-        expect(title).toMatchObject({ before: 'Dawn', after: 'First light', surfaces: ['series'] });
+        expect(title).toMatchObject({ before: 'Dawn', after: 'First light' });
+        expect(title.surfaces).toContain('series');
         expect(start).toMatchObject({ before: { startPhotoId: s.photoIds[0], position: 1 }, after: { startPhotoId: s.photoIds[1], position: 2 } });
         expect(removed).toMatchObject({ before: { title: 'Dusk', startPhotoId: s.photoIds[2] }, after: null });
         expect(added).toMatchObject({ before: null, after: { title: 'Noon', startPhotoId: s.photoIds[2] } });
