@@ -101,6 +101,12 @@ test('sizes the frame with the presets and changes nothing else, with the short 
     await waitForHydration(page);
     const frame = page.locator('iframe[title="Visitor preview of the draft catalog"]');
     const src = await frame.getAttribute('src');
+    // A marker inside the framed page, which a reload would lose.
+    const inside = await (await frame.elementHandle())?.contentFrame();
+    if (!inside) throw new Error('The preview frame has no document');
+    await inside.waitForLoadState();
+    await inside.evaluate(() => void ((window as unknown as { kept: string }).kept = 'kept'));
+    const kept = () => inside.evaluate(() => (window as unknown as { kept?: string }).kept ?? null);
     await expect(page.getByText(`Draft ${draftId.slice(4, 12)}`)).toBeVisible();
     await expect(page.getByRole('link', { name: 'Back to Publish' })).toHaveAttribute('href', '/curation/publish');
     await expect(page.getByRole('button', { name: 'Fit the window' })).toHaveAttribute('aria-pressed', 'true');
@@ -117,6 +123,7 @@ test('sizes the frame with the presets and changes nothing else, with the short 
         expect(box && box.width).toBeLessThanOrEqual(1280);
         // Presets change size only: the same page, never reloaded.
         expect(await frame.getAttribute('src')).toBe(src);
+        expect(await kept()).toBe('kept');
     }
     await page.getByRole('button', { name: 'Fit the window' }).click();
     await expect.poll(() => frame.evaluate((element) => (element as HTMLIFrameElement).style.width)).toBe('');

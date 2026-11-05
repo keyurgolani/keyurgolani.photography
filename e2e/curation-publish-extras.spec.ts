@@ -59,7 +59,7 @@ async function open(page: Page): Promise<void> {
 const bar = (page: Page) => page.locator('main form[data-sticky-bar]');
 const liveRegion = (page: Page) => page.locator('main > [role="status"]');
 const named = (text: string) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(': ', '\\s*: ')}$`);
-const USE_ORDER = named('Use the published value: the order of Salt Roads');
+const USE_ORDER = named("Use the published value: the order of Salt Roads, from Pier lamps' move");
 const MOVED = 'Pier lamps moves from position 7 to 2 in Salt Roads';
 
 test('puts the published order back from the stale row, says so where focus lands, and the row leaves the ledger', async ({ page }) => {
@@ -81,12 +81,25 @@ test('announces a row that went stale after the page loaded, once a minute passe
     await open(page);
     await expect(liveRegion(page)).toHaveCount(1);
     await expect(liveRegion(page)).toHaveText('');
+    // Every time the region's words change, counted in the page, so a second announcement can't hide behind the same text.
+    await liveRegion(page).evaluate((region) => {
+        const said: string[] = [];
+        (window as unknown as { said: string[] }).said = said;
+        new MutationObserver(() => {
+            const text = region.textContent ?? '';
+            if (text && said.at(-1) !== text) said.push(text);
+            else if (!text) said.push('');
+        }).observe(region, { childList: true, characterData: true, subtree: true });
+    });
+    const said = () => page.evaluate(() => (window as unknown as { said: string[] }).said.filter((text) => /went stale/.test(text)).length);
     await reopenBreakwater(fixture);
     await page.clock.fastForward(60_000);
     await expect(liveRegion(page)).toHaveText(/went stale after this page loaded: .*Breakwater, first light.*Load the updated ledger to review/);
-    // Said once: the next minute's answer names nothing new, so the region keeps the same words.
+    await expect.poll(said).toBe(1);
+    // Said once: the next minute's answer names nothing new, so the region is not written again.
     await page.clock.fastForward(60_000);
-    await expect(liveRegion(page)).toHaveText(/went stale after this page loaded/);
+    await page.waitForTimeout(500);
+    expect(await said()).toBe(1);
 });
 
 test('says Base moved once another revision went live, and offers only Load the updated ledger', async ({ page }) => {
