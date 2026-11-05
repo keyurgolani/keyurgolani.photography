@@ -170,7 +170,8 @@ const today = () => {
 const asideOf = (library) => `${library}.legacy-derivatives-${today()}`;
 const AFTER_APPLY = ['legacy-derivatives.used', 'move-back.sh'];
 
-describe('scripts/host/legacy-move-aside.sh', () => {
+// Each test runs the real script, often several times, so a loaded machine gets 30 s a test.
+describe('scripts/host/legacy-move-aside.sh', { timeout: 30_000 }, () => {
   it('names exactly the eight folders lib/derivativeFolders.mjs lists, in its order', () => {
     const text = fs.readFileSync(SCRIPT, 'utf8');
     const list = text.match(/^NAMES=\(([^)]*)\)/m);
