@@ -306,13 +306,6 @@
  *     a file is damaged or an I/O error stops it.
  *
  *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
- *   npx tsx scripts/photos.ts gc --set-aside <assets/<photoId>/<assetRevision or .gc-…>>
- *     --set-aside renames a folder a standing tombstone takes down, or the
- *     .gc- folder a stopped run left beside one, into the data root's own
- *     trash/<photoId>-<name>-<date-time>/, on the same filesystem, under
- *     the catalog lock, and deletes nothing. It refuses, exit 1, any other
- *     path, a cross-device move and an existing destination. Emptying
- *     trash/ is the owner's own step.
  *     Plan the cleanup docs/data-root.md's retention rules allow: staging
  *     folders a killed derivative build left and candidates that never became
  *     a revision, once each is more than 7 days old, and the asset folders a
@@ -338,6 +331,21 @@
  *     asset folder is always protected now, and 3 on any other stop, such as a
  *     changed plan or a busy lock. --apply logs one JSON line per path it
  *     deletes.
+ *
+ *   npx tsx scripts/photos.ts gc --set-aside <assets/<photoId>/<assetRevision or .gc-…>>
+ *     Renames a folder a standing tombstone takes down, or the .gc- folder a
+ *     stopped run left beside one, into the data root's own
+ *     trash/<photoId>-<name>-<date-time>/, on the same filesystem, under the
+ *     catalog and authored locks, and deletes nothing. It refuses, exit 1, any
+ *     other path (NOT_AN_ASSET_PATH), a folder no standing tombstone takes
+ *     down (NOT_TAKEN_DOWN), one the live revision, a draft series, an open
+ *     Inbox item or a staging folder names (PROTECTED), a .gc- folder set
+ *     aside whole, which goes back instead (SET_ASIDE_WHOLE), a symlink, a
+ *     file or a symlinked trash/ (UNSAFE_PATH), a cross-device move
+ *     (CROSS_DEVICE) and an existing destination (EXISTS); 3 when a lock stays
+ *     busy or is lost or the data root isn't ready, and 4 when a file is
+ *     damaged or an I/O error stops it. Emptying trash/ is the owner's own
+ *     step.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
  * reads the library exits 1 when it's unset. The data root is
