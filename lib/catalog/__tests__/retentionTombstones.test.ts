@@ -87,7 +87,7 @@ const folderOf = (built: PurgeFixture, photoId: string, assetRevision = built.fi
 const assetsOf = (root: string) => new Map([...snapshot(root)].filter(([file]) => file.startsWith('assets/')));
 /** GC's per-run markers for a tombstone, by file name. */
 const markers = (root: string, tombstoneId: string) => fs.readdirSync(tombstonesDir(root)).filter((name) => name.startsWith(`${tombstoneId}.collected.`)).sort();
-const readMarker = (root: string, name: string) => JSON.parse(fs.readFileSync(path.join(tombstonesDir(root), name), 'utf8')) as { planDigest: string; paths: { path: string; bytes: number; newestMs: number }[] };
+const readMarker = (root: string, name: string) => JSON.parse(fs.readFileSync(path.join(tombstonesDir(root), name), 'utf8')) as { planDigest: string; paths: { path: string; bytes: number; newestMs: number; files: { name: string; bytes: number }[] }[] };
 
 /** D with a second asset revision, D2, and a set for it, then purged whole, so its tombstone lists both. */
 async function purgeTwo(built: PurgeFixture): Promise<string> {
@@ -398,7 +398,7 @@ describe('a revoke after GC', { timeout: 120_000 }, () => {
         const out: string[] = [];
         const exitCode = await runPurgeCommand(built.root, purgeArgs(['--revoke', id, '--reason', 'too late', '--yes'], { PHOTOS_ACTOR: 'owner' }), { out: (line) => out.push(line), err: (line) => out.push(line) }, { clock: at(PAST_GRACE), logger: quiet });
         expect(exitCode).toBe(1);
-        expect(out.at(-1)).toMatch(new RegExp(`^\\[photos\\] ALREADY_COLLECTED: photos gc --apply began deleting ${folderOf(built, built.d)} for ${id}, and it's gone or changed now`));
+        expect(out.at(-1)).toMatch(new RegExp(`^\\[photos\\] ALREADY_COLLECTED: photos gc --apply began deleting ${folderOf(built, built.d)} for ${id}, and it's gone or cut short now`));
         expect(snapshot(built.root)).toEqual(before);
     });
 });
@@ -418,7 +418,9 @@ describe("GC's per-run markers and revoke (S1)", { timeout: 120_000 }, () => {
         expect(seen).toEqual([`${id}.collected.${digest.slice(3, 19)}.json`]);
         const marker = readMarker(built.root, seen[0]);
         expect(marker.planDigest).toBe(digest);
-        expect(marker.paths).toEqual(planned.plan?.delete.map((entry) => ({ path: entry.path, bytes: entry.bytes, newestMs: entry.newestMs })));
+        expect(marker.paths).toEqual(planned.plan?.delete.map((entry) => ({ path: entry.path, bytes: entry.bytes, newestMs: entry.newestMs, files: entry.files })));
+        // Every file, the manifests included, by name and size.
+        expect(marker.paths[0].files).toContainEqual({ name: `${built.profileId}/manifest.json`, bytes: expect.any(Number) });
     });
 
     it('lets a revoke through when a marker is there but nothing was deleted, and a listed revision never had a folder', async () => {

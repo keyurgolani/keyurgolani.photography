@@ -156,7 +156,7 @@ function processReason(node: ts.CallExpression): string | null {
     const [command, list] = node.arguments;
     const commandText = isLiteral(command) ? command.text : null;
     const listed = list && ts.isArrayLiteralExpression(list) ? list.elements : [];
-    const literals = listed.filter(isLiteral).map((each) => each.text);
+    const literals = listed.flatMap((each) => (isLiteral(each) ? [each.text] : []));
     if (strings.some((text) => SHELL_RM.test(text))) return 'runs rm';
     if (strings.some((text) => GIT_CLEAN.test(text)) || (commandText === 'git' && literals.includes('clean'))) return 'runs git clean';
     if (strings.some((text) => FIND_DELETE.test(text))) return 'runs find -delete';

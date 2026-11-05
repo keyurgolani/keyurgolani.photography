@@ -90,7 +90,7 @@ export function gcPlanLines(plan: GcPlan): string[] {
     lines.push(`Bytes: deletes ${sizeText(plan.bytes.delete)}, unreferenced ${sizeText(plan.bytes.unreferenced)}${kept.length > 0 ? `. Kept for ${kept.join(', ')}` : ''}.`);
     if (plan.assetsNote) lines.push(plan.assetsNote);
     if (plan.leftovers.length > 0) {
-        lines.push(`Set aside by a photos gc --apply run that stopped, reported only: ${plan.leftovers.join(', ')}. GC never deletes a folder it set aside in another run.`);
+        lines.push(`Left by a photos gc --apply run that stopped, reported only, since GC never deletes a folder it set aside in another run: ${plan.leftovers.map((folder) => folder.text).join('; ')}.`);
     }
     lines.push(`Plan digest: ${plan.digest}`);
     return lines;

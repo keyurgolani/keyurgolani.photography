@@ -16,9 +16,10 @@ import { hasErrorCode } from '../storage/fsx';
  * writes, after which nothing here counts the tombstone, and
  * `<tombstoneId>.collected.<digest-prefix>.json` is the marker each
  * `photos gc --apply` run writes before its first delete: every exact folder
- * that run will delete for the tombstone, with its bytes and newest change.
- * A revoke is refused once one of those folders is gone or has changed, and
- * only then. Every file is created whole by a hard link and never rewritten.
+ * that run will delete for the tombstone, with its bytes, newest change and
+ * every file by name and size. A revoke is refused once one of those
+ * folders is gone and not set aside whole, or one of its recorded files is
+ * missing or shorter than recorded, and only then. Every file is created whole by a hard link and never rewritten.
  *
  * This module only reads. The web process imports it for `/media`, and the
  * rule engine for `assets.tombstoned`, so it must never reach purge.ts or
@@ -35,9 +36,10 @@ export const TOMBSTONE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * When restore stops being possible, in the same words wherever purge, GC and
  * the docs say it: revoke works until `photos gc --apply` deletes a listed
- * folder, and after that the takedown is permanent.
+ * folder, and after that the takedown is permanent. A folder set aside whole
+ * isn't deleted: setAsideText() says how to bring it back.
  */
-export const PERMANENT_TEXT = 'After that the takedown is permanent: the revisions that show it can never be rolled back to, and only a backup of the data root brings it back.';
+export const PERMANENT_TEXT = 'Once photos gc --apply has deleted a folder a tombstone lists, that takedown is permanent: the revisions that show it can never be rolled back to, and only a backup of the data root brings it back.';
 
 /** A tombstone file is a few hundred bytes. Anything far larger is not one. */
 const MAX_FILE_BYTES = 256 * 1024;
@@ -69,6 +71,8 @@ export interface CollectedPath {
     bytes: number;
     /** The newest change in it, in ms. */
     newestMs: number;
+    /** Every file in it, its manifests included, as `<profileId>/<name>` with its size. */
+    files: { name: string; bytes: number }[];
 }
 
 /** One GC run's marker, written before that run's first delete for the tombstone. */
@@ -190,7 +194,10 @@ export function parseRevoke(value: unknown, id: string): TombstoneRevoke | strin
     return value as unknown as TombstoneRevoke;
 }
 
-const PATH_KEYS = ['path', 'bytes', 'newestMs'] as const;
+const PATH_KEYS = ['path', 'bytes', 'newestMs', 'files'] as const;
+const FILE_KEYS = ['name', 'bytes'] as const;
+/** `<profileId>/<name>`, a file in a set. */
+const SET_FILE_RE = /^(p_[0-9a-f]{16})\/([a-z0-9]+\.[a-z0-9]+)$/;
 
 /**
  * `value` as GC's marker for tombstone `id` from the run whose digest starts
@@ -207,7 +214,10 @@ export function parseCollected(value: unknown, id: string, prefix?: string): Tom
     const paths = value.paths;
     if (!Array.isArray(paths) || paths.length === 0) return 'paths is not a list of folders';
     for (const entry of paths) {
-        if (!isObject(entry) || !hasExactly(entry, PATH_KEYS) || !isCount(entry.bytes) || !isCount(entry.newestMs)) return 'a path is not {path, bytes, newestMs}';
+        if (!isObject(entry) || !hasExactly(entry, PATH_KEYS) || !isCount(entry.bytes) || !isCount(entry.newestMs) || !Array.isArray(entry.files)) return 'a path is not {path, bytes, newestMs, files}';
+        for (const file of entry.files) {
+            if (!isObject(file) || !hasExactly(file, FILE_KEYS) || typeof file.name !== 'string' || !SET_FILE_RE.test(file.name) || !isCount(file.bytes)) return `a file of ${String(entry.path)} is not {name: <profileId>/<file>, bytes}`;
+        }
         const match = typeof entry.path === 'string' ? ASSET_FOLDER_RE.exec(entry.path) : null;
         if (!match || !PHOTO_ID_RE.test(match[1]) || !ASSET_REVISION_RE.test(match[2])) return `${JSON.stringify(entry.path)} is not an asset folder, assets/<photoId>/<assetRevision>`;
     }
@@ -383,17 +393,60 @@ export const graceEndsMs = (entry: Pick<Tombstone, 'createdAt'> & { ctimeMs?: nu
 /** A problem as one line, for a message. */
 export const problemText = (problem: TombstoneProblem) => `${problem.file}: ${problem.detail}`;
 
-/** `.gc-<assetRevision>-<uuid>`, the name `photos gc --apply` gives a folder it sets aside before its delete. */
+/** `.gc-<assetRevision>-<digest-prefix>-<uuid>`, the name `photos gc --apply` gives a folder it sets aside before its delete. */
 export const SET_ASIDE_PREFIX = '.gc-';
+const SET_ASIDE_RE = /^\.gc-(sha256-[0-9a-f]{64})-([0-9a-f]{16})-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The name a run with digest `planDigest` sets `assetRevision`'s folder aside under. */
+export const setAsideName = (assetRevision: string, planDigest: string, uuid: string) => `${SET_ASIDE_PREFIX}${assetRevision}-${digestPrefix(planDigest)}-${uuid}`;
+
+/**
+ * Whether `dir` still holds every file `files` records, each a regular file
+ * at least as long as recorded. Extra files and newer changes don't count:
+ * only a file gone or cut short means GC reached it.
+ */
+export async function holdsRecorded(dir: string, files: readonly { name: string; bytes: number }[]): Promise<boolean> {
+    for (const file of files) {
+        let stat: fs.Stats;
+        try {
+            stat = await fs.promises.lstat(path.join(dir, ...file.name.split('/')));
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return false;
+            throw error;
+        }
+        if (!stat.isFile() || stat.size < file.bytes) return false;
+    }
+    return true;
+}
+
+/** A folder a `photos gc --apply` run set aside and didn't finish with. */
+export interface SetAsideFolder {
+    /** `assets/<photoId>/.gc-…`, relative to the data root. */
+    path: string;
+    /** `assets/<photoId>/<assetRevision>`, where it came from. */
+    original: string;
+    /** `whole`: every file the run's marker recorded is there. `partial`: a delete reached it. `unknown`: no marker says what it held. */
+    state: 'whole' | 'partial' | 'unknown';
+    /** What to say about it, the same in revoke, the plan and `photos status --check`. */
+    text: string;
+}
+
+/** The one sentence for a folder set aside, wherever it's reported. */
+export function setAsideText(folder: Pick<SetAsideFolder, 'path' | 'original' | 'state'>): string {
+    if (folder.state === 'whole') return `set aside whole at ${folder.path}: rename it back to ${folder.original}, then revoke`;
+    if (folder.state === 'partial') return `${folder.path} is what is left of ${folder.original}, partly deleted by photos gc --apply: that takedown is permanent, and only a backup of the data root brings it back`;
+    return `${folder.path} was set aside by photos gc --apply, which never deletes it, and no marker says what it held`;
+}
 
 /**
  * Every folder a `photos gc --apply` run set aside and didn't finish with,
- * `assets/<photoId>/.gc-…`, relative to the data root and sorted: one whose
- * delete failed partway, or that couldn't be put back. GC reports them and
- * never deletes one it didn't make in the same run. Reads with lstat and
- * follows no symlink. A missing `assets/` holds none.
+ * `assets/<photoId>/.gc-…`, relative to the data root and sorted, each with
+ * whether it is whole by its run's marker: one whose delete failed partway,
+ * or that couldn't be put back. GC reports them and never deletes one it
+ * didn't make in the same run. Reads with lstat and follows no symlink. A
+ * missing `assets/` holds none.
  */
-export async function setAsideFolders(root: string): Promise<string[]> {
+export async function setAsideFolders(root: string, read?: TombstoneRead): Promise<SetAsideFolder[]> {
     const store = path.join(/*turbopackIgnore: true*/ root, 'assets');
     let photos: fs.Dirent[];
     try {
@@ -403,14 +456,25 @@ export async function setAsideFolders(root: string): Promise<string[]> {
         if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return [];
         throw error;
     }
-    const found: string[] = [];
+    const tombstones = read ?? (await readTombstones(root));
+    const found: SetAsideFolder[] = [];
     for (const photo of photos) {
         if (!photo.isDirectory() || !PHOTO_ID_RE.test(photo.name)) continue;
-        for (const name of await fs.promises.readdir(path.join(store, photo.name))) {
-            if (name.startsWith(SET_ASIDE_PREFIX)) found.push(`assets/${photo.name}/${name}`);
+        for (const entry of await fs.promises.readdir(path.join(store, photo.name), { withFileTypes: true })) {
+            if (!entry.name.startsWith(SET_ASIDE_PREFIX)) continue;
+            const relative = `assets/${photo.name}/${entry.name}`;
+            const match = SET_ASIDE_RE.exec(entry.name);
+            const original = match ? `assets/${photo.name}/${match[1]}` : `assets/${photo.name}/?`;
+            const recorded = match
+                ? tombstones.tombstones.flatMap((each) => each.collected).filter((marker) => marker.planDigest.slice(3, 19) === match[2]).flatMap((marker) => marker.paths).find((each) => each.path === original)
+                : undefined;
+            let state: SetAsideFolder['state'] = 'unknown';
+            if (recorded && entry.isDirectory()) state = (await holdsRecorded(path.join(store, photo.name, entry.name), recorded.files)) ? 'whole' : 'partial';
+            else if (recorded) state = 'partial';
+            found.push({ path: relative, original, state, text: setAsideText({ path: relative, original, state }) });
         }
     }
-    return found.sort();
+    return found.sort((a, b) => (a.path < b.path ? -1 : 1));
 }
 
 const keyOf = (photoId: string, assetRevision: string) => `${photoId}/${assetRevision}`;

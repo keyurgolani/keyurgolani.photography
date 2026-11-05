@@ -406,14 +406,14 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
 
 /** The folders a stopped `photos gc --apply` run set aside, as a problem, or null when there are none. */
 async function setAsideProblem(dataRoot: string): Promise<StatusCheck['problems'][number] | null> {
-    let found: string[];
+    let found: Awaited<ReturnType<typeof setAsideFolders>>;
     try {
         found = await setAsideFolders(dataRoot);
     } catch (error) {
         return { code: 'gc-set-aside', message: `assets/ can't be listed for folders photos gc --apply set aside (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})` };
     }
     if (found.length === 0) return null;
-    return { code: 'gc-set-aside', message: `${count(found.length, 'folder')} a stopped photos gc --apply run set aside, which GC never deletes: ${found.join(', ')}. photos gc lists ${found.length === 1 ? 'it' : 'them'}` };
+    return { code: 'gc-set-aside', message: `${count(found.length, 'folder')} a stopped photos gc --apply run left, which GC never deletes: ${found.map((folder) => folder.text).join('; ')}` };
 }
 
 function checkLines(check: StatusCheck): string {

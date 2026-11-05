@@ -144,27 +144,42 @@ async function decoding<T>(step: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Remove the staging folders that builds killed before publishing left. A
- * folder whose lock this takes belongs to no live build. A build killed less
- * than a lease ago still holds its lock, so a later start removes its folder.
- * Anything in `staging/` a build doesn't make is left alone, and a folder that
- * can't be removed is logged and left for the next start. Returns the names
- * removed.
+ * Remove the staging folders that builds killed before publishing left, at
+ * watcher start. A folder whose lock this takes belongs to no live build. A
+ * build killed less than a lease ago still holds its lock, so a later start
+ * removes its folder. Anything in `staging/` a build doesn't make is left
+ * alone, and a folder that can't be removed is logged and left for the next
+ * start. Returns the names removed.
+ *
+ * #181's A10 guard: it removes only direct children of `staging/`, follows
+ * no symlink (an entry that is a symlink is unlinked as a link), and stays
+ * inside `staging/` by dev:inode: `staging/` must be a real folder, and
+ * right before each delete it must still be the folder first listed, by
+ * dev and inode. `staging/` that is a symlink clears nothing.
  */
-export async function removeAbandonedStaging(root: string, { leaseMs, logger = console }: { leaseMs?: number; logger?: Logger } = {}): Promise<string[]> {
+export async function removeAbandonedStaging(root: string, { leaseMs, logger = console, hooks = {} }: { leaseMs?: number; logger?: Logger; hooks?: { beforeClear?(name: string): void | Promise<void> } } = {}): Promise<string[]> {
     const dir = stagingRoot(root);
+    let staging: fs.Stats;
     let entries: fs.Dirent[];
     try {
+        staging = await fs.promises.lstat(dir);
+        if (staging.isSymbolicLink() || !staging.isDirectory()) {
+            logger.warn('[derivatives] staging/ is a symlink or not a folder, so nothing in it was removed.');
+            return [];
+        }
         entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
     }
     const removed: string[] = [];
-    for (const name of entries.filter((entry) => entry.isDirectory() && STAGING_ID.test(entry.name)).map((entry) => entry.name).sort()) {
+    for (const name of entries.filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && STAGING_ID.test(entry.name)).map((entry) => entry.name).sort()) {
         try {
-            await withLock(stagingLockName(name), { root, waitMs: 0, leaseMs }, () => fs.promises.rm(path.join(dir, name), { recursive: true, force: true }));
-            removed.push(name);
+            const cleared = await withLock(stagingLockName(name), { root, waitMs: 0, leaseMs }, async () => {
+                await hooks.beforeClear?.(name);
+                return clearStagingEntry(dir, name, staging);
+            });
+            if (cleared) removed.push(name);
         } catch (error) {
             // Held: a live build owns the folder, or one killed too recently to tell.
             if (error instanceof LockTimeoutError) continue;
@@ -172,6 +187,28 @@ export async function removeAbandonedStaging(root: string, { leaseMs, logger = c
         }
     }
     return removed;
+}
+
+/**
+ * Remove one direct child of `staging/`, checked in the same tick as its
+ * delete: `staging/` is still the folder `staging` describes, by dev and
+ * inode and no symlink, and the entry is a symlink, unlinked as a link, or a
+ * real folder, removed without following any link in it. Anything else is
+ * left. Throws when `staging/` changed. Returns whether it removed it.
+ */
+async function clearStagingEntry(dir: string, name: string, staging: fs.Stats): Promise<boolean> {
+    const now = fs.lstatSync(dir);
+    if (now.isSymbolicLink() || now.dev !== staging.dev || now.ino !== staging.ino) throw new Error('staging/ is no longer the folder that was listed, so nothing more was removed');
+    const target = path.join(dir, name);
+    const entry = fs.lstatSync(target);
+    if (entry.isSymbolicLink()) {
+        await fs.promises.unlink(target);
+        return true;
+    }
+    if (!entry.isDirectory()) return false;
+    // rm() unlinks a symlink inside the folder rather than following it.
+    await fs.promises.rm(target, { recursive: true, force: true });
+    return true;
 }
 
 /** The files a build writes, by name. */

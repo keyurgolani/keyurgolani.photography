@@ -13,7 +13,7 @@ import { errorText } from './error-text';
 import { CATALOG_LEASE_MS, type CatalogLogger } from './publish';
 import { references, ReferenceScanError, type AssetReference } from './references';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile } from './repository';
-import { folderFacts, manifestContent, sizeText } from './asset-folders';
+import { folderFacts, sizeText } from './asset-folders';
 import { holderText } from './rollback';
 import {
     graceEndsMs,
@@ -23,7 +23,10 @@ import {
     standingFor,
     tombstoneFile,
     tombstonesDir,
+    holdsRecorded,
     PERMANENT_TEXT,
+    setAsideName,
+    setAsideText,
     TOMBSTONE_ID_RE,
     TOMBSTONES_DIR,
     type CollectedPath,
@@ -77,6 +80,8 @@ export type PurgeOutcome =
     | 'ALREADY_REVOKED'
     | 'UNKNOWN_TOMBSTONE'
     | 'ALREADY_COLLECTED'
+    /** A folder a stopped GC run set aside whole: rename it back, then revoke. */
+    | 'SET_ASIDE'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
     | 'LOCK_LOST'
@@ -98,6 +103,7 @@ export const PURGE_EXIT_CODES: Record<PurgeOutcome, 0 | 1 | 3 | 4> = {
     ALREADY_REVOKED: 0,
     UNKNOWN_TOMBSTONE: 1,
     ALREADY_COLLECTED: 1,
+    SET_ASIDE: 1,
     CATALOG_LOCKED: 3,
     AUTHORED_LOCKED: 3,
     LOCK_LOST: 3,
@@ -200,30 +206,52 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const NOTHING = ' Nothing was written.';
 
 
-/** How a folder a GC run recorded is now: as the run planned it, gone, or changed. */
-async function recordedState(root: string, recorded: CollectedPath): Promise<'same' | 'gone' | 'changed'> {
+/**
+ * How a folder a GC run recorded is now. `standing`: there, with every file
+ * the run recorded present and no shorter. `aside`: not so in its place, but
+ * set aside whole by that run, at `aside`. `reached`: gone, or a recorded
+ * file is missing or cut short, so the delete reached it. Extra files and a
+ * newer change don't count (#181's A10 review, item 13).
+ */
+async function recordedState(root: string, recorded: CollectedPath, planDigest: string): Promise<{ state: 'standing' | 'reached' } | { state: 'aside'; aside: string }> {
     const dir = path.join(root, ...recorded.path.split('/'));
-    let stat: fs.Stats;
+    let stat: fs.Stats | null = null;
     try {
         stat = await fs.promises.lstat(dir);
     } catch (error) {
-        if (hasErrorCode(error, 'ENOENT')) return 'gone';
-        throw error;
+        if (!hasErrorCode(error, 'ENOENT')) throw error;
     }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return 'changed';
+    if (stat !== null && stat.isDirectory() && !stat.isSymbolicLink() && (await holdsRecorded(dir, recorded.files))) return { state: 'standing' };
+    // Gone from its place, or something else is there: the run may have set it aside whole and stopped.
     const [, photoId, assetRevision] = recorded.path.split('/');
-    const content = await manifestContent(dir, recorded.path, photoId, assetRevision);
-    if (!content.listed || content.bytes !== recorded.bytes) return 'changed';
-    return (await folderFacts(dir)).newestMs === recorded.newestMs ? 'same' : 'changed';
+    const photoDir = path.join(root, 'assets', photoId);
+    const prefix = setAsideName(assetRevision, planDigest, '').slice(0, -1);
+    let names: fs.Dirent[] = [];
+    try {
+        names = await fs.promises.readdir(photoDir, { withFileTypes: true });
+    } catch (error) {
+        if (!hasErrorCode(error, 'ENOENT', 'ENOTDIR')) throw error;
+    }
+    for (const entry of names.filter((each) => each.isDirectory() && each.name.startsWith(`${prefix}-`)).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        if (await holdsRecorded(path.join(photoDir, entry.name), recorded.files)) return { state: 'aside', aside: `assets/${photoId}/${entry.name}` };
+    }
+    return { state: 'reached' };
 }
 
-/** Every folder `markers` recorded that is gone or changed now, sorted. */
-async function reachedFolders(root: string, markers: TombstoneEntry['collected']): Promise<string[]> {
+/** What every folder `markers` recorded is now: those a delete reached, and those set aside whole, sorted. */
+async function recordedFolders(root: string, markers: TombstoneEntry['collected']): Promise<{ reached: string[]; aside: { path: string; original: string }[] }> {
     const reached = new Set<string>();
+    const aside = new Map<string, string>();
     for (const marker of markers) {
-        for (const recorded of marker.paths) if ((await recordedState(root, recorded)) !== 'same') reached.add(recorded.path);
+        for (const recorded of marker.paths) {
+            const now = await recordedState(root, recorded, marker.planDigest);
+            if (now.state === 'reached') reached.add(recorded.path);
+            if (now.state === 'aside') aside.set(recorded.path, now.aside);
+        }
     }
-    return [...reached].sort();
+    // A folder one run set aside whole and another reached is reached.
+    for (const folder of reached) aside.delete(folder);
+    return { reached: [...reached].sort(), aside: [...aside].sort().map(([original, at]) => ({ original, path: at })) };
 }
 
 const isAre = (n: number) => (n === 1 ? 'is' : 'are');
@@ -426,9 +454,11 @@ export async function runPurge(options: PurgeOptions): Promise<PurgeResult> {
 /**
  * `photos purge --revoke <tombstoneId>`: write the tombstone's revoke under
  * the catalog lock, after which `/media`, `assets.tombstoned` and GC ignore
- * it. Refused once a folder a GC run recorded for it in its marker is gone or
- * changed, and only then: a marker whose folders all stand, or an asset
- * revision that never had a folder, doesn't refuse it. Never throws for an
+ * it. Refused once a folder a GC run recorded for it in its marker is gone,
+ * or a file it recorded is missing or shorter, and only then: extra files,
+ * newer changes, a marker whose folders all stand, or an asset revision that
+ * never had a folder don't refuse it. A folder set aside whole stops it with
+ * SET_ASIDE and says how to rename it back. Never throws for an
  * expected stop.
  */
 export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
@@ -463,11 +493,16 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         result.tombstone = entry;
         if (entry.revoked) return finish('ALREADY_REVOKED', `${entry.tombstoneId} was revoked at ${entry.revoked.createdAt} by ${entry.revoked.actor}.${NOTHING}`, { revoke: entry.revoked });
         // Each GC run writes its marker, with every exact folder it will delete, before its first delete. Only a
-        // recorded folder that is gone or changed now means a revoke would bring back less than it says.
-        const reached = await reachedFolders(root, entry.collected);
+        // recorded folder that is gone, or a recorded file missing or cut short, means a revoke would bring back less than it says.
+        const { reached, aside } = await recordedFolders(root, entry.collected);
         if (reached.length > 0) {
             const it = reached.length === 1 ? 'it' : 'them';
-            return finish('ALREADY_COLLECTED', `photos gc --apply began deleting ${reached.join(', ')} for ${entry.tombstoneId}, and ${reached.length === 1 ? "it's" : "they're"} gone or changed now, so a revoke can't bring ${it} back.${NOTHING} ${PERMANENT_TEXT}`);
+            return finish('ALREADY_COLLECTED', `photos gc --apply began deleting ${reached.join(', ')} for ${entry.tombstoneId}, and ${reached.length === 1 ? "it's" : "they're"} gone or cut short now, so a revoke can't bring ${it} back.${NOTHING} ${PERMANENT_TEXT}`);
+        }
+        if (aside.length > 0) {
+            // Not deleted: a stopped run left it whole beside its place. Renamed back, the revoke goes through.
+            const texts = aside.map((folder) => setAsideText({ ...folder, state: 'whole' }));
+            return finish('SET_ASIDE', `photos gc --apply stopped with ${aside.map((folder) => folder.original).join(', ')} out of place for ${entry.tombstoneId}: ${texts.join('; ')}.${NOTHING}`);
         }
         const what = entry.assetRevision === null ? `${entry.photoId}, ${plural(entry.assetRevisions.length, 'asset revision')}` : `${entry.photoId} at ${entry.assetRevision}`;
         const notes = await othersText(entry, tombstones);
@@ -503,7 +538,7 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         }
         const listed = new Set(entry.assetRevisions.map((assetRevision) => `assets/${entry.photoId}/${assetRevision}`));
         for (const other of others) {
-            const gone = (await reachedFolders(root, other.collected)).filter((folder) => listed.has(folder));
+            const gone = (await recordedFolders(root, other.collected)).reached.filter((folder) => listed.has(folder));
             if (gone.length === 0) continue;
             gone.forEach((folder) => down.add(folder.split('/')[2]));
             parts.push(` photos gc --apply deleted ${gone.join(', ')} for ${other.tombstoneId}, so ${gone.length === 1 ? 'it' : 'they'} ${isAre(gone.length)} gone for good: only a backup of the data root brings ${gone.length === 1 ? 'it' : 'them'} back.`);
