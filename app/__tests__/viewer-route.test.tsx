@@ -243,6 +243,9 @@ describe('the Viewer route', () => {
         ['a photo moved to another series', 'route-b', P[0], `/work/route-a/photo/${P[0]}`],
         ['a photo moved, under a former slug', 'sentinel-old-slug', P[3], `/work/route-b/photo/${P[3]}`],
         ['a photo moved, under an uppercase slug', 'Route-A', P[3], `/work/route-b/photo/${P[3]}`],
+        ['a published photo, under an unknown slug', 'no-such-series', P[0], `/work/route-a/photo/${P[0]}`],
+        ['a published photo, under a draft series\' slug', 'route-draft', P[0], `/work/route-a/photo/${P[0]}`],
+        ['a published photo, under a hidden series\' slug', 'route-hidden', P[3], `/work/route-b/photo/${P[3]}`],
     ])('answers %s 308 to the canonical URL (#7, decided)', async (_name, slug, photoId, location) => {
         expect(await answer(slug, photoId)).toEqual({ redirect: location });
         expect(await generateMetadata(props(slug, photoId))).toEqual({});
@@ -275,12 +278,12 @@ describe('the Viewer route', () => {
             ['route-draft', P[4]],
             ['route-hidden', P[5]],
             ['route-a', id(99)],
-            ['no-such-series', P[0]],
+            ['no-such-series', P[4]],
             ['Route-Draft', P[4]],
             ['route-a', id(99).toUpperCase()],
             ['..', P[0]],
             ['route-a', 'IMG_0001.jpg'],
-            ['route-draft', P[0]],
+            ['Route--A', P[0]],
         ];
         for (const [slug, photoId] of cases) expect(await answer(slug, photoId), `${slug} ${photoId}`).toEqual({ notFound: true });
     });

@@ -716,7 +716,9 @@ describe('the page', () => {
         expect(doc.querySelectorAll('[data-catalog-revision]')).toHaveLength(1);
     });
 
-    it('puts the h1, the statement, and the cover in the server HTML, so the page reads whole with JavaScript off', async () => {
+    // The server HTML only: renderToStaticMarkup also renders client components' first pass, so it can't show the page
+    // works with JavaScript off. e2e/series.spec.ts's "with JavaScript disabled" checks that, in a browser.
+    it('puts the h1, the statement, the cover, every entry, and both All work links in the server HTML', async () => {
         const page = await html();
         expect(page).toMatch(/<h1[^>]*>Fixture series A<\/h1>/);
         expect(page).toContain('<p>Fixture statement, first paragraph.</p>');

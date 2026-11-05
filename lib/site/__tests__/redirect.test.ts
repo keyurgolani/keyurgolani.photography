@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { redirectLocation } from '../redirect';
+import { MAX_LOCATION_LENGTH, redirectLocation } from '../redirect';
 
 // The one place a series or Viewer redirect gets its Location (#5, #7): the
 // canonical path the catalog gave, and the visitor's query re-encoded after
@@ -32,10 +32,17 @@ describe('redirectLocation', () => {
         expect(resolved.searchParams.get('next')).toBe('//evil.example/x');
     });
 
-    it('doesn\'t touch the caller\'s query', () => {
-        const query = new URLSearchParams('a=1');
-        redirectLocation('/work/harbor', query);
-        expect(query.toString()).toBe('a=1');
+    it('drops the query, whole, when it would take the Location past MAX_LOCATION_LENGTH', () => {
+        expect(MAX_LOCATION_LENGTH).toBe(2048);
+        const path = '/work/harbor';
+        // `?q=` and the value: exactly at the cap keeps the query, one character more drops all of it.
+        const fits = 'x'.repeat(MAX_LOCATION_LENGTH - path.length - '?q='.length);
+        expect(redirectLocation(path, { q: fits })).toHaveLength(MAX_LOCATION_LENGTH);
+        expect(redirectLocation(path, { q: `${fits}x` })).toBe(path);
+        expect(redirectLocation(path, { a: '1', q: `${fits}x` })).toBe(path);
+        // The cap counts the re-encoded bytes: 700 spaces are 700 `+`, but 700 `/` are 2,100 characters.
+        expect(redirectLocation(path, { q: ' '.repeat(700) })).toBe(`${path}?q=${'+'.repeat(700)}`);
+        expect(redirectLocation(path, { q: '/'.repeat(700) })).toBe(path);
     });
 
     it.each([

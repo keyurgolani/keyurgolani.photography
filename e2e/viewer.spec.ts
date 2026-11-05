@@ -78,8 +78,7 @@ test('a former series slug answers 308 to the canonical URL, and nothing it can\
     const moved = await request.get(`${origin()}${href(P[1], 'sentinel-old-slug')}`, { maxRedirects: 0 });
     expect(moved.status()).toBe(308);
     expect(moved.headers()['location']).toBe(href(P[1]));
-    // A slug the site doesn't publish names no series a photo could have left, so it stays the one not-found.
-    const missing = [href(P[4], 'draft'), href(P[5], 'sentinel-hidden'), href(P[0], 'draft'), href(P[0], 'no-such-series'), href(id(99)), href(id(99).toUpperCase()), '/work/harbor/photo/IMG_0001.jpg'];
+    const missing = [href(P[4], 'draft'), href(P[5], 'sentinel-hidden'), href(P[4], 'no-such-series'), href(id(99)), href(id(99).toUpperCase()), '/work/harbor/photo/IMG_0001.jpg'];
     for (const path of missing) {
         const response = await request.get(`${origin()}${path}`, { maxRedirects: 0 });
         expect(response.status(), path).toBe(404);
@@ -102,6 +101,10 @@ test('a letter-case variant, or a photograph moved to another series, answers 30
         [href(P[3]), href(P[3], 'ridge')],
         [`${href(P[3], 'Harbor')}?utm_source=mail&tag=one&tag=two`, `${href(P[3], 'ridge')}?utm_source=mail&tag=one&tag=two`],
         [`${href(P[1], 'sentinel-old-slug')}?photo=${P[1]}`, `${href(P[1])}?photo=${P[1]}`],
+        // A published photo's one home, from any slug in shape: unknown, draft, and hidden slugs answer alike.
+        [href(P[0], 'no-such-series'), href(P[0])],
+        [href(P[0], 'draft'), href(P[0])],
+        [href(P[0], 'sentinel-hidden'), href(P[0])],
     ]) {
         const response = await request.get(`${origin()}${path}`, { maxRedirects: 0 });
         expect(response.status(), path).toBe(308);

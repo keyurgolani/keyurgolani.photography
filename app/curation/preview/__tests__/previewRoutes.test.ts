@@ -307,6 +307,29 @@ describe('signed in', () => {
         expect(viewer.props).toMatchObject({ closeHref: `${base}/work/${LONG}`, previousHref: null, nextHref: expect.stringMatching(new RegExp(`^${base}/work/${LONG}/photo/`)) });
     });
 
+    it('keeps the query on its case and moved redirects, each a 307 under the preview and never a public path', async () => {
+        const base = previewBasePath(draftId);
+        const short = catalog.content.series.find((series) => series.slug === 'fixture-short')!;
+        const photo = firstPhoto().id;
+        const other = short.photoIds[0];
+        const query = { utm_source: 'mail', tag: ['one', 'two'] };
+        const search = '?utm_source=mail&tag=one&tag=two';
+        const series = (slug: string) => () => pages.series.default({ params: Promise.resolve({ draftId, slug }), searchParams: Promise.resolve(query) });
+        const viewer = (slug: string, photoId: string) => () => pages.viewer.default({ params: Promise.resolve({ draftId, slug, photoId }), searchParams: Promise.resolve(query) });
+        for (const [name, run, location] of [
+            ['a series slug in capitals', series(LONG.toUpperCase()), `${base}/work/${LONG}${search}`],
+            ['a Viewer slug in capitals', viewer(LONG.toUpperCase(), photo), `${base}/work/${LONG}/photo/${photo}${search}`],
+            ['a photo ID in capitals', viewer(LONG, photo.toUpperCase()), `${base}/work/${LONG}/photo/${photo}${search}`],
+            ['a photo under the other series', viewer('fixture-short', photo), `${base}/work/${LONG}/photo/${photo}${search}`],
+            ['a photo under an unknown slug', viewer('no-such-series', other), `${base}/work/fixture-short/photo/${other}${search}`],
+        ] as const) {
+            const answer = await outcome(run);
+            expect(answer.kind, name).toBe('thrown');
+            const digest = answer.kind === 'thrown' ? answer.digest : '';
+            expect(digest.startsWith(`NEXT_REDIRECT;replace;${location};307;`), `${name}: ${digest}`).toBe(true);
+        }
+    });
+
     it('gives every page the preview metadata: a Preview title, noindex, and no share or canonical metadata', async () => {
         for (const name of ['frame metadata', 'home metadata', 'series metadata', 'viewer metadata']) {
             const metadata = (await surfaces(draftId)[name]()) as Record<string, unknown>;
