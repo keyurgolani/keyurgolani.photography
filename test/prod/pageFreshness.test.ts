@@ -7,32 +7,37 @@
  * unless RUN_PROD_TESTS=1.
  *
  * In order, on one server started before the launch, so its pid only changes
- * where a row says it restarts:
+ * where a row says it restarts (F5):
  * - E1: before anything is published, the series and Viewer error pages are
  *   Next's bare error shell: no title, meta tag or filled hidden segment
  *   after </head>, and tag for tag the body /work sends. Then the same on a second server whose
  *   first request meets a damaged active pointer.
- * - F1, F6: the launch, then a publish that changes the series statement.
- *   After each, Work's one marker (`ul[data-catalog-revision]`, B3) and the
- *   series page's meta tag, main and statement show the revision /api/ready
- *   names.
+ * - F1, F3, F6: the launch, then a publish that changes the series
+ *   statement. After each, Work's one marker (`ul[data-catalog-revision]`,
+ *   B3), Home's ready `main` (B6), and the series page's meta tag, main and
+ *   statement show the revision /api/ready names.
  * - H1, H2: the series head (title, description, canonical, og:image,
  *   catalog-revision) is all inside <head>, for Twitterbot and a browser.
  * - S1, the series half: the canonical URL, an alias and a case variant, an
  *   unknown slug and a draft, with the same status, Location and
  *   Cache-Control for both agents, and every 404 the not-found page.
- * - F2, F7 (Work and the series page): a rollback to R1 through the photos
- *   CLI, in a child process, shows on the first GET of each.
+ * - F4: a rollback to R1 from this process shows on Home.
+ * - F5: a restart, and Home still shows R1.
+ * - F2, F7 (Home, Work and the series page): after a third publish shows on
+ *   all three, a rollback to R1 through the photos CLI, in a child process,
+ *   shows on the first GET of each.
  *
  * The rows that wait on other PRs are todos at the end, each naming the PR.
  */
 import fs from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { VARIANT_BYTES } from '../../lib/catalog/__tests__/catalogFixtures';
-import { publish, type PublishResult } from '../../lib/catalog/publish';
+import { activateRevision, publish, type PublishResult } from '../../lib/catalog/publish';
+import { CATALOG_LOCK } from '../../lib/catalog/repository';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../../lib/catalog/testing';
 import { catalogPaths, readActivePointer } from '../../lib/catalog/working-layer';
 import { versionFile } from '../../lib/storage/document';
+import { withLock } from '../../lib/storage/lock';
 import { runTsx } from '../helpers/runTsx';
 import {
     bodyOf,
@@ -45,6 +50,7 @@ import {
     links,
     markers,
     meta,
+    restart,
     skeleton,
     startStandalone,
     withoutScripts,
@@ -91,6 +97,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     /** F6's two revisions, for the rows after it. */
     let r1 = '';
     let r2 = '';
+    let r3 = '';
     const extra: (() => Promise<void> | void)[] = [];
 
     beforeAll(async () => {
@@ -190,6 +197,19 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         }
     }
 
+    /** Home as each agent comes from `revision`: one marker on its main, the ready state (B6), and every rev_ that one. */
+    async function expectHomeAt(revision: string): Promise<void> {
+        for (const agent of AGENTS) {
+            const page = await get(base(), '/', agent);
+            const where = `/ as ${agent}`;
+            expect(page.status, where).toBe(200);
+            const found = markers(page.html);
+            expect(found.main, `${where}: main[data-catalog-revision]`).toEqual([revision]);
+            expect(found.homeState, `${where}: main[data-home-state]`).toEqual(['ready']);
+            expect(found.revisions, `${where}: every rev_ in it`).toEqual([revision]);
+        }
+    }
+
     it('E1: answers the series and Viewer pages with /work\'s bare error shell before the launch', async () => {
         const ready = await get(base(), '/api/ready', 'browser');
         expect(ready.status).toBe(503);
@@ -217,10 +237,11 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expect(started.output()).not.toContain(damaged.root);
     }, 120_000);
 
-    it('F1, F6: shows the launch and a statement publish on Work and the series page, as /api/ready names them', async () => {
+    it('F1, F3, F6: shows the launch and a statement publish on Work, Home and the series page, as /api/ready names them', async () => {
         // The launch, on a server that was up before it. Each page first, so nothing else warmed the reader for it.
         r1 = (await published(true)).revisionId!;
         await expectWorkAt(r1);
+        await expectHomeAt(r1);
         await expectSeriesAt(r1, statement(1), [statement(2)]);
         expect(await readyRevision()).toBe(r1);
 
@@ -228,13 +249,15 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         r2 = (await published()).revisionId!;
         expect(r2).not.toBe(r1);
         await expectWorkAt(r2);
+        // F3: Home's marker is the new revision, ready.
+        await expectHomeAt(r2);
         await expectSeriesAt(r2, statement(2), [statement(1)]);
         expect(await readyRevision()).toBe(r2);
         expectSameProcess();
     }, 120_000);
 
     it('H1, H2: keeps the series head in <head>, for Twitterbot and a browser alike', async () => {
-        expect(r2, 'F1, F6 published').not.toBe('');
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
         for (const agent of AGENTS) {
             const page = await get(base(), `/work/${SLUG}`, agent);
             const where = `/work/${SLUG} as ${agent}`;
@@ -259,7 +282,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     }, 60_000);
 
     it('S1: answers the series URLs with the same status, Location and Cache-Control for both agents', async () => {
-        expect(r2, 'F1, F6 published').not.toBe('');
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
         const canonical = `/work/${SLUG}`;
         const rows: { path: string; status: number; location?: string }[] = [
             { path: canonical, status: 200 },
@@ -296,17 +319,55 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expectSameProcess();
     }, 60_000);
 
-    it('F2, F7: shows a rollback by the photos CLI on the first GET of Work and the series page', async () => {
-        expect(r2, 'F1, F6 published').not.toBe('');
+    it('F4: shows a rollback from this process on Home', async () => {
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
+        const rollback = await withLock(CATALOG_LOCK, { root: catalog!.root }, (lock) => activateRevision({
+            lock,
+            revisionId: r1,
+            expectedActiveRevisionId: r2,
+            kind: 'rollback',
+            actor: 'test',
+            reason: 'F4',
+        }));
+        expect(rollback.outcome, rollback.message).toBe('ACTIVATED');
+        await expectHomeAt(r1);
+        expect(await readyRevision()).toBe(r1);
+        expectSameProcess();
+    }, 60_000);
+
+    it('F5: still shows the rollback on Home after a restart', async () => {
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
+        expect(server!.output()).not.toContain('catalog.read.failed');
+        // The one row that restarts: a new process on the same copy, roots and SITE_URL.
+        server = await restart(server!);
+        expect(server.pid).not.toBe(pid);
+        pid = server.pid;
+        await expectHomeAt(r1);
+        expect(await readyRevision()).toBe(r1);
+        expectSameProcess();
+    }, 120_000);
+
+    it('F2, F7: shows a rollback by the photos CLI on the first GET of Home, Work and the series page', async () => {
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
+        // A third revision, shown on every page, so the rollback below is a change each page has to follow.
+        await editSeries(catalog!.root, seriesId, { statement: statement(3) });
+        r3 = (await published()).revisionId!;
+        expect([r1, r2]).not.toContain(r3);
+        await expectHomeAt(r3);
+        await expectWorkAt(r3);
+        await expectSeriesAt(r3, statement(3), [statement(1), statement(2)]);
+        expect(await readyRevision()).toBe(r3);
+
         // #15's rollback, in its own process, as the curator runs it.
-        const rolled = await runTsx('scripts/photos.ts', ['rollback', '--to', r1, '--reason', 'F7', '--actor', 'test', '--yes', '--expect-active', r2], {
+        const rolled = await runTsx('scripts/photos.ts', ['rollback', '--to', r1, '--reason', 'F7', '--actor', 'test', '--yes', '--expect-active', r3], {
             env: { PHOTOGRAPHY_DATA_DIR: catalog!.root, PHOTOS_ACTOR: undefined },
         });
         expect(rolled.code, rolled.stderr).toBe(0);
         expect(rolled.stdout).toContain(`ROLLED_BACK: Rolled back to revision 1 (${r1})`);
         // Each page's first GET since, as both agents, before /api/ready asks.
+        await expectHomeAt(r1);
         await expectWorkAt(r1);
-        await expectSeriesAt(r1, statement(1), [statement(2)]);
+        await expectSeriesAt(r1, statement(1), [statement(2), statement(3)]);
         expect(await readyRevision()).toBe(r1);
         expectSameProcess();
         expect(server!.output()).not.toContain('catalog.read.failed');
@@ -314,12 +375,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     }, 120_000);
 
     // Waiting on other PRs: each lands with the markers or routes it needs.
-    it.todo("F3 (waits on B6): Home's marker is new and ready after a publish, and every rev_ in the body is the marker");
-    it.todo("F4 (waits on B6): Home's marker is the target after an in-process rollback");
-    it.todo("F5 (waits on B6): Home's marker is still the target after a restart");
-    it.todo('F7, Home (waits on B6): the CLI rollback shows on the first GET of /');
     it.todo("F8 (waits on B8): on a copied root, the Viewer's meta tag follows a caption publish and a rollback, and the original root is byte-identical");
-    it.todo("F9 (waits on B6 and B8): Home, Work, the series page and the Viewer all show F7's target after a restart");
+    it.todo("F9 (waits on B8): Home, Work, the series page and the Viewer all show F7's target after a restart");
     it.todo("H3 (waits on B8): the Viewer's h1 with its sr-only position, the aria-hidden counter, caption, alt, AVIF and WebP srcsets and the full head, for both agents");
     it.todo('S1, the Viewer half (waits on B8): 200, 308s from an alias, a case variant and a moved photo, and 404s for an unknown id and a draft, alike for both agents');
 });
