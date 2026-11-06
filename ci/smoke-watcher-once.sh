@@ -166,7 +166,7 @@ problems=$(docker run --rm --pull never "$IMAGE" node -e '
   for (const source of ["scripts", "utils", "lib", "tsconfig.json"]) {
     if (fs.existsSync(source)) problems.push(source);
   }
-  for (const script of ["imageWatcher", "photos", "watcherHealth"]) {
+  for (const script of ["imageWatcher", "photos", "watcherHealth", "budgets-cli"]) {
     if (!fs.existsSync("dist/scripts/" + script + ".mjs")) problems.push("no dist/scripts/" + script + ".mjs");
   }
   console.log(problems.join(", "));
@@ -189,6 +189,13 @@ plan=$(sed -n 's/^Plan: //p' <<<"$dry_run")
 [ -n "$plan" ] || fail "The dry run printed no plan: $dry_run"
 in_watcher node dist/scripts/photos.mjs migrate --apply --plan "$plan" >/dev/null || fail "Applying $plan failed."
 library_listing >"$TMP/listing-start.txt" || fail "Could not list the library."
+
+# photos validate measures the candidate's budgets in dist/scripts/budgets-cli.mjs, the second bundle (#6). With
+# nothing authored yet it exits 1 on its errors, and prints the sizes either way, on stderr then. It writes nothing.
+validate=$(in_watcher node dist/scripts/photos.mjs validate 2>&1) || true
+grep -qF 'Budgets (gzip' <<<"$validate" || fail "photos validate printed no budget sizes from budgets-cli.mjs: $validate"
+if grep -qF 'Budgets: not measured' <<<"$validate"; then fail "photos validate couldn't run budgets-cli.mjs: $validate"; fi
+echo "photos validate printed the candidate's budget sizes from dist/scripts/budgets-cli.mjs."
 
 # 2. --once builds a set, with its manifest.json, for each fixture, says
 #    legacyDerivatives: false, and writes nothing in the library.

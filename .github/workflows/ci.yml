@@ -60,9 +60,11 @@ jobs:
   e2e:
     name: Browser tests
     runs-on: ubuntu-latest
-    # The suite alone takes about 19 minutes on next, and the Playwright install
-    # is bounded at three 6-minute tries.
-    timeout-minutes: 40
+    # The Playwright install is bounded at three 6-minute tries and test:budgets
+    # at 12 minutes, most of them writing the 5,000-photograph library. The rest
+    # is the suite's, which grows with each PR, so time it on a recent run before
+    # moving this.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
 
@@ -96,6 +98,25 @@ jobs:
           exit 1
 
       - run: npm run test:e2e
+
+      # #6's budgets on the build test:e2e just made: a generated library on 127.0.0.1:3200, Chromium only, no
+      # network. A budget over its number in lib/perf/budgets.ts fails the job, and so the pull request. Its own
+      # ceiling, so a hang fails this step and the uploads below still run.
+      - name: Check #6's budgets
+        timeout-minutes: 12
+        run: npm run test:budgets
+
+      - if: always()
+        name: Summarize #6's budgets
+        run: cat .perf/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: budgets-report
+          path: .perf/report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - if: failure()
         uses: actions/upload-artifact@v7

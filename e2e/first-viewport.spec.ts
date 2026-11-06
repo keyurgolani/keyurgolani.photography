@@ -7,7 +7,8 @@ import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
 // #6's first viewports in the browser, on the 5,000-photograph budget library
-// (100 series, a featured one of 250) published to a second `next start`. For
+// (100 series, the featured one of 100 first; lib/perf/fixture.ts) published
+// to a second `next start`. For
 // Home, Work, a series, and the Viewer, on a desktop and a phone, it counts
 // what the first load asks for (the document, /media images, /api data),
 // checks each image asks for the rung its sizes and the device need and no

@@ -36,6 +36,9 @@ test-results/
 playwright-report/
 blob-report/
 
+# npm run test:budgets' report (#6)
+/.perf/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
