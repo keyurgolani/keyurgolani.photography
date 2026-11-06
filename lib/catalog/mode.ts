@@ -4,6 +4,7 @@ import { hasErrorCode } from '../storage/fsx';
 import { listActivations } from './repository';
 import type { ActivePointer } from './types';
 import { readActivePointer } from './working-layer';
+import { globalSlot } from '../globalSlot';
 
 /**
  * Whether a data root has published, as checkPublished() finds it. Since
@@ -33,8 +34,7 @@ export const CUTOVER_KEY = Symbol.for('keyurgolani.photography.catalogCutover');
 
 /** Data roots this process has seen publish, shared by every bundle. */
 function cutOver(): Set<string> {
-    const store = globalThis as typeof globalThis & { [CUTOVER_KEY]?: Set<string> };
-    return (store[CUTOVER_KEY] ??= new Set<string>());
+    return globalSlot(CUTOVER_KEY, () => new Set<string>());
 }
 
 type Evidence = { found: boolean } | { unreadable: string };

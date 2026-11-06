@@ -24,7 +24,10 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth 
  * file matches its size and SHA-256. The manifest is written last, so a set
  * without one was never finished. A build holds stagingLockName(<id>) for as
  * long as its `staging/<id>` folder exists, so a starting worker can remove
- * the folders of killed builds without touching a live one's.
+ * the folders of killed builds without touching a live one's. It also holds
+ * assetLockName(<photoId>, <assetRevision>) from before that folder exists
+ * through the publish, and `photos gc --set-aside` takes the same lock, so
+ * "build a set for X" and "set X aside" never run at once.
  *
  * resolveAsset() and the manifest reader live in lib/media/manifest.ts, so
  * the web process can read sets without loading the encoder.
@@ -98,6 +101,24 @@ export function stagingLockName(id: string): string {
     return `build-${id}`;
 }
 
+/**
+ * The lock a build holds for one asset revision, from before its staging
+ * folder exists through the publish, and `photos gc --set-aside` holds for
+ * the folder it moves (#181's A10 review, item 40a). Photo IDs hold `_`, which
+ * a lock name can't, so it is a digest of the pair.
+ */
+export function assetLockName(photoId: string, assetRevision: string): string {
+    return `asset-${createHash('sha256').update(`${photoId}\n${assetRevision}`).digest('hex').slice(0, 32)}`;
+}
+
+/** A build that lost its asset's lock before the publish: it removes its staging folder and leaves the entry pending. */
+class AssetLockLostError extends Error {
+    constructor() {
+        super("The build lost its asset's lock before the publish.");
+        this.name = 'AssetLockLostError';
+    }
+}
+
 /** A name a build's staging folder can have: one that makes a valid lock name. #15's GC considers only these too. */
 export const STAGING_ID = /^[a-z0-9-]+$/;
 
@@ -144,27 +165,42 @@ async function decoding<T>(step: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Remove the staging folders that builds killed before publishing left. A
- * folder whose lock this takes belongs to no live build. A build killed less
- * than a lease ago still holds its lock, so a later start removes its folder.
- * Anything in `staging/` a build doesn't make is left alone, and a folder that
- * can't be removed is logged and left for the next start. Returns the names
- * removed.
+ * Remove the staging folders that builds killed before publishing left, at
+ * watcher start. A folder whose lock this takes belongs to no live build. A
+ * build killed less than a lease ago still holds its lock, so a later start
+ * removes its folder. Anything in `staging/` a build doesn't make is left
+ * alone, and a folder that can't be removed is logged and left for the next
+ * start. Returns the names removed.
+ *
+ * #181's A10 guard: it removes only direct children of `staging/`, follows
+ * no symlink (an entry that is a symlink is unlinked as a link), and stays
+ * inside `staging/` by dev:inode: `staging/` must be a real folder, and
+ * right before each delete it must still be the folder first listed, by
+ * dev and inode. `staging/` that is a symlink clears nothing.
  */
-export async function removeAbandonedStaging(root: string, { leaseMs, logger = console }: { leaseMs?: number; logger?: Logger } = {}): Promise<string[]> {
+export async function removeAbandonedStaging(root: string, { leaseMs, logger = console, hooks = {} }: { leaseMs?: number; logger?: Logger; hooks?: { beforeClear?(name: string): void | Promise<void> } } = {}): Promise<string[]> {
     const dir = stagingRoot(root);
+    let staging: fs.Stats;
     let entries: fs.Dirent[];
     try {
+        staging = await fs.promises.lstat(dir);
+        if (staging.isSymbolicLink() || !staging.isDirectory()) {
+            logger.warn('[derivatives] staging/ is a symlink or not a folder, so nothing in it was removed.');
+            return [];
+        }
         entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return [];
         throw error;
     }
     const removed: string[] = [];
-    for (const name of entries.filter((entry) => entry.isDirectory() && STAGING_ID.test(entry.name)).map((entry) => entry.name).sort()) {
+    for (const name of entries.filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && STAGING_ID.test(entry.name)).map((entry) => entry.name).sort()) {
         try {
-            await withLock(stagingLockName(name), { root, waitMs: 0, leaseMs }, () => fs.promises.rm(path.join(dir, name), { recursive: true, force: true }));
-            removed.push(name);
+            const cleared = await withLock(stagingLockName(name), { root, waitMs: 0, leaseMs }, async () => {
+                await hooks.beforeClear?.(name);
+                return clearStagingEntry(dir, name, staging);
+            });
+            if (cleared) removed.push(name);
         } catch (error) {
             // Held: a live build owns the folder, or one killed too recently to tell.
             if (error instanceof LockTimeoutError) continue;
@@ -172,6 +208,30 @@ export async function removeAbandonedStaging(root: string, { leaseMs, logger = c
         }
     }
     return removed;
+}
+
+/**
+ * Remove one direct child of `staging/`, checked in the same tick as its
+ * delete: `staging/` is still the folder `staging` describes, by dev and
+ * inode and no symlink, and the entry is a symlink, unlinked as a link, or a
+ * real folder on `staging/`'s own device, removed without following any
+ * link in it. Anything else is left. Throws when `staging/` changed. Returns whether it removed it.
+ */
+async function clearStagingEntry(dir: string, name: string, staging: fs.Stats): Promise<boolean> {
+    const now = fs.lstatSync(dir);
+    if (now.isSymbolicLink() || now.dev !== staging.dev || now.ino !== staging.ino) throw new Error('staging/ is no longer the folder that was listed, so nothing more was removed');
+    const target = path.join(dir, name);
+    const entry = fs.lstatSync(target);
+    // A direct child lives on staging/'s own device: one on another is a mount, which the clear never reaches into.
+    if (entry.dev !== staging.dev) throw new Error(`staging/${name} is on another device than staging/, so it was left`);
+    if (entry.isSymbolicLink()) {
+        await fs.promises.unlink(target);
+        return true;
+    }
+    if (!entry.isDirectory()) return false;
+    // rm() unlinks a symlink inside the folder rather than following it.
+    await fs.promises.rm(target, { recursive: true, force: true });
+    return true;
 }
 
 /** The files a build writes, by name. */
@@ -320,65 +380,78 @@ export async function buildDerivativeSet(job: DerivativeJob, options: BuildOptio
         // Read without the lock, so a pass may have brought the revision back since, as a revert does. Checked again under it.
         return recordFailed('source-superseded', undefined, (current) => current.photos[job.photoId]?.source.observedRevision !== job.assetRevision);
     }
-    let source: Buffer;
-    try {
-        source = await fs.promises.readFile(path.join(library, photo.source.path));
-    } catch (error) {
-        // A6 review: an outage, not this file. Record nothing, so no set fails for a share that dropped out.
-        if (!await libraryReadable(library)) return { status: 'pending', reason: 'library-unavailable' };
-        if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
-        return recordFailed(`source unreadable: ${errorText(error)}`, error);
-    }
-    if (assetRevisionOf(source, hasher) !== job.assetRevision) return { status: 'pending', reason: 'digest-mismatch' };
-    if (revision.width === null || revision.height === null) return recordFailed('undecodable');
-    const { width: orientedWidth, height: orientedHeight } = revision;
-    // A6: the pixel cap, from #10's recorded size before anything is decoded, and Sharp's own as it decodes.
-    const maxPixels = options.maxSourcePixels ?? MAX_SOURCE_PIXELS;
-    if (orientedWidth * orientedHeight > maxPixels) return recordFailed(`too-large: ${orientedWidth}x${orientedHeight} is over the ${maxPixels}-pixel cap`);
-
-    const id = idGen();
-    const staging = path.join(stagingRoot(root), id);
     const writeFile = faults.writeFile ?? ((file: string, data: Uint8Array) => fs.promises.writeFile(file, data, { mode: PRIVATE_FILE_MODE, flag: 'wx' }));
+
+    // The asset's lock, taken without waiting before the source is read (item 51's N3) and held through the publish, then the folder's:
+    // --set-aside can't move this asset while the build reads, stages or publishes it, and a build never waits on it.
+    let assetLocked = false;
+    let outcome: BuildOutcome | null;
     try {
-        // Taken before the folder exists and let go only once it is published or removed.
-        await withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }) => {
+        outcome = await withLock(assetLockName(job.photoId, job.assetRevision), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async (assetLock): Promise<BuildOutcome | null> => {
+            assetLocked = true;
+            let source: Buffer;
             try {
-                await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
-                const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
-                for (const width of VARIANT_WIDTHS) {
-                    variants[width] = {} as Record<VariantFormat, VariantFile>;
-                    for (const format of VARIANT_FORMATS) {
-                        const name = `${width}.${format}`;
-                        const encoded = await decoding(() => encodeVariant(source, width, format, { limitInputPixels: maxPixels }));
-                        const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
-                        const size = await validated(name, data, format, variantWidthFor(orientedWidth, orientedHeight, PROFILE_1.variants[width].width));
-                        await writeFile(path.join(staging, name), data);
-                        variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
-                        await faults.afterVariant?.(name);
-                    }
-                }
-                const manifest: AssetManifest = {
-                    schemaVersion: 1,
-                    photoId: job.photoId,
-                    assetRevision: job.assetRevision,
-                    profileId: job.profileId,
-                    variants,
-                    lqip: await lqipOf(source, maxPixels),
-                    createdAt: iso(clock()),
-                };
-                await faults.beforeManifest?.();
-                await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
-                await faults.beforePublish?.();
-                // A build that stalled past its lease may have lost the folder to a starting worker.
-                signal.throwIfAborted();
-                await publishDirectory(staging, finalDir);
+                source = await fs.promises.readFile(path.join(library, photo.source.path));
             } catch (error) {
-                await fs.promises.rm(staging, { recursive: true, force: true });
-                throw error;
+                // A6 review: an outage, not this file. Record nothing, so no set fails for a share that dropped out.
+                if (!await libraryReadable(library)) return { status: 'pending', reason: 'library-unavailable' };
+                if (hasErrorCode(error, 'ENOENT', 'ENOTDIR')) return { status: 'pending', reason: 'source-changing' };
+                return recordFailed(`source unreadable: ${errorText(error)}`, error);
             }
+            if (assetRevisionOf(source, hasher) !== job.assetRevision) return { status: 'pending', reason: 'digest-mismatch' };
+            if (revision.width === null || revision.height === null) return recordFailed('undecodable');
+            const { width: orientedWidth, height: orientedHeight } = revision;
+            // A6: the pixel cap, from #10's recorded size before anything is decoded, and Sharp's own as it decodes.
+            const maxPixels = options.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+            if (orientedWidth * orientedHeight > maxPixels) return recordFailed(`too-large: ${orientedWidth}x${orientedHeight} is over the ${maxPixels}-pixel cap`);
+
+            const id = idGen();
+            const staging = path.join(stagingRoot(root), id);
+            // Taken before the folder exists and let go only once it is published or removed.
+            return withLock(stagingLockName(id), { root, waitMs: 0, leaseMs: options.lock?.leaseMs }, async ({ signal }): Promise<BuildOutcome | null> => {
+                try {
+                    await fs.promises.mkdir(staging, { recursive: true, mode: PRIVATE_DIR_MODE });
+                    const variants = {} as Record<VariantWidth, Record<VariantFormat, VariantFile>>;
+                    for (const width of VARIANT_WIDTHS) {
+                        variants[width] = {} as Record<VariantFormat, VariantFile>;
+                        for (const format of VARIANT_FORMATS) {
+                            const name = `${width}.${format}`;
+                            const encoded = await decoding(() => encodeVariant(source, width, format, { limitInputPixels: maxPixels }));
+                            const data = (await faults.afterEncode?.(name, encoded)) ?? encoded;
+                            const size = await validated(name, data, format, variantWidthFor(orientedWidth, orientedHeight, PROFILE_1.variants[width].width));
+                            await writeFile(path.join(staging, name), data);
+                            variants[width][format] = { ...size, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+                            await faults.afterVariant?.(name);
+                        }
+                    }
+                    const manifest: AssetManifest = {
+                        schemaVersion: 1,
+                        photoId: job.photoId,
+                        assetRevision: job.assetRevision,
+                        profileId: job.profileId,
+                        variants,
+                        lqip: await lqipOf(source, maxPixels),
+                        createdAt: iso(clock()),
+                    };
+                    await faults.beforeManifest?.();
+                    await writeFile(path.join(staging, MANIFEST_FILE), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+                    await faults.beforePublish?.();
+                    // A build that stalled past its lease may have lost the folder to a starting worker.
+                    signal.throwIfAborted();
+                    // Or the asset to --set-aside: then it publishes nothing and the entry stays pending for the next pass (item 51's N2).
+                    if (assetLock.signal.aborted || !(await assetLock.isHeld().catch(() => false))) throw new AssetLockLostError();
+                    await publishDirectory(staging, finalDir);
+                    return null;
+                } catch (error) {
+                    await fs.promises.rm(staging, { recursive: true, force: true });
+                    throw error;
+                }
+            });
         });
     } catch (error) {
+        // Another command holds the asset: --set-aside, most likely. The entry stays pending for the next pass.
+        if ((!assetLocked && error instanceof LockTimeoutError) || error instanceof AssetLockLostError) return { status: 'pending', reason: 'locked' };
         return recordFailed(buildFailureText(error, finalDir), error);
     }
-    return recordReady(false);
+    return outcome ?? recordReady(false);
 }

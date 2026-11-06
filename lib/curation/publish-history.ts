@@ -276,7 +276,8 @@ export function blockedText(reasons: readonly string[]): string {
 export function blockingReasons(issues: readonly Pick<Issue, 'code' | 'record'>[], photoName: (photoId: string) => string): string[] {
     const families = new Map<string, Set<string>>();
     for (const issue of issues) {
-        const family = issue.code.startsWith('assets.') ? 'assets' : issue.code;
+        // A takedown isn't a missing file, so #15's purge has its own words.
+        const family = issue.code === 'assets.tombstoned' ? issue.code : issue.code.startsWith('assets.') ? 'assets' : issue.code;
         const ids = families.get(family) ?? new Set<string>();
         if (issue.record.kind === 'photo') ids.add(issue.record.id);
         families.set(family, ids);
@@ -287,6 +288,13 @@ export function blockingReasons(issues: readonly Pick<Issue, 'code' | 'record'>[
                 const names = [...ids].map(photoName);
                 const n = names.length;
                 return n ? `${n} of its photographs no longer ${n === 1 ? 'has its' : 'have their'} image files: ${names.slice(0, 5).join(', ')}${n > 5 ? `, and ${n - 5} more` : ''}` : 'its image files are missing';
+            }
+            case 'assets.tombstoned': {
+                const names = [...ids].map(photoName);
+                const n = names.length;
+                return n
+                    ? `${n} of its photographs ${n === 1 ? 'was' : 'were'} taken down with photos purge: ${names.slice(0, 5).join(', ')}${n > 5 ? `, and ${n - 5} more` : ''}`
+                    : "a takedown record in the data root can't be read, so nobody can tell what it takes down";
             }
             case 'privacy.path':
                 return 'a description in it names a file on this computer';

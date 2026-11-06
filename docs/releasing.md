@@ -420,7 +420,7 @@ docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
 - **An empty library marks nothing missing.** A pass that finds no photo at all while the registry has photos present, as a network share not mounted yet at boot looks, writes nothing and applies no decision. The watcher logs it as an error, its healthcheck reads unhealthy, and it tries again every minute until the photos are back. `--once` exits 1 then.
 - **The watcher exits 1 when it has nothing to do**: with no data root in production, and with `--once` on a data root the migration hasn't initialized. Before, it still wrote legacy derivatives there.
 
-The legacy derivative folders stay in the library, left as they are. They take space and nothing else, and #15's GC reclaims them once it ships. No step of this release, or of any doc here, moves or deletes anything in the library.
+The legacy derivative folders stay in the library, left as they are. They take space and nothing else. #15's GC, which v2.0.0's A10 ships, never touches the library; moving the legacy folders aside is A12's step. No step of this release, or of any doc here, moves or deletes anything in the library.
 
 It changes `docker-compose.prod.yml`, so the host takes four steps. With an override, add `-f <override>` after each `-f docker-compose.prod.yml` and `-f docker-compose.prod.yml.new`, and add `curator` to the `pull` and `up -d` lines when it runs. A host that skipped `v1.6.0` takes its steps on the way.
 

@@ -279,22 +279,78 @@
  *     0400, and prints no secret. Exits 0 when written, 1 when refused or
  *     the file can't be written, and 2 on a usage error.
  *
+ *   npx tsx scripts/photos.ts purge <photoId> [--asset-revision <assetRevision>] --reason <text> [--actor <name>] [--yes]
+ *   npx tsx scripts/photos.ts purge --revoke <tombstoneId> --reason <text> [--actor <name>] [--yes]
+ *     #15's takedown that survives a rollback. A dry run unless --yes: it
+ *     prints one plain line saying what it takes down, then each asset
+ *     revision and set, and each revision that was live before and loses
+ *     rollback eligibility, and writes nothing. With --yes it prints the same,
+ *     then writes catalog/tombstones/<tombstoneId>.json: from the next request
+ *     /media answers 410 for every set it lists, and no revision that shows
+ *     one can be published or rolled back to. It deletes nothing; only the
+ *     owner's photos gc --apply, more than 7 days later, deletes the bytes.
+ *     Without --asset-revision it takes down every asset revision the registry
+ *     holds for the photo now. It refuses an asset the live revision shows, or
+ *     a photo a draft series lists at a targeted asset revision: publish
+ *     without it, or take it out with photos sequence remove, first. --revoke
+ *     takes a tombstone back until photos gc --apply deletes a folder it
+ *     lists; after that the takedown is permanent, and only a backup of the
+ *     data root brings it back. The actor is --actor or PHOTOS_ACTOR, and one
+ *     is required, as is --reason. Holds the catalog lock, and purge the
+ *     authored lock too, waiting up to 30 s for each. Never touches the
+ *     library. Exits 0 when planned, written, or already done, 1 when refused
+ *     (a live or listed asset, an unknown photo, asset revision or tombstone,
+ *     or a revoke after GC deleted or cut short a folder its marker records,
+ *     or while one is set aside whole, to rename back first), 2 on a usage
+ *     error, 3 when a lock stays busy or the data root isn't ready, and 4 when
+ *     a file is damaged or an I/O error stops it.
+ *
  *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
  *     Plan the cleanup docs/data-root.md's retention rules allow: staging
- *     folders a killed derivative build left and candidates that never
- *     became a revision, once each is more than 7 days old. It lists every
- *     path with its class, the rule that allows it, and its size, and
- *     prints the plan's digest. It deletes nothing without --apply, which
- *     takes that digest, plans again, and deletes only if the plan is
- *     still the same. Both hold the catalog and authored locks for the
- *     whole run, waiting up to 30 s for each. It never deletes an asset,
- *     a revision, an activation, a record, or anything in edits/. Exits 0
- *     when planned or applied, 1 when a folder it would delete in is a
- *     symlink, isn't a folder, resolves somewhere else, or changes just
- *     before a delete, 2 on a usage error, 4 when a catalog file is
- *     damaged or an I/O error stops it, and 3 on any other stop, such as a
+ *     folders a killed derivative build left and candidates that never became
+ *     a revision, once each is more than 7 days old, and the asset folders a
+ *     standing tombstone took down more than 7 days ago that nothing always
+ *     protected names (the live revision, a draft series listing the photo at
+ *     that asset revision, an open Inbox item, or a staging folder) and whose
+ *     manifests account for every file in it. It lists every path with its
+ *     class, the rule that allows it, and its size, reports the sets nothing
+ *     references without deleting them, prints byte totals and what each
+ *     protection keeps, and prints the plan's digest. It deletes nothing
+ *     without --apply, which takes that digest, plans again, and deletes only
+ *     if the plan is still the same, after one plain line saying what it
+ *     deletes. Both hold the catalog and authored locks for the whole run,
+ *     waiting up to 30 s for each. Apply sets each tombstoned folder aside as
+ *     .gc-<assetRevision>-<prefix>-<uuid>, checks it once more, and only then
+ *     deletes it; a .gc- folder a stopped run left is reported, never deleted.
+ *     It never deletes any other asset, a revision, an activation, a record, a
+ *     tombstone, anything in edits/, or anything in the library. Exits 0 when
+ *     planned or applied, 1 when a folder it would delete in is a symlink,
+ *     isn't a folder, resolves somewhere else, sits in the library, or changes
+ *     just before a delete, 2 on a usage error, 4 when a catalog file is
+ *     damaged, an I/O error stops it, a delete fails partway, or a planned
+ *     asset folder is always protected now, and 3 on any other stop, such as a
  *     changed plan or a busy lock. --apply logs one JSON line per path it
  *     deletes.
+ *
+ *   npx tsx scripts/photos.ts gc --set-aside <assets/<photoId>/<assetRevision or .gc-…>>
+ *     Renames a folder a standing tombstone takes down, or the .gc- folder a
+ *     stopped run left beside one, into the data root's own
+ *     trash/<photoId>-<name>-<date-time>/, on the same filesystem, under the
+ *     asset's own lock, taken first without waiting, then the catalog,
+ *     curation and authored locks, and deletes nothing. It refuses, exit 1, any
+ *     other path (NOT_AN_ASSET_PATH), a folder no standing tombstone takes
+ *     down (NOT_TAKEN_DOWN), one the live revision, a draft series, an open
+ *     Inbox item or a staging folder names (PROTECTED), a .gc- folder set
+ *     aside whole, which goes back instead (SET_ASIDE_WHOLE), a symlink, a
+ *     file or a symlinked trash/ (UNSAFE_PATH), a cross-device move
+ *     (CROSS_DEVICE) and an existing destination (EXISTS); 3 when a lock stays
+ *     busy (ASSET_LOCKED at once; CATALOG_LOCKED, CURATION_LOCKED, AUTHORED_LOCKED) or
+ *     is lost or the data root isn't ready, and 4 when a file is damaged or an
+ *     I/O error stops it. After the rename it asks the always-protected set
+ *     again, and puts the folder back (PROTECTED) if anything names it now;
+ *     when something took its place, it exits 4 (PUT_BACK_BLOCKED), leaves it
+ *     in trash/, and photos status names it with its holder. Emptying trash/
+ *     is the owner's own step.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
  * reads the library exits 1 when it's unset. The data root is
@@ -322,6 +378,7 @@ import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
 import { historyArgs, historyStop, rollbackArgs, runHistoryCommand, runRollbackCommand, type HistoryArgs } from '../lib/catalog/history-cli';
 import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
+import { purgeArgs, runPurgeCommand } from '../lib/catalog/purge-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
 import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
@@ -387,7 +444,12 @@ const USAGE = `Usage:
         --accept verify.failed brings back a revision whose last photos verify failed.
   ${PROGRAM} verify [--revision <revisionId>] [--json]
 ${curationUsage(PROGRAM)}
+  ${PROGRAM} purge <photoId> [--asset-revision <assetRevision>] --reason <text> [--actor <name>] [--yes]
+  ${PROGRAM} purge --revoke <tombstoneId> --reason <text> [--actor <name>] [--yes]
+        A dry run unless --yes. A tombstone answers 410 at once. Only photos gc --apply deletes the bytes, after 7 days.
   ${PROGRAM} gc [--apply <planDigest>]
+  ${PROGRAM} gc --set-aside <assets/photoId/assetRevision>
+        Moves that folder, or a .gc- folder beside it, into the data root's trash/. It never deletes.
 ${credentialUsage(PROGRAM)}
 A flag given twice is refused, except --accept. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
@@ -675,6 +737,13 @@ async function verifyCommand(args: string[]): Promise<number> {
     return runVerifyCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
 }
 
+async function purgeCommand(args: string[]): Promise<number> {
+    const parsed = purgeArgs(args);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return runPurgeCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
+}
+
 async function gcCommand(args: string[]): Promise<number> {
     const parsed = gcArgs(args);
     const root = catalogRoot();
@@ -791,6 +860,7 @@ async function main(argv: string[]): Promise<number> {
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
             return result.exitCode;
         }
+        if (command === 'purge') return await purgeCommand(args);
         if (command === 'gc') return await gcCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {

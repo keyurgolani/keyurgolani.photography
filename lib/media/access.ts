@@ -24,3 +24,13 @@ export const denyAll: MediaAccessPolicy = () => 'deny';
 export function activeRevisionAccess(isPublic: (ref: AssetRef) => boolean | Promise<boolean>): MediaAccessPolicy {
     return async (ref) => ((await isPublic(ref)) ? 'public' : 'deny');
 }
+
+/**
+ * #15's tombstones first (#181's A10): a set a standing tombstone lists is
+ * `gone`, a 410 with `no-store`, whatever `policy` would say, before and
+ * after GC deletes its files. Any other set gets `policy`'s answer. The web
+ * route passes the catalog's isTombstoned() in, as it does isAssetPublic().
+ */
+export function withTombstones(isTombstoned: (ref: AssetRef) => boolean | Promise<boolean>, policy: MediaAccessPolicy): MediaAccessPolicy {
+    return async (ref, request) => ((await isTombstoned(ref)) ? 'gone' : policy(ref, request));
+}

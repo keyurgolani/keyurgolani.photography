@@ -11,6 +11,9 @@ import { dataRootStatus } from '../storage/config';
 import { usualProfile } from './compile';
 import { checkPublished, type PublishState } from './mode';
 import { lastCommitted, listActivations, readLastPublish, readRevisionFile, type LastPublishFile } from './repository';
+import { alwaysHolder, protectedText, references } from './references';
+import { renameBack, setAsideFolders, TRASH_DIR, trashOrigin } from './tombstones';
+import { sizeText, trashSummary, type TrashSummary } from './asset-folders';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { Activation, AuthoredPhoto, AuthoredSeries, WorkingLayer } from './types';
 import { readActivePointer, readWorkingLayer } from './working-layer';
@@ -99,6 +102,8 @@ export interface OwnerStatus {
      * or why the inbox can't be read. Null before the data root is ready.
      */
     inbox: InboxAlerts | { error: string } | null;
+    /** What `photos gc --set-aside` moved into the data root's `trash/`, when anything is there (#181's A10). Emptying it is the owner's step. */
+    trash?: TrashSummary | { error: string };
 }
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -222,6 +227,31 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
     } catch (error) {
         status.inbox = { error: message(error) };
     }
+    try {
+        const trash = await trashSummary(root);
+        if (trash) status.trash = trash;
+        // A folder in trash/ that something holds again, as a put-back photos gc --set-aside couldn't make leaves one: named with its
+        // holder, whatever the count, by its name alone (items 40a and 49).
+        if (trash?.kind === 'folder') {
+            const origins = trash.names.flatMap((name) => {
+                const origin = trashOrigin(name);
+                return origin ? [{ name, origin }] : [];
+            });
+            if (origins.length > 0) {
+                try {
+                    const refs = await references(root, { live: true });
+                    trash.held = origins.flatMap(({ name, origin }) => {
+                        const holder = alwaysHolder(refs, origin.photoId, origin.assetRevision);
+                        return holder ? [{ name, text: protectedText(holder), origin: `assets/${origin.photoId}/${origin.assetRevision}` }] : [];
+                    });
+                } catch (error) {
+                    trash.holdersUnknown = message(error).replace(/ Nothing was deleted\.$/, '').replace(/\.$/, '');
+                }
+            }
+        }
+    } catch (error) {
+        status.trash = { error: message(error) };
+    }
     return status;
 }
 
@@ -294,6 +324,22 @@ function formatStatus(status: OwnerStatus, now: number): string {
     }
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
+    if (status.trash) {
+        const trash = status.trash;
+        if ('error' in trash) lines.push(`Trash: trash/ can't be read (${trash.error})`);
+        else if (trash.kind !== 'folder') lines.push(`Trash: trash/ in the data root is a ${trash.kind}, which nothing reads or empties.`);
+        else {
+            lines.push(`Trash: ${count(trash.count, 'folder')} in trash/, ${trash.bytes === null ? 'size unknown' : sizeText(trash.bytes)}. Emptying trash/ is your own step.`);
+            const heldText = (name: string) => {
+                const held = trash.held?.find((each) => each.name === name);
+                return held ? `; ${held.text}, so it belongs back at ${held.origin}: ${renameBack(`${TRASH_DIR}/${name}`, held.origin)}` : '';
+            };
+            for (const entry of trash.folders) lines.push(`  ${entry.name}, ${sizeText(entry.bytes)}${heldText(entry.name)}`);
+            // Over TRASH_LISTED, only the held ones, by name.
+            if (trash.folders.length === 0) for (const held of trash.held ?? []) lines.push(`  ${held.name}${heldText(held.name)}`);
+            if (trash.holdersUnknown !== undefined) lines.push(`  holders unknown: what holds a folder in trash/ can't be read (${trash.holdersUnknown}), so status can't say whether one belongs back`);
+        }
+    }
     lines.push(heartbeatLine(identity.watcher, now));
     return `${lines.join('\n')}\n`;
 }
@@ -309,7 +355,9 @@ export type CheckCode =
     | 'last-pass-failed'
     | 'pass-stalled'
     | 'heartbeat-missing'
-    | 'heartbeat-stale';
+    | 'heartbeat-stale'
+    /** #181's A10: a folder a stopped `photos gc --apply` run set aside, which GC never deletes. */
+    | 'gc-set-aside';
 
 export interface StatusCheck {
     ok: boolean;
@@ -393,10 +441,24 @@ async function statusCheck(status: OwnerStatus, dataRoot: string | null, complet
     if (stalled) problems.push(stalled);
     const late = heartbeatProblem(heartbeat);
     if (late) problems.push(late);
+    const aside = dataRoot === null ? null : await setAsideProblem(path.resolve(dataRoot));
+    if (aside) problems.push(aside);
     const held = status.inbox && !('error' in status.inbox) ? status.inbox.held.length : 0;
     // Review nit: a superseded set isn't a failure of these bytes.
     const permanent = status.identity.failedProfiles.filter((failed) => failed.error !== 'source-superseded').length;
     return { ok: problems.length === 0, problems, counts: { held, retrying: status.identity.retryingJobs, permanent } };
+}
+
+/** The folders a stopped `photos gc --apply` run set aside, as a problem, or null when there are none. */
+async function setAsideProblem(dataRoot: string): Promise<StatusCheck['problems'][number] | null> {
+    let found: Awaited<ReturnType<typeof setAsideFolders>>;
+    try {
+        found = await setAsideFolders(dataRoot);
+    } catch (error) {
+        return { code: 'gc-set-aside', message: `assets/ can't be listed for folders photos gc --apply set aside (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})` };
+    }
+    if (found.length === 0) return null;
+    return { code: 'gc-set-aside', message: `${count(found.length, 'folder')} a stopped photos gc --apply run left, which GC never deletes: ${found.map((folder) => folder.text).join('; ')}` };
 }
 
 function checkLines(check: StatusCheck): string {
@@ -413,7 +475,9 @@ export async function runStatusCommand(layer: StatusHandle, { json = false, chec
         const now = clock ?? layer.clock ?? Date.now;
         const status = await ownerStatus({ ...layer, clock: now });
         const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined
-            && status.inbox !== null && !('error' in status.inbox);
+            && status.inbox !== null && !('error' in status.inbox)
+            // Holders of trash/ entries that couldn't be read leave the status incomplete (item 49).
+            && !(status.trash !== undefined && 'kind' in status.trash && status.trash.kind === 'folder' && status.trash.holdersUnknown !== undefined);
         if (!check) return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status, now()) };
         const verdict = await statusCheck(status, layer.dataRoot, ok, now);
         return { exitCode: verdict.ok ? 0 : 1, output: json ? `${JSON.stringify({ ...status, check: verdict }, null, 2)}\n` : `${formatStatus(status, now())}${checkLines(verdict)}` };
