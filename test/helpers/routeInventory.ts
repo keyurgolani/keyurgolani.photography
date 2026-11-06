@@ -5,7 +5,10 @@
  *
  * - A route handler exporting anything but GET or HEAD is a mutation.
  * - A `'use server'` directive, at the top of a file or of a function, makes
- *   server actions, which Next runs from a POST to any page.
+ *   server actions, which Next runs from a POST to any page. A function here
+ *   is a declaration, an expression, an arrow, or an object or class method.
+ *   A `'use server'` prologue in any other block (a getter, a constructor, a
+ *   computed-name method) is a violation: it can't be checked, so it fails.
  *
  * What counts as curator code is decided by URL, the way Next serves it:
  * route groups `(name)` and parallel slots `@name` drop out of the path, so
@@ -245,7 +248,7 @@ const isExported = (node: ts.Node) =>
 const isDefault = (node: ts.Node) =>
     ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword);
 
-type FunctionLike = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+type FunctionLike = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration;
 
 /** Each exported value: its name (`default` for the default export) and, when it's a function written here, the function. */
 function exportsOf(source: ts.SourceFile): { name: string; fn: FunctionLike | null }[] {
@@ -300,23 +303,53 @@ function isForceDynamic(source: ts.SourceFile): boolean {
     );
 }
 
-/** Every function in `source` whose body opens with `'use server'`. */
-function inlineActions(source: ts.SourceFile): FunctionLike[] {
-    const found: FunctionLike[] = [];
+/** A name written as an identifier, a private name or a literal, or null for a computed one. */
+function staticName(name: ts.PropertyName | ts.BindingName | undefined): string | null {
+    if (name && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))) return name.text;
+    return null;
+}
+
+/**
+ * Every place in `source` with a `'use server'` prologue below the top of
+ * the file. `actions` are the functions Next takes as inline server actions:
+ * function declarations and expressions, arrow functions, and methods of an
+ * object or class (Next rejects class instance methods at build time, but
+ * they're checked the same way here), each with a name the rail can report.
+ * `unchecked` is every other shape the prologue sits in, a getter, setter,
+ * constructor, static block, bare block or computed-name method among them,
+ * which the rail can't classify and so reports rather than skip.
+ */
+function inlineActions(source: ts.SourceFile): { actions: FunctionLike[]; unchecked: ts.Node[] } {
+    const actions: FunctionLike[] = [];
+    const unchecked: ts.Node[] = [];
     const visit = (node: ts.Node) => {
-        if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) && node.body && ts.isBlock(node.body)) {
-            if (hasDirective(node.body.statements, 'use server')) found.push(node);
+        if ((ts.isBlock(node) || ts.isModuleBlock(node)) && hasDirective(node.statements, 'use server')) {
+            const owner = node.parent;
+            const ownsBody = 'body' in owner && owner.body === node;
+            const isAction = ownsBody && (ts.isFunctionDeclaration(owner) || ts.isFunctionExpression(owner) || ts.isArrowFunction(owner) || ts.isMethodDeclaration(owner));
+            if (isAction && functionName(owner) !== null) actions.push(owner);
+            else unchecked.push(ownsBody ? owner : node);
         }
         ts.forEachChild(node, visit);
     };
     ts.forEachChild(source, visit);
-    return found;
+    return { actions, unchecked };
 }
 
-function functionName(fn: FunctionLike): string {
+/** What `fn` is called where it's written, or null when the name is computed or destructured. Anonymous functions with nowhere to take a name from are `<anonymous>`. */
+function functionName(fn: FunctionLike): string | null {
+    if (ts.isMethodDeclaration(fn)) return staticName(fn.name);
     if ((ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn)) && fn.name) return fn.name.text;
-    if (ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name)) return fn.parent.name.text;
+    const holder = fn.parent;
+    if (ts.isVariableDeclaration(holder)) return ts.isIdentifier(holder.name) ? holder.name.text : null;
+    if (ts.isPropertyAssignment(holder) || ts.isPropertyDeclaration(holder)) return staticName(holder.name);
     return '<anonymous>';
+}
+
+/** Where a node starts, as `line:column`, both from 1. */
+function position(source: ts.SourceFile, node: ts.Node): string {
+    const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+    return `${line + 1}:${character + 1}`;
 }
 
 /** The value imports of a module, type-only ones left out, with their specifiers. */
@@ -349,7 +382,8 @@ export function routeInventory(root: string): Inventory {
     const parsed = new Map<string, ts.SourceFile>();
     for (const file of files) {
         const text = fs.readFileSync(path.join(root, file), 'utf8');
-        const kind = /\.[cm]?tsx$|\.jsx$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+        // A .js file may hold JSX, as Next allows, so it parses as JS (JSX on), never as plain TS.
+        const kind = /\.[cm]?tsx$/.test(file) ? ts.ScriptKind.TSX : /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
         parsed.set(file, ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind));
     }
     const curatorActionFiles = new Set<string>();
@@ -371,7 +405,7 @@ export function routeInventory(root: string): Inventory {
             if (guard === null || fn === null) return false;
             guardsUsed.add(guard.name);
             if (guard.name === 'requireCuratorLogin' && !login) {
-                inventory.violations.push(`${file}#${functionName(fn)} calls requireCuratorLogin(), which skips the session, outside the login page and its form's handler. Call requireCurator().`);
+                inventory.violations.push(`${file}#${functionName(fn) ?? '<computed>'} calls requireCuratorLogin(), which skips the session, outside the login page and its form's handler. Call requireCurator().`);
                 return true;
             }
             return kind === 'read' ? true : guard.kind === 'mutation';
@@ -380,11 +414,15 @@ export function routeInventory(root: string): Inventory {
 
         // Server actions, file-level and inline.
         const fileLevel = hasDirective(source.statements, 'use server');
-        const inline = inlineActions(source);
+        const { actions: inline, unchecked } = inlineActions(source);
         if (fileLevel) inventory.actions.push(file);
         for (const fn of inline) inventory.actions.push(`${file}#${functionName(fn)}`);
-        if ((fileLevel || inline.length > 0) && !curator) {
+        if ((fileLevel || inline.length > 0 || unchecked.length > 0) && !curator) {
             inventory.violations.push(`${file} has a 'use server' directive outside ${where}.`);
+        }
+        // Fail closed: a 'use server' prologue in a shape the rail can't classify is never skipped.
+        for (const node of unchecked) {
+            inventory.violations.push(`${file}:${position(source, node)} has a 'use server' directive in a ${ts.SyntaxKind[node.kind]} the rail can't classify as a named function or method, so its guard can't be checked.`);
         }
         if (fileLevel && curator) {
             curatorActionFiles.add(file);
@@ -395,7 +433,7 @@ export function routeInventory(root: string): Inventory {
         }
         if (curator) {
             for (const fn of inline) {
-                if (!need(fn, 'mutation')) inventory.violations.push(`${file}#${functionName(fn)} is a server action whose first statement isn't await requireCurator().`);
+                if (!need(fn, 'mutation')) inventory.violations.push(`${file}#${functionName(fn) ?? '<computed>'} is a server action whose first statement isn't await requireCurator().`);
             }
         }
 
