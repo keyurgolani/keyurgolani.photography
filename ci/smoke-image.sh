@@ -41,7 +41,8 @@
 # SMOKE_IMAGE_PORT, 3000 by default. That is the only change to
 # docker-compose.prod.yml, made with an override that needs Docker Compose
 # 2.24.4 or later for its !override tag. ci/smoke-catalog.sh checks /media on
-# a published catalog.
+# a published catalog. The temp root goes under $RUNNER_TEMP, the job's own
+# temp folder in CI, or $TMPDIR elsewhere.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -62,7 +63,7 @@ BASE_URL=http://127.0.0.1:$PORT
 OUTPUT_TIMEOUT=120
 # One Compose project per run, so concurrent runs never share containers.
 PROJECT=photography-smoke-$$
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-image.XXXXXX")
 PHOTOS=$TMP/public/assets/photos
 DATA=$TMP/portfolio-data
 UNSET=$TMP/unset-library
