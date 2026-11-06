@@ -431,6 +431,30 @@ describe('the poll', () => {
         expect(region.querySelector('p')).toBe(said);
     });
 
+    it('keeps the new-items line and its link when a later check says only something about the watcher, and adds that beside it', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByText(/1 new item needs judgment\./);
+        // The same arrival, said already, and now the watcher stopped: only the watcher is news.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent(/watcher stopped checking in/);
+        // The arrival line stays where it was, the same node, so it isn't read again, and its link is still there once.
+        expect(within(region).getByText(/1 new item needs judgment\./)).toBe(arrival);
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' })).toBeInTheDocument();
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+        expect(region.textContent?.match(/1 new item needs judgment\./g)).toHaveLength(1);
+        // A third word about the watcher replaces the second, beside the arrival, which still holds.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent('The watcher is checking in again.');
+        expect(region).not.toHaveTextContent(/watcher stopped checking in/);
+        expect(within(region).getByText(/1 new item needs judgment\./)).toBe(arrival);
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+    });
+
     it("puts its strips straight into the page, with no wrapper of its own, where next's watcher strip was (A8's CI, Dark parity)", () => {
         render(
             <div data-testid="page">
