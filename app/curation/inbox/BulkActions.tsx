@@ -1,6 +1,6 @@
 'use client';
 
-import { startTransition, useActionState, type FormEvent } from 'react';
+import { startTransition, useActionState, useEffect, useState, type FormEvent } from 'react';
 import styles from '../curator.module.css';
 import { bulkItems } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
@@ -31,13 +31,16 @@ const UNASSIGNED_HINT = 'Leave selected unassigned approves each selected new ph
  * belongs to this form by its `form` attribute (BULK_FORM_ID). Its value is the row's item and the version the page
  * showed, so the server checks every item against what the curator saw, as one action does. What went through is said once in the polite region. What was
  * left alone, or a selection the server refused, is an error summary that takes focus and links each record, or the
- * checkboxes. The answers stay until the next press.
+ * checkboxes. The answers stay until the next press. The form has no plain-post route, so its buttons are disabled
+ * until the page hydrates, as SameOriginPostForm's is: a press before that does nothing, never a POST nothing handles.
  */
 export default function BulkActions({ base, rows, canDefer, canUnassign, firstPick }: BulkActionsProps) {
     const [state, dispatch, pending] = useActionState(bulkItems, BULK_IDLE);
+    const [ready, setReady] = useState(false);
+    useEffect(() => setReady(true), []);
     const submit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        // As ItemActions: aria-disabled, never `disabled`, so a focused button keeps focus while the action is out.
+        // As ItemActions: while the action is out, aria-disabled, never `disabled`, so a focused button keeps focus.
         if (pending) return;
         const submitter = (event.nativeEvent as SubmitEvent).submitter;
         // A8 review N5: only a bulk button sends this form. Enter in a checkbox submits it with no submitter, or the first
@@ -48,7 +51,8 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
         form.set(submitter.name, submitter.value);
         startTransition(() => dispatch(form));
     };
-    const off = { 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined };
+    // `disabled` only before hydration, when nothing can have focus on it yet; aria-disabled while an action is out.
+    const off = { disabled: !ready, 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined };
     const answered = state.status === 'idle' ? null : state;
     const left = answered?.results.filter((result) => result.status !== 'done') ?? [];
     const leftTitle = left.length === 1 ? '1 item was left as it is' : `${left.length} items were left as they are`;
