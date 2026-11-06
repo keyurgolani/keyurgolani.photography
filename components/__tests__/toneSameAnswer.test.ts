@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HOME_FIXTURE_CATALOG, VARIETY_FIXTURE_CATALOG } from '@/e2e/support/homeFixture';
+import { HOME_FIXTURE_CATALOG, VARIETY_FIXTURE_CATALOG } from '@/test/helpers/homeFixtureCatalogs';
 import { buildTestAssetFiles } from '@/lib/catalog/testing';
 import { canvasSampler, copyTone, coverSource, regionLevel, toneFor, TONE_SAMPLE_WIDTH, type Box, type Source } from '../badgePlace';
 
@@ -37,6 +37,11 @@ function region(bitmap: { width: number; data: Uint8ClampedArray }, x: number, y
 }
 
 beforeEach(() => {
+  // An idle browser, as Chromium is once the slide has loaded, so no sample waits on WebKit's fallback.
+  vi.stubGlobal('requestIdleCallback', (callback: () => void) => {
+    queueMicrotask(callback);
+    return 1;
+  });
   files = new Map();
   fetched = [];
   vi.stubGlobal('fetch', async (url: string) => {

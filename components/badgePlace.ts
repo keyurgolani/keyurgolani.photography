@@ -229,9 +229,13 @@ export const TONE_IDLE_TIMEOUT_MS = 2000;
 /** Where the browser can't say when it's idle (WebKit has no requestIdleCallback), how long after the page's load it waits. */
 export const TONE_IDLE_FALLBACK_MS = 1000;
 
+/** When the page's load ended, in performance.now() time, or 0 where the browser can't say. */
+const pageLoadEnd = () => (performance.getEntriesByType?.('navigation')[0] as PerformanceNavigationTiming | undefined)?.loadEventEnd || 0;
+
 /**
  * Resolves once the browser is idle, or after TONE_IDLE_TIMEOUT_MS. Where it can't say, as in WebKit, it waits for
- * the page's load and then TONE_IDLE_FALLBACK_MS, so the sampler stays clear of the slide's own load and of LCP.
+ * the page's load and until TONE_IDLE_FALLBACK_MS after it, so the first sample stays clear of the slide's own load
+ * and of LCP; a later slide, long after the load, samples at once.
  */
 const idle = () =>
   new Promise<void>((resolve) => {
@@ -239,9 +243,9 @@ const idle = () =>
       requestIdleCallback(() => resolve(), { timeout: TONE_IDLE_TIMEOUT_MS });
       return;
     }
-    const later = () => setTimeout(resolve, TONE_IDLE_FALLBACK_MS);
-    if (document.readyState === 'complete') later();
-    else window.addEventListener('load', later, { once: true });
+    const after = (loadEnd: number) => setTimeout(resolve, Math.max(0, loadEnd + TONE_IDLE_FALLBACK_MS - performance.now()));
+    if (document.readyState === 'complete') after(pageLoadEnd());
+    else window.addEventListener('load', () => after(performance.now()), { once: true });
   });
 
 /**

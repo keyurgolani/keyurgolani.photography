@@ -346,9 +346,9 @@ export function summaryMarkdown(raw, { rows, regressions }) {
       '',
       '### Requests off 127.0.0.1 (none is the pass; not gated)',
       '',
-      'Every load\'s requests, the page\'s, a service worker\'s and its WebSockets, base and head alike. The browser resolves no host but 127.0.0.1, so none reaches the outside, but a page that asks for something there isn\'t the page a visitor gets, and each one is named below.',
+      'Every round load\'s requests, the page\'s, a service worker\'s and its WebSockets, base and head alike; the warm-up loads aren\'t counted. The browser resolves no hostname but 127.0.0.1, and each request off loopback is named below: a page that asks for something there isn\'t the page a visitor gets.',
       '',
-      '| Fixture | Server | Loads checked | Loads with a request off 127.0.0.1 |',
+      '| Fixture | Server | Round loads checked | Loads with a request off 127.0.0.1 |',
       '|---|---|---|---|',
       ...checked.map((row) => `| ${row.fixture} | ${row.server} | ${row.loads} | ${row.stray} |`),
     );

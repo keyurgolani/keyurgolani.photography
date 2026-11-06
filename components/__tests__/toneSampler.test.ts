@@ -131,11 +131,14 @@ describe('canvasSampler', () => {
     }
   });
 
-  it("skips, and closes the bitmap, when the browser ignored the resize, so it never reads the file's corner", async () => {
-    const full = { width: 1920, height: 1280, close: vi.fn() };
-    bitmapMock.mockResolvedValueOnce(full);
-    expect(await copyTone(slide(), copy, { sample: canvasSampler })).toBe('light');
-    expect(full.close).toHaveBeenCalledTimes(1);
+  it("skips, and closes the bitmap, when the browser ignored the resize in either dimension, so it never reads the file's corner", async () => {
+    for (const ignored of [{ width: 1920, height: 1280 }, { width: TONE_SAMPLE_WIDTH, height: 1280 }, { width: 1920, height: 171 }]) {
+      document.body.replaceChildren();
+      const full = { ...ignored, close: vi.fn() };
+      bitmapMock.mockResolvedValueOnce(full);
+      expect(await copyTone(slide(), copy, { sample: canvasSampler })).toBe('light');
+      expect(full.close).toHaveBeenCalledTimes(1);
+    }
     expect(context.getImageData).not.toHaveBeenCalled();
   });
 
@@ -148,7 +151,7 @@ describe('canvasSampler', () => {
     expect(bitmapMock).not.toHaveBeenCalled();
   });
 
-  it("asks for an idle moment with a ceiling, and without requestIdleCallback (WebKit) waits for the page's load and then a while", async () => {
+  it('asks for an idle moment with a ceiling', async () => {
     const asks: unknown[] = [];
     vi.stubGlobal('requestIdleCallback', vi.fn((callback: () => void, options: unknown) => {
       asks.push(options);
@@ -157,20 +160,56 @@ describe('canvasSampler', () => {
     }));
     await canvasSampler(slide(), source);
     expect(asks).toEqual([{ timeout: TONE_IDLE_TIMEOUT_MS }]);
+  });
 
-    vi.stubGlobal('requestIdleCallback', undefined);
-    fetchMock.mockClear();
-    vi.useFakeTimers();
-    try {
+  describe('without requestIdleCallback (WebKit), it waits until TONE_IDLE_FALLBACK_MS after the page has loaded', () => {
+    const now = vi.fn(() => 0);
+    const loadEnd = vi.fn(() => 0);
+    beforeEach(() => {
+      vi.stubGlobal('requestIdleCallback', undefined);
+      vi.spyOn(performance, 'now').mockImplementation(() => now());
+      vi.spyOn(performance, 'getEntriesByType').mockImplementation((type: string) => (type === 'navigation' ? [{ loadEventEnd: loadEnd() } as unknown as PerformanceEntry] : []));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      Reflect.deleteProperty(document, 'readyState');
+    });
+
+    it('for the rest of that time when the page loaded a moment ago', async () => {
+      loadEnd.mockReturnValue(1000);
+      now.mockReturnValue(1200);
       const pending = canvasSampler(slide(), source);
+      await vi.advanceTimersByTimeAsync(TONE_IDLE_FALLBACK_MS - 200 - 1);
+      expect(fetchMock).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('not at all for a later slide, long after the load, so each slide change keeps its tone', async () => {
+      loadEnd.mockReturnValue(1000);
+      now.mockReturnValue(60_000);
+      const pending = canvasSampler(slide(), source);
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("for the page's load first, while it's still loading", async () => {
+      Object.defineProperty(document, 'readyState', { value: 'loading', configurable: true });
+      now.mockReturnValue(500);
+      const pending = canvasSampler(slide(), source);
+      await vi.advanceTimersByTimeAsync(10 * TONE_IDLE_FALLBACK_MS);
+      expect(fetchMock).not.toHaveBeenCalled();
+      now.mockReturnValue(3000);
+      window.dispatchEvent(new Event('load'));
       await vi.advanceTimersByTimeAsync(TONE_IDLE_FALLBACK_MS - 1);
       expect(fetchMock).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await pending;
       expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 
   it("waits for the browser to be idle before it fetches, so it doesn't compete with the slide's own load", async () => {

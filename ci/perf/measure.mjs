@@ -1,18 +1,19 @@
 // @ts-check
 /**
- * One cold load of a page and its LCP and TBT, for the A/B perf job (ab.mjs). Taken from the loader lane's local perf
- * tool: a fresh browser context per load, so it's a first visit and Home's intro plays, with an empty cache. The cache
- * stays on, as a visitor's browser has it, so a file the page asks for twice comes from it the second time. ab.mjs
- * launches the browser with every host but 127.0.0.1 unresolvable, so nothing leaves the runner; Playwright's routing,
- * which aborted those before, turns the cache off. A request off 127.0.0.1, a WebSocket included, is recorded on the
- * load (`offLoopback`), and the summary names it. LCP is the last `largest-contentful-paint` entry. TBT is the sum of
- * each top-document `longtask` past 50 ms, from FCP to load + 5 s (stats.mjs reduceLoad()). An LCP element inside
- * Home's badge or a portrait frame is marked ` (portrait)`. Nothing touches the page before the read, since input
- * ends LCP. For reference, not gated: the bytes the load transferred, the document's and every resource's
- * transferSize summed (all same-origin on 127.0.0.1, so none reads 0 for want of Timing-Allow-Origin), and when Home's
- * copy-tone sampler started its fetch, and what that fetch transferred: the one fetch() of /media Home makes
- * (components/badgePlace.ts canvasSampler()), matched by its resource timing's `fetch` initiator and counted only
- * when it got the file (from the cache, or a 200), so an only-if-cached fetch the browser refused reads as none.
+ * One cold load of a page and its LCP and TBT, for the A/B perf job (ab.mjs). Taken from the loader lane's local
+ * perf tool: a fresh browser context per load, so it's a first visit and Home's intro plays, with an empty cache.
+ * The cache stays on, as a visitor's browser has it, so a file the page asks for twice comes from it the second
+ * time. ab.mjs launches the browser with every hostname but 127.0.0.1 unresolvable; Playwright's routing, which
+ * aborted those before, turns the cache off. A request off loopback, a WebSocket included, is recorded on the load
+ * (`offLoopback`), and the summary names it; an IP literal isn't proven unresolvable, so the record is the check.
+ * LCP is the last `largest-contentful-paint` entry. TBT is the sum of each top-document `longtask` past 50 ms, from
+ * FCP to load + 5 s (stats.mjs reduceLoad()). An LCP element inside Home's badge or a portrait frame is marked
+ * ` (portrait)`. Nothing touches the page before the read, since input ends LCP. For reference, not gated: the bytes
+ * the load transferred, the document's and every resource's transferSize summed (all same-origin on 127.0.0.1, so
+ * none reads 0 for want of Timing-Allow-Origin), and when Home's copy-tone sampler started its fetch, and what that
+ * fetch transferred: the one fetch() of /media Home makes (components/badgePlace.ts canvasSampler()), matched by its
+ * resource timing's `fetch` initiator and counted only when it got the file (from the cache, or a 200), so an
+ * only-if-cached fetch the browser refused reads as none.
  */
 
 import { reduceLoad } from './stats.mjs';
@@ -48,7 +49,7 @@ export async function measureLoad(browser, url, profile) {
     /** @param {string} url */
     const note = (url) => {
       const target = new URL(url);
-      if (/^(https?|wss?):$/.test(target.protocol) && target.hostname !== '127.0.0.1') offLoopback.push(url);
+      if (/^(https?|wss?):$/.test(target.protocol) && !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) offLoopback.push(url);
     };
     // The context's requests include a service worker's; WebSockets come only through their own event.
     context.on('request', (request) => note(request.url()));
