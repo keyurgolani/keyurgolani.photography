@@ -20,5 +20,5 @@ const analysis = analyse(raw);
 const markdown = summaryMarkdown(raw, analysis);
 process.stdout.write(markdown);
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
-for (const row of analysis.regressions) console.error(`::error::${row.metric}: head ${row.head.median} ms against base ${row.base.median} ms, +${row.delta} past the ${row.floor} ms noise floor.`);
+for (const row of analysis.regressions) console.error(`::error::${row.metric}: head ${row.head.median} ms against base ${row.base.median} ms, +${row.delta} past the ${row.floor} ms noise floor${row.floorSource === 'minimum' ? ' (the minimum)' : ''}.`);
 process.exitCode = analysis.regressions.length > 0 ? 1 : 0;

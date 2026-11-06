@@ -6,14 +6,19 @@
  *
  * Three servers run in every round: A1 and A2 on the same base build, B on the head. A round's value for a server is
  * the median of its loads in that round. Base is A1, head is B, and A2 exists only to say how far the base moves
- * against itself in the same job: a metric's noise floor is NOISE_FACTOR times the largest per-round |A1 - A2|. Head
- * regresses on a metric when median(B) - median(A1), over the rounds, is past that floor.
+ * against itself in the same job: a metric's noise floor is NOISE_FACTOR times the largest per-round |A1 - A2|, or
+ * the metric's minimum (minimumFloor()) when that's larger, so a base that never moves doesn't fail the job on one
+ * stray millisecond. Head regresses on a metric when median(B) - median(A1), over the rounds, is past that floor.
  */
 
 /** The fewest rounds the job runs. Fewer, and one bad round decides a median. */
 export const MIN_ROUNDS = 5;
 /** The noise floor's margin over the largest A/A gap seen. */
 export const NOISE_FACTOR = 1.5;
+/** The least noise floor for LCP and TBT, in ms. */
+export const MINIMUM_FLOOR_MS = /** @type {Readonly<Record<string, number>>} */ ({ lcp: 50, tbt: 20 });
+/** The least noise floor for any other timing, as a share of the base median. */
+export const MINIMUM_FLOOR_SHARE = 0.05;
 /** What each load records that the job compares, in ms. */
 export const METRICS = /** @type {const} */ (['lcp', 'tbt']);
 /** The three servers, by role. */
@@ -22,7 +27,7 @@ export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 /** @typedef {'A1' | 'A2' | 'B'} Server */
 /** @typedef {{ median: number, min: number, max: number, n: number }} Summary */
 /** @typedef {'regression' | 'faster' | 'within noise'} Verdict */
-/** @typedef {{ base: Summary, head: Summary, aa: Summary, floor: number, delta: number, verdict: Verdict }} Comparison */
+/** @typedef {{ base: Summary, head: Summary, aa: Summary, floor: number, floorSource: 'A/A' | 'minimum', delta: number, verdict: Verdict }} Comparison */
 /** @typedef {Comparison & { metric: string }} Row */
 /** @typedef {{ lcp: number | null, tbt: number | null } & Record<string, unknown>} Load */
 /** @typedef {{ round: number, order: Server[], servers: Partial<Record<Server, Record<string, Load[]>>> }} Round */
@@ -78,18 +83,28 @@ export function noiseFloor(a1, a2, factor = NOISE_FACTOR) {
   return factor * Math.max(...a1.map((value, round) => Math.abs(value - a2[round])));
 }
 
+/** A metric's least noise floor: MINIMUM_FLOOR_MS for LCP and TBT, else MINIMUM_FLOOR_SHARE of the base median. @param {string} metric @param {number} baseMedian */
+export function minimumFloor(metric, baseMedian) {
+  return MINIMUM_FLOOR_MS[metric] ?? MINIMUM_FLOOR_SHARE * baseMedian;
+}
+
 /**
- * One metric's per-round values for each server, compared.
- * @param {{ a1: readonly number[], a2: readonly number[], b: readonly number[] }} rounds @returns {Comparison}
+ * One metric's per-round values for each server, compared. The floor is the larger of 1.5x the A/A gap and the
+ * metric's minimum.
+ * @param {{ metric: string, a1: readonly number[], a2: readonly number[], b: readonly number[] }} rounds @returns {Comparison}
  */
-export function compareMetric({ a1, a2, b }) {
+export function compareMetric({ metric, a1, a2, b }) {
   const base = summarize(a1);
   const head = summarize(b);
-  const floor = noiseFloor(a1, a2);
+  const spread = noiseFloor(a1, a2);
+  const minimum = minimumFloor(metric, base.median);
+  const floor = Math.max(spread, minimum);
+  /** @type {Comparison['floorSource']} */
+  const floorSource = minimum > spread ? 'minimum' : 'A/A';
   const delta = head.median - base.median;
   /** @type {Verdict} */
   const verdict = delta > floor ? 'regression' : -delta > floor ? 'faster' : 'within noise';
-  return { base, head, aa: summarize(a2), floor, delta, verdict };
+  return { base, head, aa: summarize(a2), floor, floorSource, delta, verdict };
 }
 
 /**
@@ -117,7 +132,7 @@ export function analyse(raw) {
             }
           }
         });
-        rows.push({ metric: `${fixture} ${profile} ${metric}`, ...compareMetric({ a1: series.A1, a2: series.A2, b: series.B }) });
+        rows.push({ metric: `${fixture} ${profile} ${metric}`, ...compareMetric({ metric, a1: series.A1, a2: series.A2, b: series.B }) });
       }
     }
   }
@@ -128,6 +143,8 @@ export function analyse(raw) {
 const ms = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
 /** @param {Summary} summary */
 const spread = (summary) => `${ms(summary.median)} (${ms(summary.min)}–${ms(summary.max)})`;
+/** @param {Comparison} row */
+const floorCell = (row) => `${ms(row.floor)} ms${row.floorSource === 'minimum' ? ' (minimum)' : ''}`;
 /** @param {Tree} tree */
 const named = (tree) => `\`${tree.ref}\` (${tree.sha.slice(0, 12)})`;
 
@@ -139,11 +156,11 @@ export function summaryMarkdown(raw, { rows, regressions }) {
     '',
     `${meta.rounds} rounds on fixtures ${Object.keys(raw.fixtures).map((name) => `\`${name}\``).join(' and ')}, ${meta.loads} cold loads of Home per server, profile and round, in ${meta.browser}${meta.runner ? ` on ${meta.runner}` : ''}. Three servers on 127.0.0.1: A1 and A2 on the base build, B on the head. Even rounds run A1, B, A2 and odd rounds A2, B, A1, so base and head swap who goes first every round.`,
     '',
-    `**Rule.** A server's value in a round is the median of its loads there. Each cell is the median over the rounds, with the min–max of the round values. A metric's noise floor is ${NOISE_FACTOR} × the largest per-round |A1 − A2| in this run. Head − base past the floor is a **regression**, and fails the job; past it the other way is *faster*. Everything else is within noise.`,
+    `**Rule.** A server's value in a round is the median of its loads there. Each cell is the median over the rounds, with the min–max of the round values. A metric's noise floor is ${NOISE_FACTOR} × the largest per-round |A1 − A2| in this run, but at least ${MINIMUM_FLOOR_MS.lcp} ms for LCP, ${MINIMUM_FLOOR_MS.tbt} ms for TBT, and ${MINIMUM_FLOOR_SHARE * 100}% of the base median for any other timing; "(minimum)" marks a floor set by that. Head − base past the floor is a **regression**, and fails the job; past it the other way is *faster*. Everything else is within noise.`,
     '',
     '| Metric (ms) | Base A1 | Head B | Head − base | Noise floor | Verdict |',
     '|---|---|---|---|---|---|',
-    ...rows.map((row) => `| ${row.metric} | ${spread(row.base)} | ${spread(row.head)} | ${row.delta > 0 ? '+' : ''}${ms(row.delta)} | ${ms(row.floor)} | ${row.verdict === 'regression' ? '**regression**' : row.verdict === 'faster' ? '*faster*' : row.verdict} |`),
+    ...rows.map((row) => `| ${row.metric} | ${spread(row.base)} | ${spread(row.head)} | ${row.delta > 0 ? '+' : ''}${ms(row.delta)} | ${floorCell(row)} | ${row.verdict === 'regression' ? '**regression**' : row.verdict === 'faster' ? '*faster*' : row.verdict} |`),
     '',
     regressions.length === 0 ? 'No regressions past the noise floor.' : `${regressions.length} regression${regressions.length === 1 ? '' : 's'} past the noise floor: ${regressions.map((row) => row.metric).join(', ')}.`,
     '',
@@ -151,7 +168,7 @@ export function summaryMarkdown(raw, { rows, regressions }) {
     '',
     '| Metric (ms) | A1 | A2 | Floor |',
     '|---|---|---|---|',
-    ...rows.map((row) => `| ${row.metric} | ${spread(row.base)} | ${spread(row.aa)} | ${ms(row.floor)} |`),
+    ...rows.map((row) => `| ${row.metric} | ${spread(row.base)} | ${spread(row.aa)} | ${floorCell(row)} |`),
     '',
     '</details>',
   ];
