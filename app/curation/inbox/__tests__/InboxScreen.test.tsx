@@ -623,6 +623,20 @@ describe('the poll', () => {
         expect(region.querySelectorAll('p')).toHaveLength(2);
     });
 
+    it('puts "Back online." before the new-items line when one answer brings both, so it is read first', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_MIN_GAP_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        expect([...region.querySelectorAll('p')].map((line) => line.textContent)).toEqual(['Back online. The inbox is checking for changes again.', '1 new item needs judgment. Refresh the inbox']);
+    });
+
     it('reads only what changed in its region: a status is atomic by default, so it says aria-atomic="false"', () => {
         render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         // role="status" implies aria-atomic="true", and Chromium honours it: with two lines, a change to one would make
