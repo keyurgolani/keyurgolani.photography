@@ -661,7 +661,9 @@ const SLICE_A_RULES: RuleDefinition[] = [
                     record: seriesRecord(series.id),
                     field: 'title',
                     message: `The series ${named} share this title, so Work shows ${group.length} links with the same name.`,
-                    hint: 'Give each series its own title. This is a warning only: the publish goes ahead.',
+                    // Integrity-class, so a rollback's plan keeps it as it is (acceptHints() rewrites editorial hints only): the
+                    // words fit a publish and a rollback alike.
+                    hint: 'Give each series its own title. This is a warning only; nothing is blocked.',
                 }));
             });
         },
