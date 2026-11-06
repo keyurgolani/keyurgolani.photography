@@ -250,6 +250,33 @@ const floorCell = (row) => `${ms(row.floor)} ms${row.floorSource === 'minimum' ?
 const named = (tree) => `\`${tree.ref}\` (${tree.sha.slice(0, 12)})`;
 
 /**
+ * Per fixture and server, how many loads recorded their requests off 127.0.0.1 (measure.mjs `offLoopback`), and how
+ * many of those had one. A load without the record, from an older raw.json, isn't counted.
+ * @param {Raw} raw
+ */
+export function offLoopbackCounts(raw) {
+  /** @type {{ fixture: string, server: string, loads: number, stray: number }[]} */
+  const rows = [];
+  for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
+    for (const server of /** @type {Server[]} */ (['A1', 'A2', 'B'])) {
+      let loads = 0;
+      let stray = 0;
+      for (const round of rounds) {
+        for (const list of Object.values(round.servers[server] ?? {})) {
+          for (const load of list) {
+            if (!Array.isArray(load.offLoopback)) continue;
+            loads++;
+            if (load.offLoopback.length > 0) stray++;
+          }
+        }
+      }
+      if (loads > 0) rows.push({ fixture, server, loads, stray });
+    }
+  }
+  return rows;
+}
+
+/**
  * Every recorded load that asked for something off 127.0.0.1 (measure.mjs `offLoopback`), as where and what.
  * @param {Raw} raw
  */
@@ -312,16 +339,22 @@ export function summaryMarkdown(raw, { rows, regressions }) {
       ...info.map((row) => `| ${label(row.metric)} | ${cell(row.base)} | ${cell(row.head)} | ${row.delta === null ? 'n/a' : `${row.delta > 0 ? '+' : ''}${ms(row.delta)}`} | ${row.baseLoads.with}/${row.baseLoads.of}, ${row.headLoads.with}/${row.headLoads.of} |`),
     );
   }
-  const stray = offLoopbackRequests(raw);
-  if (stray.length > 0) {
+  const checked = offLoopbackCounts(raw);
+  if (checked.length > 0) {
+    const stray = offLoopbackRequests(raw);
     lines.push(
       '',
-      '### Requests off 127.0.0.1',
+      '### Requests off 127.0.0.1 (none is the pass; not gated)',
       '',
-      `**${stray.length} load${stray.length === 1 ? '' : 's'} asked for something off 127.0.0.1.** The browser resolves no other host, so none reached it, but a page that asks the outside world for something isn't the page a visitor gets. Not gated.`,
+      'Every load\'s requests, the page\'s, a service worker\'s and its WebSockets, base and head alike. The browser resolves no host but 127.0.0.1, so none reaches the outside, but a page that asks for something there isn\'t the page a visitor gets, and each one is named below.',
       '',
-      ...stray.map(({ where, urls }) => `- ${where}: ${urls.join(', ')}`),
+      '| Fixture | Server | Loads checked | Loads with a request off 127.0.0.1 |',
+      '|---|---|---|---|',
+      ...checked.map((row) => `| ${row.fixture} | ${row.server} | ${row.loads} | ${row.stray} |`),
     );
+    if (stray.length > 0) {
+      lines.push('', `**${stray.length} load${stray.length === 1 ? '' : 's'} asked for something off 127.0.0.1.**`, '', ...stray.map(({ where, urls }) => `- ${where}: ${urls.join(', ')}`));
+    }
   }
   const js = raw.firstLoadJs;
   if (js) {

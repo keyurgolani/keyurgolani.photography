@@ -6,6 +6,7 @@ import {
   INFO_METRICS,
   informational,
   loopbackListeners,
+  offLoopbackCounts,
   offLoopbackRequests,
   MAX_ROUNDS,
   median,
@@ -296,11 +297,18 @@ describe('informational and its table', () => {
 
   it('names every load that asked for something off 127.0.0.1, and gates on none of them', () => {
     const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 0]] });
-    expect(summaryMarkdown(raw, analyse(raw))).not.toContain('Requests off 127.0.0.1');
+    for (const round of raw.fixtures.one.rounds) for (const server of ['A1', 'A2', 'B']) for (const load of round.servers[server].phone) load.offLoopback = [];
+    // Shown on every run, per server, so an empty list reads as the pass it is rather than as nothing measured.
+    const clean = summaryMarkdown(raw, analyse(raw));
+    expect(clean).toContain('### Requests off 127.0.0.1 (none is the pass; not gated)');
+    expect(clean).toContain('| one | A1 | 5 | 0 |');
+    expect(clean).toContain('| one | B | 5 | 0 |');
+    expect(clean).not.toContain('asked for something off 127.0.0.1');
     raw.fixtures.one.rounds[2].servers.B.phone[0].offLoopback = ['https://fonts.example/a.woff2'];
     const markdown = summaryMarkdown(raw, analyse(raw));
     expect(offLoopbackRequests(raw)).toEqual([{ where: 'one round 3 B phone load 1', urls: ['https://fonts.example/a.woff2'] }]);
-    expect(markdown).toContain('### Requests off 127.0.0.1');
+    expect(markdown).toContain('| one | B | 5 | 1 |');
+    expect(markdown).toContain('**1 load asked for something off 127.0.0.1.**');
     expect(markdown).toContain('- one round 3 B phone load 1: https://fonts.example/a.woff2');
     expect(analyse(raw).regressions).toEqual([]);
   });
