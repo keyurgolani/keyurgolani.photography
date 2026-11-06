@@ -12,6 +12,7 @@ const sent = vi.hoisted(() => ({
     forms: [] as { action: string; fields: [string, string][] }[],
     answer: null as InboxActionState | null,
     bulk: null as InboxBulkState | null,
+    hold: null as Promise<void> | null,
 }));
 
 vi.mock('../actions', () => {
@@ -31,6 +32,7 @@ vi.mock('../actions', () => {
         archiveItem: make('archive'),
         bulkItems: async (_previous: InboxBulkState, form: FormData): Promise<InboxBulkState> => {
             sent.forms.push({ action: 'bulk', fields: [...form.entries()].map(([name, value]) => [name, String(value)]) });
+            if (sent.hold) await sent.hold;
             return sent.bulk ?? BULK_IDLE;
         },
     };
@@ -47,6 +49,7 @@ beforeEach(() => {
     sent.forms = [];
     sent.answer = null;
     sent.bulk = null;
+    sent.hold = null;
     window.sessionStorage.clear();
     window.history.replaceState(null, '', '/');
 });
@@ -288,6 +291,27 @@ describe('the bulk answers (A8 review)', () => {
         render(<InboxList view={view()} query={ANY} />);
         expect(screen.getByRole('button', { name: 'Decide later on selected' })).toBeEnabled();
         expect(screen.getByRole('button', { name: 'Leave selected unassigned' })).toBeEnabled();
+    });
+
+    it('keep a pressed bulk button enabled and focused while its action is out, aria-disabled only', async () => {
+        let release = () => undefined as void;
+        sent.hold = new Promise<void>((done) => {
+            release = done;
+        });
+        render(<InboxList view={view()} query={ANY} />);
+        const button = screen.getByRole('button', { name: 'Decide later on selected' });
+        try {
+            button.focus();
+            await press(button);
+            expect(button).toHaveAttribute('aria-disabled', 'true');
+            expect(button).toBeEnabled();
+            expect(button).toHaveFocus();
+        } finally {
+            await act(async () => {
+                release();
+            });
+        }
+        expect(button).not.toHaveAttribute('aria-disabled');
     });
 
     it("send nothing for a submit no bulk button made, as Enter in a checkbox does (N5)", async () => {
