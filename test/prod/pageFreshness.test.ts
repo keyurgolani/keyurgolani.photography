@@ -24,13 +24,23 @@
  * - F4: a rollback to R1 from this process, through rollback() as the CLI's
  *   is, so the working layer rebases onto R1 too, shows on Home.
  * - F5: a restart, and Home still shows R1.
+ * - H3: the Viewer's raw HTML (B8): its h1 with the sr-only position, the
+ *   aria-hidden counter, the caption, the alt, the AVIF and WebP srcsets, and
+ *   its whole head inside <head>, for both agents.
+ * - S1, the Viewer half: the photo URL, an alias, two case variants, a moved
+ *   photo, an unknown ID and a draft's photo, alike for both agents.
  * - F2, F7 (Home, Work and the series page): after a third publish shows on
  *   all three, a rollback to R1 through the photos CLI, in a child process,
  *   shows on the first GET of each.
- *
- * The rows that wait on other PRs are todos at the end, each naming the PR.
+ * - F9: a restart after F7, and Home, Work, the series page and the Viewer
+ *   all still show R1.
+ * - F8: on a copy of the data root, served by a server of its own, the
+ *   Viewer's meta tag follows a caption publish and a rollback, while the
+ *   original root stays byte for byte as it was.
  */
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { VARIANT_BYTES } from '../../lib/catalog/__tests__/catalogFixtures';
 import { publish, type PublishResult } from '../../lib/catalog/publish';
@@ -44,8 +54,10 @@ import {
     bodyOf,
     copyStandalone,
     DYNAMIC_CACHE_CONTROL,
+    editPhoto,
     editSeries,
     errorShellProblems,
+    folderDigests,
     get,
     headOf,
     links,
@@ -53,7 +65,9 @@ import {
     meta,
     restart,
     skeleton,
+    srcsetCandidates,
     startStandalone,
+    viewerMarkup,
     withoutScripts,
     type Agent,
     type StandaloneCopy,
@@ -69,6 +83,12 @@ const TITLE = 'Harbor light';
 const SHORT = 'Harbor light, in short.';
 /** The statement revision `n` publishes, so the page shows which revision it came from. */
 const statement = (n: number) => `Harbor light, as revision ${n} has it.`;
+/** The Viewer's photograph, the second of three in the series, carries this caption from the start. */
+const CAPTION = 'Morning light on the harbor wall.';
+/** F8's caption, published on the copied root only. */
+const F8_CAPTION = 'Evening light on the harbor wall.';
+/** In #10's shape, and no fixture's. */
+const UNKNOWN_PHOTO = 'ph_00000000-0000-4000-8000-000000000000';
 const quiet = { log: () => undefined };
 
 /**
@@ -78,7 +98,8 @@ const quiet = { log: () => undefined };
  */
 const fixture = (seed: number): TestCatalogOptions => ({
     seed,
-    photos: 6,
+    // The second photograph, the Viewer's, has a caption; the rest have none.
+    photos: [{}, { caption: CAPTION }, {}, {}, {}, {}],
     variantBytes: VARIANT_BYTES,
     series: [
         { slug: SLUG, slugAliases: [ALIAS], title: TITLE, statement: statement(1), shortStatement: SHORT, photos: 3 },
@@ -94,7 +115,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     /** The server every row but E1's damaged pointer uses, and its pid, which no row here changes. */
     let pid = 0;
     let seriesId = '';
+    let viewerPhotoId = '';
     let viewerPath = '';
+    /** The Viewer photograph's alt, the fixture's reviewed description. */
+    let viewerAlt = '';
+    /** The draft series' one photo, which no revision publishes. */
+    let draftPhotoId = '';
     /** F6's two revisions, for the rows after it. */
     let r1 = '';
     let r2 = '';
@@ -106,7 +132,11 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         catalog = await createTestCatalog(fixture(61));
         const series = catalog.series.find((entry) => entry.slug === SLUG)!;
         seriesId = series.id;
-        viewerPath = `/work/${SLUG}/photo/${series.photoIds[1]}`;
+        viewerPhotoId = series.photoIds[1];
+        viewerPath = `/work/${SLUG}/photo/${viewerPhotoId}`;
+        const alt = catalog.photos.find((photo) => photo.id === viewerPhotoId)!.alt;
+        viewerAlt = alt?.kind === 'described' ? alt.text : '';
+        draftPhotoId = catalog.series.find((entry) => entry.slug === DRAFT_SLUG)!.photoIds[0];
         server = await startStandalone({ cwd: copy.dir, dataRoot: catalog.root, library: copy.library, siteUrl: SITE_URL });
         pid = server.pid;
     }, 180_000);
@@ -151,6 +181,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expect(page.status, where).toBe(500);
         expect(page.headers.get('content-type'), where).toContain('text/html');
         expect(page.html, where).toMatch(/<html\b[^>]*\bid="__next_error__"/);
+        // No revision answered, so neither B8's Viewer tag nor the series page's names one, in <head> or after it.
+        expect(meta(page.html, 'catalog-revision'), `${where}: <meta name="catalog-revision">`).toEqual([]);
         const body = bodyOf(page.html);
         expect(errorShellProblems(body), `${where}: ${withoutScripts(body)}`).toEqual([]);
         const tags = skeleton(body);
@@ -208,6 +240,57 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
             expect(found.main, `${where}: main[data-catalog-revision]`).toEqual([revision]);
             expect(found.homeState, `${where}: main[data-home-state]`).toEqual(['ready']);
             expect(found.revisions, `${where}: every rev_ in it`).toEqual([revision]);
+        }
+    }
+
+    /**
+     * The Viewer as each agent comes from `revision` on `at`: B8's meta tag
+     * is its one marker, every rev_ in it is that one, and its caption, in
+     * the reading area and the description, is `caption`.
+     */
+    async function expectViewerAt(at: string, revision: string, caption: string, gone: string[] = []): Promise<void> {
+        for (const agent of AGENTS) {
+            const page = await get(at, viewerPath, agent);
+            const where = `${viewerPath} on ${at} as ${agent}`;
+            expect(page.status, where).toBe(200);
+            const found = markers(page.html);
+            expect(found.meta, `${where}: <meta name="catalog-revision">`).toEqual([revision]);
+            expect(found.revisions, `${where}: every rev_ in it`).toEqual([revision]);
+            expect(viewerMarkup(page.html).paragraphs.filter((text) => text === caption), `${where}: the caption`).toHaveLength(1);
+            expect(meta(headOf(page.html), 'description'), `${where}: the description`).toEqual([caption]);
+            for (const text of gone) expect(page.html.includes(text), `${where} still shows "${text}"`).toBe(false);
+        }
+    }
+
+    /**
+     * Each row's status, Location and Cache-Control, alike for both agents. A
+     * 308's Location is resolved against the origin, since Next may send it
+     * relative or absolute, and each agent's raw one must still match. Every
+     * 404 is the not-found page with noindex in <head>.
+     */
+    async function expectStatusMatrix(rows: readonly { path: string; status: number; location?: string }[]): Promise<void> {
+        for (const row of rows) {
+            const answers: { status: number; location: string | null; cacheControl: string | null }[] = [];
+            for (const agent of AGENTS) {
+                const page = await get(base(), row.path, agent);
+                const where = `${row.path} as ${agent}`;
+                expect(page.status, where).toBe(row.status);
+                expect(page.headers.get('cache-control'), where).toBe(DYNAMIC_CACHE_CONTROL);
+                const location = page.headers.get('location');
+                if (row.location === undefined) {
+                    expect(location, where).toBeNull();
+                } else {
+                    const target = new URL(location!, base());
+                    expect(target.origin, where).toBe(base());
+                    expect(`${target.pathname}${target.search}`, where).toBe(row.location);
+                }
+                if (row.status === 404) {
+                    expect(withoutScripts(page.html), where).toContain('Page not found');
+                    expect(meta(headOf(page.html), 'robots').some((value) => value.includes('noindex')), `${where}: noindex in <head>`).toBe(true);
+                }
+                answers.push({ status: page.status, location, cacheControl: page.headers.get('cache-control') });
+            }
+            expect(answers[1], `${row.path}: the browser's answer is Twitterbot's`).toEqual(answers[0]);
         }
     }
 
@@ -293,30 +376,71 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
             { path: '/work/no-such-series', status: 404 },
             { path: `/work/${DRAFT_SLUG}`, status: 404 },
         ];
-        for (const row of rows) {
-            const answers: { status: number; location: string | null; cacheControl: string | null }[] = [];
-            for (const agent of AGENTS) {
-                const page = await get(base(), row.path, agent);
-                const where = `${row.path} as ${agent}`;
-                expect(page.status, where).toBe(row.status);
-                expect(page.headers.get('cache-control'), where).toBe(DYNAMIC_CACHE_CONTROL);
-                const location = page.headers.get('location');
-                if (row.location === undefined) {
-                    expect(location, where).toBeNull();
-                } else {
-                    // Next may send the path alone or against the request's origin; either way it's this one.
-                    const target = new URL(location!, base());
-                    expect(target.origin, where).toBe(base());
-                    expect(`${target.pathname}${target.search}`, where).toBe(row.location);
+        await expectStatusMatrix(rows);
+        expectSameProcess();
+    }, 60_000);
+
+    it("H3: renders the Viewer's heading, counter, caption, alt and sources, and keeps its head in <head>, for both agents", async () => {
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
+        const position = ', photograph 2 of 3';
+        for (const agent of AGENTS) {
+            const page = await get(base(), viewerPath, agent);
+            const where = `${viewerPath} as ${agent}`;
+            expect(page.status, where).toBe(200);
+            const head = headOf(page.html);
+            const body = bodyOf(page.html);
+            const found = viewerMarkup(page.html);
+            // ViewerChrome's h1: the series title, then the position for a screen reader only.
+            expect(found.headings, `${where}: the h1`).toEqual([{ text: `${TITLE}${position}`, spoken: [position] }]);
+            // The padded counter is for the eye alone.
+            expect(found.hiddenText.filter((text) => /^\d+ \/ \d+$/.test(text)), `${where}: the aria-hidden counter`).toEqual(['02 / 03']);
+            expect(found.paragraphs.filter((text) => text === CAPTION), `${where}: the caption`).toHaveLength(1);
+            expect(found.alts, `${where}: the photograph's one img`).toEqual([viewerAlt]);
+            expect(viewerAlt, 'the fixture describes the photograph').not.toBe('');
+            expect(found.sources.map((source) => source.type), `${where}: the sources`).toEqual(['image/avif', 'image/webp']);
+            for (const [source, extension] of [[found.sources[0], 'avif'], [found.sources[1], 'webp']] as const) {
+                const candidates = srcsetCandidates(source.srcset);
+                expect(candidates.length, `${where}: the ${extension} srcset`).toBeGreaterThan(0);
+                for (const candidate of candidates) {
+                    expect(candidate.url, `${where}: ${extension}`).toMatch(new RegExp(`^/media/${viewerPhotoId}/\\S+\\.${extension}$`));
+                    expect(Number.isInteger(candidate.width) && candidate.width > 0, `${where}: ${candidate.url}'s width`).toBe(true);
                 }
-                if (row.status === 404) {
-                    expect(withoutScripts(page.html), where).toContain('Page not found');
-                    expect(meta(headOf(page.html), 'robots').some((value) => value.includes('noindex')), `${where}: noindex in <head>`).toBe(true);
-                }
-                answers.push({ status: page.status, location, cacheControl: page.headers.get('cache-control') });
+                const widths = candidates.map((candidate) => candidate.width);
+                expect(widths, `${where}: each ${extension} width once, narrowest first`).toEqual([...new Set(widths)].sort((a, b) => a - b));
             }
-            expect(answers[1], `${row.path}: the browser's answer is Twitterbot's`).toEqual(answers[0]);
+            // The head: one title, the caption as description, the canonical and og:url on SITE_URL, one share image, the revision.
+            const titles = [...withoutScripts(head).matchAll(/<title>([^<]*)<\/title>/g)].map((match) => match[1]);
+            expect(titles, `${where}: the title`).toHaveLength(1);
+            expect(titles[0], where).toContain(`${TITLE}${position}`);
+            expect(meta(head, 'description'), where).toEqual([CAPTION]);
+            expect(links(head, 'canonical'), where).toEqual([`${SITE_URL}${viewerPath}`]);
+            expect(meta(head, 'og:url'), where).toEqual([`${SITE_URL}${viewerPath}`]);
+            const images = meta(head, 'og:image');
+            expect(images, `${where}: og:image`).toHaveLength(1);
+            expect(images[0], where).toMatch(new RegExp(`^${SITE_URL.replace(/\./g, '\\.')}/media/${viewerPhotoId}/\\S+/w1200\\.webp$`));
+            expect(meta(head, 'catalog-revision'), where).toEqual([r2]);
+            expect(markers(page.html).revisions, `${where}: every rev_ in it`).toEqual([r2]);
+            // Nothing of it streamed in after </head>.
+            expect(withoutScripts(body), `${where}: a title after </head>`).not.toMatch(/<title[\s>]/i);
+            for (const name of ['description', 'og:url', 'og:image', 'catalog-revision']) expect(meta(body, name), `${where}: ${name} after </head>`).toEqual([]);
+            expect(links(body, 'canonical'), `${where}: canonical after </head>`).toEqual([]);
         }
+        expectSameProcess();
+    }, 60_000);
+
+    it('S1: answers the Viewer URLs with the same status, Location and Cache-Control for both agents', async () => {
+        expect(r2, 'F1, F3, F6 published').not.toBe('');
+        const canonical = viewerPath;
+        await expectStatusMatrix([
+            { path: canonical, status: 200 },
+            { path: `/work/${ALIAS}/photo/${viewerPhotoId}?from=card`, status: 308, location: `${canonical}?from=card` },
+            { path: `/work/Harbor-Light/photo/${viewerPhotoId}`, status: 308, location: canonical },
+            { path: `/work/${SLUG}/photo/${viewerPhotoId.toUpperCase()}?from=card`, status: 308, location: `${canonical}?from=card` },
+            // Moved: a published series that doesn't hold the photo sends it to the one that does.
+            { path: `/work/salt-flats/photo/${viewerPhotoId}?photo=2`, status: 308, location: `${canonical}?photo=2` },
+            { path: `/work/${SLUG}/photo/${UNKNOWN_PHOTO}`, status: 404 },
+            { path: `/work/${DRAFT_SLUG}/photo/${draftPhotoId}`, status: 404 },
+        ]);
         expectSameProcess();
     }, 60_000);
 
@@ -375,9 +499,52 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expect(server!.output()).not.toContain(catalog!.root);
     }, 120_000);
 
-    // Waiting on other PRs: each lands with the markers or routes it needs.
-    it.todo("F8 (waits on B8): on a copied root, the Viewer's meta tag follows a caption publish and a rollback, and the original root is byte-identical");
-    it.todo("F9 (waits on B8): Home, Work, the series page and the Viewer all show F7's target after a restart");
-    it.todo("H3 (waits on B8): the Viewer's h1 with its sr-only position, the aria-hidden counter, caption, alt, AVIF and WebP srcsets and the full head, for both agents");
-    it.todo('S1, the Viewer half (waits on B8): 200, 308s from an alias, a case variant and a moved photo, and 404s for an unknown id and a draft, alike for both agents');
+    it('F9: still shows F7\'s rollback on Home, Work, the series page and the Viewer after a restart', async () => {
+        expect(r3, 'F2, F7 published R3 and rolled back').not.toBe('');
+        expect(server!.output()).not.toContain('catalog.read.failed');
+        server = await restart(server!);
+        expect(server.pid).not.toBe(pid);
+        pid = server.pid;
+        // Each page's first GET on the new process, before /api/ready asks.
+        await expectHomeAt(r1);
+        await expectWorkAt(r1);
+        await expectSeriesAt(r1, statement(1), [statement(2), statement(3)]);
+        await expectViewerAt(base(), r1, CAPTION);
+        expect(await readyRevision()).toBe(r1);
+        expectSameProcess();
+    }, 120_000);
+
+    it("F8: on a copied root, the Viewer's meta tag follows a caption publish and a rollback, and the original root is byte-identical", async () => {
+        expect(r3, 'F9 ran').not.toBe('');
+        const original = catalog!.root;
+        // Beside the root, in the folder createTestCatalog() made, so its cleanup() takes the copy too.
+        const fixtureDir = path.dirname(original);
+        expect(path.dirname(fixtureDir), 'the fixture root sits in a temp folder of its own').toBe(path.resolve(os.tmpdir()));
+        expect(path.basename(fixtureDir)).toMatch(/^catalog-fixture-/);
+        const copied = path.join(fixtureDir, 'f8-data');
+        const before = folderDigests(original);
+        fs.cpSync(original, copied, { recursive: true, verbatimSymlinks: true });
+        expect(Object.values(folderDigests(copied)).filter((entry) => entry.startsWith('link ')), 'the copy shares nothing with the original through a link').toEqual([]);
+        const own = await startStandalone({ cwd: copy!.dir, dataRoot: copied, library: copy!.library, siteUrl: SITE_URL });
+        extra.push(() => own.stop());
+        await expectViewerAt(own.base, r1, CAPTION);
+
+        await editPhoto(copied, viewerPhotoId, { caption: F8_CAPTION });
+        const result = await publish({ dataRoot: copied, actor: 'test', logger: quiet });
+        expect(result.outcome, blockingText(result)).toBe('PUBLISHED');
+        const captioned = result.revisionId!;
+        expect([r1, r2, r3]).not.toContain(captioned);
+        await expectViewerAt(own.base, captioned, F8_CAPTION, [CAPTION]);
+        // The original's server never saw it.
+        await expectViewerAt(base(), r1, CAPTION, [F8_CAPTION]);
+
+        const rolled = await rollback({ dataRoot: copied, revisionId: r1, expectedActiveRevisionId: captioned, actor: 'test', reason: 'F8', logger: quiet });
+        expect(rolled.outcome, blockingText(rolled)).toBe('ROLLED_BACK');
+        await expectViewerAt(own.base, r1, CAPTION, [F8_CAPTION]);
+
+        expect(own.output()).not.toContain('catalog.read.failed');
+        expect(folderDigests(original), 'the original root, byte for byte').toEqual(before);
+        expect(await readyRevision()).toBe(r1);
+        expectSameProcess();
+    }, 120_000);
 });

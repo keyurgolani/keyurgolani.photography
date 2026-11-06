@@ -12,6 +12,7 @@
  * Nothing here imports e2e/, which the image's .dockerignore leaves out.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -278,6 +279,83 @@ export async function editSeries(root: string, seriesId: string, change: { state
     const record = await readAuthoredRecord(root, 'series', seriesId);
     if (record === null) throw new Error(`There is no series ${seriesId} to edit.`);
     await writeAuthoredRecord({ ...structuredClone(record), ...change }, { expectedVersion: record.version, root });
+}
+
+/** Change a photo's caption the same way editSeries() changes a statement: read, change that field alone, write at the version read. */
+export async function editPhoto(root: string, photoId: string, change: { caption: string }): Promise<void> {
+    const record = await readAuthoredRecord(root, 'photo', photoId);
+    if (record === null) throw new Error(`There is no photo ${photoId} to edit.`);
+    await writeAuthoredRecord({ ...structuredClone(record), ...change }, { expectedVersion: record.version, root });
+}
+
+/**
+ * Every file under `dir` by `/`-separated relative path, sorted, with the
+ * sha256 of its raw bytes, and every folder as `dir`, so two equal results
+ * mean the tree is byte for byte the same. folderBytes() reads text, which
+ * would let two different invalid UTF-8 runs read the same.
+ */
+export function folderDigests(dir: string): Record<string, string> {
+    return Object.fromEntries(fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })
+        .map((name) => name.split(path.sep).join('/'))
+        .sort()
+        .map((name) => {
+            const full = path.join(dir, name);
+            const stat = fs.lstatSync(full);
+            if (stat.isSymbolicLink()) return [name, `link ${fs.readlinkSync(full)}`];
+            return [name, stat.isDirectory() ? 'dir' : createHash('sha256').update(fs.readFileSync(full)).digest('hex')];
+        }));
+}
+
+/** An element's text: its tags and comments taken out, entities decoded. */
+function textOf(markup: string): string {
+    return decode(markup.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, ''));
+}
+
+/** The attributes of the one opening tag `open`. */
+function attributesOf(open: string): Record<string, string> {
+    return tags(open)[0]?.attributes ?? {};
+}
+
+/** What the Viewer's page shows, read from tags only, so the Flight payload's copy of a prop never counts. */
+export interface ViewerMarkup {
+    /** Each h1's text, and the text of each `sr-only` span in it: ViewerChrome's ", photograph N of T". */
+    headings: { text: string; spoken: string[] }[];
+    /** The text of each `aria-hidden="true"` span with only text in it: the padded `NN / NN` counter. */
+    hiddenText: string[];
+    /** The text of each `<p>` with only text in it: the caption among them. */
+    paragraphs: string[];
+    /** Each `<img>`'s alt. */
+    alts: string[];
+    /** Each `<source>`'s type and srcset, in order. */
+    sources: { type: string; srcset: string }[];
+}
+
+export function viewerMarkup(html: string): ViewerMarkup {
+    const markup = withoutScripts(bodyOf(html));
+    const headings = [...markup.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi)].map(([, inside]) => ({
+        text: textOf(inside),
+        spoken: [...inside.matchAll(/(<span\b[^>]*>)([^<]*)<\/span>/gi)]
+            .filter(([, open]) => (attributesOf(open).class ?? '').split(/\s+/).includes('sr-only'))
+            .map(([, , text]) => decode(text)),
+    }));
+    const hiddenText = [...markup.matchAll(/(<span\b[^>]*>)([^<]*)<\/span>/gi)].filter(([, open]) => attributesOf(open)['aria-hidden'] === 'true').map(([, , text]) => decode(text));
+    const paragraphs = [...markup.matchAll(/<p\b[^>]*>([^<]*)<\/p>/gi)].map(([, text]) => decode(text));
+    const all = tags(markup);
+    return {
+        headings,
+        hiddenText,
+        paragraphs,
+        alts: all.filter((tag) => tag.name === 'img').map((tag) => tag.attributes.alt ?? ''),
+        sources: all.filter((tag) => tag.name === 'source').map((tag) => ({ type: tag.attributes.type ?? '', srcset: tag.attributes.srcset ?? '' })),
+    };
+}
+
+/** A srcset's candidates, each a URL and its `w` width. A candidate without one comes back as width NaN, so a check on it fails. */
+export function srcsetCandidates(srcset: string): { url: string; width: number }[] {
+    return srcset.split(',').map((candidate) => candidate.trim()).filter((candidate) => candidate !== '').map((candidate) => {
+        const [url, descriptor = ''] = candidate.split(/\s+/);
+        return { url, width: /^\d+w$/.test(descriptor) ? Number(descriptor.slice(0, -1)) : Number.NaN };
+    });
 }
 
 /** A hidden div and what it holds, up to its first `</div>`, so a nested segment shows as content. */
