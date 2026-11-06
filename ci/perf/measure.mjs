@@ -7,8 +7,10 @@
  * portrait frame is marked ` (portrait)`. Nothing touches the page before the read, since input ends LCP. For
  * reference, not gated: the bytes the load transferred, the document's and every resource's transferSize summed (all
  * same-origin on 127.0.0.1, so none reads 0 for want of Timing-Allow-Origin), and when Home's copy-tone sampler started
- * its fetch: the one fetch() of /media Home makes (components/badgePlace.ts canvasSampler()), matched by its resource
- * timing's `fetch` initiator, so its URL and its cache key stay the rung's own.
+ * its fetch, and what that fetch transferred: the one fetch() of /media Home makes (components/badgePlace.ts
+ * canvasSampler()), matched by its resource timing's `fetch` initiator, so its URL and its cache key stay the file's
+ * own. It refetches the slide's file; this run turns the cache off for every request (Network.setCacheDisabled), so it
+ * reads the file's size here, where the site's immutable /media gives a cache hit.
  */
 
 import { reduceLoad } from './stats.mjs';
@@ -73,7 +75,7 @@ export async function measureLoad(browser, url, profile) {
       const documents = /** @type {PerformanceResourceTiming[]} */ (performance.getEntriesByType('navigation'));
       const bytes = [...documents, ...resources].reduce((sum, entry) => sum + (entry.transferSize || 0), 0);
       const tone = resources.find((entry) => entry.initiatorType === 'fetch' && new URL(entry.name).pathname.startsWith('/media/'));
-      return { .../** @type {any} */ (window).__perf, bytes, toneFetch: tone ? tone.startTime : null };
+      return { .../** @type {any} */ (window).__perf, bytes, toneFetch: tone ? tone.startTime : null, toneFetchBytes: tone ? tone.transferSize : null };
     });
     return reduceLoad(perf, loadAt, SETTLE_MS);
   } finally {

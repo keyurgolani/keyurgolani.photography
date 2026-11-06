@@ -25,10 +25,10 @@ export const MINIMUM_FLOOR_MS = /** @type {Readonly<Record<string, number>>} */ 
 export const MINIMUM_FLOOR_SHARE = 0.05;
 /** What each load records that the job compares, in ms. */
 export const METRICS = /** @type {const} */ (['lcp', 'tbt']);
-/** What each load records for reference only: bytes transferred, and the tone sampler's fetch start against LCP. */
-export const INFO_METRICS = /** @type {const} */ (['bytes', 'toneFetchAfterLcp']);
+/** What each load records for reference only: bytes transferred, and the tone sampler's fetch start against LCP and its bytes. */
+export const INFO_METRICS = /** @type {const} */ (['bytes', 'toneFetchAfterLcp', 'toneFetchBytes']);
 /** Their labels in the job summary. */
-const INFO_LABELS = /** @type {Readonly<Record<string, string>>} */ ({ bytes: 'bytes transferred (B)', toneFetchAfterLcp: 'tone fetch − LCP (ms)' });
+const INFO_LABELS = /** @type {Readonly<Record<string, string>>} */ ({ bytes: 'bytes transferred (B)', toneFetchAfterLcp: 'tone fetch − LCP (ms)', toneFetchBytes: 'tone fetch transferred (B)' });
 /** The three servers, by role. */
 export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 
@@ -114,23 +114,24 @@ export function treeFor(server, { base, head }) {
 /**
  * @typedef {{
  *   lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null,
- *   bytes?: number | null, toneFetch?: number | null,
+ *   bytes?: number | null, toneFetch?: number | null, toneFetchBytes?: number | null,
  * }} PageEntries
  */
 
 /**
  * One load's numbers from what the page observed (measure.mjs). LCP is the last `largest-contentful-paint` entry, or
  * null when there was none. TBT is the sum of each long task past 50 ms that starts from FCP (0 without one) to
- * `loadAt` + `settleMs`. For reference, not gated: `bytes`, what the load transferred, and `toneFetchAfterLcp`, when
- * Home's copy-tone sampler started its fetch (measure.mjs) against LCP, negative before it; null where there's none.
+ * `loadAt` + `settleMs`. For reference, not gated: `bytes`, what the load transferred; `toneFetchAfterLcp`, when
+ * Home's copy-tone sampler started its fetch (measure.mjs) against LCP, negative before it; and `toneFetchBytes`, what
+ * that fetch transferred, 0 from the cache. Null where there's none.
  * @param {PageEntries} entries @param {number} loadAt @param {number} settleMs
  */
-export function reduceLoad({ lcp, longtasks, fcp, bytes = null, toneFetch = null }, loadAt, settleMs) {
+export function reduceLoad({ lcp, longtasks, fcp, bytes = null, toneFetch = null, toneFetchBytes = null }, loadAt, settleMs) {
   const from = fcp ?? 0;
   const tbt = longtasks.filter((task) => task.t >= from && task.t <= loadAt + settleMs).reduce((sum, task) => sum + Math.max(0, task.d - 50), 0);
   const last = lcp.at(-1) ?? null;
   const toneFetchAfterLcp = last && typeof toneFetch === 'number' ? Math.round(toneFetch - last.t) : null;
-  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null, bytes: typeof bytes === 'number' ? bytes : null, toneFetchAfterLcp };
+  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null, bytes: typeof bytes === 'number' ? bytes : null, toneFetchAfterLcp, toneFetchBytes: typeof toneFetchBytes === 'number' ? toneFetchBytes : null };
 }
 
 /** A metric's least noise floor: MINIMUM_FLOOR_MS for LCP and TBT, else MINIMUM_FLOOR_SHARE of the base median. @param {string} metric @param {number} baseMedian */
@@ -282,7 +283,7 @@ export function summaryMarkdown(raw, { rows, regressions }) {
       '',
       '### Bytes and the tone fetch (for reference, not gated)',
       '',
-      'Bytes are each load\'s transferSize summed over the document and every resource. The tone fetch is when Home\'s copy-tone sampler started its one fetch() of /media, less the load\'s LCP, so positive is after LCP. Same per-round medians as above, over the loads that have a value; the last column counts those loads, base then head. No floor, no verdict.',
+      'Bytes are each load\'s transferSize summed over the document and every resource. The tone fetch is Home\'s copy-tone sampler\'s one fetch() of /media: when it started, less the load\'s LCP, so positive is after LCP, and what it transferred, 0 from the cache. Every load here runs with the cache off, so that fetch reads the file\'s size even where the site would serve it from the cache. Same per-round medians as above, over the loads that have a value; the last column counts those loads, base then head. No floor, no verdict.',
       '',
       '| Metric | Base (A1+A2)/2 | Head B | Head − base | Loads with a value |',
       '|---|---|---|---|---|',

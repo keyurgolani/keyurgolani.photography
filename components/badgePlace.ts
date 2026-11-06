@@ -226,33 +226,6 @@ export type ToneSampler = (image: HTMLImageElement, source: Source) => Promise<A
 /** How long the sampler waits for an idle moment before it fetches anyway. */
 export const TONE_IDLE_TIMEOUT_MS = 2000;
 
-/** Each candidate of a srcset, as its URL and its width descriptor. */
-const candidates = (srcset: string) =>
-  srcset
-    .split(',')
-    .map((entry) => entry.trim().split(/\s+/))
-    .filter(([url, descriptor]) => url && descriptor?.endsWith('w'))
-    .map(([url, descriptor]) => ({ url: new URL(url, document.baseURI).href, width: parseInt(descriptor, 10) }));
-
-/**
- * The rung the tone reads (v2.0.0 TBT): the smallest candidate at least TONE_SAMPLE_WIDTH wide in the srcset the
- * image shows from (its <picture>'s <source>, or its own srcset, that holds currentSrc), so in the format the browser
- * took, or the widest when none is that wide. The sample is TONE_SAMPLE_WIDTH wide, so that rung holds every pixel it
- * reads. Null when currentSrc is in no srcset it can read.
- */
-export function toneSampleUrl(image: HTMLImageElement): string | null {
-  const current = image.currentSrc;
-  if (!current) return null;
-  const picture = image.parentElement?.tagName === 'PICTURE' ? image.parentElement : null;
-  for (const element of [...(picture ? picture.querySelectorAll('source') : []), image]) {
-    const set = candidates(element.getAttribute('srcset') ?? '');
-    if (!set.some((candidate) => candidate.url === current)) continue;
-    const wide = set.filter((candidate) => candidate.width >= TONE_SAMPLE_WIDTH).sort((a, b) => a.width - b.width);
-    return (wide[0] ?? set.sort((a, b) => b.width - a.width)[0]).url;
-  }
-  return null;
-}
-
 /** Resolves once the browser is idle, or after TONE_IDLE_TIMEOUT_MS, or on the next task where it can't say. */
 const idle = () =>
   new Promise<void>((resolve) => {
@@ -264,17 +237,19 @@ const idle = () =>
  * The browser's sampler (H1, v2.0.0 TBT). It never decodes the image on screen: drawing an <img> into a canvas, or
  * createImageBitmap() of one, decodes it whole on the main thread, and the slide is w1920 on a 3x phone under #6's
  * size rule, a long task of about 90 ms at 4x CPU. Once the browser is idle, so after the slide's own load, it fetches
- * toneSampleUrl()'s small rung, same origin and from the cache where the page has it, and decodes it from the Blob at
- * TONE_SAMPLE_WIDTH, which the browser does off the main thread. Home makes no other fetch() of /media, which is how
- * ci/perf/measure.mjs finds it. The whole photograph is scaled, with no crop rectangle, so no rung's pixel density
- * enters; the region is then read from the small copy, in the image's natural pixels scaled by the same factor. With
- * no createImageBitmap, no rung to read, or a fetch or decode that fails, it skips (null), and the theme keeps its own
- * scrim.
+ * the file the slide shows (currentSrc) again, same origin and from the cache: public /media is immutable for a year
+ * (lib/media/handler.ts), so on the site that's a cache hit and no bytes. Under /curation/preview media is
+ * `private, no-store`, so a curator's preview downloads it again. It decodes that Blob at TONE_SAMPLE_WIDTH, which the
+ * browser does off the main thread, from the same pixels the slide shows, so the tone is the one the image itself
+ * gave. Home makes no other fetch() of /media, which is how ci/perf/measure.mjs finds it. The whole photograph is
+ * scaled, with no crop rectangle, so the file's pixel density can't enter; the region is then read from the small
+ * copy, in natural pixels scaled by the same factor. With no createImageBitmap, no currentSrc, or a fetch or decode
+ * that fails, it skips (null), and the theme keeps its own scrim.
  */
 export const canvasSampler: ToneSampler = async (image, source) => {
-  const url = toneSampleUrl(image);
-  if (url === null || typeof createImageBitmap !== 'function' || typeof fetch !== 'function') return null;
-  if (new URL(url).origin !== window.location.origin) return null;
+  const url = image.currentSrc;
+  if (!url || typeof createImageBitmap !== 'function' || typeof fetch !== 'function') return null;
+  if (new URL(url, document.baseURI).origin !== window.location.origin) return null;
   const width = TONE_SAMPLE_WIDTH;
   const height = Math.max(1, Math.round((width * image.naturalHeight) / image.naturalWidth));
   const k = width / image.naturalWidth;
@@ -315,7 +290,7 @@ export const positionOf = (value: string) => {
  * `copy`, the union of the story's boxes and the title's panel.
  * - Null when it can't measure now (the image not in, as mid-swap to a larger srcset candidate, or not under the
  *   copy), so the caller keeps what it has and measures again when the image loads (M5).
- * - 'light', the theme's own scrim, when it can't measure at all: no canvas, no createImageBitmap, no small rung,
+ * - 'light', the theme's own scrim, when it can't measure at all: no canvas, no createImageBitmap, no currentSrc,
  *   or a fetch or decode that fails (canvasSampler()). Home's media is same-origin; media moved to another origin
  *   would leave the tone 'light' until the sampler fetched it with CORS.
  */
