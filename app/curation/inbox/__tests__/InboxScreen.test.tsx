@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BULK_IDLE, type InboxActionState, type InboxBulkState, type InboxDetail, type InboxItem, type InboxView, type ReadyInboxSummary, type SeriesOption } from '@/lib/curation/inbox-view';
 import { INBOX_WATCH_INTERVAL_MS, INBOX_WATCH_MIN_GAP_MS, OFFLINE_TEXT } from '@/lib/curation/inbox-watch';
@@ -272,6 +273,21 @@ describe('the bulk answers (A8 review)', () => {
         expect(within(region).getByText(/no description yet/)).toBeInTheDocument();
         expect(within(region).queryByRole('link', { name: 'photo-1.jpg' })).toBeNull();
         expect(screen.queryByRole('region', { name: /left as/ })).toBeNull();
+    });
+
+    it('render the bulk buttons disabled in the server HTML, so a press before the page hydrates posts nothing the plain way', () => {
+        const html = document.createElement('div');
+        html.innerHTML = renderToString(<InboxList view={view()} query={ANY} />);
+        const form = html.querySelector('#inbox-bulk') as HTMLFormElement;
+        const buttons = [...form.querySelectorAll('button[name="intent"]')] as HTMLButtonElement[];
+        expect(buttons.map((button) => button.value)).toEqual(['defer', 'unassigned']);
+        for (const button of buttons) expect(button).toBeDisabled();
+    });
+
+    it('enable the bulk buttons once the page has hydrated', () => {
+        render(<InboxList view={view()} query={ANY} />);
+        expect(screen.getByRole('button', { name: 'Decide later on selected' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Leave selected unassigned' })).toBeEnabled();
     });
 
     it("send nothing for a submit no bulk button made, as Enter in a checkbox does (N5)", async () => {
