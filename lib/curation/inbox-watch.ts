@@ -325,7 +325,10 @@ export interface InboxNews {
 
 const OFFLINE_LINE = OFFLINE_TEXT;
 const BACK_LINE = 'Back online. The inbox is checking for changes again.';
-/** Said in place of a count when the server refused the page's cursor: what arrived since the page loaded can't be counted. */
+/**
+ * Said in place of a count when the server refused the page's cursor: what arrived since the page loaded can't be
+ * counted. It starts the new-items line until the page refreshes, with any later count after it.
+ */
 export const REBASED_LINE = 'The inbox has changed since this page loaded.';
 
 /**
@@ -357,18 +360,20 @@ export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announ
     if (answer.rebased) {
         // The server refused the page's cursor, as after a restore of the data root, and this answer counts from a new
         // one, against a history the page never saw. A count from it would undercount what the page hasn't seen, so the
-        // line says the inbox changed, with the same Refresh link. Counts from the new cursor start afresh, so each one
-        // said before is forgotten, and the next one is honest again.
-        for (const key of announced) if (key.startsWith('arrived:')) news.forget.push(key);
-        if (!announced.has('rebased')) {
+        // line says the inbox changed, with the same Refresh link, and the page is stale until it refreshes. Counts from
+        // the new cursor start afresh, so each one said before is forgotten. A refusal with no count said since the last
+        // one has nothing new to say.
+        const counted = [...announced].filter((key) => key.startsWith('arrived:'));
+        news.forget.push(...counted);
+        if (!announced.has('rebased') || counted.length > 0) {
             news.arrival = REBASED_LINE;
-            news.keys.push('rebased');
+            if (!announced.has('rebased')) news.keys.push('rebased');
         }
     } else if (more > 0 && !announced.has(`arrived:${more}`)) {
-        news.arrival = more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`;
+        const count = more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`;
+        // After a refusal the page stays stale until it refreshes, so the count follows the sentence that says so.
+        news.arrival = announced.has('rebased') ? `${REBASED_LINE} ${count}` : count;
         news.keys.push(`arrived:${more}`);
-        // The count now stands in the line, so a later refusal of the cursor is news again.
-        if (announced.has('rebased')) news.forget.push('rebased');
     }
     const wasRunning = page.watcher.state === 'running';
     const running = summary.watcher.state === 'running';
