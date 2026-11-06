@@ -176,8 +176,12 @@ test('two automatic failures in a row suspend playback with a polite note, and P
     await expectShown(page, HOME_OPENING);
     // The first tick finds after(1) failed and skips to after(2) at once, which fails too: playback suspends.
     await expect(status(page)).toHaveText('Some photographs couldn’t load.', { timeout: 20_000 });
-    // A polite notice: the status region, never an alert.
-    await expect(page.getByRole('alert')).toHaveCount(0);
+    // A polite notice: the status region, never an alert. The app router mounts Next's route announcer on every page
+    // once it hydrates, an assertive role="alert" div in <next-route-announcer>'s shadow root that speaks only a route
+    // change's title. So: no alert but that one, and nothing in any alert, which says nothing on Home is assertive.
+    const alerts = page.getByRole('alert');
+    await expect(alerts.and(page.locator(':not(#__next-route-announcer__)'))).toHaveCount(0);
+    await expect(alerts.filter({ hasText: /\S/ })).toHaveCount(0);
     await expect(page.locator('[data-playback]')).toHaveAttribute('data-playback', 'held');
     await expectShown(page, HOME_OPENING);
     await expect(play(page)).toBeAttached();
