@@ -520,8 +520,9 @@ echo "photos history listed revision 1 as one a rollback can return to, photos r
 #     0600, as web's uid, and the 410 below is the check that web can read it
 #     (a tombstone web can't read is passed over, and the set 404s). As
 #     another uid, root here, purge --yes refuses, exit 1 and WRONG_OWNER,
-#     before any lock, and writes nothing, locks/ included. GC runs as a dry
-#     run only: the smoke never deletes.
+#     before any lock, and writes nothing, locks/ included, and so does gc
+#     --set-aside of the folder the purge took down. GC runs as a dry run
+#     only: the smoke never deletes.
 unlisted_set=assets/${unlisted#/media/}
 unlisted_set=${unlisted_set%/*}
 unlisted_folder=${unlisted_set%/*}
@@ -576,6 +577,16 @@ done
 expect_code "$active" 200
 [ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the purge of another photo."
 published_listing "$TMP/published-before-gc.txt" "$target"
+# The tombstoned folder is one gc --set-aside takes, so as root it must refuse too, before any lock, moving nothing into trash/.
+locks_before=$(locks_mtime)
+set_aside_code=0
+photos_as_root gc --set-aside "$unlisted_folder" >"$TMP/set-aside-as-root.txt" 2>&1 || set_aside_code=$?
+[ "$set_aside_code" = 1 ] || fail "photos gc --set-aside as root exited $set_aside_code, expected 1: $(cat "$TMP/set-aside-as-root.txt")"
+grep -qF -- "[photos] WRONG_OWNER: photos gc --set-aside runs as uid 0, but uid ${WEB_USER%%:*} owns the data root" "$TMP/set-aside-as-root.txt" ||
+  fail "photos gc --set-aside as root didn't refuse WRONG_OWNER: $(cat "$TMP/set-aside-as-root.txt")"
+published_listing "$TMP/published-after-set-aside.txt" "$target"
+diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-set-aside.txt" || fail "photos gc --set-aside as root wrote under the published root."
+[ "$(locks_mtime)" = "$locks_before" ] || fail "photos gc --set-aside as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
 gc_code=0
 photos_as_web gc >"$TMP/gc.txt" 2>&1 || gc_code=$?
 [ "$gc_code" = 0 ] || fail "photos gc exited $gc_code, expected 0: $(cat "$TMP/gc.txt")"
@@ -589,5 +600,5 @@ fi
 published_listing "$TMP/published-after-gc.txt" "$target"
 diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-gc.txt" || fail "photos gc, a dry run, changed something under the published root."
 expect_code "$unlisted" 410
-echo "As web's uid, photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, as root --yes refused and wrote nothing, locks/ included, as web's uid --yes wrote $tombstone and web answered 410 for the set with no restart, and photos gc kept its asset-revision folder as within its 7 days and deleted nothing."
+echo "As web's uid, photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, as root --yes refused and wrote nothing, locks/ included, as web's uid --yes wrote $tombstone and web answered 410 for the set with no restart, as root gc --set-aside refused too, and photos gc kept its asset-revision folder as within its 7 days and deleted nothing."
 echo "smoke-catalog passed."
