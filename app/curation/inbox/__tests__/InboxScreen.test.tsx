@@ -496,6 +496,43 @@ describe('the poll', () => {
         expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
     });
 
+    it('keeps only the new-items sentence beside its link: what else that answer said is the other line, which a later word replaces', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(arrival).toHaveTextContent(/^1 new item needs judgment\. Refresh the inbox$/);
+        expect(region).toHaveTextContent(/watcher stopped checking in/);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent('The watcher is checking in again.');
+        expect(region).not.toHaveTextContent(/watcher stopped checking in/);
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
+    });
+
+    it('says "Back online." beside the new-items line, not in it, so going offline again replaces it', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_MIN_GAP_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(arrival).toHaveTextContent(/^1 new item needs judgment\. Refresh the inbox$/);
+        expect(region).toHaveTextContent('Back online.');
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        expect(region).toHaveTextContent(OFFLINE_TEXT);
+        expect(region).not.toHaveTextContent('Back online.');
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
+    });
+
     it('reads only what changed in its region: a status is atomic by default, so it says aria-atomic="false"', () => {
         render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         // role="status" implies aria-atomic="true", and Chromium honours it: with two lines, a change to one would make
