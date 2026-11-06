@@ -659,8 +659,8 @@ describe('the poll', () => {
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(region).toHaveAttribute('data-watch', 'stopped');
-        // Invisible to everyone: no ARIA attribute beyond its name, and nothing said.
-        expect(region.getAttributeNames().filter((name) => name.startsWith('aria-'))).toEqual(['aria-label']);
+        // Invisible to everyone: no ARIA attribute beyond its name and its aria-atomic="false", and nothing said.
+        expect(region.getAttributeNames().filter((name) => name.startsWith('aria-')).sort()).toEqual(['aria-atomic', 'aria-label']);
         expect(region).toHaveTextContent('');
     });
 
