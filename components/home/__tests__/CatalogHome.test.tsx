@@ -660,7 +660,7 @@ describe('CatalogHome', () => {
       expect(slideImage(0)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
       current.mockReturnValue(`http://localhost${image(0).variants.w1200.webp.url}`);
       fail(0);
-      expect(failure()).toBe('Photograph 04 of 04 couldn’t load.');
+      expect(failure()).toBe('Couldn’t load photograph 04 of 04');
       expect(button('Retry')).toBeInTheDocument();
     });
 
