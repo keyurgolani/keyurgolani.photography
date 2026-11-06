@@ -59,7 +59,7 @@ import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
-import { writerGate } from '../lib/catalog/owner-gate';
+import { writerGate } from '../lib/catalog/data-root-owner';
 import { dataRoot, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { attachWatcher, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
 

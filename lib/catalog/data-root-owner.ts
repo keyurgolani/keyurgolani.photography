@@ -34,7 +34,10 @@ export type WriterKind =
     | 'catalog'
     | 'verify'
     | 'curation'
-    | 'watcher';
+    | 'watcher'
+    | 'curator'
+    /** Round 3b: a dry run or read that takes a lock to read, which writes the lock file. */
+    | 'locking-read';
 
 export const BREAKS: Record<WriterKind, string> = {
     tombstone: "A tombstone this uid writes is one web can't read: /media would pass it over and serve the set as the live revision says, and every publish and rollback would stop on assets.tombstoned.",
@@ -48,6 +51,8 @@ export const BREAKS: Record<WriterKind, string> = {
     verify: "A status/verify.json this uid writes is one the owner can't read, so every photos rollback and the curator's Publish screen would stop on it until photos verify runs as the owner.",
     curation: "An Inbox item or decision this uid writes is one the watcher, the curator and every command of the owner's can't read, so the Inbox would stop until the file is fixed by hand.",
     watcher: "Sets, registry versions, Inbox items and the heartbeat this uid writes are ones web and every command of the owner's can't read: /media would 404 the new sets, and the healthcheck would fail.",
+    curator: "Inbox items, decisions, working-layer records and lock files this uid writes are ones the watcher and every command of the owner's can't read, so the Inbox and the draft would stop until the files are fixed by hand.",
+    'locking-read': "It takes a lock to read, which writes a lock file in locks/, and one this uid leaves behind if it's killed, or a locks/ it makes, would stop every command of the owner's until it's removed by hand.",
 };
 
 function effectiveUid(): number | null {
@@ -56,14 +61,23 @@ function effectiveUid(): number | null {
     return null;
 }
 
+/** The refusal for writer <name> of <kind> on <root>, or null when there's nothing to protect (no data root, or none there yet) or its uid owns it. */
+export function writerGate(root: string | null, name: string, kind: WriterKind): string | null {
+    if (root === null || !fs.existsSync(root)) return null;
+    return ownerRefusal(root, name, kind);
+}
+
 /** The refusal for `name`, a writer of `kind`, on data root `root`, or null when its uid owns the root. */
 export function ownerRefusal(root: string, name: string, kind: WriterKind): string | null {
     const uid = effectiveUid();
     if (uid === null) return null;
-    const owner = fs.statSync(root).uid;
+    const { uid: owner, gid } = fs.statSync(root);
     if (uid === owner) return null;
+    const user = `user: "${owner}:${gid}"`;
     const how = kind === 'watcher'
-        ? `Run it as uid ${owner}, as docker-compose.prod.yml's image-watcher does.`
-        : `Run it as uid ${owner}, as docker-compose.prod.yml runs every container and its run --rm commands: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs …`;
+        ? `Run it as uid ${owner}, as docker-compose.prod.yml's image-watcher does with ${user}.`
+        : kind === 'curator'
+            ? `Start it as uid ${owner}, as docker-compose.prod.yml's curator does with ${user}.`
+            : `Run it as uid ${owner}, as docker-compose.prod.yml runs every container with ${user}, and its run --rm commands with them: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs ${name.replace(/^photos /, '')} …`;
     return `${name} runs as uid ${uid}, but uid ${owner} owns the data root, and web runs as that owner. ${BREAKS[kind]} It took no lock. Nothing was written. ${how}`;
 }

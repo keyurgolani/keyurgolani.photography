@@ -62,7 +62,10 @@ describe('ownerRefusal() (A11, ruling c)', () => {
         expect(said('revoke')).toMatch(/keep answering 410 for the sets, and every publish and rollback would stop on assets\.tombstoned/);
         expect(said('gc-apply')).toMatch(/keep its sets at 410 and stop every publish and rollback on assets\.tombstoned\. GC deletes and writes its markers only as the data root's owner/);
         expect(said('set-aside')).toMatch(/moves into trash\/ would be one the owner's commands can't read, move or clear, and the lock file it takes/);
-        expect(said('watcher')).toMatch(/\/media would 404 the new sets, and the healthcheck would fail\. .*as docker-compose\.prod\.yml's image-watcher does\.$/);
+        expect(said('watcher')).toMatch(/\/media would 404 the new sets, and the healthcheck would fail\. .*as docker-compose\.prod\.yml's image-watcher does with user: "\d+:\d+"\.$/);
+        expect(said('curator')).toMatch(/Inbox and the draft would stop .*Start it as uid \d+, as docker-compose\.prod\.yml's curator does with user: "\d+:\d+"\.$/);
+        expect(said('locking-read')).toMatch(/It takes a lock to read, which writes a lock file in locks\//);
+        expect(said('authored')).toMatch(/docker compose -f docker-compose\.prod\.yml run --rm --no-deps image-watcher node dist\/scripts\/photos\.mjs the authored writer …$/);
         for (const kind of Object.keys(BREAKS) as WriterKind[]) expect(said(kind)).toMatch(new RegExp(`^the ${kind} writer runs as uid `));
         expect(new Set(Object.values(BREAKS)).size).toBe(Object.keys(BREAKS).length);
         for (const kind of ['tombstone', 'revoke'] as const) expect(said(kind)).not.toMatch(/marker/);

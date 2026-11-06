@@ -160,7 +160,7 @@ describe.runIf(posix)('the owner gate, every writer (A11 round 3)', { timeout: 1
             expect(`${result.stdout}${result.stderr}`).toMatch(WRONG);
             expect(result.stderr).toContain(`runs as uid ${other(w)}, but uid ${w.owner} owns the data root`);
             // How to run it as the owner, with the compose line.
-            expect(result.stderr).toContain(`user: "${w.owner}:${w.owner}"`);
+            expect(result.stderr).toContain(`user: "${w.owner}:${fs.statSync(w.built.root).gid}"`);
             expect(result.stderr).toMatch(/docker compose -f docker-compose\.prod\.yml run --rm --no-deps image-watcher node dist\/scripts\/photos\.mjs \S+/);
             expect(result.code).toBe(1);
             check();

@@ -1,8 +1,7 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { CREDENTIAL_COMMANDS } from '../curation/auth/credential-cli';
 import type { CURATION_COMMANDS } from '../curation/commands';
-import { ownerRefusal, type WriterKind } from './data-root-owner';
+import { writerGate, type WriterKind } from './data-root-owner';
 
 /**
  * The A11 coordinator's round 3 rule, in one table: any command that takes a
@@ -17,15 +16,19 @@ import { ownerRefusal, type WriterKind } from './data-root-owner';
  * arguments, so a flag such as --yes, --apply or --set-aside makes a writer of
  * a dry run. The watcher asks too, at its start, as `watcher`.
  *
- * Read-only here means it takes no lock and writes nothing under the data
- * root: status, list, validate, diff, history and identity status. A dry run
- * that takes its locks only to read is read too: purge and purge --revoke
- * without --yes, gc without --apply or --set-aside, and rollback without
- * --yes and with no terminal to confirm in, which stops before it writes. A
- * dry run that writes files is a writer: publish --dry-run writes its
- * candidate and diagnostics, and migrate --dry-run its plan, unless --out
- * puts the plan outside the data root. The credential commands write only
- * their --out file and never touch the data root.
+ * Read here means it takes no lock and writes nothing under the data root,
+ * as traced over each command's run and its lock calls (round 3b): status,
+ * list, validate, diff, history, identity status, curation list and show,
+ * describe --import --dry-run, carry-over without --apply, rollback without
+ * --yes outside a terminal (it plans before it takes the catalog lock, and
+ * stops at CONFIRMATION_REQUIRED), migrate --dry-run --out outside the data
+ * root, and the credential commands, which write only their --out file. A
+ * lock is a write, a lock file in locks/, so a dry run that takes a lock to
+ * read refuses too, as locking-read: purge and purge --revoke without --yes,
+ * and gc without --apply or --set-aside. A dry run that writes files is a
+ * writer: publish --dry-run writes its candidate and diagnostics, and
+ * migrate --dry-run its plan, unless --out puts the plan outside the data
+ * root.
  */
 
 export type Access = 'read' | WriterKind;
@@ -112,13 +115,14 @@ export const PHOTOS_ACCESS: Record<string, Rule> = {
     rollback: (args, { tty }) => (has(args, 'yes') || tty ? 'catalog' : 'read'),
     verify: 'verify',
     curation: (args) => CURATION_ACCESS[args[0] as keyof typeof CURATION_ACCESS] ?? 'read',
+    // Round 3b: their dry runs take the catalog lock, and purge's and gc's the authored lock too, to read.
     purge: (args) => {
-        if (!has(args, 'yes')) return 'read';
+        if (!has(args, 'yes')) return 'locking-read';
         return has(args, 'revoke') ? 'revoke' : 'tombstone';
     },
     gc: (args) => {
         if (has(args, 'set-aside')) return 'set-aside';
-        return has(args, 'apply') ? 'gc-apply' : 'read';
+        return has(args, 'apply') ? 'gc-apply' : 'locking-read';
     },
 };
 
@@ -129,7 +133,7 @@ export function commandAccess(argv: readonly string[], ctx: GateContext): { name
     const rule = PHOTOS_ACCESS[command];
     const access = typeof rule === 'function' ? rule(args, ctx) : rule;
     const sub = command === 'identity' || command === 'curation' ? ` ${args[0] ?? ''}` : '';
-    const flag = access === 'set-aside' ? ' --set-aside' : access === 'gc-apply' ? ' --apply' : access === 'revoke' ? ' --revoke --yes' : access === 'tombstone' ? ' --yes' : '';
+    const flag = access === 'set-aside' ? ' --set-aside' : access === 'gc-apply' ? ' --apply' : access === 'revoke' ? ' --revoke --yes' : access === 'tombstone' ? ' --yes' : access === 'locking-read' && has(args, 'revoke') ? ' --revoke' : '';
     return { name: `photos ${command}${sub}${flag}`, access };
 }
 
@@ -145,8 +149,3 @@ export function ownerGate(argv: readonly string[], ctx: GateContext): string | n
     return writerGate(ctx.root, found.name, found.access);
 }
 
-/** The refusal for writer <name> of <kind> on <root>, or null when there's nothing to protect or its uid owns it. */
-export function writerGate(root: string | null, name: string, kind: WriterKind): string | null {
-    if (root === null || !fs.existsSync(root)) return null;
-    return ownerRefusal(root, name, kind);
-}
