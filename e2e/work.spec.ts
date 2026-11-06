@@ -146,7 +146,9 @@ const entries = (page: Page) => page.getByRole('main').getByRole('listitem').get
 const entry = (page: Page, slug: string) => page.getByRole('main').locator(`a[href="/work/${slug}"]`);
 /** The entry's list item: its cover, title, statement and count. */
 const items = (page: Page) => page.getByRole('main').getByRole('listitem');
-const item = (page: Page, slug: string) => items(page).filter({ has: entry(page, slug) });
+// `has` is queried inside each list item, so it names the link from there: `entry`'s main, which no list item holds,
+// would match none, and every wait on the item would run out (B3's CI).
+const item = (page: Page, slug: string) => items(page).filter({ has: page.locator(`a[href="/work/${slug}"]`) });
 /** Where an entry draws its target and its ring: the link's ::after, stretched over the whole entry. */
 const STRETCHED = { pseudo: '::after' } as const;
 const countLabel = (count: number) => (count === 1 ? '1 photograph' : `${count} photographs`);
