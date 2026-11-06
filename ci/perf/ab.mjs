@@ -17,7 +17,8 @@
  * 2. Starts `next start` on 127.0.0.1 for each, A1 on 3871, B on 3872, A2 on 3873, waits for /api/ready, and refuses
  *    to go on unless `ss` shows each port listening on 127.0.0.1 only. Warms each: Home and every image it names, six
  *    times.
- * 3. Runs `--rounds` rounds in stats.mjs's roundOrder(), each server `--loads` cold loads of Home per profile
+ * 3. Does one load per server and profile that isn't recorded, so round 1 doesn't pay for a cold browser. Then runs
+ *    `--rounds` rounds in stats.mjs's roundOrder(), each server `--loads` cold loads of Home per profile
  *    (measure.mjs), in system Chrome from the runner image, so nothing is downloaded.
  * 4. Stops the servers.
  * Then reads each build's first-load JS from its manifests, and writes everything to `<out>/raw.json`, with each
@@ -35,7 +36,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { measureLoad, PROFILES } from './measure.mjs';
-import { loopbackListeners, parseRounds, roundOrder, SERVERS } from './stats.mjs';
+import { loopbackListeners, parseRounds, roundOrder, SERVERS, treeFor } from './stats.mjs';
 
 /** @typedef {import('./stats.mjs').Server} Server */
 
@@ -216,7 +217,7 @@ async function measure(argv) {
       const servers = {};
       try {
         for (const server of SERVERS) {
-          const tree = server === 'B' ? opts.head : opts.base;
+          const tree = treeFor(server, opts);
           const root = path.join(work, fixture, server);
           log(`${fixture}: publishing ${server} from ${tree}`);
           prepare(tree, root, flags);
@@ -225,6 +226,9 @@ async function measure(argv) {
         }
         for (const server of SERVERS) await warm(/** @type {{ origin: string }} */ (servers[server]).origin);
         await new Promise((resolve) => setTimeout(resolve, 3000));
+        // One unrecorded load per server and profile, so the browser's first loads land in no round.
+        for (const server of roundOrder(0)) for (const profile of Object.values(PROFILES)) await measureLoad(browser, `${/** @type {{ origin: string }} */ (servers[server]).origin}/`, profile);
+        log(`${fixture}: browser warmed on every server and profile`);
         const rounds = (raw.fixtures[fixture] = { rounds: /** @type {import('./stats.mjs').Round[]} */ ([]) }).rounds;
         for (let round = 0; round < opts.rounds; round++) {
           const order = roundOrder(round);

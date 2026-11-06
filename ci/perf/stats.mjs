@@ -5,16 +5,20 @@
  * measures and report.mjs prints.
  *
  * Three servers run in every round: A1 and A2 on the same base build, B on the head. A round's value for a server is
- * the median of its loads in that round. Base is A1, head is B, and A2 exists only to say how far the base moves
- * against itself in the same job: a metric's noise floor is NOISE_FACTOR times the largest per-round |A1 - A2|, or
- * the metric's minimum (minimumFloor()) when that's larger, so a base that never moves doesn't fail the job on one
- * stray millisecond. Head regresses on a metric when median(B) - median(A1), over the rounds, is past that floor.
+ * the median of its loads in that round. B always runs between A1 and A2 (roundOrder()), so a round's base is
+ * (A1 + A2) / 2, which brackets B whichever base server went first. A1 against A2 also says how far the base moves
+ * against itself in the same job: a metric's noise floor is NOISE_FACTOR times the median per-round |A1 - A2|, or the
+ * metric's minimum (minimumFloor()) when that's larger, so a base that never moves doesn't fail the job on one stray
+ * millisecond. A median, not the largest gap, so the floor holds still as rounds are added instead of growing with
+ * them. Head regresses on a metric when median(B) - median(base), over the rounds, is past that floor.
  */
 
 /** The fewest rounds the job runs. Fewer, and one bad round decides a median. */
 export const MIN_ROUNDS = 5;
-/** The noise floor's margin over the largest A/A gap seen. */
-export const NOISE_FACTOR = 1.5;
+/** The most, which the workflow's 150-minute ceiling covers. */
+export const MAX_ROUNDS = 20;
+/** The noise floor's multiple of the median A/A gap. */
+export const NOISE_FACTOR = 4;
 /** The least noise floor for LCP and TBT, in ms. */
 export const MINIMUM_FLOOR_MS = /** @type {Readonly<Record<string, number>>} */ ({ lcp: 50, tbt: 20 });
 /** The least noise floor for any other timing, as a share of the base median. */
@@ -27,7 +31,12 @@ export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 /** @typedef {'A1' | 'A2' | 'B'} Server */
 /** @typedef {{ median: number, min: number, max: number, n: number }} Summary */
 /** @typedef {'regression' | 'faster' | 'within noise'} Verdict */
-/** @typedef {{ base: Summary, head: Summary, aa: Summary, floor: number, floorSource: 'A/A' | 'minimum', delta: number, verdict: Verdict }} Comparison */
+/**
+ * @typedef {{
+ *   base: Summary, head: Summary, a1: Summary, a2: Summary, medianGap: number,
+ *   floor: number, floorSource: 'A/A' | 'minimum', delta: number, verdict: Verdict,
+ * }} Comparison
+ */
 /** @typedef {Comparison & { metric: string }} Row */
 /** @typedef {{ lcp: number | null, tbt: number | null } & Record<string, unknown>} Load */
 /** @typedef {{ round: number, order: Server[], servers: Partial<Record<Server, Record<string, Load[]>>> }} Round */
@@ -61,10 +70,10 @@ export function summarize(values) {
   return { median: median(sorted), min: sorted[0], max: sorted[sorted.length - 1], n: sorted.length };
 }
 
-/** The `rounds` input as a whole number of at least MIN_ROUNDS. @param {unknown} value */
+/** The `rounds` input as a whole number from MIN_ROUNDS to MAX_ROUNDS. @param {unknown} value */
 export function parseRounds(value) {
   const rounds = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : NaN;
-  if (!Number.isInteger(rounds) || rounds < MIN_ROUNDS) throw new Error(`rounds must be a whole number, at least ${MIN_ROUNDS}, got ${JSON.stringify(value)}.`);
+  if (!Number.isInteger(rounds) || rounds < MIN_ROUNDS || rounds > MAX_ROUNDS) throw new Error(`rounds must be a whole number from ${MIN_ROUNDS} to ${MAX_ROUNDS}, got ${JSON.stringify(value)}.`);
   return rounds;
 }
 
@@ -77,10 +86,42 @@ export function roundOrder(round) {
   return round % 2 === 0 ? ['A1', 'B', 'A2'] : ['A2', 'B', 'A1'];
 }
 
-/** NOISE_FACTOR times the largest per-round gap between the two base servers. @param {readonly number[]} a1 @param {readonly number[]} a2 */
-export function noiseFloor(a1, a2, factor = NOISE_FACTOR) {
+/** The median per-round gap between the two base servers, either way round. @param {readonly number[]} a1 @param {readonly number[]} a2 */
+export function medianGap(a1, a2) {
   if (a1.length === 0 || a1.length !== a2.length) throw new Error(`The A/A rounds don't pair up: ${a1.length} against ${a2.length}.`);
-  return factor * Math.max(...a1.map((value, round) => Math.abs(value - a2[round])));
+  return median(a1.map((value, round) => Math.abs(value - a2[round])));
+}
+
+/** NOISE_FACTOR times the median per-round gap between the two base servers. @param {readonly number[]} a1 @param {readonly number[]} a2 */
+export function noiseFloor(a1, a2, factor = NOISE_FACTOR) {
+  return factor * medianGap(a1, a2);
+}
+
+/**
+ * Which tree a server runs: A1 and A2 the base, B the head.
+ * @template T @param {string} server @param {{ base: T, head: T }} trees @returns {T}
+ */
+export function treeFor(server, { base, head }) {
+  if (server === 'A1' || server === 'A2') return base;
+  if (server === 'B') return head;
+  throw new Error(`No server ${server}.`);
+}
+
+/**
+ * @typedef {{ lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null }} PageEntries
+ */
+
+/**
+ * One load's numbers from what the page observed (measure.mjs). LCP is the last `largest-contentful-paint` entry, or
+ * null when there was none. TBT is the sum of each long task past 50 ms that starts from FCP (0 without one) to
+ * `loadAt` + `settleMs`.
+ * @param {PageEntries} entries @param {number} loadAt @param {number} settleMs
+ */
+export function reduceLoad({ lcp, longtasks, fcp }, loadAt, settleMs) {
+  const from = fcp ?? 0;
+  const tbt = longtasks.filter((task) => task.t >= from && task.t <= loadAt + settleMs).reduce((sum, task) => sum + Math.max(0, task.d - 50), 0);
+  const last = lcp.at(-1) ?? null;
+  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null };
 }
 
 /** A metric's least noise floor: MINIMUM_FLOOR_MS for LCP and TBT, else MINIMUM_FLOOR_SHARE of the base median. @param {string} metric @param {number} baseMedian */
@@ -89,14 +130,15 @@ export function minimumFloor(metric, baseMedian) {
 }
 
 /**
- * One metric's per-round values for each server, compared. The floor is the larger of 1.5x the A/A gap and the
- * metric's minimum.
+ * One metric's per-round values for each server, compared. Each round's base is (A1 + A2) / 2. The floor is the
+ * larger of NOISE_FACTOR times the median A/A gap and the metric's minimum.
  * @param {{ metric: string, a1: readonly number[], a2: readonly number[], b: readonly number[] }} rounds @returns {Comparison}
  */
 export function compareMetric({ metric, a1, a2, b }) {
-  const base = summarize(a1);
+  const gap = medianGap(a1, a2);
+  const base = summarize(a1.map((value, round) => (value + a2[round]) / 2));
   const head = summarize(b);
-  const spread = noiseFloor(a1, a2);
+  const spread = NOISE_FACTOR * gap;
   const minimum = minimumFloor(metric, base.median);
   const floor = Math.max(spread, minimum);
   /** @type {Comparison['floorSource']} */
@@ -104,7 +146,7 @@ export function compareMetric({ metric, a1, a2, b }) {
   const delta = head.median - base.median;
   /** @type {Verdict} */
   const verdict = delta > floor ? 'regression' : -delta > floor ? 'faster' : 'within noise';
-  return { base, head, aa: summarize(a2), floor, floorSource, delta, verdict };
+  return { base, head, a1: summarize(a1), a2: summarize(a2), medianGap: gap, floor, floorSource, delta, verdict };
 }
 
 /**
@@ -156,19 +198,19 @@ export function summaryMarkdown(raw, { rows, regressions }) {
     '',
     `${meta.rounds} rounds on fixtures ${Object.keys(raw.fixtures).map((name) => `\`${name}\``).join(' and ')}, ${meta.loads} cold loads of Home per server, profile and round, in ${meta.browser}${meta.runner ? ` on ${meta.runner}` : ''}. Three servers on 127.0.0.1: A1 and A2 on the base build, B on the head. Even rounds run A1, B, A2 and odd rounds A2, B, A1, so base and head swap who goes first every round.`,
     '',
-    `**Rule.** A server's value in a round is the median of its loads there. Each cell is the median over the rounds, with the min–max of the round values. A metric's noise floor is ${NOISE_FACTOR} × the largest per-round |A1 − A2| in this run, but at least ${MINIMUM_FLOOR_MS.lcp} ms for LCP, ${MINIMUM_FLOOR_MS.tbt} ms for TBT, and ${MINIMUM_FLOOR_SHARE * 100}% of the base median for any other timing; "(minimum)" marks a floor set by that. Head − base past the floor is a **regression**, and fails the job; past it the other way is *faster*. Everything else is within noise.`,
+    `**Rule.** A server's value in a round is the median of its loads there, and the base's is (A1 + A2) / 2, which brackets B. Each cell is the median over the rounds, with the min–max of the round values. A metric's noise floor is ${NOISE_FACTOR} × the median per-round |A1 − A2| in this run, but at least ${MINIMUM_FLOOR_MS.lcp} ms for LCP, ${MINIMUM_FLOOR_MS.tbt} ms for TBT, and ${MINIMUM_FLOOR_SHARE * 100}% of the base median for any other timing; "(minimum)" marks a floor set by that. Head − base past the floor is a **regression**, and fails the job; past it the other way is *faster*. Everything else is within noise.`,
     '',
-    '| Metric (ms) | Base A1 | Head B | Head − base | Noise floor | Verdict |',
+    '| Metric (ms) | Base (A1+A2)/2 | Head B | Head − base | Noise floor | Verdict |',
     '|---|---|---|---|---|---|',
     ...rows.map((row) => `| ${row.metric} | ${spread(row.base)} | ${spread(row.head)} | ${row.delta > 0 ? '+' : ''}${ms(row.delta)} | ${floorCell(row)} | ${row.verdict === 'regression' ? '**regression**' : row.verdict === 'faster' ? '*faster*' : row.verdict} |`),
     '',
     regressions.length === 0 ? 'No regressions past the noise floor.' : `${regressions.length} regression${regressions.length === 1 ? '' : 's'} past the noise floor: ${regressions.map((row) => row.metric).join(', ')}.`,
     '',
-    '<details><summary>The base against itself (A2)</summary>',
+    '<details><summary>The base against itself (A1 and A2)</summary>',
     '',
-    '| Metric (ms) | A1 | A2 | Floor |',
-    '|---|---|---|---|',
-    ...rows.map((row) => `| ${row.metric} | ${spread(row.base)} | ${spread(row.aa)} | ${floorCell(row)} |`),
+    '| Metric (ms) | A1 | A2 | Median gap | Floor |',
+    '|---|---|---|---|---|',
+    ...rows.map((row) => `| ${row.metric} | ${spread(row.a1)} | ${spread(row.a2)} | ${ms(row.medianGap)} | ${floorCell(row)} |`),
     '',
     '</details>',
   ];

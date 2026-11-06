@@ -12,12 +12,12 @@ on:
         required: true
         default: v1.7.0
       head:
-        description: Head ref. Empty measures the commit this run was dispatched from.
+        description: Head ref. Empty measures the commit this run was dispatched from. Only code you'd run in CI on the dispatching branch, never a fork or a pull request ref, since it runs in that branch's cache scope.
         type: string
         required: false
         default: ''
       rounds:
-        description: Rounds, at least 5. Each takes about 6 minutes.
+        description: Rounds, 5 to 20. Each takes about 6 minutes.
         type: number
         required: true
         default: 5
@@ -43,8 +43,9 @@ jobs:
         env:
           ROUNDS: ${{ inputs.rounds }}
         run: |
-          if [[ ! $ROUNDS =~ ^[0-9]+$ ]] || (( ROUNDS < 5 )); then
-            echo "::error::rounds must be a whole number, at least 5, not '$ROUNDS'."
+          # 10# reads it as decimal, so 08 is 8, not a bad octal.
+          if [[ ! $ROUNDS =~ ^[0-9]+$ ]] || (( 10#$ROUNDS < 5 || 10#$ROUNDS > 20 )); then
+            echo "::error::rounds must be a whole number from 5 to 20, not '$ROUNDS'."
             exit 1
           fi
 
