@@ -1,9 +1,10 @@
 'use client';
 
-import { startTransition, useActionState, useEffect, useState, type FormEvent } from 'react';
+import { startTransition, useActionState, type FormEvent } from 'react';
 import styles from '../curator.module.css';
 import { bulkItems } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
+import { submitOff, useHydrated } from './useHydrated';
 import { BULK_FORM_ID, BULK_IDLE, DEFER_LABEL } from '@/lib/curation/inbox-view';
 
 export interface BulkRow {
@@ -36,8 +37,7 @@ const UNASSIGNED_HINT = 'Leave selected unassigned approves each selected new ph
  */
 export default function BulkActions({ base, rows, canDefer, canUnassign, firstPick }: BulkActionsProps) {
     const [state, dispatch, pending] = useActionState(bulkItems, BULK_IDLE);
-    const [ready, setReady] = useState(false);
-    useEffect(() => setReady(true), []);
+    const ready = useHydrated();
     const submit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         // As ItemActions: while the action is out, aria-disabled, never `disabled`, so a focused button keeps focus.
@@ -51,8 +51,7 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
         form.set(submitter.name, submitter.value);
         startTransition(() => dispatch(form));
     };
-    // `disabled` only before hydration, when nothing can have focus on it yet; aria-disabled while an action is out.
-    const off = { disabled: !ready, 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined };
+    const off = submitOff(ready, pending);
     const answered = state.status === 'idle' ? null : state;
     const left = answered?.results.filter((result) => result.status !== 'done') ?? [];
     const leftTitle = left.length === 1 ? '1 item was left as it is' : `${left.length} items were left as they are`;
