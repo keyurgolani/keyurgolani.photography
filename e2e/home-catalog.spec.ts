@@ -350,10 +350,21 @@ async function worstTextContrast(page: Page, target: Locator): Promise<number> {
     return worst;
 }
 
-for (const width of [1440, 1024]) {
-    test(`the series title and statement keep 4.5:1 over a white opening photograph, revealed by keyboard, at ${width} px`, async ({ page }, testInfo) => {
-        if (testInfo.project.name === 'desktop') await page.setViewportSize({ width, height: 900 });
-        else test.skip(width !== 1440, 'One mobile run is enough.');
+/**
+ * Where :354's white-photograph case runs: two desktop widths, and on mobile Pixel 7's own screen and a 360 px phone,
+ * where All bodies of work sits beside Enter the series (B7's CI fix).
+ */
+const WHITE_CASES = [
+    { name: 'at 1440 px', project: 'desktop', viewport: { width: 1440, height: 900 } },
+    { name: 'at 1024 px', project: 'desktop', viewport: { width: 1024, height: 900 } },
+    { name: 'on Pixel 7', project: 'mobile', viewport: null },
+    { name: 'at 360 px on a phone', project: 'mobile', viewport: { width: 360, height: 800 } },
+] as const;
+
+for (const { name: where, project, viewport } of WHITE_CASES) {
+    test(`the series title and statement keep 4.5:1 over a white opening photograph, revealed by keyboard, ${where}`, async ({ page }, testInfo) => {
+        runsOn(testInfo, project);
+        if (viewport) await page.setViewportSize(viewport);
         await page.route(`**/media/${HOME_OPENING}/**`, async (route) => {
             const format = new URL(route.request().url()).pathname.endsWith('.avif') ? 'avif' : 'webp';
             await route.fulfill({ status: 200, contentType: `image/${format}`, body: await whitePhoto(format) });
@@ -370,6 +381,20 @@ for (const width of [1440, 1024]) {
         for (const [name, target] of [['title', title], ['statement', statement], ['Work link', allWork(page)]] as const) {
             expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the white photograph`).toBeGreaterThanOrEqual(4.5);
         }
+        if (project !== 'mobile') return;
+        // On a phone the link rides Enter's row, inside the print, and adds no height: the title sits where it does with
+        // the link taken out of the layout, which is next's story. Dark's phone wash is today's, so the title needs that.
+        const [enterBox, workBox] = await Promise.all([enter(page).boundingBox(), allWork(page).boundingBox()]);
+        const contentRight = await page.locator('[data-chrome-region="story"] > div').evaluate((el) => el.getBoundingClientRect().right - parseFloat(getComputedStyle(el).paddingRight));
+        expect(workBox!.y, 'All bodies of work on Enter the series’ row').toBeCloseTo(enterBox!.y, 1);
+        expect(workBox!.height).toBeGreaterThanOrEqual(44);
+        expect(workBox!.x, 'after Enter the series, 0.5rem on').toBeCloseTo(enterBox!.x + enterBox!.width + 8, 1);
+        expect(workBox!.x + workBox!.width, "inside the story's gutter, on the print").toBeLessThanOrEqual(contentRight + 0.5);
+        const titleTop = async () => (await title.boundingBox())!.y;
+        const withLink = await titleTop();
+        const hidden = await page.addStyleTag({ content: '[data-chrome-region="story"] a[href="/work"] { display: none !important; }' });
+        expect(await titleTop(), "the title's top without the link").toBeCloseTo(withLink, 1);
+        await hidden.evaluate((node) => node.parentNode?.removeChild(node));
     });
 }
 
