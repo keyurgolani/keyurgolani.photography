@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { canvasSampler, copyTone, TONE_SAMPLE_WIDTH, type Box, type Source } from '../badgePlace';
+import { canvasSampler, copyTone, TONE_IDLE_FALLBACK_MS, TONE_IDLE_TIMEOUT_MS, TONE_SAMPLE_WIDTH, type Box, type Source } from '../badgePlace';
 
 // The copy tone's sampler (v2.0.0 TBT): decoding the slide on screen into a canvas is a main-thread decode of the
 // rung it shows, w1920 on a 3x phone since #6's size rule, about 90 ms of long task at 4x. So it fetches the file the
@@ -52,6 +52,11 @@ beforeEach(() => {
   bitmapMock = vi.fn(async () => bitmap);
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('createImageBitmap', bitmapMock);
+  // An idle browser, as Chromium is once the slide has loaded. The test without it removes it.
+  vi.stubGlobal('requestIdleCallback', (callback: () => void) => {
+    queueMicrotask(callback);
+    return 1;
+  });
 });
 
 afterEach(() => {
@@ -69,7 +74,7 @@ describe('canvasSampler', () => {
     const pixels = await canvasSampler(image, source);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toBe(new URL(media('w1920', 'avif'), location.href).href);
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'force-cache', credentials: 'same-origin' });
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'only-if-cached', mode: 'same-origin', credentials: 'same-origin' });
     expect(bitmapMock).toHaveBeenCalledTimes(1);
     expect(bitmapMock.mock.calls[0][0]).toBe(blob);
     expect(bitmapMock.mock.calls[0][1]).toMatchObject({ resizeWidth: TONE_SAMPLE_WIDTH, resizeHeight: 171 });
@@ -103,6 +108,69 @@ describe('canvasSampler', () => {
     await canvasSampler(slide(), source);
     // 256 / 1920 of the region at (700, 800), 520 x 400.
     expect(context.getImageData).toHaveBeenCalledWith(93, 106, 70, 54);
+  });
+
+  it("never downloads the slide again: it reads the file from the cache only, and skips where the browser has no copy", async () => {
+    await canvasSampler(slide(), source);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'only-if-cached', mode: 'same-origin' });
+    document.body.replaceChildren();
+    // WebKit with no HTTP cache to share (private browsing) rejects an only-if-cached fetch, with no request.
+    context.getImageData.mockClear();
+    fetchMock.mockRejectedValueOnce(new TypeError('Load failed'));
+    expect(await copyTone(slide(), copy, { sample: canvasSampler })).toBe('light');
+    expect(context.getImageData).not.toHaveBeenCalled();
+  });
+
+  it("refetches from the network in a curator's preview, where media is private, no-store", async () => {
+    history.pushState({}, '', '/curation/preview/d1/site');
+    try {
+      await canvasSampler(slide(), source);
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'force-cache', mode: 'same-origin' });
+    } finally {
+      history.pushState({}, '', '/');
+    }
+  });
+
+  it("skips, and closes the bitmap, when the browser ignored the resize, so it never reads the file's corner", async () => {
+    const full = { width: 1920, height: 1280, close: vi.fn() };
+    bitmapMock.mockResolvedValueOnce(full);
+    expect(await copyTone(slide(), copy, { sample: canvasSampler })).toBe('light');
+    expect(full.close).toHaveBeenCalledTimes(1);
+    expect(context.getImageData).not.toHaveBeenCalled();
+  });
+
+  it('fetches nothing for a file the slide shows from another origin, or from a data: URL', async () => {
+    for (const current of ['https://cdn.example/media/ph_x/sha256-r/p1/w1920.avif', 'data:image/avif;base64,AAAA']) {
+      document.body.replaceChildren();
+      expect(await copyTone(slide({ current }), copy, { sample: canvasSampler })).toBe('light');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(bitmapMock).not.toHaveBeenCalled();
+  });
+
+  it("asks for an idle moment with a ceiling, and without requestIdleCallback (WebKit) waits for the page's load and then a while", async () => {
+    const asks: unknown[] = [];
+    vi.stubGlobal('requestIdleCallback', vi.fn((callback: () => void, options: unknown) => {
+      asks.push(options);
+      queueMicrotask(callback);
+      return 1;
+    }));
+    await canvasSampler(slide(), source);
+    expect(asks).toEqual([{ timeout: TONE_IDLE_TIMEOUT_MS }]);
+
+    vi.stubGlobal('requestIdleCallback', undefined);
+    fetchMock.mockClear();
+    vi.useFakeTimers();
+    try {
+      const pending = canvasSampler(slide(), source);
+      await vi.advanceTimersByTimeAsync(TONE_IDLE_FALLBACK_MS - 1);
+      expect(fetchMock).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("waits for the browser to be idle before it fetches, so it doesn't compete with the slide's own load", async () => {

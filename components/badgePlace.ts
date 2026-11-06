@@ -226,25 +226,37 @@ export type ToneSampler = (image: HTMLImageElement, source: Source) => Promise<A
 /** How long the sampler waits for an idle moment before it fetches anyway. */
 export const TONE_IDLE_TIMEOUT_MS = 2000;
 
-/** Resolves once the browser is idle, or after TONE_IDLE_TIMEOUT_MS, or on the next task where it can't say. */
+/** Where the browser can't say when it's idle (WebKit has no requestIdleCallback), how long after the page's load it waits. */
+export const TONE_IDLE_FALLBACK_MS = 1000;
+
+/**
+ * Resolves once the browser is idle, or after TONE_IDLE_TIMEOUT_MS. Where it can't say, as in WebKit, it waits for
+ * the page's load and then TONE_IDLE_FALLBACK_MS, so the sampler stays clear of the slide's own load and of LCP.
+ */
 const idle = () =>
   new Promise<void>((resolve) => {
-    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), { timeout: TONE_IDLE_TIMEOUT_MS });
-    else setTimeout(resolve, 0);
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => resolve(), { timeout: TONE_IDLE_TIMEOUT_MS });
+      return;
+    }
+    const later = () => setTimeout(resolve, TONE_IDLE_FALLBACK_MS);
+    if (document.readyState === 'complete') later();
+    else window.addEventListener('load', later, { once: true });
   });
 
 /**
  * The browser's sampler (H1, v2.0.0 TBT). It never decodes the image on screen: drawing an <img> into a canvas, or
  * createImageBitmap() of one, decodes it whole on the main thread, and the slide is w1920 on a 3x phone under #6's
  * size rule, a long task of about 90 ms at 4x CPU. Once the browser is idle, so after the slide's own load, it fetches
- * the file the slide shows (currentSrc) again, same origin and from the cache: public /media is immutable for a year
- * (lib/media/handler.ts), so on the site that's a cache hit and no bytes. Under /curation/preview media is
- * `private, no-store`, so a curator's preview downloads it again. It decodes that Blob at TONE_SAMPLE_WIDTH, which the
+ * the file the slide shows (currentSrc) again, same origin and from the cache only (`only-if-cached`): public /media
+ * is immutable for a year (lib/media/handler.ts), so on the site that's a cache hit and no bytes, and a browser with
+ * no copy to share, as WebKit's private browsing, skips rather than download the slide again. Under /curation/preview
+ * media is `private, no-store`, so a curator's preview fetches it again (`force-cache`). It decodes that Blob at TONE_SAMPLE_WIDTH, which the
  * browser does off the main thread, from the same pixels the slide shows, so the tone is the one the image itself
  * gave. Home makes no other fetch() of /media, which is how ci/perf/measure.mjs finds it. The whole photograph is
  * scaled, with no crop rectangle, so the file's pixel density can't enter; the region is then read from the small
- * copy, in natural pixels scaled by the same factor. With no createImageBitmap, no currentSrc, or a fetch or decode
- * that fails, it skips (null), and the theme keeps its own scrim.
+ * copy, in natural pixels scaled by the same factor. With no createImageBitmap, no same-origin currentSrc, a fetch or
+ * decode that fails, or a decode that ignored the resize, it skips (null), and the theme keeps its own scrim.
  */
 export const canvasSampler: ToneSampler = async (image, source) => {
   const url = image.currentSrc;
@@ -261,10 +273,19 @@ export const canvasSampler: ToneSampler = async (image, source) => {
   await idle();
   let bitmap: ImageBitmap;
   try {
-    const response = await fetch(url, { cache: 'force-cache', credentials: 'same-origin', priority: 'low' });
+    // From the cache only: a browser with no copy to share, as WebKit's private browsing, rejects with no request and
+    // the tone skips, so it never downloads the slide again. A curator's preview serves media `private, no-store`, so
+    // it fetches it again there, as before.
+    const cache = window.location.pathname.startsWith('/curation/preview/') ? 'force-cache' : 'only-if-cached';
+    const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
     if (!response.ok) return null;
     bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
   } catch {
+    return null;
+  }
+  // A browser that ignored the resize gives the file's own size, and drawing that at 0, 0 would read its corner.
+  if (bitmap.width !== width || bitmap.height !== height) {
+    bitmap.close();
     return null;
   }
   try {
