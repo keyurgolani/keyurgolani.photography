@@ -338,6 +338,8 @@ test('scrolls the form alone under the wheel, to its end, and the list and the p
     // The list opens where it shows the open item's row (ReturnToRow's keepListPlace). Since A8 its filters and bulk
     // actions sit above the rows, so at this height that's scrolled already (124 px on CI), not the top: it stays there.
     const listPlace = await settledTop(list);
+    // Short of its end, so a wheel that reached the list would move it, and the check below can fail (the review of bbf1e280).
+    expect(await atEnd(list)).toBe(false);
     await form.hover();
     await page.mouse.wheel(0, 5_000);
     await expect.poll(() => atEnd(form)).toBe(true);

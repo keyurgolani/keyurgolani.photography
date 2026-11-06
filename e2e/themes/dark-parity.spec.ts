@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
 import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
-import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
+import { createInboxFixture, OPENED_INBOX_ITEMS, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, completeHiddenSegments, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
@@ -928,10 +928,10 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
  * link's, where next's row is a plain list item. The checkbox's column is HEAD_ONLY's, and its track is as wide as what
  * it holds, so with it taken out the link sits exactly where next's does: every box and every other style is compared
  * exactly. Only the row's own `display` departs, list-item to grid, and the ::marker that only a list item has goes
- * with it (computed.ts). The inbox fixture opens 8 items (e2e/support/curation-inbox.ts's openInboxItems), all needing
- * judgment, in the list's one ul, and every one of them has the column, an empty one for the missing source.
+ * with it (computed.ts). Every item openInboxItems() opens needs judgment, so each is a row of the list's one ul, and
+ * every row has the column, an empty one for the missing source.
  */
-const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: 8 }, (_, index) => ({
+const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: OPENED_INBOX_ITEMS }, (_, index) => ({
     page: 'inbox',
     selector: `#inbox-list > ul > li:nth-of-type(${index + 1})`,
     properties: ['display'],
