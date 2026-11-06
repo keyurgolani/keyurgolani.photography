@@ -1,0 +1,113 @@
+name: Perf A/B
+
+# On demand only: never on push, pull request or schedule. Home's LCP and TBT, base against head, on two published
+# test fixtures, with the base measured against itself in the same job for each metric's noise floor. ci/perf/ab.mjs
+# says what it measures and how; ci/perf/stats.mjs holds the rule; the job summary repeats it with the numbers.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base ref (tag, branch or commit)
+        type: string
+        required: true
+        default: v1.7.0
+      head:
+        description: Head ref. Empty measures the commit this run was dispatched from.
+        type: string
+        required: false
+        default: ''
+      rounds:
+        description: Rounds, at least 5. Each takes about 6 minutes.
+        type: number
+        required: true
+        default: 5
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ab:
+    name: Perf A/B
+    # Pinned, so a run months apart measures on the same image. Not -latest.
+    runs-on: ubuntu-24.04
+    # Two installs and builds take about 10 minutes, and each round about 6, so this covers about 20 rounds.
+    timeout-minutes: 150
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Check the inputs
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          if [[ ! $ROUNDS =~ ^[0-9]+$ ]] || (( ROUNDS < 5 )); then
+            echo "::error::rounds must be a whole number, at least 5, not '$ROUNDS'."
+            exit 1
+          fi
+
+      # The measuring code, from the commit this run was dispatched from, so base and head are measured by the same
+      # code whatever refs they are. ci/perf only, plus the root files cone mode brings.
+      - name: Check out the tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci/perf
+          persist-credentials: false
+
+      - name: Check out the base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.base }}
+          path: base
+          persist-credentials: false
+
+      - name: Check out the head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.head || github.sha }}
+          path: head
+          persist-credentials: false
+
+      # No npm cache: the job's only network is the checkouts above and npm ci below.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: head/.nvmrc
+
+      # The image's Chrome measures both trees, so no browser is downloaded. Fail here, not an hour in.
+      - name: Check the runner's Chrome
+        run: google-chrome --version
+
+      - name: Install the base
+        working-directory: base
+        run: npm ci
+
+      - name: Install the head
+        working-directory: head
+        run: npm ci
+
+      - name: Build both
+        run: node tool/ci/perf/ab.mjs build base head
+
+      - name: Measure
+        env:
+          TMPDIR: ${{ runner.temp }}
+          ROUNDS: ${{ inputs.rounds }}
+          BASE_REF: ${{ inputs.base }}
+          HEAD_REF: ${{ inputs.head || github.ref_name }}
+        run: node tool/ci/perf/ab.mjs measure --base base --head head --rounds "$ROUNDS" --out "$RUNNER_TEMP/perf-ab" --base-ref "$BASE_REF" --head-ref "$HEAD_REF"
+
+      # Writes the table to the job summary, and fails only on a regression past a metric's noise floor.
+      - name: Report
+        run: node tool/ci/perf/report.mjs "$RUNNER_TEMP/perf-ab/raw.json"
+
+      - name: Upload the raw measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-ab
+          path: ${{ runner.temp }}/perf-ab/
+          if-no-files-found: warn
+          retention-days: 14
