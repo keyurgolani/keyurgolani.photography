@@ -72,6 +72,16 @@ const CLOCK_START = Date.UTC(2026, 0, 1);
 const LOADING: Motion = { at: 0, hold: true };
 /** Home past its intro, its badge landed and done lingering: the exit's 6 s bound, then the badge's 3 s. */
 const SETTLED: Motion = { at: 12_000 };
+/**
+ * Home with JavaScript is on that paused clock under reduced motion too, so none of its timers fires on its own between
+ * the load and the walk, in either build: the badge's linger, the chrome's idle and fade, the loading bounds. On the real
+ * clock they did (A12's CI, runs 42210528925 and 42233383736): the badge wait could pass in the one commit where the
+ * badge has landed and its linger hasn't started yet, so one build was walked with the badge lingering (opacity 1) and
+ * the other after it (0); and in home-chrome the chrome recedes 4 s after the act. Paused, the linger starts and holds
+ * until the clock runs past it, BADGE_LINGER_MS (HeroReveal's), and a revealed chrome stays up through the walk. A longer
+ * linger in HeroReveal leaves the badge lingering, and the badge wait then times out and fails the row.
+ */
+const BADGE_LINGER_MS = 3000;
 const SCALES = [1, 2] as const;
 // Rows go to a file as they're measured: a failed test restarts the worker, which would drop rows held in memory.
 // build.ts, the global setup, starts it empty.
@@ -236,7 +246,9 @@ interface PassShot {
  */
 async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session, motion = pair.motion }: { js?: boolean; session?: string; motion?: Motion } = {}) {
     const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: motion ? 'no-preference' : 'reduce', javaScriptEnabled: js });
-    if (motion) {
+    // Home's timers, held still (BADGE_LINGER_MS's note).
+    const homeClock = !motion && js && pair.url === '/';
+    if (motion || homeClock) {
         await context.clock.install({ time: CLOCK_START });
         await context.clock.pauseAt(CLOCK_START + 1);
     }
@@ -297,6 +309,11 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
         if (motion.hold) {
             await until("Home's intro in its loading phase", async () => (await page.locator('[class*="grainOverlay"]').count()) === 1 && (await page.locator('main[data-home-intro="loading"]').count()) === 1, 5000);
         }
+    }
+    if (homeClock) {
+        // Lingering holds on the paused clock, so this can't pass early; then the clock runs past the linger, and stops.
+        await until("Home's badge lingering", () => page.locator('[data-home-badge][data-landed][data-lingering]').count().then((n) => n > 0), 20_000);
+        await context.clock.runFor(BADGE_LINGER_MS);
     }
     if (js && pair.url === '/' && !motion?.hold) await until("Home's badge", () => page.locator('[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
     // Without JavaScript a state act is left out: its row then compares the page at rest, as another pair does, and no
