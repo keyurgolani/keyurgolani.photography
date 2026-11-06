@@ -334,6 +334,47 @@ describe("an item's answers", () => {
         );
     };
 
+    // Every item form posts by hand and has no plain-post route, so its submit buttons wait for the page to hydrate.
+    const everyForm = () => detail({ can: { approve: true, edit: true, defer: true, dismiss: true, retry: true, reopen: true, confirm: false, bind: true, archive: true } });
+    const replacement = () => detail({ type: 'replacement', title: 'Replacement ready', can: { approve: false, edit: false, defer: true, dismiss: false, retry: false, reopen: false, confirm: true, bind: false, archive: false }, primaryUnavailable: null });
+    const submits = (root: ParentNode) => [...root.querySelectorAll('form button[type="submit"]')] as HTMLButtonElement[];
+
+    it("render every item form's submit buttons disabled in the server HTML, so a press before the page hydrates posts nothing the plain way", () => {
+        for (const [d, intents] of [
+            [everyForm(), ['edit', 'defer', 'approve', 'retry', 'reopen', 'bind', 'dismiss']],
+            [replacement(), ['defer', 'confirm']],
+        ] as const) {
+            const html = document.createElement('div');
+            html.innerHTML = renderToString(<InboxDetailView view={view({ selected: d })} />);
+            const buttons = submits(html);
+            expect(buttons.map((button) => button.value)).toEqual(intents);
+            for (const button of buttons) expect(button).toBeDisabled();
+            // Archive's form has no submit button until its second step, so Enter in its reason would send it the plain
+            // way: the reason waits for hydration too.
+            if (d.can.archive) expect(html.querySelector('#archive-reason')).toBeDisabled();
+        }
+    });
+
+    it("enable every item form's submit buttons once the page has hydrated", async () => {
+        for (const d of [everyForm(), replacement()]) {
+            const { container, unmount } = render(<InboxDetailView view={view({ selected: d })} />);
+            const buttons = submits(container);
+            expect(buttons.length).toBeGreaterThan(0);
+            for (const button of buttons) expect(button).toBeEnabled();
+            // Archive's own submit shows once its first press asks to confirm, after hydration, and is enabled too.
+            const archive = screen.queryByRole('button', { name: /^Archive/ });
+            if (archive) {
+                const reason = screen.getByRole('textbox', { name: 'Reason for archiving' });
+                expect(reason).toBeEnabled();
+                fireEvent.change(reason, { target: { value: 'Taken down at the owner’s request.' } });
+                await press(archive);
+                for (const button of submits(container)) expect(button).toBeEnabled();
+                expect(submits(container).map((button) => button.value)).toContain('archive');
+            }
+            unmount();
+        }
+    });
+
     it('show a refused submit as one error summary that links the item', async () => {
         sent.answer = { status: 'refused', action: 'approve', eventId: EVT(1), message: "This photograph is already in a series, and approving doesn't take it out of one. Nothing was written.", serial: 1 };
         renderItem();
