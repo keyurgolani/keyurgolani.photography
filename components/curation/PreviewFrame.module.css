@@ -53,11 +53,14 @@
   border-bottom: 1px solid var(--gah-rule-strong);
 }
 
-/* A9: the full preview's toolbar: the short hash, the size presets and the way back. It wraps on a phone; the Publish
-   panel's toolbar, the marker alone, keeps the styles it had (Dark parity). */
+/* A9: the full preview's toolbar: the short hash, the size presets and the way back. It wraps on a phone, and it opens
+   the page as tall as its 44 px controls, so it keeps the focus ring's own room above and below them, or a preset's
+   ring would go above the viewport (contract rule 4). The Publish panel's toolbar, the marker alone, keeps the styles
+   it had (Dark parity). */
 .frame:not([data-embedded='true']) .toolbar {
   flex-wrap: wrap;
   column-gap: 1rem;
+  padding-block: calc(var(--focus-ring-width) + var(--focus-ring-offset));
 }
 
 .hash {
