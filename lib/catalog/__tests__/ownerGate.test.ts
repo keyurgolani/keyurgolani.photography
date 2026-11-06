@@ -1,5 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CREDENTIAL_COMMANDS } from '../../curation/auth/credential-cli';
@@ -51,6 +52,24 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         expect(keys(CURATION_ACCESS)).toEqual([...CURATION_COMMANDS, ...CREDENTIAL_COMMANDS].sort());
     });
 
+    it('compares --out by the realpath of its nearest existing folder, so a symlink into the data root makes a writer', () => {
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-gate-out-'));
+        const root = path.join(base, 'data');
+        fs.mkdirSync(path.join(root, 'locks'), { recursive: true });
+        const outside = path.join(base, 'outside');
+        fs.mkdirSync(outside);
+        fs.symlinkSync(root, path.join(outside, 'root-link'));
+        const at = (argv: string[]) => commandAccess(argv, { tty: false, root })?.access;
+        expect(at(['migrate', '--dry-run', '--out', path.join(outside, 'migration')])).toBe('read');
+        expect(at(['migrate', '--dry-run', '--out', path.join(outside, 'root-link', 'identity', 'new')])).toBe('migration-plan');
+        expect(at(['curation', 'session-secret', '--out', path.join(outside, 's.key')])).toBe('read');
+        expect(at(['curation', 'session-secret', '--out', path.join(outside, 'root-link', 'locks', 'stray.key')])).toBe('credential');
+        expect(at(['curation', 'session-secret', '--out', path.join(root, 'locks', 'stray.key')])).toBe('credential');
+        // A data root reached through a symlink of its own.
+        fs.symlinkSync(root, path.join(base, 'data-link'));
+        expect(commandAccess(['curation', 'session-secret', '--out', path.join(root, 'x.key')], { tty: false, root: path.join(base, 'data-link') })?.access).toBe('credential');
+    });
+
     it('answers by flag where a flag makes a writer', () => {
         const ctx = { tty: false, root: '/data/portfolio' };
         const at = (argv: string[], tty = false) => commandAccess(argv, { ...ctx, tty })?.access;
@@ -78,7 +97,12 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         expect(at(['identity', 'archive', 'ph_x'])).toBe('identity');
         expect(at(['curation', 'list'])).toBe('read');
         expect(at(['curation', 'defer', 'evt_x'])).toBe('curation');
-        expect(at(['curation', 'session-secret', '--out', 'x'])).toBe('read');
+        expect(at(['curation', 'session-secret', '--out', '/elsewhere/x.key'])).toBe('read');
+        expect(at(['curation', 'hash-passphrase', '--out', '/data/portfolio/locks/catalog.lock'])).toBe('credential');
+        expect(at(['identity', 'frobnicate'])).toBe('identity');
+        expect(at(['identity'])).toBe('identity');
+        expect(at(['curation', 'frobnicate'])).toBe('curation');
+        expect(at(['curation'])).toBe('curation');
         expect(at(['verify'])).toBe('verify');
         expect(at(['nonsense'])).toBeUndefined();
     });

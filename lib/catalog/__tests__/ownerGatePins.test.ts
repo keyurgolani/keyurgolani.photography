@@ -15,8 +15,8 @@ import { cleanupPurgeTemplates, purgeFixture, quiet, snapshot, tempLibrary, writ
  * lock, exit 1, WRONG_OWNER, writing nothing, locks/ included. Read-only
  * commands and dry runs still run. Each case spawns the real CLI, or the
  * watcher, as the npm scripts do, on its own copy of A10's purge fixture,
- * with test/helpers/fakeUid.cjs making the child's geteuid() and getuid()
- * answer another uid than the temp root's owner.
+ * with test/helpers/fakeUid.cjs making the child's geteuid() answer another
+ * uid than the temp root's owner, its real uid left as it is (round 4).
  *
  * These lists are the spec, written apart from lib/catalog/owner-gate.ts so
  * they pin what the gate does, not what its table says.
@@ -49,6 +49,8 @@ async function world(): Promise<World> {
     fs.writeFileSync(path.join(outside, 'plan.json'), '{}\n');
     const record = await readAuthoredRecord(built.root, 'photo', built.a);
     fs.writeFileSync(path.join(outside, 'record.json'), `${JSON.stringify({ ...record, title: 'Retitled' }, null, 2)}\n`);
+    // A path outside the data root by its name that leads into it (round 4).
+    fs.symlinkSync(built.root, path.join(outside, 'root-link'));
     const event = writeOpenEvent(built.root, built.c, built.first[built.c]);
     const purged = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet });
     if (purged.outcome !== 'PURGED') throw new Error(`The fixture's purge ended ${purged.outcome}.`);
@@ -123,6 +125,12 @@ const WRITERS: { name: string; argv: Argv }[] = [
     { name: 'purge (dry run, takes the catalog and authored locks)', argv: (w) => ['purge', w.built.c, '--reason', 'r', '--actor', 'test'] },
     { name: 'purge --revoke (dry run, takes the catalog lock)', argv: (w) => ['purge', '--revoke', w.tombstoneId, '--reason', 'r', '--actor', 'test'] },
     { name: 'gc (dry run, takes the catalog and authored locks)', argv: () => ['gc'] },
+    // Round 4: an --out that resolves into the data root makes a writer of a reader, through a symlink too.
+    { name: 'curation session-secret --out inside the data root, in locks/', argv: (w) => ['curation', 'session-secret', '--out', path.join(w.built.root, 'locks', 'stray.key')] },
+    { name: 'migrate --dry-run --out through a symlink into the data root', argv: (w) => ['migrate', '--dry-run', '--out', path.join(w.outside, 'root-link', 'identity', 'migration-out')] },
+    // Round 4: an identity or curation subcommand the table doesn't know fails closed; the owner gets the usage error.
+    { name: 'identity <unknown>', argv: () => ['identity', 'frobnicate'] },
+    { name: 'curation <unknown>', argv: () => ['curation', 'frobnicate'] },
 ];
 
 /**
@@ -231,10 +239,22 @@ describe.runIf(posix)('the owner gate, every reader and dry run (A11 round 3)', 
             const asOwner = await world();
             const owned = await run(asOwner, 'scripts/photos.ts', reader.argv(asOwner), asOwner.owner);
             const w = await world();
+            // Round 4: a reader writes nothing either, a lock file included.
+            const check = untouched(w.built.root);
             const result = await run(w, 'scripts/photos.ts', reader.argv(w), other(w));
             expect(`${result.stdout}${result.stderr}`).not.toMatch(/WRONG_OWNER/);
             expect(result.code).toBe(owned.code);
+            check();
         });
     }
+
+    it('photos identity and photos curation with an unknown subcommand, as the owner, still get the usage error', async () => {
+        const w = await world();
+        for (const argv of [['identity', 'frobnicate'], ['curation', 'frobnicate']]) {
+            const result = await run(w, 'scripts/photos.ts', argv, w.owner);
+            expect(`${result.stdout}${result.stderr}`).not.toMatch(/WRONG_OWNER/);
+            expect(result.code).toBe(2);
+        }
+    });
 });
 
