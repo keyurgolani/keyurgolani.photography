@@ -642,14 +642,16 @@ const SLICE_A_RULES: RuleDefinition[] = [
     {
         // Work lists every published series by its title, so two that share one show as links with the same name. A
         // warning, the owner's call: it names each series by slug, and never blocks a publish or changes an exit code.
-        // Titles match after trim, then foldName()'s NFC and case-fold, so "Harbor", " harbor" and "HARBOR" are one.
+        // Titles match after normalized()'s trim and collapse of every run of whitespace, a non-breaking space among
+        // them, since Work's titles have no white-space rule and render each run as one space, then foldName()'s NFC and
+        // case-fold: "Harbor light", " harbor  light" and "HARBOR\u00a0LIGHT" are one.
         id: 'series.duplicate-title',
         severity: 'warning',
         gate: 'publish',
         check: (ctx) => {
             const byTitle = new Map<string, SeriesLike[]>();
             for (const series of publishedSeries(ctx)) {
-                const key = foldName(series.title.trim());
+                const key = foldName(normalized(series.title));
                 if (key !== '') byTitle.set(key, [...(byTitle.get(key) ?? []), series]);
             }
             return [...byTitle.values()].filter((group) => group.length > 1).flatMap((group) => {
