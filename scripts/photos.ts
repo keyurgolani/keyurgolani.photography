@@ -394,6 +394,7 @@ import { historyArgs, historyStop, rollbackArgs, runHistoryCommand, runRollbackC
 import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
 import { purgeArgs, runPurgeCommand } from '../lib/catalog/purge-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
+import { ownerGate } from '../lib/catalog/owner-gate';
 import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
@@ -874,6 +875,13 @@ async function orderCommand(parse: () => SequenceCommand): Promise<number> {
 
 async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
+    // The A11 round 3 rule: a command that takes a lock or writes under the data root runs only as the data root's
+    // owner, the uid web runs as, and refuses before its first lock otherwise (lib/catalog/owner-gate.ts).
+    const wrongOwner = ownerGate(argv, { tty: process.stdin.isTTY === true, root: dataRoot() });
+    if (wrongOwner) {
+        console.error(`[photos] WRONG_OWNER: ${wrongOwner}`);
+        return 1;
+    }
     try {
         if (command === 'migrate') return await migrate(args);
         if (command === 'identity') return await identity(args);

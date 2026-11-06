@@ -37,7 +37,6 @@ import {
 } from './tombstones';
 import { AUTHORED_LOCK } from './working-layer-writer';
 import { readActivePointer } from './working-layer';
-import { ownerRefusal } from './data-root-owner';
 
 /**
  * #15's purge, #181's A10: `photos purge <photoId> [--asset-revision <r>]`
@@ -83,8 +82,6 @@ export type PurgeOutcome =
     | 'ALREADY_COLLECTED'
     /** A folder a stopped GC run set aside whole: rename it back, then revoke. */
     | 'SET_ASIDE'
-    /** The A11 ruling (c): --yes as a uid that doesn't own the data root, refused before any lock, so web never meets a file it can't read. */
-    | 'WRONG_OWNER'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
     | 'LOCK_LOST'
@@ -107,7 +104,6 @@ export const PURGE_EXIT_CODES: Record<PurgeOutcome, 0 | 1 | 3 | 4> = {
     UNKNOWN_TOMBSTONE: 1,
     ALREADY_COLLECTED: 1,
     SET_ASIDE: 1,
-    WRONG_OWNER: 1,
     CATALOG_LOCKED: 3,
     AUTHORED_LOCKED: 3,
     LOCK_LOST: 3,
@@ -299,18 +295,6 @@ export async function runPurge(options: PurgeOptions): Promise<PurgeResult> {
 
     const status = dataRootStatus({ write: options.yes === true, root });
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${errorText(new Error(status.detail), root)}` : ''}.${NOTHING}`);
-    // The A11 ruling (c): only the uid web runs as writes a takedown file, so web can always read it. Asked before any lock,
-    // since a lock file a killed run left as another uid would stop the owner's commands. The dry run takes locks only to read.
-    if (options.yes) {
-        let wrongOwner: string | null;
-        try {
-            wrongOwner = ownerRefusal(root, 'purge');
-        } catch (error) {
-            const failed = failedText(error, root);
-            return finish(failed.outcome, failed.message);
-        }
-        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
-    }
     const waitMs = options.waitMs ?? PURGE_WAIT_MS;
     const leaseMs = options.leaseMs ?? CATALOG_LEASE_MS;
 
@@ -443,18 +427,6 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
 
     const status = dataRootStatus({ write: options.yes === true, root });
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${errorText(new Error(status.detail), root)}` : ''}.${NOTHING}`);
-    // The A11 ruling (c): only the uid web runs as writes a takedown file, so web can always read it. Asked before any lock,
-    // since a lock file a killed run left as another uid would stop the owner's commands. The dry run takes locks only to read.
-    if (options.yes) {
-        let wrongOwner: string | null;
-        try {
-            wrongOwner = ownerRefusal(root, 'revoke');
-        } catch (error) {
-            const failed = failedText(error, root);
-            return finish(failed.outcome, failed.message);
-        }
-        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
-    }
 
     try {
         return await withLock(CATALOG_LOCK, { root, leaseMs: options.leaseMs ?? CATALOG_LEASE_MS, waitMs: options.waitMs ?? PURGE_WAIT_MS }, (lock) => held(lock));

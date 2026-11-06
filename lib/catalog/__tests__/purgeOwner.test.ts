@@ -2,247 +2,70 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { ownerRefusal } from '../data-root-owner';
-import { purgeArgs, runPurgeCommand } from '../purge-cli';
-import { PURGE_EXIT_CODES, runPurge, runRevoke } from '../purge';
-import { GC_EXIT_CODES, runGc } from '../retention';
-import { TOMBSTONES_DIR } from '../tombstones';
-import { cleanupPurgeTemplates, purgeFixture, quiet, snapshot } from './purgeFixtures';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BREAKS, ownerRefusal, type WriterKind } from '../data-root-owner';
 
 /**
- * The A11 coordinator's ruling (c), and review round 2: a command that writes
- * into catalog/tombstones/, or deletes as GC, refuses, exit 1, when its
- * effective uid isn't the data root's owner, the uid web runs as. It refuses
- * before it takes any lock, so it writes nothing at all, locks/ included: a
- * lock file left by a killed run as root would stop every command of the
- * owner's. A dry run is only a report and still reports.
- * process.geteuid() (and getuid(), its fallback) is faked to differ from, or
- * match, the owner of the test's own temp root.
+ * ownerRefusal(), the check the owner gate asks (A11 ruling c, rounds 2 and
+ * 3). Which commands ask, and that each refuses before its first lock, is
+ * ownerGatePins.test.ts, end to end; this is the check itself: the effective
+ * uid against the data root's owner, through a symlink, and each writer's
+ * own words. process.geteuid() and getuid() are faked against the owner of
+ * the test's own temp folder.
  */
 
 afterEach(() => vi.restoreAllMocks());
-afterAll(() => cleanupPurgeTemplates());
 
 const ownerOf = (root: string) => fs.statSync(root).uid;
 const posix = typeof process.geteuid === 'function' || typeof process.getuid === 'function';
 
-/** The effective uid answers <uid>, as if the command ran as that user. The real uid stays the owner's, so only geteuid() can tell. */
+/** The effective uid answers <uid>, as if the command ran as that user. The real uid stays <realUid> when given, so only geteuid() can tell. */
 function runAs(uid: number, realUid?: number): void {
     vi.spyOn(process, 'geteuid').mockReturnValue(uid);
     if (realUid !== undefined) vi.spyOn(process, 'getuid').mockReturnValue(realUid);
 }
 
-const WRONG = /runs as uid (\d+), but uid (\d+) owns the data root, and web runs as that owner\..*Nothing was written\./;
+const WRONG = /runs as uid (\d+), but uid (\d+) owns the data root, and web runs as that owner\..* It took no lock\. Nothing was written\./;
 
-/** locks/ as it stands: absent, or its mtime, so a lock taken and released shows. */
-function locksState(root: string): number | null {
-    const dir = path.join(root, 'locks');
-    return fs.existsSync(dir) ? fs.statSync(dir).mtimeMs : null;
-}
-
-/**
- * Everything a refusal must leave alone, taken before it: the root's
- * snapshot (which leaves locks/ out), and locks/ itself, absent or its mtime
- * and every entry in it.
- */
-function untouched(root: string): () => void {
-    const before = snapshot(root);
-    const locks = locksState(root);
-    const entries = lockEntries(root);
-    return () => {
-        // Nothing written.
-        expect(snapshot(root)).toEqual(before);
-        // locks/ untouched: made by none, and its mtime the same, so no lock was taken and released.
-        expect(locksState(root)).toBe(locks);
-        // No lock file created, or left.
-        expect(lockEntries(root)).toEqual(entries);
-        expect((lockEntries(root) ?? []).filter((name) => name.endsWith('.lock'))).toEqual([]);
-    };
-}
-
-function lockEntries(root: string): string[] | null {
-    const dir = path.join(root, 'locks');
-    return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : null;
-}
-
-/** Moves locks/ aside, inside the test's own temp root, so the next command would have to make it. */
-function withoutLocks(root: string): void {
-    if (fs.existsSync(path.join(root, 'locks'))) fs.renameSync(path.join(root, 'locks'), path.join(path.dirname(root), `locks-aside-${path.basename(path.dirname(root))}`));
-}
-
-describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)', { timeout: 60_000 }, () => {
-    it('purge --yes refuses as another effective uid before any lock, exit 1, writing nothing; its dry run still reports; as the owner it purges', async () => {
-        const built = await purgeFixture(412);
-        const owner = ownerOf(built.root);
-        // The real uid is the owner's: only the effective uid, which owns what it creates, is another.
-        runAs(owner + 1, owner);
-
-        const dry = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: false, logger: quiet });
-        expect(dry.outcome).toBe('PLANNED');
-        expect(dry.plan?.summary).toMatch(/^Takes down /);
-
-        expect(locksState(built.root)).not.toBeNull();
-        const check = untouched(built.root);
-        const refused = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet });
-        expect(refused.outcome).toBe('WRONG_OWNER');
-        expect(PURGE_EXIT_CODES[refused.outcome]).toBe(1);
-        expect(refused.message).toMatch(WRONG);
-        expect(refused.message).toContain(`runs as uid ${owner + 1}, but uid ${owner} owns`);
-        expect(refused.message).toMatch(/A tombstone this uid writes is one web can't read: \/media would pass it over and serve the set as the live revision says/);
-        expect(refused.tombstone).toBeNull();
-        check();
-        expect(fs.existsSync(path.join(built.root, TOMBSTONES_DIR))).toBe(false);
-
-        runAs(owner);
-        expect((await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet })).outcome).toBe('PURGED');
+describe('ownerRefusal() (A11, ruling c)', () => {
+    it.runIf(posix)('refuses when the effective uid differs, even with the real uid the owner, and allows when it matches', () => {
+        // Only stat()ed: whoever owns it, the faked uid differs from or matches that owner.
+        const root = os.tmpdir();
+        const owner = ownerOf(root);
+        runAs(owner + 7, owner);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toMatch(WRONG);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toContain(`runs as uid ${owner + 7}, but uid ${owner} owns`);
+        runAs(owner, owner + 7);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toBeNull();
     });
 
-    it('purge --yes as another uid makes no locks/ where there was none', async () => {
-        const built = await purgeFixture(412);
-        withoutLocks(built.root);
-        runAs(ownerOf(built.root) + 1);
-        const check = untouched(built.root);
-        const refused = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet });
-        expect(refused.outcome).toBe('WRONG_OWNER');
-        expect(PURGE_EXIT_CODES[refused.outcome]).toBe(1);
-        check();
-        expect(locksState(built.root)).toBeNull();
-    });
-
-    it('falls back to getuid() where there is no geteuid()', async () => {
-        const built = await purgeFixture(412);
-        const owner = ownerOf(built.root);
+    it.runIf(posix)('falls back to getuid() where there is no geteuid()', () => {
+        const root = os.tmpdir();
+        const owner = ownerOf(root);
         const original = Object.getOwnPropertyDescriptor(process, 'geteuid');
         Object.defineProperty(process, 'geteuid', { value: undefined, configurable: true, writable: true });
         try {
             vi.spyOn(process, 'getuid').mockReturnValue(owner + 1);
-            expect(ownerRefusal(built.root, 'purge')).toMatch(WRONG);
+            expect(ownerRefusal(root, 'photos sequence', 'authored')).toMatch(WRONG);
             vi.spyOn(process, 'getuid').mockReturnValue(owner);
-            expect(ownerRefusal(built.root, 'purge')).toBeNull();
+            expect(ownerRefusal(root, 'photos sequence', 'authored')).toBeNull();
         } finally {
             if (original) Object.defineProperty(process, 'geteuid', original);
         }
     });
 
-    it('photos purge, the CLI: the dry run prints its Takes down line and exits 0, --yes prints the refusal and exits 1', async () => {
-        const built = await purgeFixture(412);
-        runAs(ownerOf(built.root) + 1);
-        const io = () => {
-            const out: string[] = [];
-            const err: string[] = [];
-            return { out, err, io: { out: (line: string) => out.push(line), err: (line: string) => err.push(line) } };
-        };
-        const dry = io();
-        expect(await runPurgeCommand(built.root, purgeArgs([built.d, '--reason', 'smoke', '--actor', 'ci'], {}), dry.io, { logger: quiet })).toBe(0);
-        expect(dry.out[0]).toMatch(new RegExp(`^Takes down ${built.d}: `));
-        const yes = io();
-        const check = untouched(built.root);
-        expect(await runPurgeCommand(built.root, purgeArgs([built.d, '--reason', 'smoke', '--actor', 'ci', '--yes'], {}), yes.io, { logger: quiet })).toBe(1);
-        expect(yes.err.at(-1)).toMatch(/^\[photos\] WRONG_OWNER: /);
-        expect(yes.err.at(-1)).toMatch(WRONG);
-        // As the CLI refuses before any lock, it prints no plan: only the dry run reports.
-        expect(yes.out).toEqual([]);
-        check();
-        expect(fs.existsSync(path.join(built.root, TOMBSTONES_DIR))).toBe(false);
-    });
-
-    it('purge --revoke --yes refuses as another uid before any lock, writing nothing; its dry run still reports; as the owner it revokes', async () => {
-        const built = await purgeFixture(412);
-        const owner = ownerOf(built.root);
-        const purged = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet });
-        expect(purged.outcome).toBe('PURGED');
-        const tombstoneId = purged.tombstone?.tombstoneId ?? '';
-        runAs(owner + 1, owner);
-
-        const dry = await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: false, logger: quiet });
-        expect(dry.outcome).toBe('REVOKE_PLANNED');
-        expect(dry.revokePlan?.summary).toMatch(/^Revokes /);
-
-        const check = untouched(built.root);
-        const refused = await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: true, logger: quiet });
-        expect(refused.outcome).toBe('WRONG_OWNER');
-        expect(PURGE_EXIT_CODES[refused.outcome]).toBe(1);
-        expect(refused.message).toMatch(WRONG);
-        expect(refused.message).toMatch(/A revoke this uid writes is one web can't read: \/media would keep answering 410 for the sets/);
-        expect(refused.revoke).toBeNull();
-        check();
-
-        withoutLocks(built.root);
-        const checkAbsent = untouched(built.root);
-        const again = await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: true, logger: quiet });
-        expect(again.outcome).toBe('WRONG_OWNER');
-        expect(PURGE_EXIT_CODES[again.outcome]).toBe(1);
-        checkAbsent();
-        expect(locksState(built.root)).toBeNull();
-
-        runAs(owner);
-        expect((await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: true, logger: quiet })).outcome).toBe('REVOKED');
-    });
-
-    it('gc --apply refuses as another uid before any lock, marker or delete, exit 1; its dry run still plans', async () => {
-        const built = await purgeFixture(412);
-        const owner = ownerOf(built.root);
-        const T0 = Date.now();
-        expect((await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, clock: () => T0, logger: quiet })).outcome).toBe('PURGED');
-        const later = () => T0 + 8 * 24 * 60 * 60 * 1000;
-        runAs(owner + 1, owner);
-        const planned = await runGc({ dataRoot: built.root, clock: later, logger: quiet });
-        expect(planned.outcome).toBe('PLANNED');
-        expect(planned.plan?.delete.map((entry) => entry.path)).toEqual([`assets/${built.d}/${built.first[built.d]}`]);
-
-        const check = untouched(built.root);
-        const refused = await runGc({ dataRoot: built.root, clock: later, logger: quiet, apply: planned.plan?.digest });
-        expect(refused.outcome).toBe('WRONG_OWNER');
-        expect(GC_EXIT_CODES[refused.outcome]).toBe(1);
-        expect(refused.message).toMatch(WRONG);
-        expect(refused.message).toMatch(/GC deletes and writes its markers only as the data root's owner/);
-        expect(refused.deleted).toEqual([]);
-        check();
-
-        withoutLocks(built.root);
-        const checkAbsent = untouched(built.root);
-        const again = await runGc({ dataRoot: built.root, clock: later, logger: quiet, apply: planned.plan?.digest });
-        expect(again.outcome).toBe('WRONG_OWNER');
-        expect(GC_EXIT_CODES[again.outcome]).toBe(1);
-        checkAbsent();
-        expect(locksState(built.root)).toBeNull();
-        // The uid-matching apply is every other gc --apply test, run as the temp root's owner.
-    });
-
-    it('gc --apply refuses as another uid even with no tombstoned folder in the plan', async () => {
-        const built = await purgeFixture(412);
-        runAs(ownerOf(built.root) + 1);
-        const planned = await runGc({ dataRoot: built.root, logger: quiet });
-        expect(planned.outcome).toBe('PLANNED');
-        expect(planned.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
-        const check = untouched(built.root);
-        const refused = await runGc({ dataRoot: built.root, logger: quiet, apply: planned.plan?.digest });
-        expect(refused.outcome).toBe('WRONG_OWNER');
-        expect(GC_EXIT_CODES[refused.outcome]).toBe(1);
-        expect(refused.message).toMatch(WRONG);
-        check();
-    });
-});
-
-describe('ownerRefusal() (A11, ruling c)', () => {
-    it.runIf(posix)('refuses when the uids differ and allows when they match', () => {
-        // Only stat()ed: whoever owns it, the faked uid differs from or matches that owner.
-        const root = os.tmpdir();
-        const owner = ownerOf(root);
-        runAs(owner + 7);
-        expect(ownerRefusal(root, 'purge')).toMatch(WRONG);
-        runAs(owner);
-        expect(ownerRefusal(root, 'purge')).toBeNull();
-    });
-
-    it.runIf(posix)('says what each command would break: purge serves the set, a revoke or marker keeps it at 410', () => {
+    it.runIf(posix)('says what each writer would break, each in its own words', () => {
         const root = os.tmpdir();
         runAs(ownerOf(root) + 1);
-        expect(ownerRefusal(root, 'purge')).toMatch(/^photos purge --yes runs as uid .*serve the set as the live revision says, and every publish and rollback would stop on assets\.tombstoned/);
-        expect(ownerRefusal(root, 'revoke')).toMatch(/^photos purge --revoke --yes runs as uid .*keep answering 410 for the sets, and every publish and rollback would stop on assets\.tombstoned/);
-        expect(ownerRefusal(root, 'gc')).toMatch(/^photos gc --apply runs as uid .*keep its sets at 410 and stop every publish and rollback on assets\.tombstoned\. GC deletes and writes its markers only as the data root's owner/);
-        for (const command of ['purge', 'revoke'] as const) expect(ownerRefusal(root, command)).not.toMatch(/marker/);
+        const said = (kind: WriterKind) => ownerRefusal(root, `the ${kind} writer`, kind) ?? '';
+        expect(said('tombstone')).toMatch(/serve the set as the live revision says, and every publish and rollback would stop on assets\.tombstoned/);
+        expect(said('revoke')).toMatch(/keep answering 410 for the sets, and every publish and rollback would stop on assets\.tombstoned/);
+        expect(said('gc-apply')).toMatch(/keep its sets at 410 and stop every publish and rollback on assets\.tombstoned\. GC deletes and writes its markers only as the data root's owner/);
+        expect(said('set-aside')).toMatch(/moves into trash\/ would be one the owner's commands can't read, move or clear, and the lock file it takes/);
+        expect(said('watcher')).toMatch(/\/media would 404 the new sets, and the healthcheck would fail\. .*as docker-compose\.prod\.yml's image-watcher does\.$/);
+        for (const kind of Object.keys(BREAKS) as WriterKind[]) expect(said(kind)).toMatch(new RegExp(`^the ${kind} writer runs as uid `));
+        expect(new Set(Object.values(BREAKS)).size).toBe(Object.keys(BREAKS).length);
+        for (const kind of ['tombstone', 'revoke'] as const) expect(said(kind)).not.toMatch(/marker/);
     });
 
     it.runIf(posix)("follows a symlinked data root to the folder's owner, as stat() does, not the link's, as lstat() would", () => {
@@ -260,16 +83,16 @@ describe('ownerRefusal() (A11, ruling c)', () => {
             return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { uid: owner + 1 });
         }) as typeof fs.lstatSync);
         runAs(owner);
-        expect(ownerRefusal(link, 'purge')).toBeNull();
+        expect(ownerRefusal(link, 'photos purge --yes', 'tombstone')).toBeNull();
         runAs(owner + 1);
-        expect(ownerRefusal(link, 'purge')).toContain(`but uid ${owner} owns the data root`);
+        expect(ownerRefusal(link, 'photos purge --yes', 'tombstone')).toContain(`but uid ${owner} owns the data root`);
     });
 
     it('skips the check where there is no geteuid() or getuid(), as on Windows', () => {
         const saved = (['geteuid', 'getuid'] as const).map((name) => [name, Object.getOwnPropertyDescriptor(process, name)] as const);
         for (const [name] of saved) Object.defineProperty(process, name, { value: undefined, configurable: true, writable: true });
         try {
-            expect(ownerRefusal('/nowhere/at/all', 'purge')).toBeNull();
+            expect(ownerRefusal('/nowhere/at/all', 'photos purge --yes', 'tombstone')).toBeNull();
         } finally {
             for (const [name, original] of saved) if (original) Object.defineProperty(process, name, original);
         }
