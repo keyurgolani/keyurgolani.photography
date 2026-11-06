@@ -494,6 +494,16 @@ describe('what the watch says', () => {
         expect(inboxNews(page, { kind: 'offline' }, new Set())).toMatchObject({ arrival: '', line: OFFLINE_TEXT });
     });
 
+    it('says the inbox changed, once, when the server refused the cursor, and counts afresh from the new one', () => {
+        const said = new Set(['arrived:3']);
+        const rebased = inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }), rebased: true }, said);
+        expect(rebased).toMatchObject({ arrival: 'The inbox has changed since this page loaded.', keys: ['rebased'], forget: ['arrived:3'] });
+        const after = new Set(['rebased']);
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: null }), rebased: true }, after).arrival).toBe('');
+        // A count from the new cursor is said, even one said before the restore, and a later refusal can be said again.
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, after)).toMatchObject({ arrival: '3 new items need judgment.', keys: ['arrived:3'], forget: ['rebased'] });
+    });
+
     it('says when the watcher stops checking in and when it is back, each once', () => {
         const stopped = inboxNews(page, { kind: 'summary', summary: summary({ watcher: { state: 'missing' } }) }, new Set());
         expect(stopped).toMatchObject({ line: expect.stringMatching(/watcher stopped checking in/), watcher: { state: 'missing' } });
