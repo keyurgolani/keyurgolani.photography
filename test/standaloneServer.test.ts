@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { WORK_ERROR_BODY } from './fixtures/errorShell';
-import { bodyOf, errorShellProblems, headOf, markers, meta, servableRevisions, skeleton, type PublishTimes } from './helpers/standaloneServer';
+import { blockingText, bodyOf, errorShellProblems, headOf, markers, meta, servableRevisions, skeleton, type PublishTimes } from './helpers/standaloneServer';
 
 const A = `rev_${'a'.repeat(64)}`;
 const B = `rev_${'b'.repeat(64)}`;
@@ -107,6 +107,29 @@ describe("E1's bare error shell, after </head>", () => {
     it('reads markup only, never a script', () => {
         const scripted = WORK_ERROR_BODY.replace('<script id="_R_"></script>', '<script id="_R_">document.title="<title>x</title><meta name=x>"</script>');
         expect(errorShellProblems(scripted)).toEqual([]);
+    });
+});
+
+describe('a refused publish, for the log', () => {
+    // Slot 4's R3 publish, which said only "1 error blocks the publish.".
+    const conflict = {
+        code: 'working.conflicts',
+        severity: 'error' as const,
+        record: { kind: 'series' as const, id: 'ser_fixture-01' },
+        field: 'statement',
+        message: 'This field changed both here and in the active revision, in different ways.',
+        hint: 'Settle the field, then delete its conflicts entry.',
+    };
+
+    it('names each blocking rule, its record and field, and its message, after the outcome', () => {
+        const warning = { ...conflict, code: 'series.statement.long', severity: 'warning' as const, message: 'Long.' };
+        expect(blockingText({ outcome: 'VALIDATION_FAILED', message: '1 error blocks the publish.', issues: [warning, conflict] })).toBe(
+            'VALIDATION_FAILED: 1 error blocks the publish.\n  working.conflicts on series ser_fixture-01, statement: This field changed both here and in the active revision, in different ways.',
+        );
+    });
+
+    it('says the outcome and message alone when no issue blocks', () => {
+        expect(blockingText({ outcome: 'CATALOG_LOCKED', message: 'Another publish holds the lock.', issues: [] })).toBe('CATALOG_LOCKED: Another publish holds the lock.');
     });
 });
 
