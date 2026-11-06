@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BROWSER_BUDGETS, FIRST_IMAGE_MS, KIB, SCREEN_BUDGETS } from '../budgets';
 import type { CatalogBudgetMeasurement } from '../catalog-budgets';
 import { BUDGET_VARIANT_BYTES } from '../fixture';
-import { browserChecks, browserFailures, catalogSection, declaredMediaBytes, openingPhotoId, parseBudgetsArgs, PERF_REPORT_FILE, reportMarkdown, writePerfReport, type BrowserRow, type PerfReport } from '../report';
+import { browserChecks, browserFailures, catalogSection, declaredMediaBytes, eagerMedia, MAX_TONE_REREADS_PER_IMAGE, openingPhotoId, parseBudgetsArgs, PERF_REPORT_FILE, reportMarkdown, writePerfReport, type BrowserRow, type PerfReport } from '../report';
 
 // `npm run test:budgets`' report (#6 item 14): `.perf/report.json`, each
 // value beside its budget, from the catalog layer and the browser layer.
@@ -165,5 +165,42 @@ describe('writePerfReport()', () => {
         expect(JSON.parse(await fs.promises.readFile(file, 'utf8'))).toEqual(report);
         // Beside it, the step summary CI appends.
         expect(await fs.promises.readFile(path.join(root, '.perf', 'report.md'), 'utf8')).toBe(reportMarkdown(report));
+    });
+});
+
+describe('eagerMedia', () => {
+    // budgets.spec.ts's fixture mode routes /media, and Playwright's routing turns the HTTP cache off, so the copy
+    // tone's re-read of the slide's own file (fetch(), only-if-cached, a cache hit or no request in a real browser)
+    // reaches the route and would count as a second download (#208's CI: 4 images, 1,433,600 B, on the phone).
+    const slide = '/media/ph_aaaaaaaa/sha256-r/p1/w1920.avif';
+    const next = '/media/ph_bbbbbbbb/sha256-r/p1/w1920.avif';
+    const image = (pathname: string) => ({ resourceType: 'image', pathname, bytes: 350 * KIB });
+    const fetched = (pathname: string) => ({ resourceType: 'fetch', pathname, bytes: 350 * KIB });
+
+    it("counts the images a load asks for, and not the tone's re-reads of them", () => {
+        const found = eagerMedia([image(slide), image(next), fetched(slide), fetched(slide), { resourceType: 'document', pathname: '/', bytes: 9000 }]);
+        expect(found).toEqual({ bytes: 700 * KIB, count: 2, rereads: 2, problems: [] });
+    });
+
+    it('as #208 did before, counting every /media request, Home on the phone was over: the re-reads are what took it there', () => {
+        const all = [image(slide), image(next), fetched(slide), fetched(slide)];
+        expect(all.reduce((sum, { bytes }) => sum + bytes, 0)).toBe(1_433_600);
+        expect(eagerMedia(all).bytes).toBe(716_800);
+    });
+
+    it('fails a re-read of any file the load did not already ask for as an image, so a different rung or photo is caught', () => {
+        const found = eagerMedia([image(slide), image(next), fetched('/media/ph_aaaaaaaa/sha256-r/p1/w400.avif')]);
+        expect(found.problems).toEqual(['/media/ph_aaaaaaaa/sha256-r/p1/w400.avif was fetched, but this load never asked for it as an image']);
+    });
+
+    it(`fails more than ${MAX_TONE_REREADS_PER_IMAGE} re-reads per eager image, so a sampler that loops is caught`, () => {
+        expect(MAX_TONE_REREADS_PER_IMAGE).toBe(2);
+        const loop = [image(slide), image(next), ...Array.from({ length: 5 }, () => fetched(slide))];
+        expect(eagerMedia(loop).problems).toEqual([`5 re-reads of /media files by fetch(), more than ${MAX_TONE_REREADS_PER_IMAGE} for each of the load's 2 images`]);
+        expect(eagerMedia([image(slide), image(next), ...Array.from({ length: 4 }, () => fetched(slide))]).problems).toEqual([]);
+    });
+
+    it('leaves every request that is not /media out', () => {
+        expect(eagerMedia([image('/assets/portrait.avif'), fetched('/api/home')])).toEqual({ bytes: 0, count: 0, rereads: 0, problems: [] });
     });
 });
