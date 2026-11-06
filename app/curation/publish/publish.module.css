@@ -354,7 +354,9 @@
 
 .rowFix {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 0.5rem;
   margin-top: 0.625rem;
 }
 
@@ -888,4 +890,69 @@
   .buttons svg {
     display: none;
   }
+}
+
+/* A9: a text change's words. The published side strikes what goes, the draft's
+   underlines what comes, each on the notice tone fills the screen already uses,
+   so the ink keeps its contrast in every theme. */
+.removed,
+.added {
+  color: var(--gah-ink);
+  text-decoration-thickness: 1px;
+}
+
+.removed {
+  background: var(--curator-tone-alert-bg);
+  text-decoration-line: line-through;
+}
+
+.added {
+  background: var(--curator-lock-bg);
+  text-decoration-line: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* A9: a group of more than 50 rows, collapsed. The summary is the native
+   disclosure control, a 44 px target with the focus token. */
+.collapse {
+  margin: 0;
+}
+
+.collapseSummary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.4rem;
+  list-style: none;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-ui);
+  cursor: pointer;
+}
+
+/* A9: what Use the published value did, where focus lands after it. */
+.reverted {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+}
+
+/* A focus target, not a control, as the refusal strip is. */
+.reverted:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+/* The summary's own marker is replaced by a chevron that turns when the group opens (A9 review). */
+.collapseSummary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  flex: none;
+  transform: rotate(-90deg);
+}
+
+.collapse[open] > .collapseSummary .chevron {
+  transform: none;
 }

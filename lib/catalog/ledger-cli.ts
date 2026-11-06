@@ -12,6 +12,8 @@ import { errorText } from './error-text';
 import { REVISION_ID_RE, type AuthoredKind } from './schema';
 import type { CommandResult } from './sequence-commands';
 import type { AuthoredRecord, IssueRecord, RevisionFile, WorkingLayer } from './types';
+import { writePublishedValue } from './use-published';
+import { publishedValueOffer, type UsePublishedOffer } from './use-published-rules';
 import { ACTIVE_POINTER_NAME, readActivePointer, readWorkingLayer } from './working-layer';
 import { AuthoredWriteError } from './working-layer-writer';
 
@@ -28,6 +30,9 @@ import { AuthoredWriteError } from './working-layer-writer';
  * printed, so a review always covers what the owner saw. It never clears a
  * suggested description, a row its Inbox item settles, or a rebase conflict,
  * and has no `--all` (#182's owner choice): each row is named on its own.
+ * `photos review --use-published <changeId>` (A9) puts the live revision's
+ * value of one row's field back into the draft instead, through the writer
+ * the Publish screen's "Use the published value" calls.
  */
 
 const CHANGE_ID_RE = /^[0-9a-f]{16}$/;
@@ -44,6 +49,8 @@ export interface ReviewArgs {
     /** The live revision `photos diff` printed, null for none. */
     expectActive: string | null;
     actor: string;
+    /** `--use-published`: put the live revision's value back, for one row. reviewArgs() always sets it. */
+    usePublished?: boolean;
 }
 
 /** `photos diff [--json]`. */
@@ -52,14 +59,16 @@ export function diffArgs(args: string[]): DiffArgs {
     return { json: values.json === true };
 }
 
-/** `photos review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]`. */
+/** `photos review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]`, or `--use-published` with one change ID. */
 export function reviewArgs(args: string[], env: Record<string, string | undefined> = process.env): ReviewArgs {
     const { values, positionals } = parseFlags({
         args,
-        options: { expect: { type: 'string' }, 'expect-active': { type: 'string' }, actor: { type: 'string' } },
+        options: { expect: { type: 'string' }, 'expect-active': { type: 'string' }, actor: { type: 'string' }, 'use-published': { type: 'boolean' } },
         allowPositionals: true,
     });
     if (positionals.length === 0) throw new UsageError('photos review needs at least one change ID from photos diff.');
+    const usePublished = values['use-published'] === true;
+    if (usePublished && new Set(positionals).size !== 1) throw new UsageError('photos review --use-published takes one change ID: it puts back one field at a time.');
     for (const id of positionals) if (!CHANGE_ID_RE.test(id)) throw new UsageError(`${id} is not a change ID: photos diff prints them, 16 hex characters each.`);
     if (values.expect === undefined) throw new UsageError('photos review needs --expect <candidateId>, the candidate photos diff printed.');
     if (!REVISION_ID_RE.test(values.expect)) throw new UsageError(`--expect takes the candidate ID photos diff printed, not ${values.expect}.`);
@@ -68,7 +77,7 @@ export function reviewArgs(args: string[], env: Record<string, string | undefine
     if (active !== 'none' && !REVISION_ID_RE.test(active)) throw new UsageError(`--expect-active takes the live revision's ID, or none, not ${active}.`);
     const actor = values.actor ?? env.PHOTOS_ACTOR ?? '';
     if (!/\S/.test(actor)) throw new UsageError('photos review needs --actor <name> or PHOTOS_ACTOR.');
-    return { changeIds: [...new Set(positionals)], expect: values.expect, expectActive: active === 'none' ? null : active, actor: actor.trim() };
+    return { changeIds: [...new Set(positionals)], expect: values.expect, expectActive: active === 'none' ? null : active, actor: actor.trim(), usePublished };
 }
 
 /** One read of the data root, as `photos validate` reads it. */
@@ -228,6 +237,8 @@ export interface DiffJsonRow {
     before: CatalogChange['before'];
     after: CatalogChange['after'];
     fields?: string[];
+    /** A series' derived row: the photographs a move shifts (A9). */
+    positions?: CatalogChange['positions'];
     causedBy?: string;
     visible: boolean;
     surfaces: CatalogChange['surfaces'];
@@ -241,9 +252,11 @@ export interface DiffJsonRow {
     reason: string | null;
     /** The rows marked with it, which photos review wants named too. */
     sharedWith: string[];
+    /** Whether photos review --use-published can put the live revision's value back for it (A9). */
+    usePublished: boolean;
 }
 
-function jsonRow(change: CatalogChange, assessment: Assessment, sharedWith: string[]): DiffJsonRow {
+function jsonRow(change: CatalogChange, assessment: Assessment, sharedWith: string[], offer: UsePublishedOffer): DiffJsonRow {
     return {
         id: change.id,
         group: groupOf(change),
@@ -253,6 +266,7 @@ function jsonRow(change: CatalogChange, assessment: Assessment, sharedWith: stri
         before: change.before,
         after: change.after,
         ...(change.fields ? { fields: change.fields } : {}),
+        ...(change.positions ? { positions: change.positions } : {}),
         ...(change.causedBy ? { causedBy: change.causedBy } : {}),
         visible: change.visible,
         surfaces: change.surfaces,
@@ -263,8 +277,12 @@ function jsonRow(change: CatalogChange, assessment: Assessment, sharedWith: stri
         reviewable: assessment.kind === 'clear',
         reason: assessment.kind === 'clear' ? null : assessment.why,
         sharedWith,
+        usePublished: offer.ok,
     };
 }
+
+/** What `--use-published` would write for a row: the screen's rule, on the ledger this command read. */
+const offerOf = (change: CatalogChange, ledger: Ledger): UsePublishedOffer => publishedValueOffer(change, { layer: ledger.layer, active: ledger.active?.content ?? null, review: ledger.review });
 
 /** `photos diff`: the ledger, grouped, with what each row waits on. Exits 0 once it reads, 3 when the data root isn't ready, 4 when a file can't be read. */
 export async function runDiffCommand(root: string, args: DiffArgs): Promise<CommandResult> {
@@ -274,7 +292,7 @@ export async function runDiffCommand(root: string, args: DiffArgs): Promise<Comm
     const assessed = new Map(diff.changes.map((change) => [change.id, assess(change, ledger)]));
     const sharing = sharingOf(diff);
     if (args.json) {
-        const rows = diff.changes.map((change) => jsonRow(change, assessed.get(change.id) as Assessment, sharing.get(change.id) ?? []));
+        const rows = diff.changes.map((change) => jsonRow(change, assessed.get(change.id) as Assessment, sharing.get(change.id) ?? [], offerOf(change, ledger)));
         const out = { schemaVersion: DIFF_JSON_SCHEMA_VERSION, candidateId, activeRevisionId: active?.revisionId ?? null, activeRevisionNumber: ledger.number, empty: diff.empty, rows };
         return { exitCode: 0, output: `${JSON.stringify(out, null, 2)}\n` };
     }
@@ -305,6 +323,7 @@ export async function runDiffCommand(root: string, args: DiffArgs): Promise<Comm
             if (open?.detail) lines.push(`      ${open.detail}`);
             if (assessment?.kind === 'clear') lines.push(`      Once it's checked: ${command([change.id, ...(sharing.get(change.id) ?? [])])}`);
             if (assessment?.kind === 'refused') lines.push(`      photos review can't clear it: ${assessment.why}`);
+            if (offerOf(change, ledger).ok) lines.push(`      Or put back what is live: photos review --use-published ${change.id} --expect ${candidateId} --expect-active ${active?.revisionId ?? 'none'}`);
         }
     }
     return { exitCode: 0, output: `${lines.join('\n')}\n` };
@@ -335,6 +354,7 @@ export async function runReviewCommand(root: string, args: ReviewArgs, hooks: Re
         return { exitCode: 3, output: `[photos] CHANGED: The draft changed since photos diff printed it: it compiles to ${ledger.candidateId}, not ${args.expect}. Nothing was written. Run photos diff again and check what changed.\n` };
     }
     const byId = new Map(ledger.diff.changes.map((change) => [change.id, change]));
+    if (args.usePublished) return publishedValueCommand(root, ledger, byId.get(args.changeIds[0]) ?? null, args);
     const sharing = sharingOf(ledger.diff);
     const named = new Set(args.changeIds);
     const refused: string[] = [];
@@ -401,6 +421,46 @@ export async function runReviewCommand(root: string, args: ReviewArgs, hooks: Re
         `Run photos diff to see what still needs a review, then photos publish --expect ${ledger.candidateId}.`,
     ];
     return { exitCode: 0, output: `${lines.join('\n')}\n` };
+}
+
+/**
+ * `photos review --use-published <changeId>`: the live revision's value of
+ * the row's field goes back into the draft, through the Publish screen's
+ * writer. The candidate changes, so the next publish needs a fresh photos
+ * diff. Exits 0 once written, 1 when the row can't take it, 3 when the
+ * record moved or the lock stays busy, 4 on a storage error.
+ */
+async function publishedValueCommand(root: string, ledger: Ledger, change: CatalogChange | null, args: ReviewArgs): Promise<CommandResult> {
+    if (change === null) return { exitCode: 1, output: `[photos] REFUSED: photos diff has no row ${args.changeIds[0]}. Run photos diff and use an ID it prints. Nothing was written.\n` };
+    const offer = offerOf(change, ledger);
+    if (!offer.ok) return { exitCode: 1, output: `[photos] REFUSED: photos review --use-published can't put back ${change.id}, so nothing was written. ${sentence(offer.why)}\n` };
+    const { target } = offer;
+    try {
+        await writePublishedValue({ root, record: target.record, field: target.field, version: target.version, valueHash: target.valueHash, baseRevisionId: ledger.active?.revisionId ?? null, actor: args.actor });
+    } catch (error) {
+        if (error instanceof ReviewRefusedError) return stopped(error.code === 'active-moved' ? 3 : 1, error.message);
+        if (error instanceof AuthoredWriteError) {
+            if (error.code === 'VERSION_CONFLICT') return stopped(3, `The ${error.record.kind} record ${error.record.id} changed since photos diff read it.`);
+            if (error.code === 'AUTHORED_LOCKED') return stopped(3, `Another write holds the working catalog. ${errorText(error, root)}`);
+            if (error.code === 'INVALID_RECORD') return stopped(1, errorText(error, root));
+        }
+        return stopped(4, errorText(error, root));
+    }
+    const others = ledger.diff.changes.filter((entry) => entry.id !== change.id && entry.record.kind === change.record.kind && entry.record.id === change.record.id && entry.field.replace(/\[.*\]$/, '') === target.field);
+    const lines = [
+        `[photos] USED_PUBLISHED: The ${target.field} of ${recordName(ledger, change.record)} is back to what ${against(ledger)} publishes. Nothing was published.`,
+        `  ${change.id}  ${change.summary}`,
+        ...others.map((entry) => `  ${entry.id}  ${entry.summary} (the same field)`),
+        `The draft changed, so run photos diff again before photos publish --expect.`,
+    ];
+    return { exitCode: 0, output: `${lines.join('\n')}\n` };
+}
+
+/** A record as the owner names it: a series or photograph by its title, else its ID. */
+function recordName(ledger: Ledger, record: IssueRecord): string {
+    if (record.kind === 'site') return 'Home';
+    const authored = recordIn(ledger.layer, record) as { title?: string } | null;
+    return authored?.title ? authored.title : record.id;
 }
 
 /**

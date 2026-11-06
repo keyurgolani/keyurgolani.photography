@@ -26,7 +26,7 @@ export default async function PreviewFramePage({ params }: FrameProps) {
     const { draftId } = await openPreview((await params).draftId);
     return (
         <main>
-            <PreviewFrame src={previewBasePath(draftId)} />
+            <PreviewFrame src={previewBasePath(draftId)} presets draftHash={draftId.slice(4, 12)} backHref="/curation/publish" />
         </main>
     );
 }

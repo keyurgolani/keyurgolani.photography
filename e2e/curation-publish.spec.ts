@@ -208,12 +208,13 @@ test('opens on the draft: the count line, the badges, one empty live region, and
     await expect(result(page)).toHaveCount(0);
 });
 
-test('blocks with one link per blocker: four Tab stops before Validate, and each link lands on its fix', async ({ page }) => {
+test('blocks with one link per blocker: five Tab stops before Validate, and each link lands on its fix', async ({ page }) => {
     await open(page);
     await press(page, validate(page), 'Publication blocked');
     await expect(page.getByText('2 changes need you before revision 3 can publish. Revision 2 stays live.')).toBeVisible();
     await expect(page.locator('#publish-reason')).toHaveText('Fix the changes above, then validate again.');
-    // Keyboard: from Open full preview to Validate, the two row fixes, then the two blocker links.
+    // Keyboard: from Open full preview to Validate, the row fixes (A9 gives the stale move a second, Use the published
+    // value), then the two blocker links.
     await page.getByRole('link', { name: /Open full preview/ }).focus();
     const stops: string[] = [];
     for (let i = 0; i < 8; i++) {
@@ -225,6 +226,7 @@ test('blocks with one link per blocker: four Tab stops before Validate, and each
     // The rows in ledger order (the series' move, then the new photograph), then the list in the same order.
     expect(stops).toEqual([
         'Still right, mark reviewed: Pier lamps position in Salt Roads',
+        "Use the published value: the order of Salt Roads, from Pier lamps' move",
         `Review and mark description ready: ${BREAKWATER_TITLE}`,
         'Review it: Pier lamps position in Salt Roads',
         `Review the description: ${BREAKWATER_TITLE}`,

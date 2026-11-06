@@ -11,13 +11,16 @@ import type { AuthoredKind } from '@/lib/catalog/schema';
 import { checkReviewable, markFieldsReviewed, ReviewRefusedError } from '@/lib/catalog/review-write';
 import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
 import { AuthoredWriteError, writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
+import { writePublishedValue } from '@/lib/catalog/use-published';
+import { canUsePublished } from '@/lib/catalog/use-published-rules';
 import { requireCurator } from '@/lib/curation/auth';
 import { WEB_ACTOR } from '@/lib/curation/inbox-form';
-import { countLine, rollbackStakes, type Answer, type Intent, type Publisher, type PublishState } from '@/lib/curation/publish-facts';
+import { countLine, rollbackStakes, type Answer, type Intent, type Publisher, type PublishState, type WatchAnswer } from '@/lib/curation/publish-facts';
+import { fieldName } from '@/lib/curation/publish-view';
 import { blockingReasons, editorialWords, restoreResult, type RestoreAnswer, type RestoreState } from '@/lib/curation/publish-history';
 import { dataRootStatus } from '@/lib/storage/config';
 import { loadHistoryView, numberFrom } from './history-load';
-import { ledgerOf, pointerFacts, readinessOf, readSnapshot, type Snapshot } from './load';
+import { ledgerOf, pointerFacts, readinessOf, readSnapshot, revisionFacts, type Snapshot } from './load';
 
 /**
  * The Publish screen's one server action (16-3). Every intent calls
@@ -31,7 +34,7 @@ import { ledgerOf, pointerFacts, readinessOf, readSnapshot, type Snapshot } from
  */
 
 const REASON = 'Publish screen';
-const INTENTS: readonly Intent[] = ['validate', 'publish', 'mark-description', 'mark-reviewed'];
+const INTENTS: readonly Intent[] = ['validate', 'publish', 'mark-description', 'mark-reviewed', 'use-published'];
 const AUTHORED_KINDS: readonly AuthoredKind[] = ['site', 'series', 'photo'];
 
 const text = (form: FormData, name: string): string | null => {
@@ -45,7 +48,7 @@ const integer = (form: FormData, name: string): number | null => {
 };
 
 function next(previous: PublishState, intent: Intent | null, answer: Answer): PublishState {
-    const result = answer.kind === 'fixed' ? null : answer.kind === 'fix-refused' ? previous.result : answer;
+    const result = answer.kind === 'fixed' || answer.kind === 'reverted' ? null : answer.kind === 'fix-refused' ? previous.result : answer;
     return { serial: previous.serial + 1, intent, answer, result };
 }
 
@@ -189,25 +192,36 @@ class FixRefused extends Error {}
  * nothing was written. The stamp's base is the live revision the page
  * compared against, so a fix refuses once the pointer has moved since.
  */
-async function stamp(previous: PublishState, form: FormData, intent: Intent, rowId: string, what: string, write: (root: string, base: string | null) => Promise<unknown>): Promise<PublishState> {
+async function stamp<T>(
+    previous: PublishState,
+    form: FormData,
+    intent: Intent,
+    rowId: string,
+    what: string,
+    write: (root: string, base: string | null) => Promise<T>,
+    done: (written: T) => Answer = () => ({ kind: 'fixed', rowId }),
+): Promise<PublishState> {
     const status = dataRootStatus({ write: true });
     if (status.state !== 'ready' || status.root === null) return next(previous, intent, { kind: 'fix-refused', rowId, text: "The data root isn't ready, so nothing was written." });
     const pageActive = previewDraftId(text(form, 'active'));
+    let written: T;
     try {
         const pointer = await readActivePointer(status.root);
         if (pageActive === null || pointer?.revisionId !== pageActive) throw new FixRefused('The live revision changed since the page loaded, so nothing was written.');
-        await write(status.root, pageActive);
+        written = await write(status.root, pageActive);
     } catch (error) {
         if (error instanceof FixRefused) return next(previous, intent, { kind: 'fix-refused', rowId, text: error.message });
         if (error instanceof ReviewRefusedError) return reviewRefused(previous, intent, rowId, what, error);
         if (error instanceof AuthoredWriteError && error.code === 'VERSION_CONFLICT') return refused(previous, intent, rowId, what);
         if (error instanceof AuthoredWriteError && error.code === 'AUTHORED_LOCKED') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'Another write holds the working catalog, so nothing was written. Try again in a moment.' });
         console.error('[curation] A Publish screen review could not be written:', error);
-        return next(previous, intent, { kind: 'fix-refused', rowId, text: "The review couldn't be written, so nothing changed. The server log names what failed." });
+        // The failure names the action that failed (A9 review).
+        const failed = intent === 'use-published' ? "The published value couldn't be written" : "The review couldn't be written";
+        return next(previous, intent, { kind: 'fix-refused', rowId, text: `${failed}, so nothing changed. The server log names what failed.` });
     }
     // A fix changes the review context, so the page reads the ledger again and the curator validates again.
     revalidatePath('/curation/publish');
-    return next(previous, intent, { kind: 'fixed', rowId });
+    return next(previous, intent, done(written));
 }
 
 /**
@@ -228,6 +242,7 @@ const INBOX_FIRST = 'Its Inbox item needs a decision again, so nothing was writt
 function reviewRefused(previous: PublishState, intent: Intent, rowId: string, what: string, error: ReviewRefusedError): PublishState {
     if (error.code === 'inbox') return next(previous, intent, { kind: 'fix-refused', rowId, text: INBOX_FIRST });
     if (error.code === 'active-moved') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'The live revision changed since the page loaded, so nothing was written.' });
+    if (error.code === 'not-clearable' && intent === 'use-published') return next(previous, intent, { kind: 'fix-refused', rowId, text: "This change can't take the published value now, so nothing was written. Load the updated ledger." });
     if (error.code === 'conflict') return next(previous, intent, { kind: 'fix-refused', rowId, text: 'This field changed both here and in the live revision, so nothing was written. Keep one value with photos edit, which clears the conflict.' });
     return refused(previous, intent, rowId, what);
 }
@@ -272,6 +287,75 @@ async function markReviewed(previous: PublishState, form: FormData): Promise<Pub
     return stamp(previous, form, 'mark-reviewed', rowId, what, (root, base) => markFieldsReviewed({ root, record: { kind, id }, version, hashes: shown, baseRevisionId: base, actor: WEB_ACTOR }));
 }
 
+const ROW_ID_RE = /^chg-[0-9a-f]{16}$/;
+const RECORD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const HASH_RE = /^[0-9a-f]{64}$/;
+const NOT_SHOWN = "The page sent a change it didn't show, so nothing was written. Load the updated ledger.";
+
+/**
+ * A9's Use the published value: the live revision's value of one field back
+ * into the draft, through the writer `photos review --use-published` calls.
+ * Every field is checked for its shape and capped before the writer sees
+ * it, as restoreAction's are, and the writer is the gate: it refuses a field
+ * that isn't stale against the live revision nor in conflict, whatever the
+ * page offered. The row leaves the ledger, so the answer says what happened.
+ */
+async function putBackPublished(previous: PublishState, form: FormData): Promise<PublishState> {
+    const raw = text(form, 'rowId') ?? '';
+    const rowId = ROW_ID_RE.test(raw) ? raw : '';
+    const kind = text(form, 'kind') as AuthoredKind | null;
+    const id = text(form, 'id') ?? '';
+    const field = text(form, 'field') ?? '';
+    const version = integer(form, 'version');
+    const valueHash = text(form, 'valueHash') ?? '';
+    const shown = rowId !== '' && kind !== null && AUTHORED_KINDS.includes(kind) && RECORD_ID_RE.test(id) && (kind !== 'site' || id === 'site') && canUsePublished(kind, field) && version !== null && HASH_RE.test(valueHash);
+    if (!shown) return next(previous, 'use-published', { kind: 'fix-refused', rowId, text: NOT_SHOWN });
+    const label = fieldName({ record: { kind, id }, field });
+    return stamp(
+        previous,
+        form,
+        'use-published',
+        rowId,
+        `The ${label}`,
+        (root, base) => writePublishedValue({ root, record: { kind, id }, field, version, valueHash, baseRevisionId: base, actor: WEB_ACTOR }),
+        (record) => {
+            const title = record.kind === 'site' ? 'Home' : record.title || id;
+            return { kind: 'reverted', text: `The published ${label} of ${title} is back in the draft. Validate again before you publish.` };
+        },
+    );
+}
+
+/**
+ * A9's watch: the open page asks every 60 s, and when its tab comes back,
+ * which rows are stale now and whether the live revision moved
+ * (lib/curation/publish-watch.ts bounds it). requireCurator() first, as
+ * every action here, and its refusal is thrown as theirs is (the route
+ * inventory's rail): nothing after it runs. The page never sees that
+ * notFound(): proxy.ts answers a refused action with a plain 401 or 404
+ * before it runs, so the call rejects, Next's client leaves the page as it
+ * is for a response that isn't RSC, and the watch counts an error and says
+ * nothing (A9 review). It reads the data root as the page does and writes
+ * nothing. Input the page didn't send, or a catalog that can't be read,
+ * answers `unavailable`, which the watch backs off from.
+ */
+export async function watchPublish(input: { draftId: unknown; active: unknown } | null): Promise<WatchAnswer> {
+    await requireCurator();
+    const draftId = previewDraftId(typeof input === 'object' && input !== null && typeof input.draftId === 'string' ? input.draftId : null);
+    const active = previewDraftId(typeof input === 'object' && input !== null && typeof input.active === 'string' ? input.active : null);
+    if (draftId === null || active === null) return { kind: 'unavailable' };
+    try {
+        const snapshot = await readSnapshot();
+        if (snapshot === null) return { kind: 'unavailable' };
+        if (snapshot.pointer.revisionId !== active) return { kind: 'base-moved', live: revisionFacts(snapshot.activations, snapshot.pointer.revisionId) };
+        const { ledger } = ledgerOf(snapshot, null);
+        const stale = [...ledger.authored, ...ledger.derived].filter((row) => row.review === 'stale').map((row) => ({ rowId: row.id, summary: row.summary }));
+        return { kind: 'ok', stale, draftChanged: snapshot.compiled.candidateId !== draftId };
+    } catch (error) {
+        console.error('[curation] The Publish screen could not check the catalog again:', error);
+        return { kind: 'unavailable' };
+    }
+}
+
 /** The screen's one action: the form's `intent` picks Validate, Publish, or a review fix. */
 export async function publishAction(previous: PublishState, form: FormData): Promise<PublishState> {
     await requireCurator();
@@ -280,6 +364,7 @@ export async function publishAction(previous: PublishState, form: FormData): Pro
     if (intent === 'validate' || intent === 'publish') return validateOrPublish(previous, form, intent);
     if (intent === 'mark-description') return markDescriptionReady(previous, form);
     if (intent === 'mark-reviewed') return markReviewed(previous, form);
+    if (intent === 'use-published') return putBackPublished(previous, form);
     return previous;
 }
 

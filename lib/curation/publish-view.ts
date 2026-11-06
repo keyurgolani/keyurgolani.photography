@@ -1,9 +1,11 @@
-import type { CatalogChange, CatalogDiff } from '../catalog/diff';
-import { hashValue, inboxReviewOf, type FieldReviewState, type InboxItem, type ReviewContext } from '../catalog/review';
+import { positionsPhrase, type CatalogChange, type CatalogDiff } from '../catalog/diff';
+import { hashValue, inboxReviewOf, publishedIndexes, type FieldReviewState, type InboxItem, type PublishedIndex, type ReviewContext } from '../catalog/review';
+import { USE_PUBLISHED_REASONS, publishedValueOffer } from '../catalog/use-published-rules';
 import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-reasons';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
-import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
+import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget, type UsePublishedFix } from './publish-facts';
+import { textDiff } from './text-diff';
 import { fileParts, shortIdOf } from './inbox-view';
 import { dayToken } from './publish-history';
 
@@ -161,6 +163,12 @@ function altValue(value: Json): string | null {
 
 const asText = (value: Json): string | null => (value === null ? null : typeof value === 'string' ? value : JSON.stringify(value));
 
+/** A text compare with its word diff (A9). */
+const textCompare = (before: string | null, after: string | null): Compare => ({ type: 'text', before, after, diff: textDiff(before, after) });
+
+/** The chapter a `chapters[<id>]` row is about, by its ID. */
+const chapterIdOf = (field: string): string | null => (field.startsWith('chapters[') ? field.slice('chapters['.length, -1) : null);
+
 /** The candidate's placement of a photograph, by series. */
 function placementOf(content: CandidateContent | RevisionContent, photoId: string): { seriesId: string; position: number } | null {
     for (const series of content.series) {
@@ -180,9 +188,11 @@ interface Built {
 /** The rows of one diff, the join's first half. */
 function rowsOf(input: LedgerInput, names: Names): Built {
     const built: Built = { rows: new Map(), group: new Map(), change: new Map() };
+    const published = publishedIndexes();
     for (const change of input.diff.changes) {
         if (!change.visible && change.category !== 'missing') continue;
         const id = `chg-${change.id}`;
+        const usePublished = publishedFixFor(change, input, names, published);
         const group = change.category === 'missing' ? 'health' : change.category === 'derived' || change.category === 'asset' ? 'derived' : 'authored';
         built.rows.set(id, {
             id,
@@ -192,11 +202,32 @@ function rowsOf(input: LedgerInput, names: Names): Built {
             blocks: false,
             ...detailOf(change, input, names),
             ...compareOf(change, input, names),
+            ...(usePublished ? { usePublished } : {}),
         });
         built.group.set(id, group);
         built.change.set(id, change);
     }
     return built;
+}
+
+/**
+ * A9's "Use the published value" for a row, from the rule the writer and
+ * `photos review --use-published` share: only a row whose own field went
+ * stale because the live revision moved, or is in conflict, and with no
+ * Inbox item to decide first. Rows that can't qualify are skipped before
+ * the rule reads anything.
+ */
+function publishedFixFor(change: CatalogChange, input: LedgerInput, names: Names, published: (content: LedgerInput['active']) => PublishedIndex): UsePublishedFix | null {
+    const candidate = change.review.fields.some((entry) => entry.state === 'stale' && entry.reason !== undefined && USE_PUBLISHED_REASONS.has(entry.reason)) || recordIn(input.layer, change.record)?.conflicts?.length;
+    if (!candidate) return null;
+    const offer = publishedValueOffer(change, { layer: input.layer, active: input.active, review: input.review, published: published(input.active) });
+    if (!offer.ok) return null;
+    const { target } = offer;
+    const name = names.record(change.record);
+    const part = rowPart(change, input, names);
+    const label = `the ${fieldName({ record: change.record, field: target.field })} of ${name}${part ? `, from ${part}` : ''}`;
+    const note = target.field === 'photoIds' ? `This puts back the whole published order of ${name}.` : target.field === 'chapters' ? `This puts back every published chapter of ${name}.` : undefined;
+    return { kind: target.record.kind, id: target.record.id, field: target.field, version: target.version, valueHash: target.valueHash, record: label, ...(note ? { note } : {}) };
 }
 
 function kindOf(change: CatalogChange): KindLabel {
@@ -246,6 +277,8 @@ export function summaryOf(change: CatalogChange, input: Pick<LedgerInput, 'activ
     }
     if (record.kind === 'series') {
         const name = names.series(record.id);
+        const chapterId = chapterIdOf(field);
+        if (chapterId !== null) return chapterSummary(change, chapterId, name, input, names);
         if (category === 'new') return `${name} is published, with ${String((after as Record<string, Json>)?.photoCount ?? 0)} photographs`;
         if (category === 'removed') return `${name} leaves the site`;
         if (category === 'visibility') return `${name} is ${String(after)}, so it leaves the site`;
@@ -253,7 +286,14 @@ export function summaryOf(change: CatalogChange, input: Pick<LedgerInput, 'activ
         if (category === 'derived') {
             const was = (before as Record<string, Json> | null)?.photoCount;
             const now = (after as Record<string, Json> | null)?.photoCount;
-            return typeof was === 'number' && typeof now === 'number' && was !== now ? `${name}: ${now} photographs, was ${was}` : `${name}: its dates are recalculated`;
+            const counted = typeof was === 'number' && typeof now === 'number' && was !== now ? `${name}: ${now} photographs, was ${was}` : null;
+            const dated = (change.fields ?? []).some((entry) => entry === 'capturedFrom' || entry === 'capturedTo') ? `${name}: its dates are recalculated` : null;
+            const head = counted ?? dated;
+            // A9: the photographs a move shifts, which the derived row's positions carry.
+            const shifted = change.positions ? positionsPhrase(change.positions) : null;
+            if (head && shifted) return `${head}. ${shifted.charAt(0).toUpperCase()}${shifted.slice(1)}`;
+            if (shifted) return `${name}: ${shifted}`;
+            return head ?? `${name}: its dates are recalculated`;
         }
         if (category === 'moved' && field.startsWith('photoIds[')) {
             const photoId = field.slice('photoIds['.length, -1);
@@ -295,6 +335,23 @@ export function summaryOf(change: CatalogChange, input: Pick<LedgerInput, 'activ
     return `${photo}: the ${PHOTO_FIELD[field] ?? field} changes`;
 }
 
+/** A chapter row's line (A9): a new chapter, one that goes, a new title, or a new start photograph. */
+function chapterSummary(change: CatalogChange, chapterId: string, name: string, input: Pick<LedgerInput, 'active' | 'candidate'>, names: Names): string {
+    const value = (side: Json) => (side && typeof side === 'object' && !Array.isArray(side) ? (side as Record<string, Json>) : null);
+    const chapterIn = (content: Pick<LedgerInput, 'candidate'>['candidate'] | LedgerInput['active']) => content.series.find((series) => series.id === change.record.id)?.chapters.find((chapter) => chapter.id === chapterId);
+    const title = chapterIn(input.candidate)?.title ?? chapterIn(input.active)?.title ?? chapterId;
+    switch (change.category) {
+        case 'new':
+            return `${name}: a new chapter, ${title}, starts at ${names.photo(String(value(change.after)?.startPhotoId ?? ''))}`;
+        case 'removed':
+            return `${name}: the chapter ${String(value(change.before)?.title ?? title)} is removed`;
+        case 'moved':
+            return `${name}: the chapter ${title} starts at ${names.photo(String(value(change.after)?.startPhotoId ?? ''))} now`;
+        default:
+            return `${name}: the chapter ${String(change.before ?? title)} is renamed ${String(change.after ?? title)}`;
+    }
+}
+
 /** Before and after, only where they help judgment (scope, Visual). */
 function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { compare?: Compare } {
     const { record, field, category } = change;
@@ -315,8 +372,8 @@ function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { c
             const generated = authored?.kind === 'photo' && authored.alt?.kind === 'described' && authored.alt.reviewed === false;
             return { compare: { type: 'description', label: generated ? 'Generated description' : 'Description', text } };
         }
-        if (field === 'alt') return { compare: { type: 'text', before: altValue(change.before), after: altValue(change.after) } };
-        if (TEXT_FIELDS.has(field)) return { compare: { type: 'text', before: asText(change.before), after: asText(change.after) } };
+        if (field === 'alt') return { compare: textCompare(altValue(change.before), altValue(change.after)) };
+        if (TEXT_FIELDS.has(field)) return { compare: textCompare(asText(change.before), asText(change.after)) };
         return {};
     }
     if (record.kind === 'series') {
@@ -332,7 +389,9 @@ function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { c
             const now = input.candidate.photos.find((photo) => photo.id === coverOf(change.after));
             return { compare: { type: 'images', before: pictureOf(was, input.media.live, altText(was)), after: pictureOf(now, input.media.draft, altText(now)) } };
         }
-        if (TEXT_FIELDS.has(field)) return { compare: { type: 'text', before: asText(change.before), after: asText(change.after) } };
+        if (TEXT_FIELDS.has(field)) return { compare: textCompare(asText(change.before), asText(change.after)) };
+        // A chapter's new title.
+        if (chapterIdOf(field) !== null && category === 'authored') return { compare: textCompare(asText(change.before), asText(change.after)) };
         return {};
     }
     // The site: Home's featured series, or the Work order.
@@ -466,7 +525,7 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
             version: record.version,
             hashes: Object.fromEntries(fields.map((field) => [field, hashValue(valueOf(record, field))])),
         };
-        return { type: 'restamp', record: actionName(change, first, names), label, target, field: fieldName(first) };
+        return { type: 'restamp', record: actionName(change, first, names, input), label, target, field: fieldName(first) };
     }
     return { type: 'hint', text: HINT_ONLY[first.reason ?? 'no-record'] ?? 'Review the change with the photos command, then validate again.' };
 }
@@ -486,16 +545,41 @@ function conflictFix(change: CatalogChange): Fix {
     return { type: 'hint', text: 'Keep one value with photos edit, which clears the conflict, then validate again.', command: `photos edit ${change.record.kind === 'site' ? 'site' : change.record.id}` };
 }
 
-/** The owner's name for a field. */
-function fieldName(entry: Pick<FieldReviewState, 'record' | 'field'>): string {
+/** The owner's name for a field: "order" for a series' photoIds, "description" for a photo's alt. */
+export function fieldName(entry: Pick<FieldReviewState, 'record' | 'field'>): string {
     const map = entry.record.kind === 'photo' ? PHOTO_FIELD : entry.record.kind === 'series' ? SERIES_FIELD : { featuredSeriesIds: 'featured series', seriesOrder: 'Work order' } as Record<string, string>;
     return map[entry.field] ?? (entry.field || 'record');
 }
 
 /** What a stamp action's accessible name adds: "Pier lamps position in Salt Roads", or "the short statement of Low Tide Hours". */
-function actionName(change: CatalogChange, entry: FieldReviewState, names: Names): string {
+function actionName(change: CatalogChange, entry: FieldReviewState, names: Names, input: Pick<LedgerInput, 'active' | 'candidate'>): string {
     if (change.record.kind === 'series' && change.field.startsWith('photoIds[')) return `${names.photo(change.field.slice('photoIds['.length, -1))} position in ${names.series(change.record.id)}`;
-    return `the ${fieldName(entry)} of ${names.record(entry.record)}`;
+    // A9 review: rows that rest on one field, as a series' chapter rows do, each name their own part, so no two controls share a name.
+    const part = rowPart(change, input, names);
+    return `the ${fieldName(entry)} of ${names.record(entry.record)}${part ? `, ${part}` : ''}`;
+}
+
+/** "Pier lamps'", "chapter Dawn's". */
+const possessive = (name: string) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+
+/** What one row of a field with several says on its own: "Pier lamps' move", "chapter Dawn's new title". Null for a row about the whole field. */
+function rowPart(change: CatalogChange, input: Pick<LedgerInput, 'active' | 'candidate'>, names: Names): string | null {
+    if (change.record.kind !== 'series') return null;
+    if (change.field.startsWith('photoIds[')) return `${possessive(names.photo(change.field.slice('photoIds['.length, -1)))} move`;
+    const chapterId = chapterIdOf(change.field);
+    if (chapterId === null) return null;
+    const chapterIn = (content: LedgerInput['active'] | LedgerInput['candidate']) => content.series.find((series) => series.id === change.record.id)?.chapters.find((chapter) => chapter.id === chapterId);
+    const title = chapterIn(input.candidate)?.title ?? chapterIn(input.active)?.title ?? chapterId;
+    switch (change.category) {
+        case 'new':
+            return `new chapter ${title}`;
+        case 'removed':
+            return `removed chapter ${title}`;
+        case 'moved':
+            return `${possessive(`chapter ${title}`)} new start`;
+        default:
+            return `${possessive(`chapter ${title}`)} new title`;
+    }
 }
 
 /** The blocker list's link for a row's fix. */

@@ -1,6 +1,6 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { PublishState, ScreenView } from '@/lib/curation/publish-facts';
+import type { LedgerRow, PublishState, ScreenView, WatchAnswer } from '@/lib/curation/publish-facts';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
 import { BREAKWATER_TITLE, createPublishFixture, type PublishFixture } from '@/test/helpers/publishFixture';
 
@@ -70,5 +70,83 @@ describe('PublishScreen', () => {
         expect(screen.getByRole('link', { name: 'edit it in the Inbox' })).toHaveAttribute('href', `/curation/inbox?item=${fixture.breakwaterEvent}#item`);
         expect(screen.getByText(/^photos edit ph_[0-9a-f-]{36}$/)).toBeInTheDocument();
         expect(screen.getByText(/^Suggested by the Inbox on 25 October\. Nobody has reviewed it\.$/)).toBeInTheDocument();
+    });
+
+    // A9 (#182).
+    it('shows a text change with <del> and <ins>, each with a hidden word a screen reader says', async () => {
+        const { default: PublishScreen } = await import('../PublishScreen');
+        const { container } = render(<PublishScreen view={view} previewHref="/curation/preview/x" openFix={null} action={action} />);
+        const row = [...view.ledger.authored].find((entry) => entry.summary === 'Low Tide Hours: the short statement changes') as LedgerRow;
+        const item = container.querySelector(`#${row.id}`) as HTMLElement;
+        const removed = item.querySelector('del');
+        const added = item.querySelector('ins');
+        expect(removed?.textContent).toBe('removed: Five');
+        expect(added?.textContent).toBe('added: Six');
+        expect(removed?.querySelector('span')?.className).toMatch(/visuallyHidden/);
+    });
+
+    it('offers Use the published value as a native button named for the record, in a form the action reads', async () => {
+        const { default: PublishScreen } = await import('../PublishScreen');
+        render(<PublishScreen view={view} previewHref="/curation/preview/x" openFix={null} action={action} />);
+        const button = screen.getByRole('button', { name: /^Use the published value\s*: the order of Salt Roads, from Pier lamps' move$/ });
+        expect(button).toHaveAttribute('type', 'submit');
+        const formElement = button.closest('form') as HTMLFormElement;
+        expect(new FormData(formElement).get('intent')).toBe('use-published');
+        expect(new FormData(formElement).get('field')).toBe('photoIds');
+        expect(screen.getByText('This puts back the whole published order of Salt Roads.')).toBeInTheDocument();
+    });
+
+    it('collapses a group of more than 50 rows into a native disclosure, and leaves 50 open', async () => {
+        const { default: PublishScreen } = await import('../PublishScreen');
+        const many = (n: number): ScreenView => {
+            const base = view.ledger.derived[0];
+            const rows = Array.from({ length: n }, (_, index) => ({ ...base, id: `chg-${index.toString(16).padStart(16, '0')}`, summary: `Recalculated row ${index}` }));
+            return { ...view, ledger: { ...view.ledger, derived: rows } };
+        };
+        const { container, unmount } = render(<PublishScreen view={many(51)} previewHref="/curation/preview/x" openFix={null} action={action} />);
+        const group = container.querySelector('section[data-group="derived"]') as HTMLElement;
+        const details = group.querySelector('details');
+        expect(details).not.toBeNull();
+        expect(details?.open).toBe(false);
+        expect(within(group).getByText('Show all 51 changes in this group')).toBeInTheDocument();
+        unmount();
+        const fifty = render(<PublishScreen view={many(50)} previewHref="/curation/preview/x" openFix={null} action={action} />);
+        expect(fifty.container.querySelector('section[data-group="derived"] details')).toBeNull();
+    });
+
+    it('opens a collapsed group when a link jumps to a row inside it', async () => {
+        const { jumpTo } = await import('../jump');
+        document.body.innerHTML = '<details><summary>Show</summary><p id="chg-target-summary" tabindex="-1">Row</p></details>';
+        const details = document.querySelector('details') as HTMLDetailsElement;
+        // jsdom lays nothing out, so it has no scrollIntoView.
+        (document.getElementById('chg-target-summary') as HTMLElement).scrollIntoView = () => undefined;
+        jumpTo({ preventDefault: () => undefined } as never, 'chg-target-summary');
+        expect(details.open).toBe(true);
+        expect(document.activeElement?.id).toBe('chg-target-summary');
+    });
+
+    it('says Base moved when the watch finds another revision live, in the one live region and on the ledger', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+            const { default: PublishScreen } = await import('../PublishScreen');
+            const live = { revisionId: `rev_${'c'.repeat(64)}`, number: 3, hash: 'cccccccc' };
+            const watch = vi.fn(async (): Promise<WatchAnswer> => ({ kind: 'base-moved', live }));
+            const { container } = render(<PublishScreen view={view} previewHref="/curation/preview/x" openFix={null} action={action} watch={watch} />);
+            expect(watch).not.toHaveBeenCalled();
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(60_000);
+            });
+            expect(watch).toHaveBeenCalledTimes(1);
+            expect(watch).toHaveBeenCalledWith({ draftId: view.draftId, active: view.active.revisionId });
+            const regions = container.querySelectorAll('[role="status"]');
+            expect(regions).toHaveLength(1);
+            expect(regions[0]).toHaveTextContent('Base moved. Revision 3 went live after this page loaded. Load the updated ledger.');
+            expect(screen.getByText(/^Base moved\. Revision 3 went live after this page loaded, so this compares/)).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: 'Load the updated ledger' })).toHaveAttribute('href', '/curation/publish');
+            expect(container.querySelector('button[value="validate"]')).toBeNull();
+            void fireEvent;
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

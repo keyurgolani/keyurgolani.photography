@@ -33,6 +33,13 @@ import type { AuthoredPhoto, AuthoredSeries, CandidateContent, CandidatePhotoRec
  *   series, or a new Work order. A move is never also an add and a remove.
  * - `visibility`: a published series made hidden or draft.
  * - `route`: a series' slug or aliases.
+ * - A series' chapters give a row each, `chapters[<chapterId>]` (A9): `new`,
+ *   `removed`, a title as `authored`, and a start photograph as `moved`. A
+ *   change no chapter row says, such as a new order of the same chapters,
+ *   is one `chapters` row. Every chapter row rests on the `chapters` stamp.
+ * - A move's effect on the rest of its series, the photographs that shift
+ *   place without moving themselves, is the series' derived row's
+ *   `positions` (A9).
  * - `missing`: a published photo whose source is missing. Source health,
  *   not a change: #17 keeps the published asset, so visitors see nothing.
  */
@@ -59,6 +66,8 @@ export interface CatalogChange {
     after: Json;
     /** A derived row's fields. */
     fields?: string[];
+    /** A series' derived row: how many photographs outside the moves shift place, and by how many places when they all shift alike. */
+    positions?: Positions;
     /** The change that brought this one, as new bytes bring new derivatives. */
     causedBy?: string;
     visible: boolean;
@@ -69,6 +78,12 @@ export interface CatalogChange {
     stale: boolean;
     /** One line for the ledger. */
     summary: string;
+}
+
+/** `shifted` photographs change place without moving themselves; `by` places later (negative: earlier), or null when they shift by different amounts. */
+export interface Positions {
+    shifted: number;
+    by: number | null;
 }
 
 export interface CatalogDiff {
@@ -124,6 +139,7 @@ interface Row {
     before: unknown;
     after: unknown;
     fields?: string[];
+    positions?: Positions;
     causedBy?: { record: IssueRecord; field: string; category: ChangeCategory };
     visible?: boolean;
     surfaces: Surface[];
@@ -181,6 +197,30 @@ function placements(series: readonly SeriesRecord[]): Map<string, { seriesId: st
     }
     return out;
 }
+
+/** The photographs in both lists, outside `moved`, whose place changes, and by how much when alike. Null when none do. */
+export function positionsOf(before: readonly string[], after: readonly string[], moved: ReadonlySet<string>): Positions | null {
+    const position = new Map(after.map((id, index) => [id, index]));
+    const shifts: number[] = [];
+    before.forEach((id, index) => {
+        const to = position.get(id);
+        if (to === undefined || moved.has(id) || to === index) return;
+        shifts.push(to - index);
+    });
+    if (shifts.length === 0) return null;
+    return { shifted: shifts.length, by: shifts.every((shift) => shift === shifts[0]) ? shifts[0] : null };
+}
+
+/** "5 other photographs shift one place later", for a ledger line. */
+export function positionsPhrase({ shifted, by }: Positions): string {
+    const one = shifted === 1;
+    const subject = `${shifted} other ${one ? 'photograph' : 'photographs'}`;
+    if (by === null) return `${subject} ${one ? 'changes' : 'change'} place`;
+    const places = Math.abs(by) === 1 ? 'one place' : `${Math.abs(by)} places`;
+    return `${subject} ${one ? 'shifts' : 'shift'} ${places} ${by > 0 ? 'later' : 'earlier'}`;
+}
+
+type Chapter = SeriesRecord['chapters'][number];
 
 const present = (record: object, field: string) => (record as Record<string, unknown>)[field] !== undefined;
 /** The fields either record has, sorted. */
@@ -252,6 +292,7 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
             const a = (was as Record<string, unknown>)[field];
             const b = (now as Record<string, unknown>)[field];
             if (same(a, b)) continue;
+            if (field === 'chapters' && chapterRows(record, now.title || id, was, now)) continue;
             rows.push({
                 record, field, category: kind, before: a, after: b,
                 surfaces: withHome(id, SERIES_SURFACES[field] ?? ['series']), provenance: 'authored', refs: [ref(record, field)],
@@ -260,15 +301,20 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
         }
         const derived = [...new Set([...Object.keys(was.derived), ...Object.keys(now.derived)])].sort(compare)
             .filter((field) => !same((was.derived as Record<string, unknown>)[field], (now.derived as Record<string, unknown>)[field]));
-        if (derived.length > 0) {
+        const moved = movedIds(was.photoIds, now.photoIds);
+        const positions = positionsOf(was.photoIds, now.photoIds, moved);
+        if (derived.length > 0 || positions) {
+            const recalculated = derived.length > 0 ? `${now.title || id}: its counts or dates are recalculated.` : '';
+            const shifted = positions ? positionsPhrase(positions) : '';
             rows.push({
-                record, field: 'derived', category: 'derived', fields: derived,
+                record, field: 'derived', category: 'derived', fields: [...derived, ...(positions ? ['positions'] : [])],
                 before: Object.fromEntries(derived.map((field) => [field, (was.derived as Record<string, unknown>)[field] ?? null])),
                 after: Object.fromEntries(derived.map((field) => [field, (now.derived as Record<string, unknown>)[field] ?? null])),
-                surfaces: withHome(id, ['work', 'series']), provenance: 'derived', refs: [], summary: `${now.title || id}: its counts or dates are recalculated.`,
+                ...(positions ? { positions } : {}),
+                surfaces: withHome(id, ['work', 'series']), provenance: 'derived', refs: [],
+                summary: recalculated && shifted ? `${recalculated} ${shifted.charAt(0).toUpperCase()}${shifted.slice(1)}.` : recalculated || `${now.title || id}: ${shifted}.`,
             });
         }
-        const moved = movedIds(was.photoIds, now.photoIds);
         for (const photoId of [...moved].sort(compare)) {
             rows.push({
                 record, field: `photoIds[${photoId}]`, category: 'moved',
@@ -277,6 +323,54 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
                 summary: `${photoId} moves from position ${was.photoIds.indexOf(photoId) + 1} to ${now.photoIds.indexOf(photoId) + 1} in ${now.title || id}.`,
             });
         }
+    }
+
+    /**
+     * A row per chapter whose change one can say (A9): added, removed, a new
+     * title, a new start photograph. False when none says what changed, so
+     * the caller keeps the one whole-field row.
+     */
+    function chapterRows(record: IssueRecord, title: string, was: SeriesRecord, now: SeriesRecord): boolean {
+        const before = new Map(was.chapters.map((chapter) => [chapter.id, chapter]));
+        const after = new Map(now.chapters.map((chapter) => [chapter.id, chapter]));
+        const start = (series: SeriesRecord, chapter: Chapter) => ({ startPhotoId: chapter.startPhotoId, position: series.photoIds.indexOf(chapter.startPhotoId) + 1 });
+        const common = { record, surfaces: withHome(record.id, ['series']), provenance: 'authored' as const, refs: [ref(record, 'chapters')] };
+        let said = 0;
+        for (const chapterId of [...new Set([...before.keys(), ...after.keys()])].sort(compare)) {
+            const a = before.get(chapterId);
+            const b = after.get(chapterId);
+            const field = `chapters[${chapterId}]`;
+            if (!a && b) {
+                rows.push({ ...common, field, category: 'new', before: null, after: { title: b.title, startPhotoId: b.startPhotoId }, summary: `${title}: a new chapter, ${b.title}, starts at ${b.startPhotoId}.` });
+                said += 1;
+            } else if (a && !b) {
+                rows.push({ ...common, field, category: 'removed', before: { title: a.title, startPhotoId: a.startPhotoId }, after: null, summary: `${title}: the chapter ${a.title} goes.` });
+                said += 1;
+            } else if (a && b) {
+                if (a.title !== b.title) {
+                    rows.push({ ...common, field, category: 'authored', before: a.title, after: b.title, summary: `${title}: the chapter ${a.title} is renamed ${b.title}.` });
+                    said += 1;
+                }
+                if (a.startPhotoId !== b.startPhotoId) {
+                    rows.push({ ...common, field, category: 'moved', before: start(was, a), after: start(now, b), summary: `${title}: the chapter ${b.title} starts at ${b.startPhotoId} now.` });
+                    said += 1;
+                }
+                // A field a chapter gains later is the whole-field row's to say.
+                const known = (chapter: Chapter) => ({ ...chapter, title: '', startPhotoId: '' });
+                if (!same(known(a), known(b))) return rowsUndone(said);
+            }
+        }
+        if (said === 0) return false;
+        // Every chapter row says its part; an order change among the rest is still the whole field's.
+        const order = (chapters: readonly Chapter[]) => chapters.map((chapter) => chapter.id).filter((chapterId) => before.has(chapterId) && after.has(chapterId));
+        if (!same(order(was.chapters), order(now.chapters))) return rowsUndone(said);
+        return true;
+    }
+
+    /** Take back the last `n` chapter rows, so the whole-field row says the change instead. */
+    function rowsUndone(n: number): false {
+        rows.splice(rows.length - n, n);
+        return false;
     }
 
     /** The authored fields behind a series leaving the site. */
@@ -398,6 +492,7 @@ export function diffCatalog(input: DiffInput): CatalogDiff {
             before: json(row.before),
             after: json(row.after),
             ...(row.fields ? { fields: row.fields } : {}),
+            ...(row.positions ? { positions: row.positions } : {}),
             ...(row.causedBy ? { causedBy: changeId(row.causedBy.record, row.causedBy.field, row.causedBy.category) } : {}),
             visible,
             surfaces: row.surfaces,
