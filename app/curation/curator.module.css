@@ -983,6 +983,10 @@ main.state {
 
   .body > .list,
   .detail > .fields {
+    /* Each panel scrolls on its own, so it's the containing block of the hidden text inside it (a row's checkbox
+       name, Archive's spoken reason line, Confirm unavailable's note): nothing positioned in it gives the window room
+       to scroll (#145, A8's CI and review). */
+    position: relative;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;

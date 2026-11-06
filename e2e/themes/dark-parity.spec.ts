@@ -799,12 +799,12 @@ const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width) => {
         { page, width, selector: 'body > next-route-announcer', maxDelta: tall, why },
         { page, width, selector: 'div:has(> main > #inbox-list)', properties: ['display'], maxDelta: tall, why },
         { page, width, selector: 'main:has(> #inbox-list)', maxDelta: tall, why },
-        { page, width, selector: '#inbox-list', properties: ['overflow-x', 'overflow-y'], maxDelta: tall, why },
+        { page, width, selector: '#inbox-list', properties: ['overflow-x', 'overflow-y', 'position'], maxDelta: tall, why },
         { page, width, selector: '#item', maxDelta: tall, why },
         { page, width, selector: '#item > div:nth-of-type(2)', properties: ['overflow-x', 'overflow-y'], maxDelta: tall, why },
         { page, width, selector: '#item > div:nth-of-type(2) > div:nth-of-type(1)', properties: ['position'], maxDelta: 57, why },
         { page, width, selector: '#item > div:nth-of-type(2) > div:nth-of-type(1) > img', maxDelta: 28.5, why },
-        { page, width, selector: '#item > div:nth-of-type(3)', properties: ['overflow-x', 'overflow-y'], maxDelta: tall, why },
+        { page, width, selector: '#item > div:nth-of-type(3)', properties: ['overflow-x', 'overflow-y', 'position'], maxDelta: tall, why },
     ];
 });
 

@@ -517,6 +517,9 @@ test('keeps the curator where they were after Save edits from the plain inbox UR
     test.skip(isMobile, 'a wide screen shows an item on the plain inbox URL');
     await openInbox(page);
     await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
+    // #145: on a wide screen the window has no room to scroll at all, so no scroll into view can move it (A8's review).
+    const room = () => page.evaluate(() => document.scrollingElement!.scrollHeight - window.innerHeight);
+    expect(await room()).toBe(0);
     await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall, saved from the plain inbox URL.');
     const save = page.getByRole('button', { name: 'Save edits' });
     // On a wide screen the form scrolls on its own (#145), so its place is the one to keep.
@@ -532,6 +535,7 @@ test('keeps the curator where they were after Save edits from the plain inbox UR
     await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
     await expect.poll(() => form.evaluate((element) => element.scrollTop)).toBeCloseTo(before, 0);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(await room()).toBe(0);
     await expect(answer(page, 'done')).toBeInViewport();
     expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.edits?.description).toMatchObject({ text: 'A harbor wall, saved from the plain inbox URL.' });
 });
