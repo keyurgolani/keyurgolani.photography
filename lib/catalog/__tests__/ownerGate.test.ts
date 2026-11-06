@@ -59,7 +59,7 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         const outside = path.join(base, 'outside');
         fs.mkdirSync(outside);
         fs.symlinkSync(root, path.join(outside, 'root-link'));
-        const at = (argv: string[]) => commandAccess(argv, { tty: false, root })?.access;
+        const at = (argv: string[]) => commandAccess(argv, { root })?.access;
         expect(at(['migrate', '--dry-run', '--out', path.join(outside, 'migration')])).toBe('read');
         expect(at(['migrate', '--dry-run', '--out', path.join(outside, 'root-link', 'identity', 'new')])).toBe('migration-plan');
         expect(at(['curation', 'session-secret', '--out', path.join(outside, 's.key')])).toBe('read');
@@ -67,12 +67,11 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         expect(at(['curation', 'session-secret', '--out', path.join(root, 'locks', 'stray.key')])).toBe('credential');
         // A data root reached through a symlink of its own.
         fs.symlinkSync(root, path.join(base, 'data-link'));
-        expect(commandAccess(['curation', 'session-secret', '--out', path.join(root, 'x.key')], { tty: false, root: path.join(base, 'data-link') })?.access).toBe('credential');
+        expect(commandAccess(['curation', 'session-secret', '--out', path.join(root, 'x.key')], { root: path.join(base, 'data-link') })?.access).toBe('credential');
     });
 
     it('answers by flag where a flag makes a writer', () => {
-        const ctx = { tty: false, root: '/data/portfolio' };
-        const at = (argv: string[], tty = false) => commandAccess(argv, { ...ctx, tty })?.access;
+        const at = (argv: string[]) => commandAccess(argv, { root: '/data/portfolio' })?.access;
         expect(at(['purge', 'ph_x', '--reason', 'r'])).toBe('locking-read');
         expect(at(['purge', 'ph_x', '--reason', 'r', '--yes'])).toBe('tombstone');
         expect(at(['purge', '--revoke', 'tomb_x', '--reason', 'r', '--yes'])).toBe('revoke');
@@ -86,7 +85,6 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         expect(at(['carry-over'])).toBe('read');
         expect(at(['carry-over', '--apply'])).toBe('authored');
         expect(at(['rollback', '--to', '1'])).toBe('locking-read');
-        expect(at(['rollback', '--to', '1'], true)).toBe('locking-read');
         expect(at(['rollback', '--to', '1', '--yes'])).toBe('catalog');
         expect(at(['publish', '--dry-run'])).toBe('catalog');
         expect(at(['migrate', '--dry-run'])).toBe('migration-plan');

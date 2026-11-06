@@ -877,7 +877,7 @@ async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
     // The A11 round 3 rule: a command that takes a lock or writes under the data root runs only as the data root's
     // owner, the uid web runs as, and refuses before its first lock otherwise (lib/catalog/owner-gate.ts).
-    const wrongOwner = ownerGate(argv, { tty: process.stdin.isTTY === true, root: dataRoot() });
+    const wrongOwner = ownerGate(argv, { root: dataRoot() });
     if (wrongOwner) {
         console.error(`[photos] WRONG_OWNER: ${wrongOwner}`);
         return 1;

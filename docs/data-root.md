@@ -141,7 +141,7 @@ So there is one rule: a command that takes a lock or writes anything under the d
 | `describe --import` | without `--dry-run` | working-layer records |
 | `carry-over` | `--apply` | working-layer records, Inbox items |
 | `publish` | always, `--dry-run` included | the candidate and diagnostics; with no `--dry-run`, the revision, activation and pointer |
-| `rollback` | `--yes`, or in a terminal, where it asks and then writes | an activation and the pointer, the working layer |
+| `rollback` | `--yes` | an activation and the pointer, the working layer |
 | `verify` | always | `status/verify.json` |
 | `curation edit`, `approve`, `defer`, `dismiss`, `retry`, `reopen`, `confirm`, `bind`, `archive`, `resolve`, `confirm-missing` | always | Inbox items in `curation/`, decisions, working-layer records |
 | `purge` | `--yes` | a tombstone in `catalog/tombstones/` |
@@ -149,10 +149,11 @@ So there is one rule: a command that takes a lock or writes anything under the d
 | `gc` | `--apply` | GC's markers in `catalog/tombstones/`, then the deletes |
 | `gc --set-aside` | always | a folder moved into `trash/` |
 | `purge`, `purge --revoke`, `gc` | dry runs too: without `--yes`, `--apply` or `--set-aside` | lock files in `locks/`: they take the catalog lock, and `purge` and `gc` the authored lock too, to read |
+| `rollback` | without `--yes` too, in a terminal or not | lock files in `locks/`: to the live revision it finishes a crashed activation under the catalog lock, and in a terminal it asks and then writes |
 | the watcher (`imageWatcher.mjs`, `--watch` and `--once`) | always | the registry, sets, staging, Inbox items, `status/watcher.json` |
 | the curator (the server with `CURATION_ENABLED=true`) | at its start | Inbox items, decisions, working-layer records, their locks |
 
-Lock-free, so they run as any uid: `status`, `list`, `validate`, `diff`, `history`, `identity status`, `curation list` and `show`, `describe --import --dry-run`, `carry-over` without `--apply`, `rollback` without `--yes` and with no terminal, to a revision that isn't the live one (it plans before it takes the catalog lock, and stops to ask for `--yes`), `migrate --dry-run --out` outside the data root, the healthcheck, `watcherHealth.mjs`, and visitor `web`. `curation hash-passphrase` and `session-secret` write only their `--out` file: outside the data root they run as any uid, and with an `--out` that resolves inside it, through a symlink too, they refuse like any writer. `migrate --dry-run --out` is compared the same way, by the realpath of each path's nearest existing folder. An `identity` or `curation` subcommand the table doesn't know refuses too. Not lock-free yet: `rollback --to` the live revision, without `--yes`, finishes a crashed activation under the catalog lock, as `photos rollback` always has, so a non-owner run of it still takes that lock; the gate lets it through as a reader for now. Each was traced: a run of it with every write under the data root logged, and a read of its lock calls.
+Lock-free, so they run as any uid: `status`, `list`, `validate`, `diff`, `history`, `identity status`, `curation list` and `show`, `describe --import --dry-run`, `carry-over` without `--apply`, `migrate --dry-run --out` outside the data root, the healthcheck, `watcherHealth.mjs`, and visitor `web`. `curation hash-passphrase` and `session-secret` write only their `--out` file: outside the data root they run as any uid, and with an `--out` that resolves inside it, through a symlink too, they refuse like any writer. `migrate --dry-run --out` is compared the same way, by the realpath of each path's nearest existing folder. An `identity` or `curation` subcommand the table doesn't know refuses too. Each was traced: a run of it with every write under the data root logged, and a read of its lock calls. Lock-taking reads, the owner's only: `purge` and `purge --revoke` without `--yes`, `gc` without `--apply` or `--set-aside`, and `rollback` without `--yes`, in a terminal or not.
 
 ### Who owns the photos
 

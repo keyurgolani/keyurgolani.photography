@@ -26,13 +26,14 @@ import { writerGate, type WriterKind } from './data-root-owner';
  * Read here means it takes no lock and writes nothing under the data root,
  * as traced over each command's run and its lock calls (round 3b): status,
  * list, validate, diff, history, identity status, curation list and show,
- * describe --import --dry-run, carry-over without --apply, rollback without
- * --yes outside a terminal (it plans before it takes the catalog lock, and
- * stops at CONFIRMATION_REQUIRED), migrate --dry-run --out outside the data
- * root, and the credential commands, which write only their --out file. A
- * lock is a write, a lock file in locks/, so a dry run that takes a lock to
- * read refuses too, as locking-read: purge and purge --revoke without --yes,
- * and gc without --apply or --set-aside. A dry run that writes files is a
+ * describe --import --dry-run, carry-over without --apply, migrate --dry-run
+ * --out outside the data root, and the credential commands with an --out
+ * outside it. A lock is a write, a lock file in locks/, so a dry run or read
+ * that takes a lock refuses too, as locking-read: purge and purge --revoke
+ * without --yes, gc without --apply or --set-aside, and every rollback
+ * without --yes, terminal or not (round 4, option b). To the live revision,
+ * rollback settles a crashed activation under the catalog lock, as it
+ * always has; in a terminal it asks and then writes. A dry run that writes files is a
  * writer: publish --dry-run writes its candidate and diagnostics, and
  * migrate --dry-run its plan, unless --out puts the plan outside the data
  * root.
@@ -41,8 +42,6 @@ import { writerGate, type WriterKind } from './data-root-owner';
 export type Access = 'read' | WriterKind;
 
 export interface GateContext {
-    /** Whether stdin is a terminal, where rollback asks to confirm and then writes. */
-    tty: boolean;
     /** The data root the command would use, or null when it has none. */
     root: string | null;
 }
@@ -129,7 +128,8 @@ export const PHOTOS_ACCESS: Record<string, Rule> = {
     diff: 'read',
     review: 'authored',
     history: 'read',
-    rollback: (args, { tty }) => (has(args, 'yes') || tty ? 'catalog' : 'read'),
+    // Round 4, option (b): without --yes it settles a crashed activation under the catalog lock when the target is live, and in a terminal it asks and then writes.
+    rollback: (args) => (has(args, 'yes') ? 'catalog' : 'locking-read'),
     verify: 'verify',
     curation: (args, { root }) => {
         const sub = args[0] ?? '';
