@@ -167,3 +167,40 @@ describe('the legacy photo list', () => {
     expect(await outsideTests(['-E', '-e', 'fetch\\([\'"`]/api/photos[\'"`?]'])).toEqual([]);
   });
 });
+
+describe("CI's retried browser installs", () => {
+  /**
+   * Every workflow step that retries a bounded install: its step timeout, how many tries, each try's bound, and the
+   * bound on the clean-up between tries. Read as text, one step to a block, as the other workflow tests do.
+   */
+  async function retriedSteps() {
+    const dir = path.join(REPO_ROOT, '.github', 'workflows');
+    const steps = [];
+    for (const name of (await fs.readdir(dir)).filter((file) => /\.ya?ml$/.test(file)).sort()) {
+      const text = await fs.readFile(path.join(dir, name), 'utf8');
+      for (const step of text.split(/\n(?= +- (?:name|uses|run|if|id):)/)) {
+        const loop = /for try in ([\d ]+); do/.exec(step);
+        if (!loop) continue;
+        steps.push({
+          where: `${name}: ${/name: (.+)/.exec(step)?.[1] ?? 'a step'}`,
+          minutes: Number(/timeout-minutes: (\d+)/.exec(step)?.[1]),
+          tries: loop[1].trim().split(/\s+/).length,
+          tryBound: Number(/\btimeout (\d+) npx playwright install\b/.exec(step)?.[1]),
+          cleanupBound: Number(/\btimeout (\d+) dpkg --configure -a\b/.exec(step)?.[1]),
+        });
+      }
+    }
+    return steps;
+  }
+
+  it('give every try its full bound, and the clean-up between tries its own, inside the step timeout with a minute to spare', async () => {
+    const steps = await retriedSteps();
+    expect(steps.map((step) => step.where)).toEqual(['ci.yml: Install Playwright browsers', 'ci.yml: Install Chromium']);
+    for (const step of steps) {
+      // A hung dpkg would otherwise eat the next try's time, so the clean-up is bounded too.
+      expect(step.cleanupBound, step.where).toBeGreaterThan(0);
+      const worst = step.tries * step.tryBound + (step.tries - 1) * step.cleanupBound;
+      expect(step.minutes * 60, `${step.where}: ${step.tries} tries of ${step.tryBound} s and ${step.tries - 1} clean-ups of ${step.cleanupBound} s`).toBeGreaterThanOrEqual(worst + 60);
+    }
+  });
+});
