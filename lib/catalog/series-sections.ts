@@ -7,8 +7,8 @@ import type { SeriesChapter, SeriesEntry } from './projections/series';
  * page Show more and Show earlier would reach. Within #6's approved bounds:
  * at most 100 photo records, and 100 KiB compressed for the first page,
  * 60 KiB for a continuation page; lib/perf's budget tests hold every page
- * to its two. Here, apart from the server-only
- * projection, so the client can name the range a control will load.
+ * to its two. Here, apart from the server-only projection, so the client
+ * can name the range a control will load.
  */
 export const SERIES_PAGE_SIZE = 100;
 
