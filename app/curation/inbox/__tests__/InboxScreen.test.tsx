@@ -187,6 +187,23 @@ describe('the bulk actions', () => {
         for (const box of boxes) expect(box.closest('a')).toBeNull();
     });
 
+    it("keep the rows where next has them, in the list's own lists, with each checkbox in the bulk form by its form attribute (A8's CI, Dark parity)", () => {
+        const { container } = render(<InboxList view={view({ items: three() })} query={ANY} />);
+        const list = container.querySelector('#inbox-list') as HTMLElement;
+        const bulk = screen.getByRole('form', { name: 'Bulk actions' }) as HTMLFormElement;
+        // next's rows: a ul of the list's own, or of a group's, and never inside a form.
+        const rows = [...list.querySelectorAll('a[data-row]')];
+        expect(rows).toHaveLength(4);
+        expect(list.querySelectorAll(':scope > ul > li > a[data-row], :scope > div > ul > li > a[data-row]')).toHaveLength(4);
+        for (const row of rows) expect(row.closest('form')).toBeNull();
+        for (const box of screen.getAllByRole('checkbox') as HTMLInputElement[]) {
+            expect(box.closest('form')).toBeNull();
+            expect(box.form).toBe(bulk);
+        }
+        // The form, with its buttons and answers, sits above the rows it acts on.
+        expect(bulk.compareDocumentPosition(rows[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it('send one version per checked item, the active revision, and which action', async () => {
         render(<InboxList view={view({ items: three() })} query={ANY} />);
         fireEvent.click(screen.getByRole('checkbox', { name: 'Select photo-1.jpg' }));
@@ -412,6 +429,17 @@ describe('the poll', () => {
         expect(fetcher).toHaveBeenCalledTimes(2);
         // Said once (N3): the same node, not a new one with the same words.
         expect(region.querySelector('p')).toBe(said);
+    });
+
+    it("puts its strips straight into the page, with no wrapper of its own, where next's watcher strip was (A8's CI, Dark parity)", () => {
+        render(
+            <div data-testid="page">
+                <InboxWatch watcher={{ state: 'missing' }} cursor={7} needsJudgment={2} item={null} />
+            </div>,
+        );
+        const page = screen.getByTestId('page');
+        expect(screen.getByRole('region', { name: 'Watcher' }).parentElement).toBe(page);
+        expect(screen.getByRole('status', { name: 'Inbox updates' }).parentElement).toBe(page);
     });
 
     it('shows the watcher strip when the watcher stops checking in while the page is open', async () => {
