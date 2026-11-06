@@ -951,14 +951,25 @@ describe('every stop after the rename puts the folder back (item 14, and the loc
 describe("the library guard's identity half, as a bind mount looks (item 15)", { timeout: 120_000 }, () => {
     afterEach(() => vi.restoreAllMocks());
 
-    /** Make statSync report `as`'s dev and inode for `file`, as a bind mount of `as` at `file` would. Every other path stats as it is. */
+    /**
+     * Make statSync report `as`'s dev and inode for `file`, as a bind mount of `as` at `file` would. Every other path
+     * stats as it is. A mount answers for every spelling of its path, so this matches by realpath: on macOS the temp
+     * root is under /var, a symlink to /private/var, and a path compared as written never met the realpath.
+     */
     function bindMount(file: string, as: string): void {
         const real = fs.statSync;
         const fake = real(as);
         const target = fs.realpathSync(file);
+        const realpathOf = (each: string) => {
+            try {
+                return fs.realpathSync(each);
+            } catch {
+                return null;
+            }
+        };
         vi.spyOn(fs, 'statSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
             const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
-            if (typeof each !== 'string' || path.resolve(each) !== target || !stat) return stat;
+            if (typeof each !== 'string' || !stat || realpathOf(each) !== target) return stat;
             return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { dev: fake.dev, ino: fake.ino });
         }) as typeof fs.statSync);
     }
