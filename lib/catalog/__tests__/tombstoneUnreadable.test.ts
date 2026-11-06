@@ -98,12 +98,15 @@ describe('a purged set whose tombstone cannot be read (A11, ruling a)', { timeou
             const back = await rollback({ dataRoot: built.root, revisionId: built.revisions[1], expectedActiveRevisionId: built.revisions[3], actor: 'test', reason: 'bring it back', logger: quiet });
             expect(back.outcome).toBe('VALIDATION_FAILED');
             expect(JSON.stringify(back)).toMatch(/assets\.tombstoned/);
+            // The fail-closed finding itself, not a finding about D, since D's tombstone can't be read.
+            expect(JSON.stringify(back)).toMatch(/catalog\/tombstones\/tomb_[0-9a-f-]+\.json can't be read as a takedown record: /);
             expect((await readActivePointer(built.root))?.revisionId).toBe(built.revisions[3]);
 
             const out = await publish({ dataRoot: built.root, actor: 'test', logger: quiet });
             expect(out.outcome).toBe('VALIDATION_FAILED');
             expect(out.errors).toBeGreaterThan(0);
             expect(JSON.stringify(out.issues)).toMatch(/assets\.tombstoned/);
+            expect(JSON.stringify(out.issues)).toMatch(/catalog\/tombstones\/tomb_[0-9a-f-]+\.json can't be read as a takedown record: /);
             expect((await readActivePointer(built.root))?.revisionId).toBe(built.revisions[3]);
         });
     }
