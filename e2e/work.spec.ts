@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { Locator, Page, Route } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
@@ -584,9 +585,9 @@ test.describe('with the pointer missing', () => {
 
     test.beforeAll(async () => {
         test.setTimeout(HOOK_TIMEOUT);
-        // Under Playwright's own output folder, which it clears itself, so nothing here deletes it.
+        // In a temp folder of its own: createTestCatalog refuses one inside the repo, which Playwright's output folder is. Nothing here deletes it.
         own = await createTestCatalog({
-            root: test.info().outputPath(`missing-pointer-${Date.now()}`),
+            root: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-missing-pointer-')), 'root'),
             seed: 47,
             withAssets: true,
             photos: [0, 1].map((n) => ({ id: missingId(n), width: 900, height: 600 })),
