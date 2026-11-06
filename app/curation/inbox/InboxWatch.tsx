@@ -29,8 +29,9 @@ interface InboxWatchProps {
 export default function InboxWatch({ watcher, needsJudgment, cursor, item }: InboxWatchProps) {
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
     const [offline, setOffline] = useState(false);
-    // The new-items line, with its Refresh link, stays until the page refreshes; a later line that says nothing of new
-    // items goes beside it, so the prompt to refresh is never lost. Each is a node of its own, read once when it lands.
+    // The new-items line, with its Refresh link, stays until the page refreshes or more items arrive; everything else an
+    // answer says is the other line, beside it, so the prompt to refresh is never lost. Each is a node of its own, read
+    // once when it lands.
     const [arrival, setArrival] = useState<{ text: string; serial: number } | null>(null);
     const [line, setLine] = useState<{ text: string; serial: number } | null>(null);
     const page = useRef<InboxPageFacts>({ needsJudgment, watcher, item });
@@ -59,14 +60,12 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                 setOffline(false);
                 if (answer.rebased) since.current = answer.summary.cursor;
             } else if (news.offline) setOffline(true);
-            if (news.line) {
-                serial += 1;
-                if (news.refresh) {
-                    // New arrivals: the line says everything this answer had, so what stood beside the last one goes.
-                    setArrival({ text: news.line, serial });
-                    setLine(null);
-                } else setLine({ text: news.line, serial });
-            }
+            if (news.arrival || news.line) serial += 1;
+            // New arrivals replace the new-items line. The other line holds the rest of this answer: it replaces what
+            // stood there, and new arrivals with nothing else to say clear it, so nothing from an older answer lingers.
+            if (news.arrival) setArrival({ text: news.arrival, serial });
+            if (news.line) setLine({ text: news.line, serial });
+            else if (news.arrival) setLine(null);
             // With the version the page showed, so the item raises its alert only while it still shows that one (S4).
             if (news.itemChanged && page.current.item) window.dispatchEvent(new CustomEvent(ITEM_CHANGED_EVENT, { detail: { id: page.current.item.id, version: news.changedFrom } }));
         };

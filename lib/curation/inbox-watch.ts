@@ -258,7 +258,12 @@ export interface InboxPageFacts {
 }
 
 export interface InboxNews {
-    /** What the polite region says, or '' for nothing new. */
+    /**
+     * The new-items sentence, or '' for none. The polite region keeps it, with the "Refresh the inbox" link after it,
+     * until the page refreshes, so it comes apart from the rest of the answer, which a later answer replaces.
+     */
+    arrival: string;
+    /** What else the polite region says, every other sentence of this answer, or '' for nothing new. */
     line: string;
     /** What it said, so the next answer doesn't say it again. */
     keys: string[];
@@ -268,8 +273,6 @@ export interface InboxNews {
     itemChanged: boolean;
     /** The version the page showed when it changed, so the item raises its alert only while it still shows that one (S4). */
     changedFrom: number | null;
-    /** The line tells of new items, so the region follows it with the "Refresh the inbox" link. */
-    refresh: boolean;
     offline: boolean;
     /** The watcher as this answer says it, or null when it says nothing about it. */
     watcher: InboxWatcher | null;
@@ -283,7 +286,7 @@ const BACK_LINE = 'Back online. The inbox is checking for changes again.';
  * judgment (by how many more than the page shows), the watcher stopping or coming back, the browser offline or back.
  */
 export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announced: ReadonlySet<string>): InboxNews {
-    const news: InboxNews = { line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, refresh: false, watcher: null };
+    const news: InboxNews = { arrival: '', line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, watcher: null };
     if (answer.kind === 'signed-out' || answer.kind === 'unavailable') return news;
     if (answer.kind === 'offline') {
         news.offline = true;
@@ -305,8 +308,7 @@ export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announ
     // which an item decided elsewhere would cancel out.
     const more = summary.arrived ?? 0;
     if (more > 0 && !announced.has(`arrived:${more}`)) {
-        lines.push(more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`);
-        news.refresh = true;
+        news.arrival = more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`;
         news.keys.push(`arrived:${more}`);
     }
     const wasRunning = page.watcher.state === 'running';
