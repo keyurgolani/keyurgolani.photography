@@ -1388,6 +1388,12 @@ main.state {
   border-bottom: 1px solid var(--curator-rule);
 }
 
+/* The checkbox's name is visually hidden text, absolutely positioned. The column is its containing block, so its box
+   stays inside the list's own scroll and never gives the window room to scroll on a wide screen (#145, A8's CI). */
+.pick {
+  position: relative;
+}
+
 .pickRow > .item {
   grid-column: 2;
 }

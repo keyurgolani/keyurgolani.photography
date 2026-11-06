@@ -27,6 +27,13 @@ describe("the Inbox row's checkbox column", () => {
         expect(declarations('.pickSpacer').width).toBe('44px');
     });
 
+    // A8's CI, run 42220768870: each checkbox's name is visually hidden text, absolutely positioned. With no positioned
+    // ancestor its box hung from the page, at its place down the list's own scroll, so the window had room to scroll on
+    // a wide screen, which #145 says it never does. The column it sits in is its containing block.
+    it("holds its checkbox's hidden name, so the list's rows never give the window room to scroll", () => {
+        expect(declarations('.pick').position).toBe('relative');
+    });
+
     it("puts the row's link in the second column, with next's padding", () => {
         const link = declarations('.pickRow > .item');
         expect(link['grid-column']).toBe('2');
