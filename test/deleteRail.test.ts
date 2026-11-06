@@ -14,10 +14,11 @@ import { REPO_ROOT } from './helpers/runTsx';
  * source tree that can delete a file or a folder is on this list, by file
  * and function, with why it may delete, and any other one fails the build.
  *
- * A new delete call needs an entry here, reviewed like the code. An entry
- * marked `until` is allowed only until that work lands, and that work removes
- * the entry. A12 removed the legacy `utils/imageOptimizer.ts` deletes but
- * `removeQuietly()`, which only clears a build's own temp files.
+ * A new delete call needs an entry here, reviewed like the code. No entry may
+ * carry `until` now: A12 removed the last legacy `utils/imageOptimizer.ts`
+ * deletes but `removeQuietly()`, which only clears a build's own temp files,
+ * and a test pins that none is left. An entry that waits on later work means
+ * changing that test, in review.
  */
 
 interface Allowed {
@@ -95,7 +96,7 @@ const ALLOWLIST: readonly Allowed[] = [
     },
     { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm(created, { recursive: true, force: true })'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
     // The legacy pipeline's one delete left after A12, which removed purgeDynamicCache() and forgetSetSource().
-    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm(file, { force: true })'], reason: 'only the temp files a legacy build staged itself; since A12 nothing but e2e/support/carry-over.ts runs that pipeline, on a temp library' },
+    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm(file, { force: true })'], reason: 'only the temp files a legacy build staged itself; since v1.7.0 nothing shipped runs that pipeline, only e2e/support/carry-over.ts and unit tests, on temp libraries' },
 ];
 
 const SCANNED = shippedFiles();
@@ -190,6 +191,13 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
         // A12 removed purgeDynamicCache() and forgetSetSource(), and with them every `until` entry.
         expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').map((entry) => entry.fn)).toEqual(['removeQuietly']);
         expect(ALLOWLIST.filter((entry) => entry.until !== undefined).map(key)).toEqual([]);
+    });
+
+    it("keeps removeQuietly()'s reason true: no shipped file but the pipeline's own imports utils/imageOptimizer", () => {
+        // The entry matches by file and function, not by caller, so a shipped import of the legacy pipeline would make its reason false with the rail green.
+        const IMPORTS_PIPELINE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:[^'"]*\/)?(?:utils\/)?imageOptimizer(?:\.[cm]?[jt]s)?['"]/;
+        const importers = SCANNED.filter((file) => file !== 'utils/imageOptimizer.ts' && IMPORTS_PIPELINE.test(fs.readFileSync(path.join(REPO_ROOT, file), 'utf8')));
+        expect(importers).toEqual([]);
     });
 
     it('lets a process call past only by its whole call, so changing its arguments fails the rail (items 39a and 43)', () => {

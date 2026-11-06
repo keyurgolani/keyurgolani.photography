@@ -351,6 +351,7 @@
  *     when something took its place, it exits 4 (PUT_BACK_BLOCKED), leaves it
  *     in trash/, and photos status names it with its holder. Emptying trash/
  *     is the owner's own step.
+ *
  *   npx tsx scripts/photos.ts legacy-derivatives [--stdout]
  *     Judge the legacy folders a watcher before v1.7.0 wrote at the top of
  *     the library, for scripts/host/legacy-move-aside.sh. For each of the
