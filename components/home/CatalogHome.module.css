@@ -98,6 +98,8 @@
   font-size: var(--gah-type-ui);
   font-weight: 500;
   text-decoration: none;
+  /* All bodies of work sits beside it on a phone (below). */
+  anchor-name: --home-enter;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -123,6 +125,32 @@
   font-family: var(--gah-font-sans);
   font-size: var(--gah-type-ui);
   text-decoration: none;
+}
+
+/* On a phone at default text it sits beside Enter the series, top to top and the stacked pair's 0.5rem apart, so the
+   story is no taller than without it (B7's CI fix). Under Enter it lifted the copy 52 px, and Dark's fixed phone wash,
+   which stays today's (HomeChrome.module.css), then left the title at 4.03:1 over a white photograph on Pixel 7. Both fit
+   from 360 px in every theme (Inter's advances: 140 + 8 + 153 px, against Bright's 304 px inside the print, the
+   narrowest). Below 360, or with the text enlarged, it stays under Enter, and Dark's wash follows the copy there as it
+   does today. Without anchoring it rides Enter's row at the story's right edge, its margin taking back its height. */
+@media (min-width: 22.5rem) and (max-width: 39.99rem) {
+  @supports (anchor-name: --home-enter) {
+    :global(main:not([data-text-enlarged])) .work {
+      position: absolute;
+      position-anchor: --home-enter;
+      top: anchor(top);
+      left: anchor(right);
+      margin-top: 0;
+      margin-left: 0.5rem;
+    }
+  }
+
+  @supports not (anchor-name: --home-enter) {
+    :global(main:not([data-text-enlarged])) .work {
+      align-self: flex-end;
+      margin-top: -44px;
+    }
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {

@@ -840,7 +840,7 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: 'main > article > header > p:first-child:has(> a[href="/work"])', why: "#173 (B4): the series page's All work link above the title" },
     { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
     // After Enter the series, its last child, so nothing before it in the story changes its path.
-    { selector: '[data-chrome-region="story"] > div > a[href="/work"]:last-child', why: "#4 (B7): Home's All bodies of work link under Enter the series" },
+    { selector: '[data-chrome-region="story"] > div > a[href="/work"]:last-child', why: "#4 (B7): Home's All bodies of work link after Enter the series" },
 ];
 
 /**
