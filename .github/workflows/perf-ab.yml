@@ -50,13 +50,27 @@ jobs:
           fi
 
       # The measuring code, from the commit this run was dispatched from, so base and head are measured by the same
-      # code whatever refs they are. ci/perf only, plus the root files cone mode brings.
+      # code whatever refs they are. ci/perf only, plus the root files cone mode brings. Every branch and tag, with no
+      # file contents but those, so the step after it can resolve the head.
       - name: Check out the tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: tool
           sparse-checkout: ci/perf
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
+
+      # actions/checkout reads a short SHA as a branch name and fails, so the head goes to it as the full SHA of the one
+      # commit it names. A ref that names none, or more than one, stops the run here with the reason.
+      - name: Resolve the head
+        id: head
+        env:
+          HEAD_INPUT: ${{ inputs.head || github.sha }}
+        run: |
+          sha=$(bash tool/ci/perf/resolve-ref.sh tool/.git "$HEAD_INPUT")
+          echo "Head: $HEAD_INPUT is $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Check out the base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +82,7 @@ jobs:
       - name: Check out the head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.head || github.sha }}
+          ref: ${{ steps.head.outputs.sha }}
           path: head
           persist-credentials: false
 

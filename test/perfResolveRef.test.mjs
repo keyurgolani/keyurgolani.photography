@@ -35,6 +35,8 @@ beforeAll(() => {
   }
   // As actions/checkout leaves a full fetch: the branches under refs/remotes/origin, the tags under refs/tags.
   lines.push('reset refs/remotes/origin/feature/fast', 'from :7', '');
+  // The local branch the checkout made, behind origin's after a push mid-run: origin's is the branch.
+  lines.push('reset refs/heads/feature/fast', 'from :11', '');
   lines.push('reset refs/tags/v1.0.0', 'from :5', '');
   lines.push('tag v2.0.0', 'from :6', 'tagger Fixture <fixture@example.invalid> 1700000000 +0000', 'data 7', 'v2.0.0', '');
   lines.push('reset refs/remotes/origin/both', 'from :8', '', 'reset refs/tags/both', 'from :9', '');
@@ -63,6 +65,7 @@ describe('ci/perf/resolve-ref.sh', () => {
 
   it('gives the commit a branch or a tag names, a lightweight or an annotated one', async () => {
     expect(await resolve('main')).toMatchObject({ code: 0, stdout: `${commit(COMMITS)}\n` });
+    // origin's, not the local branch that lags it.
     expect(await resolve('feature/fast')).toMatchObject({ code: 0, stdout: `${commit(7)}\n` });
     expect(await resolve('v1.0.0')).toMatchObject({ code: 0, stdout: `${commit(5)}\n` });
     expect(await resolve('v2.0.0')).toMatchObject({ code: 0, stdout: `${commit(6)}\n` });
