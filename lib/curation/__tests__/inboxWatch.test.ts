@@ -486,6 +486,15 @@ describe('what the watch says', () => {
         expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 9, arrived: 0 }) }, new Set()).line).toBe('');
     });
 
+    it('gives the new-items sentence apart from the rest of the answer, so the Inbox keeps it with its link alone', () => {
+        const news = inboxNews(page, { kind: 'summary', summary: summary({ arrived: 2, watcher: { state: 'missing' } }) }, new Set(['offline']));
+        expect(news.arrival).toBe('2 new items need judgment.');
+        expect(news.line).toBe("Back online. The inbox is checking for changes again. The watcher stopped checking in, so new photographs won't appear here until it runs.");
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }) }, new Set())).toMatchObject({ arrival: '1 new item needs judgment.', line: '' });
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ watcher: { state: 'missing' } }) }, new Set())).toMatchObject({ arrival: '', line: expect.stringMatching(/watcher stopped checking in/) });
+        expect(inboxNews(page, { kind: 'offline' }, new Set())).toMatchObject({ arrival: '', line: OFFLINE_TEXT });
+    });
+
     it('says when the watcher stops checking in and when it is back, each once', () => {
         const stopped = inboxNews(page, { kind: 'summary', summary: summary({ watcher: { state: 'missing' } }) }, new Set());
         expect(stopped).toMatchObject({ line: expect.stringMatching(/watcher stopped checking in/), watcher: { state: 'missing' } });
