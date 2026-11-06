@@ -747,11 +747,15 @@ describe('the poll', () => {
         expect(region).not.toHaveTextContent('1 new item needs judgment.');
         expect(region).not.toHaveTextContent('3 new items need judgment.');
         expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
-        // From the new cursor on, a count is honest again, even one the page said before the restore.
+        // From the new cursor on, a count is said, even one the page said before the restore, but the page is stale until
+        // it refreshes, so the count follows the sentence that says so, in the same line, a new node.
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher.mock.calls.at(-1)?.[0]).toBe('/api/curation/inbox/summary?since=3');
-        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toHaveTextContent(/^3 new items need judgment\. Refresh the inbox$/);
-        expect(region).not.toHaveTextContent('The inbox has changed');
+        const counted = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(counted).toHaveTextContent(/^The inbox has changed since this page loaded\. 3 new items need judgment\. Refresh the inbox$/);
+        expect(counted).not.toBe(changed);
+        expect(region.querySelectorAll('p')).toHaveLength(1);
+        expect(region.textContent?.match(/The inbox has changed/g)).toHaveLength(1);
         expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
     });
 

@@ -294,8 +294,12 @@ describe('what the watch says', () => {
         expect(rebased).toMatchObject({ arrival: 'The inbox has changed since this page loaded.', keys: ['rebased'], forget: ['arrived:3'] });
         const after = new Set(['rebased']);
         expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: null }), rebased: true }, after).arrival).toBe('');
-        // A count from the new cursor is said, even one said before the restore, and a later refusal can be said again.
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, after)).toMatchObject({ arrival: '3 new items need judgment.', keys: ['arrived:3'], forget: ['rebased'] });
+        // A count from the new cursor is said, even one said before the restore, after the sentence that the page is stale,
+        // which stays until it refreshes.
+        const counted = inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, after);
+        expect(counted).toMatchObject({ arrival: 'The inbox has changed since this page loaded. 3 new items need judgment.', keys: ['arrived:3'], forget: [] });
+        // Another refusal after a count says the inbox changed again, alone, and forgets the count; one with no count since says nothing.
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: null }), rebased: true }, new Set(['rebased', 'arrived:3']))).toMatchObject({ arrival: 'The inbox has changed since this page loaded.', forget: ['arrived:3'] });
     });
 
     it('says when the watcher stops checking in and when it is back, each once', () => {
