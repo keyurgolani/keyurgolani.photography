@@ -127,6 +127,11 @@ const rows: Row[] = [
         if (series) series.shortStatement = ' ';
         return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'shortStatement' };
     } },
+    { code: 'series.duplicate-title', gate: 'publish', severity: 'warning', rollbackClass: 'integrity', breakIt: (ctx) => {
+        const [first, second] = ctx.authored?.series ?? [];
+        second.title = first.title;
+        return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'title' };
+    } },
     { code: 'route.slug-format', gate: 'render', severity: 'error', rollbackClass: 'integrity', breakIt: (ctx) => {
         const series = ctx.authored?.series[0];
         if (series) series.slugAliases = ['Fixture_One'];
@@ -558,6 +563,61 @@ describe("photos carry-over's marker", () => {
         // The title is never optional.
         Object.assign(authored, { statement: '', title: ' ' });
         expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} title`]);
+    });
+});
+
+describe('two published series with one title, which Work would show as two links with the same name', () => {
+    const findings = (ctx: RuleContext) => runRules(ctx).filter((issue) => issue.code === 'series.duplicate-title');
+    const titled = (ctx: RuleContext, first: string, second: string) => {
+        const [a, b] = ctx.authored!.series;
+        Object.assign(a, { title: first });
+        Object.assign(b, { title: second });
+        return [a, b];
+    };
+
+    it.each([
+        ['the same title', 'Fixture harbor', 'Fixture harbor'],
+        ['another case', 'Fixture harbor', 'FIXTURE HARBOR'],
+        ['spaces around one', 'Fixture harbor', '  Fixture harbor\t'],
+        ['another Unicode form of the same letters', 'Fixture caf\u00e9', 'Fixture cafe\u0301'],
+        ['a sharp s that folds to ss', 'Fixture stra\u00dfe', 'FIXTURE STRASSE'],
+    ])('warns on %s, on each series, naming both by slug', (_label, first, second) => {
+        const ctx = context();
+        const [a, b] = titled(ctx, first, second);
+        const issues = findings(ctx);
+        expect(issues.map((issue) => [issue.severity, issue.record, issue.field])).toEqual([
+            ['warning', { kind: 'series', id: a.id }, 'title'],
+            ['warning', { kind: 'series', id: b.id }, 'title'],
+        ]);
+        for (const issue of issues) {
+            expect(issue.message).toContain(a.slug);
+            expect(issue.message).toContain(b.slug);
+        }
+        // A warning only: nothing else is wrong, and no error comes with it.
+        expect(runRules(ctx).filter((issue) => issue.severity === 'error')).toEqual([]);
+    });
+
+    it.each([
+        ['different titles', 'Fixture harbor', 'Fixture harbour'],
+        ['a space inside one', 'Fixture harbor', 'Fixture har bor'],
+    ])('says nothing for %s', (_label, first, second) => {
+        const ctx = context();
+        titled(ctx, first, second);
+        expect(findings(ctx)).toEqual([]);
+    });
+
+    it("says nothing for a draft series, which Work doesn't show", () => {
+        const ctx = context();
+        const [, b] = titled(ctx, 'Fixture harbor', 'Fixture harbor');
+        b.visibility = 'draft';
+        expect(findings(ctx)).toEqual([]);
+    });
+
+    it('reads a stored revision too, which holds only published series', () => {
+        const ctx = context();
+        const [first, second] = ctx.candidate.series;
+        second.title = first.title.toUpperCase();
+        expect(findings({ ...ctx, authored: null }).map((issue) => issue.record.id)).toEqual([first.id, second.id]);
     });
 });
 

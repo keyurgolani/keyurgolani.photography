@@ -110,6 +110,28 @@ describe('photos validate', { timeout: 120_000 }, () => {
     });
 });
 
+describe('a title two published series share', { timeout: 120_000 }, () => {
+    it('is a warning on validate and publish, on each series by slug, that never blocks or changes the exit code, and the activation counts it', async () => {
+        // Left under os.tmpdir() for whoever clears it: this test deletes nothing.
+        const catalog = await createTestCatalog({ seed: 131, photos: 3, series: [{ title: 'Fixture harbor' }, { title: 'FIXTURE HARBOR' }], variantBytes: VARIANT_BYTES });
+        const warned = (output: string) => {
+            for (const id of ['ser_fixture-01', 'ser_fixture-02']) {
+                expect(output).toMatch(new RegExp(`^warning series ${id} title: .*fixture-01.*fixture-02.* \\(series\\.duplicate-title\\)$`, 'm'));
+            }
+        };
+        const validated = await photos(catalog.root, ['validate']);
+        expect(validated.code, validated.stderr).toBe(0);
+        expect(validated.stdout).toContain('[photos] VALID: The working layer passes, with 0 errors and 2 warnings.');
+        warned(validated.stdout);
+
+        const published = await photos(catalog.root, ['publish', '--confirm-launch', '--expect', catalog.revisionId, '--reason', 'launch'], { PHOTOS_ACTOR: 'cli-test' });
+        expect(published.code, published.stderr).toBe(0);
+        expect(published.stdout).toContain(`[photos] PUBLISHED: Published ${catalog.revisionId} as revision 1.`);
+        warned(published.stdout);
+        expect((await listActivations(catalog.root))[0]).toMatchObject({ validation: { errors: 0, warnings: 2 } });
+    });
+});
+
 describe('photos publish', { timeout: 120_000 }, () => {
     it('needs an actor, from --actor or PHOTOS_ACTOR, and a well-formed --expect', async () => {
         const catalog = await fixture(103);
