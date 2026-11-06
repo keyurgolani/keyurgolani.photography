@@ -199,6 +199,8 @@ interface Pair {
 }
 
 let browser: Browser;
+/** FORCING: the head's origin. */
+let forcedHead = '';
 
 /** Pass 1's style: no photograph's pixels, and a slide's image off, so whatever is drawn over or around a photograph composites over the same ground in both builds. */
 const NO_PHOTOS = 'img,picture,canvas,video{opacity:0!important}[class$="_slide"],[class*="_slide "]{background-image:none!important}';
@@ -298,11 +300,12 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
             await until("Home's intro in its loading phase", async () => (await page.locator('[class*="grainOverlay"]').count()) === 1 && (await page.locator('main[data-home-intro="loading"]').count()) === 1, 5000);
         }
     }
-    if (js && pair.url === '/' && !motion?.hold) await until("Home's badge", () => page.locator('[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
+    if (js && pair.url === '/' && !motion?.hold) await until("Home's badge", () => page.locator(origin === forcedHead ? '[data-home-badge][data-landed]' : '[data-home-badge][data-landed]:not([data-lingering])').count().then((n) => n > 0), 20_000);
     // Without JavaScript a state act is left out: its row then compares the page at rest, as another pair does, and no
     // act abandoned at 3 s can still be pressing keys during the walk.
     if (js) await pair.act?.(page);
     else if (!pair.gateOnly) await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
+    if (origin === forcedHead && pair.name === 'home-chrome') await page.waitForTimeout(5000);
     await settleImages();
     if (motion && js) {
         await page.evaluate(() => {
@@ -1050,6 +1053,7 @@ function sanctionedFor(pair: Pair, width: number, base: Walk): Record<string, st
  * its loading phase, System against the base's stored `dark`, where the grain and the ripples are.
  */
 async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }, { portrait = false }: { portrait?: boolean } = {}) {
+    forcedHead = origins.head;
     // One throwaway load in each build first: a server derives some things on first ask (About's portrait LQIP), so
     // the first walk of a page could catch one build before it has them.
     for (const [origin, session] of [[origins.base, cookies?.base], [origins.head, cookies?.head]] as const) {
@@ -1103,7 +1107,7 @@ function parity(group: string, pairs: Pair[], origins: () => { base: string; hea
             const { base, head } = origins();
             const cookies = pair.session ? options.session!() : undefined;
             await gate(pair, { base, head }, cookies, { portrait: options.portrait });
-            if (pair.gateOnly) return;
+            return;
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
                     const name = `${pair.name}-${viewport.width}-${scale}x`;
