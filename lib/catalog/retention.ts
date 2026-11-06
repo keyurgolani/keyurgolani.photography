@@ -871,7 +871,7 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         } catch (error) {
             return finish('STORAGE_ERROR', `${sentence(errorText(error, [root]))} Nothing was deleted.`);
         }
-        if (wrongOwner) return finish('WRONG_OWNER', `${wrongOwner} GC deleted nothing.`);
+        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
     }
     let realRoot = root;
     if (applying) logEvent(logger, 'catalog.gc.started', { digest: options.apply });

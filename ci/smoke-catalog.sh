@@ -78,7 +78,7 @@ LEGACY_WEBPS=(/assets/photos/optimized/landscape.webp /assets/photos/optimized/p
 NO_REVISION=rev_$(printf '0%.0s' {1..64})
 
 fail() {
-  echo "::error::$1"
+  echo "::error::$1" >&2
   exit 1
 }
 
