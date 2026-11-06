@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -118,9 +119,16 @@ const WRITERS: { name: string; argv: Argv }[] = [
     { name: 'purge --revoke --yes', argv: (w) => ['purge', '--revoke', w.tombstoneId, '--reason', 'r', '--actor', 'test', '--yes'] },
     { name: 'gc --apply', argv: (w) => ['gc', '--apply', w.digest] },
     { name: 'gc --set-aside', argv: (w) => ['gc', '--set-aside', w.downFolder] },
+    // Round 3b: dry runs that take a lock to read write a lock file, so they refuse too.
+    { name: 'purge (dry run, takes the catalog and authored locks)', argv: (w) => ['purge', w.built.c, '--reason', 'r', '--actor', 'test'] },
+    { name: 'purge --revoke (dry run, takes the catalog lock)', argv: (w) => ['purge', '--revoke', w.tombstoneId, '--reason', 'r', '--actor', 'test'] },
+    { name: 'gc (dry run, takes the catalog and authored locks)', argv: () => ['gc'] },
 ];
 
-/** Every command that only reads, or is a dry run: as a non-owner it answers as it does for the owner. */
+/**
+ * Every command that takes no lock and writes nothing under the data root, traced (round 3b) with a write
+ * tracer over each one's run and a read of each one's lock calls: as a non-owner it answers as it does for the owner.
+ */
 const READERS: { name: string; argv: Argv }[] = [
     { name: 'status', argv: () => ['status'] },
     { name: 'status --json --check', argv: () => ['status', '--json', '--check'] },
@@ -134,12 +142,12 @@ const READERS: { name: string; argv: Argv }[] = [
     { name: 'rollback without --yes, not in a terminal', argv: (w) => ['rollback', '--to', '2', '--reason', 'r', '--actor', 'test', '--expect-active', w.built.revisions[3]] },
     { name: 'curation list', argv: () => ['curation', 'list', '--all', '--json'] },
     { name: 'curation show', argv: (w) => ['curation', 'show', w.eventId, '--json'] },
-    { name: 'purge (dry run)', argv: (w) => ['purge', w.built.c, '--reason', 'r', '--actor', 'test'] },
-    { name: 'purge --revoke (dry run)', argv: (w) => ['purge', '--revoke', w.tombstoneId, '--reason', 'r', '--actor', 'test'] },
-    { name: 'gc (dry run)', argv: () => ['gc'] },
     { name: 'migrate --dry-run --out outside the data root', argv: (w) => ['migrate', '--dry-run', '--out', path.join(w.outside, 'migration')] },
     { name: 'curation session-secret --out outside the data root', argv: (w) => ['curation', 'session-secret', '--out', path.join(w.outside, `session-${Date.now()}.key`)] },
 ];
+
+/** The other uid: root, as the mistake the gate exists for, unless the temp root is root's. */
+const other = (w: World) => (w.owner === 0 ? 1 : 0);
 
 const WRONG = /\[photos\] WRONG_OWNER: .* runs as uid (\d+), but uid (\d+) owns the data root, and web runs as that owner\..*Nothing was written\./;
 
@@ -148,9 +156,12 @@ describe.runIf(posix)('the owner gate, every writer (A11 round 3)', { timeout: 1
         it(`photos ${writer.name} as another uid: exit 1, WRONG_OWNER, nothing written, locks/ untouched`, async () => {
             const w = await world();
             const check = untouched(w.built.root);
-            const result = await run(w, 'scripts/photos.ts', writer.argv(w), w.owner + 1);
+            const result = await run(w, 'scripts/photos.ts', writer.argv(w), other(w));
             expect(`${result.stdout}${result.stderr}`).toMatch(WRONG);
-            expect(result.stderr).toContain(`runs as uid ${w.owner + 1}, but uid ${w.owner} owns the data root`);
+            expect(result.stderr).toContain(`runs as uid ${other(w)}, but uid ${w.owner} owns the data root`);
+            // How to run it as the owner, with the compose line.
+            expect(result.stderr).toContain(`user: "${w.owner}:${w.owner}"`);
+            expect(result.stderr).toMatch(/docker compose -f docker-compose\.prod\.yml run --rm --no-deps image-watcher node dist\/scripts\/photos\.mjs \S+/);
             expect(result.code).toBe(1);
             check();
         });
@@ -159,7 +170,7 @@ describe.runIf(posix)('the owner gate, every writer (A11 round 3)', { timeout: 1
     it('the watcher, --once, as another uid: exit 1, WRONG_OWNER, nothing written, locks/ untouched', async () => {
         const w = await world();
         const check = untouched(w.built.root);
-        const result = await run(w, 'scripts/imageWatcher.ts', ['--once'], w.owner + 1);
+        const result = await run(w, 'scripts/imageWatcher.ts', ['--once'], other(w));
         expect(result.stderr).toMatch(/\[ImageWatcher\] WRONG_OWNER: the image watcher runs as uid \d+, but uid \d+ owns the data root/);
         expect(result.code).toBe(1);
         check();
@@ -172,13 +183,55 @@ describe.runIf(posix)('the owner gate, every writer (A11 round 3)', { timeout: 1
     });
 });
 
+/** The curator's startup hook, instrumentation.ts's register(), as the server runs it first, with CURATION_ENABLED=true. */
+function startCurator(w: World, uid: number | null) {
+    return new Promise<TsxRun>((resolve, reject) => {
+        const child = spawn(process.execPath, ['--conditions=react-server', '--import', 'tsx', '--input-type=module', '-e', "const m = await import('./instrumentation.ts'); await m.register(); console.log('[test] register() returned');"], {
+            cwd: REPO_ROOT,
+            env: {
+                ...process.env,
+                NEXT_RUNTIME: 'nodejs',
+                CURATION_ENABLED: 'true',
+                HOSTNAME: '127.0.0.1',
+                PHOTOGRAPHY_DATA_DIR: w.built.root,
+                PHOTOGRAPHY_LIBRARY_DIR: w.library,
+                ...(uid === null ? {} : { NODE_OPTIONS: `--require ${PRELOAD}`, PHOTOS_TEST_UID: String(uid) }),
+            },
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk) => { stdout += chunk; });
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.on('error', reject);
+        child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    });
+}
+
+describe.runIf(posix)('the owner gate, the curator at its start (A11 round 3b)', { timeout: 120_000 }, () => {
+    it('refuses to start as another uid: non-zero, WRONG_OWNER, nothing written, locks/ untouched', async () => {
+        const w = await world();
+        const check = untouched(w.built.root);
+        const result = await startCurator(w, other(w));
+        expect(result.stderr).toMatch(/WRONG_OWNER: the curator runs as uid \d+, but uid \d+ owns the data root/);
+        expect(result.stdout).not.toContain('register() returned');
+        expect(result.code).not.toBe(0);
+        check();
+    });
+
+    it('starts as the owner: no WRONG_OWNER', async () => {
+        const w = await world();
+        const result = await startCurator(w, w.owner);
+        expect(`${result.stdout}${result.stderr}`).not.toMatch(/WRONG_OWNER/);
+    });
+});
+
 describe.runIf(posix)('the owner gate, every reader and dry run (A11 round 3)', { timeout: 120_000 }, () => {
     for (const reader of READERS) {
         it(`photos ${reader.name} as another uid answers as it does for the owner`, async () => {
             const asOwner = await world();
             const owned = await run(asOwner, 'scripts/photos.ts', reader.argv(asOwner), asOwner.owner);
             const w = await world();
-            const result = await run(w, 'scripts/photos.ts', reader.argv(w), w.owner + 1);
+            const result = await run(w, 'scripts/photos.ts', reader.argv(w), other(w));
             expect(`${result.stdout}${result.stderr}`).not.toMatch(/WRONG_OWNER/);
             expect(result.code).toBe(owned.code);
         });

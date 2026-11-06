@@ -54,10 +54,11 @@ describe('the owner gate covers every command (A11 round 3)', () => {
     it('answers by flag where a flag makes a writer', () => {
         const ctx = { tty: false, root: '/data/portfolio' };
         const at = (argv: string[], tty = false) => commandAccess(argv, { ...ctx, tty })?.access;
-        expect(at(['purge', 'ph_x', '--reason', 'r'])).toBe('read');
+        expect(at(['purge', 'ph_x', '--reason', 'r'])).toBe('locking-read');
         expect(at(['purge', 'ph_x', '--reason', 'r', '--yes'])).toBe('tombstone');
         expect(at(['purge', '--revoke', 'tomb_x', '--reason', 'r', '--yes'])).toBe('revoke');
-        expect(at(['gc'])).toBe('read');
+        expect(at(['gc'])).toBe('locking-read');
+        expect(at(['purge', '--revoke', 'tomb_x', '--reason', 'r'])).toBe('locking-read');
         expect(at(['gc', '--apply', 'gc_x'])).toBe('gc-apply');
         expect(at(['gc', '--apply=gc_x'])).toBe('gc-apply');
         expect(at(['gc', '--set-aside', 'assets/p/r'])).toBe('set-aside');
