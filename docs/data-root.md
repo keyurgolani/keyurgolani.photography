@@ -129,7 +129,28 @@ Until the migration below initializes the data root, the watcher writes only its
 
 ### Who owns the data root
 
-uid 1001 owns the data root and everything in it, and every container runs as uid 1001, so `web`, the watcher, the curator and each `run --rm` command, the `photos.mjs` CLI included, are one uid. Keep it that way: run the CLI through `image-watcher`, as this page does, never as your own user or as root on the host. Most of what the CLI writes the others never read, but `web` reads `catalog/tombstones/` on every `/media` request, and purge, revoke and GC write those files `0600`. A tombstone another uid wrote is one `web` can't read: it passes the file over, so the set serves as the live revision says, and every publish and rollback stops on `assets.tombstoned` until the file reads again. So `photos purge --yes`, `photos purge --revoke --yes` and any `photos gc --apply` refuse, exit 1 and write nothing, when the effective uid they run as isn't the data root's owner (through a symlinked data root, the folder's owner), and name both uids and what the command would have broken. They ask before they take any lock: a lock file is `0600` too, and one a killed run left as root, or a whole root-owned `locks/`, would stop every command of uid 1001's. Their dry runs still take their locks to read, and still report. Don't widen the files' modes instead. On Windows, which has no uids, the check is skipped.
+uid 1001 owns the data root and everything in it, and every container runs as uid 1001, so `web`, the watcher, the curator and each `run --rm` command, the `photos.mjs` CLI included, are one uid. Keep it that way: run the CLI through `image-watcher`, as this page does, never as your own user or as root on the host. Everything they write is `0600` in `0700` folders, lock files included, so a file another uid writes is one the others can't read: a tombstone `web` passes over, so the set serves as the live revision says, a registry or Inbox the watcher stops on, a lock file a killed run left, or a whole root-owned `locks/`, that stops every command of uid 1001's, or a folder in `trash/` none of them can clear.
+
+So there is one rule: a command that takes a lock or writes anything under the data root refuses when the effective uid it runs as isn't the data root's owner (through a symlinked data root, the folder's owner). It refuses before its first lock, exits 1 with `WRONG_OWNER`, writes nothing, and names both uids and what its own files would have broken. The watcher asks the same at its start, `--once` included. Read-only commands and dry runs still report as any uid. Don't widen the files' modes instead. On Windows, which has no uids, the check is skipped. `lib/catalog/owner-gate.ts` holds the table the CLI checks before it dispatches anything:
+
+| Command | Writes when | What it writes under the data root |
+|---|---|---|
+| `migrate` | `--apply`; `--dry-run` unless `--out` is outside the data root | the registry, `data-root.json` and the mapping; the dry run's plan and report in `identity/migration/` |
+| `identity bind`, `new`, `archive`, `retry`, `reprofile` | always | a decision in `identity/decisions/`, then a pass: the registry |
+| `draft:init`, `edit`, `sequence`, `series`, `review` | always | working-layer records in `authored/`, `edits/` |
+| `describe --import` | without `--dry-run` | working-layer records |
+| `carry-over` | `--apply` | working-layer records, Inbox items |
+| `publish` | always, `--dry-run` included | the candidate and diagnostics; with no `--dry-run`, the revision, activation and pointer |
+| `rollback` | `--yes`, or in a terminal, where it asks and then writes | an activation and the pointer, the working layer |
+| `verify` | always | `status/verify.json` |
+| `curation edit`, `approve`, `defer`, `dismiss`, `retry`, `reopen`, `confirm`, `bind`, `archive`, `resolve`, `confirm-missing` | always | Inbox items in `curation/`, decisions, working-layer records |
+| `purge` | `--yes` | a tombstone in `catalog/tombstones/` |
+| `purge --revoke` | `--yes` | a revoke in `catalog/tombstones/` |
+| `gc` | `--apply` | GC's markers in `catalog/tombstones/`, then the deletes |
+| `gc --set-aside` | always | a folder moved into `trash/` |
+| the watcher (`imageWatcher.mjs`, `--watch` and `--once`) | always | the registry, sets, staging, Inbox items, `status/watcher.json` |
+
+Read only, as any uid: `status`, `list`, `validate`, `diff`, `history`, `identity status`, `curation list` and `show`, `describe --import --dry-run`, `carry-over` without `--apply`, `rollback` without `--yes` and with no terminal, `purge` and `purge --revoke` without `--yes`, `gc` without `--apply` or `--set-aside`, `migrate --dry-run --out` outside the data root, and the healthcheck, `watcherHealth.mjs`. The dry runs among them still take their locks to read. `curation hash-passphrase` and `session-secret` write only their `--out` file and never touch the data root.
 
 ### Who owns the photos
 
