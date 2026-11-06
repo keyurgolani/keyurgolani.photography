@@ -1,4 +1,4 @@
-import path from 'node:path';
+import { isInside, realpathLoose } from '../storage/fsx';
 import type { CREDENTIAL_COMMANDS } from '../curation/auth/credential-cli';
 import type { CURATION_COMMANDS } from '../curation/commands';
 import { writerGate, type WriterKind } from './data-root-owner';
@@ -15,6 +15,13 @@ import { writerGate, type WriterKind } from './data-root-owner';
  * that isn't. Each answers `read`, or the kind of writer it is, from its
  * arguments, so a flag such as --yes, --apply or --set-aside makes a writer of
  * a dry run. The watcher asks too, at its start, as `watcher`.
+ *
+ * The coverage test sees commands and subcommands, not flags. A flag that
+ * makes a reader write, as --yes, --apply, --set-aside or an --out into the
+ * data root do, needs its own rule here and its own pin in
+ * ownerGatePins.test.ts, and review is what catches one that has neither. A
+ * subcommand of identity or curation the table doesn't know is a writer, so
+ * it fails closed.
  *
  * Read here means it takes no lock and writes nothing under the data root,
  * as traced over each command's run and its lock calls (round 3b): status,
@@ -54,9 +61,17 @@ function valueOf(args: readonly string[], name: string): string | undefined {
     return undefined;
 }
 
-const inside = (child: string, parent: string) => {
-    const relative = path.relative(path.resolve(parent), path.resolve(child));
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+/**
+ * Whether <child> lands inside <parent>, by the realpath of each one's
+ * nearest existing folder (round 4), so a symlink into the data root, or a
+ * data root that is itself a symlink, can't make a path look outside it.
+ */
+const inside = (child: string, parent: string) => isInside(realpathLoose(child), realpathLoose(parent));
+
+/** Whether --out, when given, puts what the command writes inside the data root. */
+const outInside = (args: readonly string[], root: string | null) => {
+    const out = valueOf(args, 'out');
+    return out !== undefined && out !== '' && root !== null && inside(out, root);
 };
 
 /** `photos identity <subcommand>`. */
@@ -84,7 +99,8 @@ export const CURATION_ACCESS: Record<(typeof CURATION_COMMANDS)[number] | (typeo
     archive: 'curation',
     resolve: 'curation',
     'confirm-missing': 'curation',
-    // They write only their --out file, mode 0400, wherever it is, and never the data root.
+    // They write only their --out file, mode 0400, and never the data root on their own: PHOTOS_ACCESS.curation
+    // makes either one a writer when its --out resolves inside the data root (round 4).
     'hash-passphrase': 'read',
     'session-secret': 'read',
 };
@@ -94,11 +110,12 @@ export const PHOTOS_ACCESS: Record<string, Rule> = {
     migrate: (args, { root }) => {
         if (has(args, 'apply')) return 'identity';
         const out = valueOf(args, 'out');
-        // A plan written outside the data root is the owner's file wherever they put it.
-        if (out !== undefined && out !== '' && (root === null || !inside(out, root))) return 'read';
+        // A plan written outside the data root is the owner's file wherever they put it; one inside it, through a symlink too, is the data root's.
+        if (out !== undefined && out !== '' && !outInside(args, root)) return 'read';
         return 'migration-plan';
     },
-    identity: (args) => IDENTITY_ACCESS[args[0] as keyof typeof IDENTITY_ACCESS] ?? 'read',
+    // Round 4: a subcommand the table doesn't know fails closed, as a writer; its usage error still follows for the owner.
+    identity: (args) => (Object.hasOwn(IDENTITY_ACCESS, args[0] ?? '') ? IDENTITY_ACCESS[args[0] as keyof typeof IDENTITY_ACCESS] : 'identity'),
     status: 'read',
     list: 'read',
     'draft:init': 'authored',
@@ -114,7 +131,12 @@ export const PHOTOS_ACCESS: Record<string, Rule> = {
     history: 'read',
     rollback: (args, { tty }) => (has(args, 'yes') || tty ? 'catalog' : 'read'),
     verify: 'verify',
-    curation: (args) => CURATION_ACCESS[args[0] as keyof typeof CURATION_ACCESS] ?? 'read',
+    curation: (args, { root }) => {
+        const sub = args[0] ?? '';
+        if (!Object.hasOwn(CURATION_ACCESS, sub)) return 'curation';
+        if ((sub === 'hash-passphrase' || sub === 'session-secret') && outInside(args, root)) return 'credential';
+        return CURATION_ACCESS[sub as keyof typeof CURATION_ACCESS];
+    },
     // Round 3b: their dry runs take the catalog lock, and purge's and gc's the authored lock too, to read.
     purge: (args) => {
         if (!has(args, 'yes')) return 'locking-read';
