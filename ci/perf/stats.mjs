@@ -49,7 +49,7 @@ export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 /**
  * @typedef {{
  *   meta: { base: Tree, head: Tree, rounds: number, loads: number, browser: string, runner?: string },
- *   fixtures: Record<string, { rounds: Round[] }>,
+ *   fixtures: Record<string, { rounds: Round[], cacheOn?: Load }>,
  *   firstLoadJs?: { base: RouteJs[], head: RouteJs[] },
  * }} Raw
  */
@@ -288,6 +288,21 @@ export function summaryMarkdown(raw, { rows, regressions }) {
       '| Metric | Base (A1+A2)/2 | Head B | Head − base | Loads with a value |',
       '|---|---|---|---|---|',
       ...info.map((row) => `| ${label(row.metric)} | ${cell(row.base)} | ${cell(row.head)} | ${row.delta === null ? 'n/a' : `${row.delta > 0 ? '+' : ''}${ms(row.delta)}`} | ${row.baseLoads.with}/${row.baseLoads.of}, ${row.headLoads.with}/${row.headLoads.of} |`),
+    );
+  }
+  const cacheOn = Object.entries(raw.fixtures).filter(([, fixture]) => fixture.cacheOn);
+  if (cacheOn.length > 0) {
+    /** @param {unknown} value */
+    const value = (value) => (typeof value === 'number' ? String(value) : 'none');
+    lines.push(
+      '',
+      '### The tone fetch with the cache on (one phone load of the head, not gated)',
+      '',
+      'One more phone load of the head per fixture, after the rounds, in a fresh context with the cache left on, as a visitor\'s browser has it. The slide\'s file is in the cache by the time the sampler refetches it, so its transferSize reads 0 where the cache served it; positive start − LCP is after LCP. None means the load made no tone fetch.',
+      '',
+      '| Fixture | Tone fetch transferred (B) | Tone fetch − LCP (ms) |',
+      '|---|---|---|',
+      ...cacheOn.map(([name, fixture]) => `| ${name} | ${value(fixture.cacheOn?.toneFetchBytes)} | ${value(fixture.cacheOn?.toneFetchAfterLcp)} |`),
     );
   }
   const js = raw.firstLoadJs;

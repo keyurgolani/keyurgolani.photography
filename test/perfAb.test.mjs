@@ -292,6 +292,22 @@ describe('informational and its table', () => {
     expect(markdown).toContain('| one phone tone fetch transferred (B) | none | 0 (0–0) | n/a | 0/10, 5/5 |');
     expect(markdown).toMatch(/No regressions past the noise floor\./);
   });
+
+  it('prints the one cache-on phone load of the head per fixture, beside the cache-off table, and gates on it never', () => {
+    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 520]] });
+    raw.fixtures.one.cacheOn = { lcp: 1000, tbt: 400, toneFetchAfterLcp: 900, toneFetchBytes: 0 };
+    const markdown = summaryMarkdown(raw, analyse(raw));
+    expect(markdown).toContain('### The tone fetch with the cache on (one phone load of the head, not gated)');
+    expect(markdown).toContain('| one | 0 | 900 |');
+    expect(analyse(raw).regressions).toEqual([]);
+  });
+
+  it('shows none for a cache-on load that made no tone fetch, and leaves the table out when no fixture has one', () => {
+    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 520]] });
+    expect(summaryMarkdown(raw, analyse(raw))).not.toContain('with the cache on');
+    raw.fixtures.one.cacheOn = { lcp: 1000, tbt: 0, toneFetchAfterLcp: null, toneFetchBytes: null };
+    expect(summaryMarkdown(raw, analyse(raw))).toContain('| one | none | none |');
+  });
 });
 
 describe('loopbackListeners', () => {

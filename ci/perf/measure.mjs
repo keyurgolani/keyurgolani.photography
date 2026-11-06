@@ -10,7 +10,8 @@
  * its fetch, and what that fetch transferred: the one fetch() of /media Home makes (components/badgePlace.ts
  * canvasSampler()), matched by its resource timing's `fetch` initiator, so its URL and its cache key stay the file's
  * own. It refetches the slide's file; this run turns the cache off for every request (Network.setCacheDisabled), so it
- * reads the file's size here, where the site's immutable /media gives a cache hit.
+ * reads the file's size here, where the site's immutable /media gives a cache hit. `{ cache: true }` leaves the cache
+ * on, still in a fresh context, for ab.mjs's one load that shows that hit.
  */
 
 import { reduceLoad } from './stats.mjs';
@@ -35,13 +36,18 @@ const SETTLE_MS = 5000;
  * @param {import('@playwright/test').Browser} browser
  * @param {string} url on 127.0.0.1
  * @param {Profile} profile
+ * @param {{ cache?: boolean }} [options] `cache: true` leaves the HTTP cache on. Playwright's routing turns the cache
+ *   off, so that load aborts nothing off 127.0.0.1; it fails instead if the page requested anything off it.
  */
-export async function measureLoad(browser, url, profile) {
+export async function measureLoad(browser, url, profile, { cache = false } = {}) {
   if (new URL(url).hostname !== '127.0.0.1') throw new Error(`Loopback only, not ${url}.`);
   const context = await browser.newContext({ viewport: profile.viewport, deviceScaleFactor: profile.deviceScaleFactor, isMobile: profile.isMobile, hasTouch: profile.hasTouch, colorScheme: 'dark' });
   try {
     const page = await context.newPage();
-    await page.route((target) => target.hostname !== '127.0.0.1', (route) => route.abort());
+    /** @type {string[]} */
+    const offLoopback = [];
+    if (cache) page.on('request', (request) => { const target = new URL(request.url()); if (/^(https?|wss?):$/.test(target.protocol) && target.hostname !== '127.0.0.1') offLoopback.push(request.url()); });
+    else await page.route((target) => target.hostname !== '127.0.0.1', (route) => route.abort());
     await page.addInitScript(() => {
       /** @type {{ lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null }} */
       const store = { lcp: [], longtasks: [], fcp: null };
@@ -63,7 +69,7 @@ export async function measureLoad(browser, url, profile) {
     });
     const cdp = await context.newCDPSession(page);
     await cdp.send('Network.enable');
-    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+    if (!cache) await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
     if (profile.network) await cdp.send('Network.emulateNetworkConditions', { offline: false, ...profile.network });
     if (profile.cpu > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: profile.cpu });
     await page.goto(url, { waitUntil: 'load', timeout: 120_000 });
@@ -77,6 +83,7 @@ export async function measureLoad(browser, url, profile) {
       const tone = resources.find((entry) => entry.initiatorType === 'fetch' && new URL(entry.name).pathname.startsWith('/media/'));
       return { .../** @type {any} */ (window).__perf, bytes, toneFetch: tone ? tone.startTime : null, toneFetchBytes: tone ? tone.transferSize : null };
     });
+    if (offLoopback.length > 0) throw new Error(`The cache-on load requested off 127.0.0.1: ${offLoopback.join(', ')}.`);
     return reduceLoad(perf, loadAt, SETTLE_MS);
   } finally {
     await context.close();
