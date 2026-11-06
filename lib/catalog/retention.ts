@@ -19,6 +19,7 @@ import { holderText } from './rollback';
 import { parseCandidateFile, REVISION_ID_RE } from './schema';
 import { AUTHORED_LOCK } from './working-layer-writer';
 import { catalogPaths } from './working-layer';
+import { ownerRefusal } from './data-root-owner';
 
 /**
  * #15's retention and GC, 15-3: `photos gc` and `photos gc --apply
@@ -187,6 +188,8 @@ export type GcOutcome =
     | 'PLAN_CHANGED'
     | 'NOW_PROTECTED'
     | 'UNSAFE_PATH'
+    /** The A11 ruling (c): --apply with a tombstone's marker to write, as a uid that doesn't own the data root. */
+    | 'WRONG_OWNER'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
     | 'LOCK_LOST'
@@ -195,7 +198,8 @@ export type GcOutcome =
     | 'STORAGE_ERROR';
 
 /**
- * The CLI's exit codes, #13's: 1 for a layout GC refuses, 4 for a damaged
+ * The CLI's exit codes, #13's: 1 for a layout GC refuses or a uid that
+ * doesn't own the data root (WRONG_OWNER), 4 for a damaged
  * file or I/O, and for #181's NOW_PROTECTED, a planned asset folder
  * something always protected names now, 3 for any other stop. Usage errors,
  * 2, are the CLI's own.
@@ -206,6 +210,7 @@ export const GC_EXIT_CODES: Record<GcOutcome, 0 | 1 | 3 | 4> = {
     UNSAFE_PATH: 1,
     PLAN_CHANGED: 3,
     NOW_PROTECTED: 4,
+    WRONG_OWNER: 1,
     CATALOG_LOCKED: 3,
     AUTHORED_LOCKED: 3,
     LOCK_LOST: 3,
@@ -900,6 +905,9 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         if (plan.delete.length > 0) {
             await hooks.afterPlan?.(plan);
             const tombstoned = plan.delete.filter((entry) => entry.class === 'tombstoned');
+            // The A11 ruling (c): a tombstone's marker goes in catalog/tombstones/ before the first delete, and only the uid web runs as writes there.
+            const wrongOwner = tombstoned.length > 0 ? ownerRefusal(root, 'photos gc --apply') : null;
+            if (wrongOwner) return finish('WRONG_OWNER', `${wrongOwner} GC deleted nothing.`);
             try {
                 // #15's AC 8 again, read fresh: an Inbox item or a build that came to name a folder since the scan stops it all.
                 for (const entry of tombstoned) {

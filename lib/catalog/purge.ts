@@ -37,6 +37,7 @@ import {
 } from './tombstones';
 import { AUTHORED_LOCK } from './working-layer-writer';
 import { readActivePointer } from './working-layer';
+import { ownerRefusal } from './data-root-owner';
 
 /**
  * #15's purge, #181's A10: `photos purge <photoId> [--asset-revision <r>]`
@@ -82,6 +83,8 @@ export type PurgeOutcome =
     | 'ALREADY_COLLECTED'
     /** A folder a stopped GC run set aside whole: rename it back, then revoke. */
     | 'SET_ASIDE'
+    /** The A11 ruling (c): --yes as a uid that doesn't own the data root, so web couldn't read what it wrote. */
+    | 'WRONG_OWNER'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
     | 'LOCK_LOST'
@@ -104,6 +107,7 @@ export const PURGE_EXIT_CODES: Record<PurgeOutcome, 0 | 1 | 3 | 4> = {
     UNKNOWN_TOMBSTONE: 1,
     ALREADY_COLLECTED: 1,
     SET_ASIDE: 1,
+    WRONG_OWNER: 1,
     CATALOG_LOCKED: 3,
     AUTHORED_LOCKED: 3,
     LOCK_LOST: 3,
@@ -380,6 +384,9 @@ export async function runPurge(options: PurgeOptions): Promise<PurgeResult> {
         }
         options.onPlan?.(plan);
         if (!options.yes) return finish('PLANNED', `This was a dry run.${NOTHING} Run it again with --yes to take it down.`);
+        // The A11 ruling (c): only the uid web runs as writes a tombstone, so web can always read it. The dry run above still reports.
+        const wrongOwner = ownerRefusal(root, 'photos purge --yes');
+        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
 
         if (!(await stillHeld(locks))) return finish('LOCK_LOST', `Purge lost the catalog or authored lock.${NOTHING}`);
         await hooks.beforeWrite?.();
@@ -477,6 +484,9 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         result.revokePlan = revokePlan;
         options.onPlan?.(revokePlan);
         if (!options.yes) return finish('REVOKE_PLANNED', `This was a dry run.${NOTHING} Run it again with --yes to revoke it.`);
+        // The A11 ruling (c), as for purge: a revoke web can't read is a takedown file it passes over.
+        const wrongOwner = ownerRefusal(root, 'photos purge --revoke --yes');
+        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
 
         if (!(await stillHeld([lock]))) return finish('LOCK_LOST', `Revoke lost the catalog lock.${NOTHING}`);
         await hooks.beforeWrite?.();
