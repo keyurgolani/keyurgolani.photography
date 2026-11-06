@@ -1258,6 +1258,27 @@ describe('CatalogHome', () => {
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
       });
 
+      it('a first failure that is AVIF waits on its WebP retry, which #18\'s 6 s bound still counts as failed, and a second suspends (#6)', async () => {
+        await renderHome();
+        load(3);
+        tick();
+        vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(0).variants.w1200.avif.url}`);
+        fail(0);
+        // The AVIF failure is the retry's, not the photograph's: no skip yet, and the WebP retry is in flight.
+        expect(slideImage(0)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
+        expect(mountedIds()).not.toContain(id(1));
+        advance(HOME_LOADING_TIMEOUT_MS - 1);
+        expect(mountedIds()).not.toContain(id(1));
+        advance(1);
+        // The bound counts the photograph whose retry never came back as failed: skipped past, to 4, whose next is 1.
+        expect(mountedIds()).toContain(id(1));
+        expect(playback()).toBe('advancing');
+        fail(4);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+        expect(failure()).toBe('Some photographs couldn’t load.');
+        expect(playback()).toBe('held');
+      });
+
       it('a manual move that loads ends the suspension too', async () => {
         await renderHome();
         load(3);
