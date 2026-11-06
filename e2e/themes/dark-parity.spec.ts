@@ -79,7 +79,10 @@ const SETTLED: Motion = { at: 12_000 };
  * badge has landed and its linger hasn't started yet, so one build was walked with the badge lingering (opacity 1) and
  * the other after it (0); and in home-chrome the chrome recedes 4 s after the act. Paused, the linger starts and holds
  * until the clock runs past it, BADGE_LINGER_MS (HeroReveal's), and a revealed chrome stays up through the walk. A longer
- * linger in HeroReveal leaves the badge lingering, and the badge wait then times out and fails the row.
+ * linger in HeroReveal leaves the badge lingering, and the badge wait then times out and fails the row. Only the gate's
+ * walks are pinned. The pixel report, an artefact and not a gate, stays on the real clock: its paint wait is two
+ * requestAnimationFrame calls, which the paused clock never runs (39c8f7a4 pinned it too, and every Home pair with a
+ * pixel report hung to the test timeout in CI).
  */
 const BADGE_LINGER_MS = 3000;
 const SCALES = [1, 2] as const;
@@ -243,11 +246,12 @@ interface PassShot {
  * through an init script in every frame, never toggled on a live page. Then hydration, fonts, every image loaded and
  * decoded, and every finite animation done. `stored` is the theme in localStorage, or '' for none (System). Without
  * JavaScript nothing waits on the page's scripts, and an act that needs them does nothing, in both builds alike.
+ * `pin` puts Home on the paused clock for the gate's walk (BADGE_LINGER_MS's note).
  */
-async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session, motion = pair.motion }: { js?: boolean; session?: string; motion?: Motion } = {}) {
+async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session, motion = pair.motion, pin = false }: { js?: boolean; session?: string; motion?: Motion; pin?: boolean } = {}) {
     const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: motion ? 'no-preference' : 'reduce', javaScriptEnabled: js });
     // Home's timers, held still (BADGE_LINGER_MS's note).
-    const homeClock = !motion && js && pair.url === '/';
+    const homeClock = pin && !motion && js && pair.url === '/';
     if (motion || homeClock) {
         await context.clock.install({ time: CLOCK_START });
         await context.clock.pauseAt(CLOCK_START + 1);
@@ -989,7 +993,7 @@ async function styles(
         head ? `${HEAD_ONLY.map((entry) => entry.selector).join(',')}{display:none!important}` : '',
         pair.headStyle && head ? pair.headStyle : '',
     ].join('');
-    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion });
+    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion, pin: true });
     try {
         const selectors = allowancesFor(pair, viewport.width).map((entry) => entry.selector);
         // The self-test's page with its theme taken off, to show a missing theme fails anywhere but the error shell.
