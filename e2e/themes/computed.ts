@@ -80,6 +80,9 @@ export interface Walk {
  * What a folded element may not paint for itself (WalkOptions.fold): it takes its parent's ink and type, takes no room
  * of its own, and draws no fill, line, outline, band, decoration, clip, mask or compositing, so leaving it out of the
  * walk hides nothing. `pseudo` is what its ::before and ::after, where they render, may not paint either.
+ * A border is read by its widths, not its styles: the reset (Tailwind's preflight) gives every element and its
+ * ::before and ::after `border: 0 solid`, which draws nothing, and a style of none or hidden computes its width to 0,
+ * so a width of 0 is no border either way (B3's CI).
  */
 export const FOLD_PAINT = {
     inherited: [
@@ -92,7 +95,7 @@ export const FOLD_PAINT = {
         position: 'static',
         'background-color': 'rgba(0, 0, 0, 0)',
         'background-image': 'none',
-        'border-top-style': 'none', 'border-right-style': 'none', 'border-bottom-style': 'none', 'border-left-style': 'none',
+        'border-top-width': '0px', 'border-right-width': '0px', 'border-bottom-width': '0px', 'border-left-width': '0px',
         'outline-style': 'none',
         'box-shadow': 'none',
         'text-decoration-line': 'none',
@@ -110,7 +113,7 @@ export const FOLD_PAINT = {
     pseudo: {
         'background-color': 'rgba(0, 0, 0, 0)',
         'background-image': 'none',
-        'border-top-style': 'none', 'border-right-style': 'none', 'border-bottom-style': 'none', 'border-left-style': 'none',
+        'border-top-width': '0px', 'border-right-width': '0px', 'border-bottom-width': '0px', 'border-left-width': '0px',
         'outline-style': 'none',
         'box-shadow': 'none',
         opacity: '1',

@@ -974,6 +974,22 @@ function judge(label: string, width: number, c: Comparison, timedOut: string[] =
 }
 
 /**
+ * Waits, up to 30 s, until `origin`'s About carries its portrait's LQIP. The server encodes it last, after every
+ * variant, in the background (lib/siteConfig/portraitVariants.ts), so one just started can serve About without it for
+ * a while after the warm-up's load. A failed test starts the worker again, and the servers with it, so the next pair
+ * on About would walk one build with the LQIP and the other without it (B3's CI, and B1's). Past 30 s the walk goes
+ * ahead, and the comparison says what differs.
+ */
+async function portraitWarm(origin: string): Promise<void> {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+        const html = await fetch(`${origin}/about`).then((response) => response.text(), () => '');
+        if (html.includes('data:image/webp;base64,')) return;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+}
+
+/**
  * The gate, at each size: Dark in the head against the base, element by element, in all three of Dark's routes.
  * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
  * base without it. A wait that times out in either build fails the row, and a head with JavaScript that doesn't
@@ -986,6 +1002,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
     for (const [origin, session] of [[origins.base, cookies?.base], [origins.head, cookies?.head]] as const) {
         await styles(origin, 'dark', pair, VIEWPORTS.desktop, 'warm-up', { session });
     }
+    if (pair.url === '/about') await Promise.all([portraitWarm(origins.base), portraitWarm(origins.head)]);
     for (const [size, viewport] of Object.entries(GATE_VIEWPORTS)) {
         const base = await styles(origins.base, 'dark', pair, viewport, 'base', { session: cookies?.base });
         const baseNoJs = await styles(origins.base, '', pair, viewport, 'base', { js: false, session: cookies?.base });
@@ -1004,7 +1021,13 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
                 const paths = entry.subtree ? against.walk.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
                 for (const path of paths) allowances[path] = Math.max(allowances[path] ?? 0, entry.maxDelta!);
             }
-            const sanctioned = Object.fromEntries(named.filter((entry) => entry.properties).map((entry) => [against.walk.resolved[entry.selector], entry.properties!]));
+            // A path that two allowances name takes both their properties: a state takes its page's too, as
+            // work-focus does work's `position` on the entry box its own ring departure names (B3's CI).
+            const sanctioned: Record<string, string[]> = {};
+            for (const entry of named.filter((candidate) => candidate.properties)) {
+                const path = against.walk.resolved[entry.selector];
+                sanctioned[path] = [...new Set([...(sanctioned[path] ?? []), ...entry.properties!])];
+            }
             const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
@@ -1178,14 +1201,17 @@ test.describe('the visitor site', () => {
             await revealChrome(page);
             await hoverOn(homeNext(page));
         }, SETTLED],
-        // The title link Work folds into its h2 (B3's review, 2 and 3): a paint on its ::after at rest, or a padding of its
-        // own, must fail as a style, though neither element is walked.
-        ["a folded link's ::after painting at rest", '/work', 'main ul li h2 a::after{background:rgb(255 0 0/.5)!important}', undefined, undefined],
-        ["a folded link's padding", '/work', 'main ul li h2 a{padding-left:1px!important}', undefined, undefined],
+        // The title link Work folds into its h2 (B3's review, 2 and 3): a paint on its ::after at rest, a padding or a
+        // border of its own, must fail as a style, though neither element is walked. Each must be seen as itself, not
+        // as any other fold line (B3's CI: a reset's `border: 0 solid` failed every fold, and these passed on it).
+        ["a folded link's ::after painting at rest", '/work', 'main ul li h2 a::after{background:rgb(255 0 0/.5)!important}', undefined, undefined, { seen: '(folded)::after background-color: rgba(255, 0, 0, 0.5)' }],
+        ["a folded link's padding", '/work', 'main ul li h2 a{padding-left:1px!important}', undefined, undefined, { seen: '(folded) padding-left: 1px' }],
+        ["a folded link's border", '/work', 'main ul li h2 a{border-bottom:1px solid!important}', undefined, undefined, { seen: '(folded) border-bottom-width: 1px' }],
         // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
         ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
     ] as const) {
-        const only = (rest[0] ?? null) as { within: string; property: string } | null;
+        const only = rest[0] && 'within' in rest[0] ? (rest[0] as { within: string; property: string }) : null;
+        const seen = rest[0] && 'seen' in rest[0] ? (rest[0] as { seen: string }).seen : null;
         test(`self-test: ${name} in the head fails the gate`, async () => {
             const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion };
             const viewport = VIEWPORTS.desktop;
@@ -1194,6 +1220,7 @@ test.describe('the visitor site', () => {
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
             // Seen as the change itself, in a style or a token, on loads that settled.
             expect(comparison.styles.length + comparison.tokens.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+            if (seen) expect(comparison.styles.filter((line) => line.includes(seen)).length, `${name}: seen as ${seen}`).toBeGreaterThan(0);
             if (only) {
                 // Seen where it was put, and nowhere else.
                 expect(comparison.styles.filter((line) => line.includes(only.property)).length, `${name}: seen as ${only.property}`).toBeGreaterThan(0);
