@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { WORK_ERROR_BODY } from './fixtures/errorShell';
-import { blockingText, bodyOf, errorShellProblems, headOf, markers, meta, servableRevisions, skeleton, type PublishTimes } from './helpers/standaloneServer';
+import { blockingText, bodyOf, errorShellProblems, headOf, markers, meta, servableRevisions, skeleton, srcsetCandidates, viewerMarkup, type PublishTimes } from './helpers/standaloneServer';
 
 const A = `rev_${'a'.repeat(64)}`;
 const B = `rev_${'b'.repeat(64)}`;
@@ -75,6 +75,59 @@ describe("the error shell's skeleton", () => {
 
     it('differs once the title or a hidden segment streams into the body', () => {
         expect(skeleton(shell(2, '<div hidden id="S:0"><title>Work · Site</title></div>'))).not.toEqual(skeleton(shell(2)));
+    });
+});
+
+/**
+ * The Viewer's body as B8 renders it on a page (ViewerChrome's header, the
+ * photograph's <picture>, and the reading area), then a Flight payload
+ * naming tags of its own, which no reader may count.
+ */
+const VIEWER = [
+    '</head><body class="font-sans">',
+    '<main data-surface="viewer" data-viewer-mode="page" class="StoryViewer_viewer">',
+    '<header class="ViewerChrome_header"><a class="ViewerChrome_control" href="/work/harbor?photo=ph_x"><svg aria-hidden="true" width="18"></svg>Close</a>',
+    '<div class="ViewerChrome_heading"><h1 class="ViewerChrome_series">Harbor<span class="sr-only ViewerChrome_spokenPosition">, photograph 2 of 3</span></h1>',
+    '<p class="ViewerChrome_position"><span aria-hidden="true">02 / 03</span></p></div>',
+    '<button type="button" class="ViewerChrome_control ViewerChrome_zoom" aria-pressed="false"><svg aria-hidden="true"></svg>Zoom</button></header>',
+    '<div class="StoryViewer_viewport" data-viewer-stage=""><div class="StoryViewer_track" data-viewer-track=""><picture>',
+    '<source type="image/avif" srcSet="/media/ph_x/sha256-a/p_1/w640.avif 640w, /media/ph_x/sha256-a/p_1/w1200.avif 1200w" sizes="100vw"/>',
+    '<source type="image/webp" srcSet="/media/ph_x/sha256-a/p_1/w640.webp 640w, /media/ph_x/sha256-a/p_1/w1200.webp 1200w" sizes="100vw"/>',
+    '<img src="/media/ph_x/sha256-a/p_1/w1200.webp" width="2400" height="1600" alt="Boats &amp; a wall." loading="eager"/></picture></div></div>',
+    '<section class="StoryViewer_reading" aria-labelledby="_R_1"><div class="StoryViewer_lead"><h2 id="_R_1" class="sr-only">Photograph 2 of 3</h2>',
+    '<p class="StoryViewer_caption">Morning &amp; the wall.</p></div></section></main>',
+    '<script>self.__next_f.push([1,"<h1>Not this</h1><img alt=\\"not this\\"><span aria-hidden=\\"true\\">09 / 09</span><p>Nor this.</p>"])</script>',
+    '</body></html>',
+].join('');
+
+describe("the Viewer's markup", () => {
+    it('reads the h1 with its sr-only position, the aria-hidden counter, the caption, the alt, and both sources, from tags only', () => {
+        const found = viewerMarkup(VIEWER);
+        expect(found.headings).toEqual([{ text: 'Harbor, photograph 2 of 3', spoken: [', photograph 2 of 3'] }]);
+        expect(found.hiddenText).toEqual(['02 / 03']);
+        expect(found.paragraphs).toEqual(['Morning & the wall.']);
+        expect(found.alts).toEqual(['Boats & a wall.']);
+        expect(found.sources.map((source) => source.type)).toEqual(['image/avif', 'image/webp']);
+        expect(srcsetCandidates(found.sources[0].srcset)).toEqual([
+            { url: '/media/ph_x/sha256-a/p_1/w640.avif', width: 640 },
+            { url: '/media/ph_x/sha256-a/p_1/w1200.avif', width: 1200 },
+        ]);
+    });
+
+    it('counts a heading with no spoken position, and a page with no photograph, as they are', () => {
+        const placeOnly = VIEWER.replace('<span class="sr-only ViewerChrome_spokenPosition">, photograph 2 of 3</span>', '').replace(/<picture>[\s\S]*<\/picture>/, '');
+        const found = viewerMarkup(placeOnly);
+        expect(found.headings).toEqual([{ text: 'Harbor', spoken: [] }]);
+        expect(found.alts).toEqual([]);
+        expect(found.sources).toEqual([]);
+    });
+
+    it('reads a srcset with extra whitespace, and nothing from an empty one', () => {
+        expect(srcsetCandidates(' /media/a.webp 640w ,\n/media/b.webp 1200w ')).toEqual([
+            { url: '/media/a.webp', width: 640 },
+            { url: '/media/b.webp', width: 1200 },
+        ]);
+        expect(srcsetCandidates('')).toEqual([]);
     });
 });
 
