@@ -39,8 +39,10 @@
 #    `photos purge <photoId> --reason smoke` is a dry run that prints its
 #    "Takes down" line and writes nothing, `--yes` writes the tombstone and
 #    the running web answers 410 for the set with no restart, and `photos
-#    gc`, a dry run only, keeps the set as taken down less than 7 days ago
-#    and deletes nothing. The smoke never runs `gc --apply`.
+#    gc`, a dry run only, keeps the asset-revision folder as taken down less
+#    than 7 days ago and deletes nothing. They run as web's uid, 1001, on a
+#    root it owns, as production runs them. The smoke never runs `gc
+#    --apply`.
 #
 #   ci/smoke-catalog.sh <tag>
 #
@@ -153,20 +155,47 @@ sha256_of() {
   node -e 'console.log(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$1"
 }
 
-# Writes every entry under the published root but locks/ to <file>, sorted:
-# its path and type, and for a file its size, mtime, mode and SHA-256. A
-# folder's own mtime is left out, so an entry added under one shows as that
-# one line. Two equal listings mean nothing was written there.
+# The uid web runs as: the image's USER, and what docker-compose.prod.yml
+# gives every container and so every run --rm photos.mjs command (A11's
+# ruling b). Step 11's commands run as it too, never as this machine's user.
+WEB_USER=1001:1001
+
+# Runs <command> in the image as web's uid, with the published root at
+# /data/portfolio and no network, as image-watcher's run --rm form does.
+as_web() {
+  docker run --rm --pull never --network none --user "$WEB_USER" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+    -v "$PUBLISHED:/data/portfolio" "$IMAGE" "$@"
+}
+
+# Runs photos.mjs as web's uid on the published root with <args>.
+photos_as_web() {
+  as_web node dist/scripts/photos.mjs "$@"
+}
+
+# Hands the published root to web's uid, as docs/data-root.md's setup does
+# with chown -R 1001:1001, so the commands run as web's uid own what they
+# write. It changes no mode: web reads every file as its owner.
+hand_to_web() {
+  docker run --rm --pull never --network none --user 0 --entrypoint chown -v "$PUBLISHED:/data/portfolio" "$IMAGE" -R "$WEB_USER" /data/portfolio ||
+    fail "Could not hand the published root to uid $WEB_USER."
+}
+
+# Writes every entry under the published root to <file>, sorted, read as
+# web's uid: its path and type, and for a file its size, mtime, mode and
+# SHA-256. A folder's own mtime is left out, so an entry added under one
+# shows as that one line. locks/ is listed like the rest: a command that
+# leaves a lock file behind changes the listing. Fails unless the listing
+# holds <entry>, so an empty or partial one can't pass a comparison.
 published_listing() {
+  local file=$1 entry=$2
   # shellcheck disable=SC2016 # the ${...} are JavaScript template strings
-  node -e '
+  as_web node -e '
     const fs = require("fs");
     const path = require("path");
     const crypto = require("crypto");
     const root = process.argv[1];
     const lines = [];
     for (const name of fs.readdirSync(root, { recursive: true })) {
-      if (name === "locks" || name.startsWith("locks" + path.sep)) continue;
       const stat = fs.lstatSync(path.join(root, name));
       if (!stat.isFile()) {
         lines.push(`${name} ${stat.isDirectory() ? "d" : "other"}`);
@@ -175,7 +204,11 @@ published_listing() {
       const sha = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, name))).digest("hex");
       lines.push(`${name} f ${stat.size} ${stat.mtimeMs} ${(stat.mode & 0o7777).toString(8)} ${sha}`);
     }
-    console.log(lines.sort().join("\n"));' "$PUBLISHED" | LC_ALL=C sort >"$1" || fail "Could not list the published root."
+    console.log(lines.sort().join("\n"));' /data/portfolio | LC_ALL=C sort >"$file" || fail "Could not list the published root."
+  grep -qF -- "$entry " "$file" || fail "The listing of the published root has no $entry, so comparing it would prove nothing: $(head -c 2000 "$file")"
+  if grep -q '^locks/.*\.lock ' "$file"; then
+    fail "A lock file was left in locks/: $(grep '^locks/' "$file")"
+  fi
 }
 
 # Flips the first byte of file <file> in place, keeping its size. A second call puts it back.
@@ -455,60 +488,67 @@ echo "photos history listed revision 1 as one a rollback can return to, photos r
 # 11. #15's purge and GC (A10), in the image, on the published root, after
 #     the rollback. The target is the fixture's photo no series lists and no
 #     revision holds, since purge refuses one the live revision or a draft
-#     series shows. GC runs as a dry run only: the smoke never deletes.
+#     series shows. Every command runs as web's uid on a root that uid owns,
+#     as in production, and nothing widens a mode: purge writes its tombstone
+#     0600, as web's uid, and the 410 below is the check that web can read it
+#     (a tombstone web can't read is passed over, and the set 404s). As
+#     another uid, purge --yes refuses and writes nothing. GC runs as a dry
+#     run only: the smoke never deletes.
 unlisted_set=assets/${unlisted#/media/}
 unlisted_set=${unlisted_set%/*}
 unlisted_folder=${unlisted_set%/*}
 unlisted_revision=${unlisted_folder##*/}
-[ -s "$PUBLISHED/$unlisted_set/manifest.json" ] || fail "There is no $unlisted_set/manifest.json under the published root, so taking it down would prove nothing."
+target=$unlisted_set/manifest.json
+hand_to_web
 expect_code "$unlisted" 404
 [ "$(header cache-control)" = no-store ] || fail "The 404 for $unlisted sent Cache-Control: $(header cache-control) before the purge."
-published_listing "$TMP/published-before-purge.txt"
+published_listing "$TMP/published-before-purge.txt" "$target"
 purge_code=0
-photos_published purge "$unlisted_photo" --reason smoke --actor ci >"$TMP/purge-dry.txt" 2>&1 || purge_code=$?
+photos_as_web purge "$unlisted_photo" --reason smoke --actor ci >"$TMP/purge-dry.txt" 2>&1 || purge_code=$?
 [ "$purge_code" = 0 ] || fail "The purge dry run exited $purge_code, expected 0: $(cat "$TMP/purge-dry.txt")"
 [[ $(head -1 "$TMP/purge-dry.txt") == "Takes down $unlisted_photo: 1 asset revision, 1 set, "*" They answer 410 at once. GC can delete the bytes from "* ]] ||
   fail "The purge dry run didn't start with its Takes down line for $unlisted_photo: $(cat "$TMP/purge-dry.txt")"
 grep -qF -- "    $unlisted_set: " "$TMP/purge-dry.txt" || fail "The purge dry run didn't list $unlisted_set: $(cat "$TMP/purge-dry.txt")"
 grep -qF -- "[photos] PLANNED: This was a dry run. Nothing was written." "$TMP/purge-dry.txt" || fail "The purge dry run didn't say it wrote nothing: $(cat "$TMP/purge-dry.txt")"
-published_listing "$TMP/published-after-dry-run.txt"
+published_listing "$TMP/published-after-dry-run.txt" "$target"
 diff -u "$TMP/published-before-purge.txt" "$TMP/published-after-dry-run.txt" || fail "The purge dry run wrote under the published root."
 expect_code "$unlisted" 404
 purge_code=0
-photos_published purge "$unlisted_photo" --reason smoke --actor ci --yes >"$TMP/purge.txt" 2>&1 || purge_code=$?
+photos_as_web purge "$unlisted_photo" --reason smoke --actor ci --yes >"$TMP/purge.txt" 2>&1 || purge_code=$?
 [ "$purge_code" = 0 ] || fail "photos purge --yes exited $purge_code, expected 0: $(cat "$TMP/purge.txt")"
 tombstone=$(sed -n 's/^\[photos\] PURGED: Wrote catalog\/tombstones\/\(tomb_[0-9a-f-]\{36\}\)\.json\. .*/\1/p' "$TMP/purge.txt")
 [ -n "$tombstone" ] || fail "photos purge --yes didn't say it wrote a tombstone: $(cat "$TMP/purge.txt")"
+as_web cat "/data/portfolio/catalog/tombstones/$tombstone.json" >"$TMP/tombstone.json" || fail "web's uid can't read catalog/tombstones/$tombstone.json."
 # shellcheck disable=SC2016 # $tombstone, $photo and $revision are jq's
 jq -e '.tombstoneId == $tombstone and .photoId == $photo and .assetRevision == null and .assetRevisions == [$revision] and .reason == "smoke" and .actor == "ci"' \
-  --arg tombstone "$tombstone" --arg photo "$unlisted_photo" --arg revision "$unlisted_revision" "$PUBLISHED/catalog/tombstones/$tombstone.json" >/dev/null ||
-  fail "catalog/tombstones/$tombstone.json doesn't take down $unlisted_photo at $unlisted_revision: $(cat "$PUBLISHED/catalog/tombstones/$tombstone.json")"
-published_listing "$TMP/published-purged.txt"
-[ -z "$(LC_ALL=C comm -23 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt")" ] ||
-  fail "photos purge --yes changed or removed something under the published root: $(LC_ALL=C comm -23 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt")"
-[ "$(LC_ALL=C comm -13 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt" | cut -d' ' -f1-2 | paste -sd' ' -)" = "catalog/tombstones d catalog/tombstones/$tombstone.json f" ] ||
-  fail "photos purge --yes should add only its tombstone, but added: $(LC_ALL=C comm -13 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt")"
-# web reads the tombstone as the image's user, as it would in image-watcher's data root.
-chmod -R a+rX "$PUBLISHED"
+  --arg tombstone "$tombstone" --arg photo "$unlisted_photo" --arg revision "$unlisted_revision" "$TMP/tombstone.json" >/dev/null ||
+  fail "catalog/tombstones/$tombstone.json doesn't take down $unlisted_photo at $unlisted_revision: $(cat "$TMP/tombstone.json")"
+published_listing "$TMP/published-purged.txt" "$target"
+changed=$(LC_ALL=C comm -23 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt") || fail "comm could not compare the listings."
+[ -z "$changed" ] || fail "photos purge --yes changed or removed something under the published root: $changed"
+added=$(LC_ALL=C comm -13 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt") || fail "comm could not compare the listings."
+[ "$(cut -d' ' -f1-2 <<<"$added" | paste -sd' ' -)" = "catalog/tombstones d catalog/tombstones/$tombstone.json f" ] ||
+  fail "photos purge --yes should add only its tombstone, but added: $added"
+# No chmod: web reads the tombstone as its owner, or this 410 fails.
 for variant in "$unlisted" "${unlisted%.webp}.avif"; do
   expect_code "$variant" 410
   [ "$(header cache-control)" = no-store ] || fail "The 410 for $variant sent Cache-Control: $(header cache-control), expected no-store."
 done
 expect_code "$active" 200
 [ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the purge of another photo."
-published_listing "$TMP/published-before-gc.txt"
+published_listing "$TMP/published-before-gc.txt" "$target"
 gc_code=0
-photos_published gc >"$TMP/gc.txt" 2>&1 || gc_code=$?
+photos_as_web gc >"$TMP/gc.txt" 2>&1 || gc_code=$?
 [ "$gc_code" = 0 ] || fail "photos gc exited $gc_code, expected 0: $(cat "$TMP/gc.txt")"
 grep -qF -- "[photos] PLANNED: " "$TMP/gc.txt" || fail "photos gc didn't plan: $(cat "$TMP/gc.txt")"
-grep -qF -- "$unlisted_folder (taken down less than 7 days ago;" "$TMP/gc.txt" || fail "photos gc didn't keep $unlisted_folder as taken down less than 7 days ago: $(cat "$TMP/gc.txt")"
+grep -qF -- "$unlisted_folder (taken down less than 7 days ago;" "$TMP/gc.txt" || fail "photos gc didn't keep the asset-revision folder $unlisted_folder as taken down less than 7 days ago: $(cat "$TMP/gc.txt")"
 grep -q '^Every asset stays: GC deletes no asset,' "$TMP/gc.txt" || fail "photos gc didn't say every asset stays: $(cat "$TMP/gc.txt")"
 grep -q '^Bytes: deletes 0 bytes,' "$TMP/gc.txt" || fail "photos gc planned to delete bytes: $(cat "$TMP/gc.txt")"
 if grep -q '^Delete ' "$TMP/gc.txt"; then
   fail "photos gc planned a delete: $(cat "$TMP/gc.txt")"
 fi
-published_listing "$TMP/published-after-gc.txt"
+published_listing "$TMP/published-after-gc.txt" "$target"
 diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-gc.txt" || fail "photos gc, a dry run, changed something under the published root."
 expect_code "$unlisted" 410
-echo "photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, --yes wrote $tombstone and web answered 410 for the set with no restart, and photos gc kept it as within its 7 days and deleted nothing."
+echo "As web's uid, photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, --yes wrote $tombstone and web answered 410 for the set with no restart, and photos gc kept its asset-revision folder as within its 7 days and deleted nothing."
 echo "smoke-catalog passed."
