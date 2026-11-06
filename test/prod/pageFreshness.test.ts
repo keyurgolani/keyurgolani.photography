@@ -12,15 +12,17 @@
  *   Next's bare error shell: no title, meta tag or filled hidden segment
  *   after </head>, and tag for tag the body /work sends. Then the same on a second server whose
  *   first request meets a damaged active pointer.
- * - F6: a publish that changes the series statement shows in the series
- *   page's meta tag, its main, its statement, and /api/ready alike.
+ * - F1, F6: the launch, then a publish that changes the series statement.
+ *   After each, Work's one marker (`ul[data-catalog-revision]`, B3) and the
+ *   series page's meta tag, main and statement show the revision /api/ready
+ *   names.
  * - H1, H2: the series head (title, description, canonical, og:image,
  *   catalog-revision) is all inside <head>, for Twitterbot and a browser.
  * - S1, the series half: the canonical URL, an alias and a case variant, an
  *   unknown slug and a draft, with the same status, Location and
  *   Cache-Control for both agents, and every 404 the not-found page.
- * - F7, the series half: a rollback through the photos CLI, in a child
- *   process, shows on the first GET.
+ * - F2, F7 (Work and the series page): a rollback to R1 through the photos
+ *   CLI, in a child process, shows on the first GET of each.
  *
  * The rows that wait on other PRs are todos at the end, each naming the PR.
  */
@@ -172,6 +174,22 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         }
     }
 
+    /**
+     * Work as each agent comes from `revision`: the list's marker is the page's
+     * only one (B3), and every rev_ in the page is that revision.
+     */
+    async function expectWorkAt(revision: string): Promise<void> {
+        for (const agent of AGENTS) {
+            const page = await get(base(), '/work', agent);
+            const where = `/work as ${agent}`;
+            expect(page.status, where).toBe(200);
+            const found = markers(page.html);
+            expect(found.list, `${where}: ul[data-catalog-revision]`).toEqual([revision]);
+            expect(withoutScripts(page.html).match(/\sdata-catalog-revision=/g), `${where}: one marker`).toHaveLength(1);
+            expect(found.revisions, `${where}: every rev_ in it`).toEqual([revision]);
+        }
+    }
+
     it('E1: answers the series and Viewer pages with /work\'s bare error shell before the launch', async () => {
         const ready = await get(base(), '/api/ready', 'browser');
         expect(ready.status).toBe(503);
@@ -199,23 +217,24 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expect(started.output()).not.toContain(damaged.root);
     }, 120_000);
 
-    it('F6: shows a publish that changes the statement in the meta tag, main, the statement and /api/ready alike', async () => {
-        // The launch, on a server that was up before it.
+    it('F1, F6: shows the launch and a statement publish on Work and the series page, as /api/ready names them', async () => {
+        // The launch, on a server that was up before it. Each page first, so nothing else warmed the reader for it.
         r1 = (await published(true)).revisionId!;
+        await expectWorkAt(r1);
         await expectSeriesAt(r1, statement(1), [statement(2)]);
         expect(await readyRevision()).toBe(r1);
 
         await editSeries(catalog!.root, seriesId, { statement: statement(2) });
         r2 = (await published()).revisionId!;
         expect(r2).not.toBe(r1);
-        // The page first, so nothing else warmed the reader for it.
+        await expectWorkAt(r2);
         await expectSeriesAt(r2, statement(2), [statement(1)]);
         expect(await readyRevision()).toBe(r2);
         expectSameProcess();
     }, 120_000);
 
     it('H1, H2: keeps the series head in <head>, for Twitterbot and a browser alike', async () => {
-        expect(r2, 'F6 published').not.toBe('');
+        expect(r2, 'F1, F6 published').not.toBe('');
         for (const agent of AGENTS) {
             const page = await get(base(), `/work/${SLUG}`, agent);
             const where = `/work/${SLUG} as ${agent}`;
@@ -240,7 +259,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     }, 60_000);
 
     it('S1: answers the series URLs with the same status, Location and Cache-Control for both agents', async () => {
-        expect(r2, 'F6 published').not.toBe('');
+        expect(r2, 'F1, F6 published').not.toBe('');
         const canonical = `/work/${SLUG}`;
         const rows: { path: string; status: number; location?: string }[] = [
             { path: canonical, status: 200 },
@@ -277,15 +296,16 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expectSameProcess();
     }, 60_000);
 
-    it('F7, the series half: shows a rollback by the photos CLI on the first GET', async () => {
-        expect(r2, 'F6 published').not.toBe('');
+    it('F2, F7: shows a rollback by the photos CLI on the first GET of Work and the series page', async () => {
+        expect(r2, 'F1, F6 published').not.toBe('');
         // #15's rollback, in its own process, as the curator runs it.
         const rolled = await runTsx('scripts/photos.ts', ['rollback', '--to', r1, '--reason', 'F7', '--actor', 'test', '--yes', '--expect-active', r2], {
             env: { PHOTOGRAPHY_DATA_DIR: catalog!.root, PHOTOS_ACTOR: undefined },
         });
         expect(rolled.code, rolled.stderr).toBe(0);
         expect(rolled.stdout).toContain(`ROLLED_BACK: Rolled back to revision 1 (${r1})`);
-        // The series page before anything else asks, as both agents, then /api/ready.
+        // Each page's first GET since, as both agents, before /api/ready asks.
+        await expectWorkAt(r1);
         await expectSeriesAt(r1, statement(1), [statement(2)]);
         expect(await readyRevision()).toBe(r1);
         expectSameProcess();
@@ -294,15 +314,12 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     }, 120_000);
 
     // Waiting on other PRs: each lands with the markers or routes it needs.
-    it.todo("F1 (waits on B3): Work's ul marker equals /api/ready's X-Catalog-Revision, exactly once, from the launch through a second publish");
-    it.todo("F2 (waits on B3): Work's ul marker is R1 on the next GET after a CLI rollback");
     it.todo("F3 (waits on B6): Home's marker is new and ready after a publish, and every rev_ in the body is the marker");
     it.todo("F4 (waits on B6): Home's marker is the target after an in-process rollback");
     it.todo("F5 (waits on B6): Home's marker is still the target after a restart");
-    it.todo('F7, Work (waits on B3): the CLI rollback shows on the first GET of /work');
     it.todo('F7, Home (waits on B6): the CLI rollback shows on the first GET of /');
     it.todo("F8 (waits on B8): on a copied root, the Viewer's meta tag follows a caption publish and a rollback, and the original root is byte-identical");
-    it.todo("F9 (waits on B3, B6 and B8): Home, Work, the series page and the Viewer all show F7's target after a restart");
+    it.todo("F9 (waits on B6 and B8): Home, Work, the series page and the Viewer all show F7's target after a restart");
     it.todo("H3 (waits on B8): the Viewer's h1 with its sr-only position, the aria-hidden counter, caption, alt, AVIF and WebP srcsets and the full head, for both agents");
     it.todo('S1, the Viewer half (waits on B8): 200, 308s from an alias, a case variant and a moved photo, and 404s for an unknown id and a draft, alike for both agents');
 });
