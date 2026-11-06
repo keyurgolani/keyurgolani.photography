@@ -25,6 +25,10 @@ export const MINIMUM_FLOOR_MS = /** @type {Readonly<Record<string, number>>} */ 
 export const MINIMUM_FLOOR_SHARE = 0.05;
 /** What each load records that the job compares, in ms. */
 export const METRICS = /** @type {const} */ (['lcp', 'tbt']);
+/** What each load records for reference only: bytes transferred, and the tone sampler's fetch start against LCP. */
+export const INFO_METRICS = /** @type {const} */ (['bytes', 'toneFetchAfterLcp']);
+/** Their labels in the job summary. */
+const INFO_LABELS = /** @type {Readonly<Record<string, string>>} */ ({ bytes: 'bytes transferred (B)', toneFetchAfterLcp: 'tone fetch − LCP (ms)' });
 /** The three servers, by role. */
 export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 
@@ -108,20 +112,25 @@ export function treeFor(server, { base, head }) {
 }
 
 /**
- * @typedef {{ lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null }} PageEntries
+ * @typedef {{
+ *   lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null,
+ *   bytes?: number | null, toneFetch?: number | null,
+ * }} PageEntries
  */
 
 /**
  * One load's numbers from what the page observed (measure.mjs). LCP is the last `largest-contentful-paint` entry, or
  * null when there was none. TBT is the sum of each long task past 50 ms that starts from FCP (0 without one) to
- * `loadAt` + `settleMs`.
+ * `loadAt` + `settleMs`. For reference, not gated: `bytes`, what the load transferred, and `toneFetchAfterLcp`, when
+ * Home's copy-tone sampler started its fetch (measure.mjs) against LCP, negative before it; null where there's none.
  * @param {PageEntries} entries @param {number} loadAt @param {number} settleMs
  */
-export function reduceLoad({ lcp, longtasks, fcp }, loadAt, settleMs) {
+export function reduceLoad({ lcp, longtasks, fcp, bytes = null, toneFetch = null }, loadAt, settleMs) {
   const from = fcp ?? 0;
   const tbt = longtasks.filter((task) => task.t >= from && task.t <= loadAt + settleMs).reduce((sum, task) => sum + Math.max(0, task.d - 50), 0);
   const last = lcp.at(-1) ?? null;
-  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null };
+  const toneFetchAfterLcp = last && typeof toneFetch === 'number' ? Math.round(toneFetch - last.t) : null;
+  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null, bytes: typeof bytes === 'number' ? bytes : null, toneFetchAfterLcp };
 }
 
 /** A metric's least noise floor: MINIMUM_FLOOR_MS for LCP and TBT, else MINIMUM_FLOOR_SHARE of the base median. @param {string} metric @param {number} baseMedian */
@@ -181,6 +190,55 @@ export function analyse(raw) {
   return { rows, regressions: rows.filter((row) => row.verdict === 'regression') };
 }
 
+/**
+ * @typedef {{
+ *   metric: string, base: Summary | null, head: Summary | null, delta: number | null,
+ *   baseLoads: { with: number, of: number }, headLoads: { with: number, of: number },
+ * }} InfoRow
+ */
+
+/**
+ * INFO_METRICS for every fixture and profile in `raw`, base and head, by the same per-round medians as analyse(), with
+ * no floor and no verdict. A load without the value (no sampler fetch, say) is left out, a round's base is the mean of
+ * whichever of A1 and A2 has one, and a side with none in any round is null. Each side counts its loads with a value.
+ * @param {Raw} raw @returns {InfoRow[]}
+ */
+export function informational(raw) {
+  /** @type {InfoRow[]} */
+  const rows = [];
+  for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
+    if (rounds.length === 0) throw new Error(`Fixture ${fixture} has no rounds.`);
+    for (const profile of Object.keys(rounds[0].servers.A1 ?? {})) {
+      for (const metric of INFO_METRICS) {
+        const baseLoads = { with: 0, of: 0 };
+        const headLoads = { with: 0, of: 0 };
+        /** @type {number[]} */
+        const base = [];
+        /** @type {number[]} */
+        const head = [];
+        for (const round of rounds) {
+          /** @param {Server} server @param {{ with: number, of: number }} count */
+          const value = (server, count) => {
+            const loads = round.servers[server]?.[profile] ?? [];
+            const values = loads.map((load) => load[metric]).filter((v) => typeof v === 'number' && Number.isFinite(v));
+            count.with += values.length;
+            count.of += loads.length;
+            return values.length > 0 ? median(values) : null;
+          };
+          const pair = [value('A1', baseLoads), value('A2', baseLoads)].filter((v) => v !== null);
+          if (pair.length > 0) base.push(pair.reduce((sum, v) => sum + v, 0) / pair.length);
+          const b = value('B', headLoads);
+          if (b !== null) head.push(b);
+        }
+        const baseSummary = base.length > 0 ? summarize(base) : null;
+        const headSummary = head.length > 0 ? summarize(head) : null;
+        rows.push({ metric: `${fixture} ${profile} ${metric}`, base: baseSummary, head: headSummary, delta: baseSummary && headSummary ? headSummary.median - baseSummary.median : null, baseLoads, headLoads });
+      }
+    }
+  }
+  return rows;
+}
+
 /** @param {number} value */
 const ms = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
 /** @param {Summary} summary */
@@ -214,6 +272,23 @@ export function summaryMarkdown(raw, { rows, regressions }) {
     '',
     '</details>',
   ];
+  const info = informational(raw);
+  if (info.some((row) => row.base || row.head)) {
+    /** @param {Summary | null} summary */
+    const cell = (summary) => (summary ? spread(summary) : 'none');
+    /** @param {string} metric */
+    const label = (metric) => metric.replace(/(\S+)$/, (name) => INFO_LABELS[name] ?? name);
+    lines.push(
+      '',
+      '### Bytes and the tone fetch (for reference, not gated)',
+      '',
+      'Bytes are each load\'s transferSize summed over the document and every resource. The tone fetch is when Home\'s copy-tone sampler started its one fetch() of /media, less the load\'s LCP, so positive is after LCP. Same per-round medians as above, over the loads that have a value; the last column counts those loads, base then head. No floor, no verdict.',
+      '',
+      '| Metric | Base (A1+A2)/2 | Head B | Head − base | Loads with a value |',
+      '|---|---|---|---|---|',
+      ...info.map((row) => `| ${label(row.metric)} | ${cell(row.base)} | ${cell(row.head)} | ${row.delta === null ? 'n/a' : `${row.delta > 0 ? '+' : ''}${ms(row.delta)}`} | ${row.baseLoads.with}/${row.baseLoads.of}, ${row.headLoads.with}/${row.headLoads.of} |`),
+    );
+  }
   const js = raw.firstLoadJs;
   if (js) {
     /** @param {RouteJs | undefined} route */
