@@ -85,8 +85,8 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         expect(at(['describe', '--import', 'f.csv'])).toBe('authored');
         expect(at(['carry-over'])).toBe('read');
         expect(at(['carry-over', '--apply'])).toBe('authored');
-        expect(at(['rollback', '--to', '1'])).toBe('read');
-        expect(at(['rollback', '--to', '1'], true)).toBe('catalog');
+        expect(at(['rollback', '--to', '1'])).toBe('locking-read');
+        expect(at(['rollback', '--to', '1'], true)).toBe('locking-read');
         expect(at(['rollback', '--to', '1', '--yes'])).toBe('catalog');
         expect(at(['publish', '--dry-run'])).toBe('catalog');
         expect(at(['migrate', '--dry-run'])).toBe('migration-plan');

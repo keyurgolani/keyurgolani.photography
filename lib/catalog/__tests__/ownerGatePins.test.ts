@@ -131,6 +131,10 @@ const WRITERS: { name: string; argv: Argv }[] = [
     // Round 4: an identity or curation subcommand the table doesn't know fails closed; the owner gets the usage error.
     { name: 'identity <unknown>', argv: () => ['identity', 'frobnicate'] },
     { name: 'curation <unknown>', argv: () => ['curation', 'frobnicate'] },
+    // Round 4, option (b): rollback without --yes takes the catalog lock to read, or to settle a crashed
+    // activation when the target is live already, so it's a lock-taking read: the owner's alone.
+    { name: 'rollback --to <the live revision> without --yes (settles under the catalog lock)', argv: () => ['rollback', '--to', '3', '--reason', 'r', '--actor', 'test'] },
+    { name: 'rollback --to <an eligible revision> without --yes', argv: (w) => ['rollback', '--to', '2', '--reason', 'r', '--actor', 'test', '--expect-active', w.built.revisions[3]] },
 ];
 
 /**
@@ -147,7 +151,6 @@ const READERS: { name: string; argv: Argv }[] = [
     { name: 'history', argv: () => ['history', '--json', '--revisions'] },
     { name: 'describe --import --dry-run', argv: (w) => ['describe', '--import', path.join(w.outside, 'descriptions.csv'), '--dry-run'] },
     { name: 'carry-over (its plan)', argv: () => ['carry-over'] },
-    { name: 'rollback without --yes, not in a terminal', argv: (w) => ['rollback', '--to', '2', '--reason', 'r', '--actor', 'test', '--expect-active', w.built.revisions[3]] },
     { name: 'curation list', argv: () => ['curation', 'list', '--all', '--json'] },
     { name: 'curation show', argv: (w) => ['curation', 'show', w.eventId, '--json'] },
     { name: 'migrate --dry-run --out outside the data root', argv: (w) => ['migrate', '--dry-run', '--out', path.join(w.outside, 'migration')] },
