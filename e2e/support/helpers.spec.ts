@@ -551,7 +551,9 @@ test.describe('a stretched link, measured through { pseudo: "::after" }', () => 
     });
 
     test('expectMinTargetSize takes the ::after\'s box, where the link\'s own is 12 px tall', async ({ page }) => {
-        await load(page, `<div class="cards">${card('One')}</div>`, CARD_STYLE);
+        // An inline link's box is its font's content area, 14 px on CI's font at 12 px, whatever the line height. An
+        // inline-block one is its line, the h2's 12 px, on any font (B3's CI).
+        await load(page, `<div class="cards">${card('One')}</div>`, `${CARD_STYLE} .card a { display: inline-block; }`);
         const link = page.getByRole('link');
         await expectMinTargetSize(link, 44, AFTER);
         await expect(expectMinTargetSize(link, 44)).rejects.toThrow(/by 12\.0/);
