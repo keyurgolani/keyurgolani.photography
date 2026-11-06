@@ -56,9 +56,9 @@ services:
   # and keep the photos readable to uid 1001 (docs/data-root.md, Who owns
   # the photos). Its run --rm form is also the CLI, photos.mjs, with these
   # same mounts and the same uid as web: photos purge --yes, purge --revoke
-  # --yes and gc --apply refuse as any uid but the data root's owner, since web
-  # must read the tombstones they write (docs/data-root.md, Who owns the data
-  # root).
+  # --yes and any gc --apply refuse as any uid but the data root's owner,
+  # before they take a lock, since web must read the tombstones they write
+  # (docs/data-root.md, Who owns the data root).
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"
