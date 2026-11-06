@@ -90,10 +90,13 @@ describe('local servers', () => {
 describe('the image build', () => {
   // `next build` type-checks every file tsconfig.json includes, test files too,
   // and `.dockerignore` drops ci/ and e2e/ from the image context. So a module
-  // under app/, components/ or lib/ that imports from either breaks the image
-  // build with TS2307 while every local check stays green.
-  const SCANNED = ['app', 'components', 'lib'];
+  // the image keeps that imports from either breaks the image build with TS2307
+  // while every local check stays green: every top-level folder and file is
+  // scanned but the ones the image context drops, or that are built or installed
+  // (A8's CI: __tests__/ imported e2e/, and only app/, components/ and lib/ were).
   const DROPPED = ['ci', 'e2e'];
+  const SHIPPED = ['app', 'components', 'lib'];
+  const UNSCANNED = new Set([...DROPPED, 'node_modules', '.git', '.next', 'dist', 'docs', '.github', 'test-results', 'playwright-report', 'blob-report', 'portfolio-data', 'site-config', 'public', 'playwright.config.ts']);
   const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g;
 
   /** The specifiers in `source` that resolve into a directory the image context drops. */
@@ -116,16 +119,24 @@ describe('the image build', () => {
     expect(droppedImports(file, "import { x } from '@/lib/ci/x';\nimport '../ci/z';\nimport y from 'ci';")).toEqual([]);
   });
 
-  it('has no module under app/, components/ or lib/ importing from ci/ or e2e/', async () => {
+  it('has no module the image keeps importing from ci/ or e2e/', async () => {
     const offenders = [];
     let scanned = 0;
-    for (const dir of SCANNED) {
-      for (const entry of await fs.readdir(path.join(REPO_ROOT, dir), { recursive: true, withFileTypes: true })) {
-        if (!entry.isFile() || !/\.[cm]?[jt]sx?$/.test(entry.name)) continue;
-        const file = path.join(entry.parentPath, entry.name);
-        scanned += 1;
-        for (const specifier of droppedImports(file, await fs.readFile(file, 'utf8'))) offenders.push(`${path.relative(REPO_ROOT, file)}: ${specifier}`);
-      }
+    const top = (await fs.readdir(REPO_ROOT, { withFileTypes: true })).filter((entry) => !UNSCANNED.has(entry.name));
+    expect(top.map((entry) => entry.name)).toEqual(expect.arrayContaining(['app', 'components', 'lib', '__tests__', 'test', 'scripts', 'utils']));
+    const files = [];
+    for (const entry of top) {
+      if (entry.isFile()) files.push(entry);
+      else if (entry.isDirectory()) files.push(...(await fs.readdir(path.join(REPO_ROOT, entry.name), { recursive: true, withFileTypes: true })));
+    }
+    for (const entry of files) {
+      if (!entry.isFile()) continue;
+      const file = path.join(entry.parentPath, entry.name);
+      // What the build type-checks: tsconfig.json includes every .ts and .tsx, and JavaScript only where shipped code imports it.
+      const shipped = SHIPPED.includes(path.relative(REPO_ROOT, file).split(path.sep)[0]);
+      if (!/\.tsx?$/.test(entry.name) && !(shipped && /\.[cm]?jsx?$/.test(entry.name))) continue;
+      scanned += 1;
+      for (const specifier of droppedImports(file, await fs.readFile(file, 'utf8'))) offenders.push(`${path.relative(REPO_ROOT, file)}: ${specifier}`);
     }
     expect(scanned).toBeGreaterThan(0);
     expect(offenders).toEqual([]);

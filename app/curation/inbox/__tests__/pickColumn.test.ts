@@ -34,6 +34,24 @@ describe("the Inbox row's checkbox column", () => {
         expect(declarations('.pick').position).toBe('relative');
     });
 
+    // A8's review: the item form has hidden text of its own (Archive's spoken reason line, #91's Confirm unavailable
+    // note). On a wide screen both panels scroll on their own, so each is the containing block for whatever is
+    // absolutely positioned inside it, and nothing in either gives the window room to scroll.
+    it('makes each of the wide screen\'s two scrolling panels the containing block of what is positioned inside it', () => {
+        const wide: Record<string, string>[] = [];
+        CSS.walkAtRules('media', (media) => {
+            if (media.params !== '(min-width: 768px)') return;
+            media.walkRules((rule: Rule) => {
+                if (rule.selectors.includes('.body > .list') && rule.selectors.includes('.detail > .fields')) {
+                    const found: Record<string, string> = {};
+                    rule.walkDecls((decl) => void (found[decl.prop] = decl.value));
+                    wide.push(found);
+                }
+            });
+        });
+        expect(wide.some((found) => found['overflow-y'] === 'auto' && found.position === 'relative')).toBe(true);
+    });
+
     it("puts the row's link in the second column, with next's padding", () => {
         const link = declarations('.pickRow > .item');
         expect(link['grid-column']).toBe('2');
