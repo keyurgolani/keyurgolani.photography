@@ -76,6 +76,15 @@ const ALLOWLIST: readonly Allowed[] = [
         runs: "spawn('sh', ['-c', `${command} \"$1\"`, 'sh', file], { stdio: 'inherit' })",
         reason: "only on the owner's photos edit, at his request: it opens his own editor ($VISUAL, $EDITOR or vi), a program he chose, on a copy photos edit made, with the path as its one argument. The app adds no command of its own, so nothing the app wrote runs a delete",
     },
+    // From #199 (the publish warning), on the rebase onto 8292f1c8.
+    {
+        kind: 'process',
+        file: 'lib/perf/catalog-budgets.ts',
+        fn: 'measureInChild',
+        calls: [`${PROCESS_CALL}spawn(process.execPath, [...childArgv(), childEntry()], { stdio: ['pipe', 'pipe', 'pipe'], timeout: CHILD_TIMEOUT_MS })`],
+        runs: "spawn(process.execPath, [...childArgv(), childEntry()], { stdio: ['pipe', 'pipe', 'pipe'], timeout: CHILD_TIMEOUT_MS })",
+        reason: "on photos validate and publish's budget warning: it runs this Node, with no shell, on lib/perf/budgets-cli.ts or its bundle dist/scripts/budgets-cli.mjs (PHOTOS_BUDGETS_CHILD names a test's stand-in), which reads JSON on stdin and writes JSON on stdout. budgets-cli.ts is a shipped file this rail scans, so it can't delete without failing the rail",
+    },
     // Not a delete: globalSlot(), the one read of the global object by a computed key, which the rail can't resolve, so it fails closed and is let past here only (item 48's N4).
     {
         kind: 'unresolvable-read',
@@ -185,8 +194,20 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
     });
 
     it('lets a process call past only by its whole call, so changing its arguments fails the rail (items 39a and 43)', () => {
-        // Today the only process entry is the owner's editor.
-        expect(ALLOWLIST.filter((entry) => entry.kind === 'process').map(key)).toEqual(['lib/catalog/edit-record.ts shellEditor']);
+        // Today the process entries are the owner's editor and, since #199, the budget warning's measuring child.
+        expect(ALLOWLIST.filter((entry) => entry.kind === 'process').map(key)).toEqual(['lib/catalog/edit-record.ts shellEditor', 'lib/perf/catalog-budgets.ts measureInChild']);
+        const budgets = 'lib/perf/catalog-budgets.ts';
+        const budgetsSource = fs.readFileSync(path.join(REPO_ROOT, budgets), 'utf8');
+        expect(passes(scanSource(budgets, budgetsSource).filter((call) => call.fn === 'measureInChild'))).toBe(true);
+        for (const [from, to] of [
+            ['spawn(process.execPath, [...childArgv(), childEntry()]', "spawn('sh', ['-c', childEntry()]"],
+            ['timeout: CHILD_TIMEOUT_MS }', 'timeout: CHILD_TIMEOUT_MS, shell: true }'],
+        ]) {
+            expect(budgetsSource.split(from).length - 1, from).toBe(1);
+            const changed = scanSource(budgets, budgetsSource.replace(from, to)).filter((call) => call.fn === 'measureInChild');
+            expect(changed.length, to).toBeGreaterThan(0);
+            expect(passes(changed), to).toBe(false);
+        }
         const file = 'lib/catalog/edit-record.ts';
         const shipped = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
         expect(passes(scanSource(file, shipped).filter((call) => call.fn === 'shellEditor'))).toBe(true);
