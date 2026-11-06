@@ -76,3 +76,47 @@ describe('All bodies of work on a phone', () => {
     expect(selectors.filter((selector) => selector.includes('.work'))).toEqual([WORK, WORK]);
   });
 });
+
+// Dark's phone wash, from HomeChrome.module.css. From 380 px it's today's fixed wash at default text, pixel for pixel
+// (Dark parity). Under 380 px that wash left the title at 4.319:1 over a white photograph at 360 px, so there it
+// follows the copy at every text size, as it does at enlarged text everywhere on a phone.
+const CHROME = postcss.parse(fs.readFileSync(fileURLToPath(new URL('../HomeChrome.module.css', import.meta.url)), 'utf8'));
+
+const DARK = ":global(html[data-theme='dark'])";
+const TODAY = 'linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.28) 66%, rgb(8 10 9 / 0.12) 100%)';
+
+/** Every top-level `@media (max-width: …)` query's width in px. */
+const maxWidths = () => {
+  const found: { query: AtRule; px: number }[] = [];
+  CHROME.each((node) => {
+    const match = node.type === 'atrule' && (node as AtRule).name === 'media' && /^\(max-width: ([\d.]+(?:px|rem))\)$/.exec((node as AtRule).params);
+    if (match) found.push({ query: node as AtRule, px: px(match[1]) });
+  });
+  return found;
+};
+
+describe("Dark's phone wash under 380 px", () => {
+  const phone = atRule(CHROME, 'media', '(max-width: 39.99rem)')!;
+  const enlarged = declarations(phone, `${DARK} .root[data-text-enlarged] .vignette`);
+  const narrow = maxWidths().filter(({ px: width }) => width >= 379 && width < 380);
+
+  it("keeps today's fixed wash on a phone from 380 px", () => {
+    expect(declarations(phone, '.vignette').background).toBe(TODAY);
+  });
+
+  it('follows the copy below 380 px at default text, as at enlarged text', () => {
+    expect(narrow, 'one query for 379 px and under').toHaveLength(1);
+    const wash = declarations(narrow[0].query, `${DARK} .vignette`);
+    expect(enlarged['--home-hold-at']).toBe('calc(100% - var(--home-copy-top, 66%) + 1.5rem)');
+    expect(wash['--home-hold-at']).toBe(enlarged['--home-hold-at']);
+    expect(wash.background).toBe(enlarged.background);
+    // At 0.86 up to the copy's top, and a step past it.
+    expect(wash.background).toMatch(/rgb\(8 10 9 \/ 0\.86\) var\(--home-hold-at\)/);
+  });
+
+  it('touches only Dark there', () => {
+    const selectors: string[] = [];
+    narrow[0]?.query.walkRules((rule: Rule) => void selectors.push(...rule.selectors));
+    expect(selectors).toEqual([`${DARK} .vignette`]);
+  });
+});

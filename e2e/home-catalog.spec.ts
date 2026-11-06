@@ -351,26 +351,41 @@ async function worstTextContrast(page: Page, target: Locator): Promise<number> {
 }
 
 /**
- * Where :354's white-photograph case runs: two desktop widths, and on mobile Pixel 7's own screen and a 360 px phone,
- * where All bodies of work sits beside Enter the series (B7's CI fix).
+ * Where the white-photograph case below runs: two desktop widths, and on mobile Pixel 7's own screen and the narrow
+ * phones under 380 px, in Dark (the suite's System) and in Black. From 360 px All bodies of work sits beside Enter the
+ * series; at 320 it stays under Enter. 320 by 568 is the smallest phone, with the copy highest up its screen. Reduced
+ * motion adds the controls' "Off with reduced motion" hint, which lifts the copy about 25 px. Black's 320 row is 800
+ * tall: at 568 Home's badge goes beside the story, over the title, and Black raises it over the scrim, which no wash
+ * can hold.
  */
 const WHITE_CASES = [
     { name: 'at 1440 px', project: 'desktop', viewport: { width: 1440, height: 900 } },
     { name: 'at 1024 px', project: 'desktop', viewport: { width: 1024, height: 900 } },
     { name: 'on Pixel 7', project: 'mobile', viewport: null },
-    { name: 'at 360 px on a phone', project: 'mobile', viewport: { width: 360, height: 800 }, floor: { title: 4.3, statement: 4.4 } },
+    { name: 'at 360 px on a phone', project: 'mobile', viewport: { width: 360, height: 800 } },
+    { name: 'at 320 px on a phone', project: 'mobile', viewport: { width: 320, height: 568 } },
+    { name: 'at 379 px on a phone', project: 'mobile', viewport: { width: 379, height: 800 } },
+    { name: 'at 360 px on a phone, with reduced motion', project: 'mobile', viewport: { width: 360, height: 800 }, reducedMotion: true },
+    { name: 'at 379 px on a phone, with reduced motion', project: 'mobile', viewport: { width: 379, height: 800 }, reducedMotion: true },
+    { name: 'at 320 px on a phone, in Black', project: 'mobile', viewport: { width: 320, height: 800 }, theme: 'black' },
+    { name: 'at 360 px on a phone, in Black', project: 'mobile', viewport: { width: 360, height: 800 }, theme: 'black' },
+    { name: 'at 360 px on a phone, in Black, with reduced motion', project: 'mobile', viewport: { width: 360, height: 800 }, theme: 'black', reducedMotion: true },
+    { name: 'at 379 px on a phone, in Black', project: 'mobile', viewport: { width: 379, height: 800 }, theme: 'black' },
 ] as const;
 
-/** Every case keeps 4.5:1 but where a case says otherwise. */
+/** Rule 8: every case keeps 4.5:1. */
 const AA = 4.5;
 
 for (const { name: where, project, viewport, ...rest } of WHITE_CASES) {
-    // At 360 px Dark's wash, as today's site has it, holds the title at 4.319:1 and the statement at 4.437:1 over a
-    // white photograph, before and after B7 alike (prs/B7-shots/measures.json): existing behaviour; raised to 4.5 by B7D.
-    const floor: { title?: number; statement?: number } = 'floor' in rest ? rest.floor : {};
+    // Under 380 px Dark's wash follows the copy at every text size: today's fixed wash held the title at 4.319:1 and
+    // the statement at 4.437:1 over this photograph at 360 px with reduced motion, and 2.33:1 at 320 by 568.
+    const theme = 'theme' in rest ? rest.theme : undefined;
+    const reducedMotion = 'reducedMotion' in rest;
     test(`the series title and statement keep their contrast over a white opening photograph, revealed by keyboard, ${where}`, async ({ page }, testInfo) => {
         runsOn(testInfo, project);
         if (viewport) await page.setViewportSize(viewport);
+        if (theme) await page.addInitScript((stored) => localStorage.setItem('theme', stored), theme);
+        if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
         await page.route(`**/media/${HOME_OPENING}/**`, async (route) => {
             const format = new URL(route.request().url()).pathname.endsWith('.avif') ? 'avif' : 'webp';
             await route.fulfill({ status: 200, contentType: `image/${format}`, body: await whitePhoto(format) });
@@ -385,10 +400,10 @@ for (const { name: where, project, viewport, ...rest } of WHITE_CASES) {
         const statement = page.locator('[data-chrome-region="story"] p');
         await expect(statement).toHaveText(HOME_SERIES.shortStatement);
         for (const [name, target] of [['title', title], ['statement', statement], ['Work link', allWork(page)]] as const) {
-            const least = name === 'Work link' ? AA : (floor[name] ?? AA);
-            expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the white photograph`).toBeGreaterThanOrEqual(least);
+            expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the white photograph`).toBeGreaterThanOrEqual(AA);
         }
-        if (project !== 'mobile') return;
+        // Below 360 px the link stays under Enter the series (CatalogHome.module.css), so only the contrast applies.
+        if (project !== 'mobile' || (viewport && viewport.width < 360)) return;
         // On a phone the link rides Enter's row, inside the print, and adds no height: the title sits where it does with
         // the link taken out of the layout, which is next's story. Dark's phone wash is today's, so the title needs that.
         const [enterBox, workBox] = await Promise.all([enter(page).boundingBox(), allWork(page).boundingBox()]);
