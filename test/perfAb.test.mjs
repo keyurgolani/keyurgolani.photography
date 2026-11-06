@@ -1,6 +1,24 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { analyse, compareMetric, loopbackListeners, median, MIN_ROUNDS, MINIMUM_FLOOR_MS, MINIMUM_FLOOR_SHARE, minimumFloor, NOISE_FACTOR, noiseFloor, parseRounds, roundOrder, summarize, summaryMarkdown } from '../ci/perf/stats.mjs';
+import {
+  analyse,
+  compareMetric,
+  loopbackListeners,
+  MAX_ROUNDS,
+  median,
+  MIN_ROUNDS,
+  MINIMUM_FLOOR_MS,
+  MINIMUM_FLOOR_SHARE,
+  minimumFloor,
+  NOISE_FACTOR,
+  noiseFloor,
+  parseRounds,
+  reduceLoad,
+  roundOrder,
+  summarize,
+  summaryMarkdown,
+  treeFor,
+} from '../ci/perf/stats.mjs';
 
 describe('median and summarize', () => {
   it('takes the middle value, or the mean of the middle two', () => {
@@ -21,14 +39,15 @@ describe('median and summarize', () => {
 });
 
 describe('parseRounds', () => {
-  it(`accepts whole numbers of ${MIN_ROUNDS} or more`, () => {
-    expect(MIN_ROUNDS).toBe(5);
+  it(`accepts whole numbers from ${MIN_ROUNDS} to ${MAX_ROUNDS}`, () => {
+    expect([MIN_ROUNDS, MAX_ROUNDS]).toEqual([5, 20]);
     expect(parseRounds('5')).toBe(5);
     expect(parseRounds(12)).toBe(12);
+    expect(parseRounds('20')).toBe(20);
   });
 
-  it('refuses fewer than five, fractions and junk', () => {
-    for (const value of ['4', '0', '-5', '5.5', 'five', '', undefined]) expect(() => parseRounds(value)).toThrow(/at least 5/);
+  it('refuses fewer than five, more than twenty, fractions and junk', () => {
+    for (const value of ['4', '0', '-5', '5.5', 5.5, '21', 21, 'five', '', undefined]) expect(() => parseRounds(value)).toThrow(/from 5 to 20/);
   });
 });
 
@@ -48,11 +67,37 @@ describe('roundOrder', () => {
   });
 });
 
+describe('treeFor', () => {
+  const trees = { base: '/w/base', head: '/w/head' };
+
+  it('serves A1 and A2 from the base and B from the head', () => {
+    expect(['A1', 'A2', 'B'].map((server) => treeFor(server, trees))).toEqual(['/w/base', '/w/base', '/w/head']);
+  });
+
+  it('refuses a server it does not know', () => {
+    expect(() => treeFor('C', trees)).toThrow(/C/);
+  });
+});
+
 describe('noiseFloor', () => {
-  it(`is ${NOISE_FACTOR} times the largest per-round gap between the two base servers`, () => {
-    expect(NOISE_FACTOR).toBe(1.5);
-    // Gaps 10, 30, 0, 20, 5: the largest is 30.
-    expect(noiseFloor([100, 130, 100, 90, 105], [110, 100, 100, 110, 100])).toBe(45);
+  it(`is ${NOISE_FACTOR} times the median per-round gap between the two base servers`, () => {
+    expect(NOISE_FACTOR).toBe(4);
+    // Gaps 10, 30, 0, 20, 5: the median is 10.
+    expect(noiseFloor([100, 130, 100, 90, 105], [110, 100, 100, 110, 100])).toBe(40);
+  });
+
+  it('counts a gap either way round, A2 over A1 as much as A1 over A2', () => {
+    // A1 - A2 is -30, 40, -40, 50, 0: the gaps are 30, 40, 40, 50, 0, median 40. Signed, the median would be 0.
+    expect(noiseFloor([100, 140, 100, 150, 100], [130, 100, 140, 100, 100])).toBe(160);
+  });
+
+  it('does not grow when rounds with the same noise are added', () => {
+    const a2At = (gaps) => gaps.map((gap) => 1000 + gap);
+    const five = [10, 20, 30, 10, 20];
+    // The same gaps four times over, one of them a rarer large one, as 20 rounds will draw.
+    const twenty = [...five, ...five, ...five, 10, 20, 120, 10, 20];
+    expect(noiseFloor(five.map(() => 1000), a2At(five))).toBe(80);
+    expect(noiseFloor(twenty.map(() => 1000), a2At(twenty))).toBe(80);
   });
 
   it('is 0 when the base agrees with itself every round', () => {
@@ -79,18 +124,27 @@ describe('minimumFloor', () => {
 describe('compareMetric', () => {
   const a1 = [1000, 1080, 960, 1040, 1000];
   const a2 = [1040, 1000, 1000, 1000, 1080];
-  // Largest A/A gap is 80, so 1.5x is 120, past LCP's 50 ms minimum. Base median 1000.
+  // Each round's base is (A1 + A2) / 2: 1020, 1040, 980, 1020, 1040, median 1020. The gaps are 40, 80, 40, 40, 80,
+  // median 40, so 4x is 160, past LCP's 50 ms minimum.
 
-  it('uses 1.5x the largest A/A gap when that is past the minimum, and flags a regression only past it', () => {
-    const over = compareMetric({ metric: 'lcp', a1, a2, b: [1130, 1125, 1121, 1150, 1140] });
-    expect(over).toMatchObject({ floor: 120, floorSource: 'A/A', delta: 130, verdict: 'regression' });
-    expect(over.base).toEqual({ median: 1000, min: 960, max: 1080, n: 5 });
-    expect(over.head).toEqual({ median: 1130, min: 1121, max: 1150, n: 5 });
+  it('uses 4x the median A/A gap when that is past the minimum, and flags a regression only past it', () => {
+    const over = compareMetric({ metric: 'lcp', a1, a2, b: [1190, 1185, 1181, 1210, 1200] });
+    expect(over).toMatchObject({ floor: 160, floorSource: 'A/A', delta: 170, verdict: 'regression' });
+    expect(over.base).toEqual({ median: 1020, min: 980, max: 1040, n: 5 });
+    expect(over.head).toEqual({ median: 1190, min: 1181, max: 1210, n: 5 });
+    expect(over.a1).toEqual({ median: 1000, min: 960, max: 1080, n: 5 });
+    expect(over.a2).toEqual({ median: 1000, min: 1000, max: 1080, n: 5 });
   });
 
   it('calls a change at or inside the floor noise, and one past it on the fast side faster', () => {
-    expect(compareMetric({ metric: 'lcp', a1, a2, b: [1120, 1120, 1120, 1120, 1120] })).toMatchObject({ delta: 120, verdict: 'within noise' });
-    expect(compareMetric({ metric: 'lcp', a1, a2, b: [870, 860, 865, 890, 840] })).toMatchObject({ delta: -135, verdict: 'faster' });
+    expect(compareMetric({ metric: 'lcp', a1, a2, b: [1180, 1180, 1180, 1180, 1180] })).toMatchObject({ delta: 160, verdict: 'within noise' });
+    expect(compareMetric({ metric: 'lcp', a1, a2, b: [850, 840, 845, 870, 820] })).toMatchObject({ delta: -175, verdict: 'faster' });
+  });
+
+  it('takes the base as the mean of A1 and A2 each round, so it brackets the head', () => {
+    // A1 always 1000, A2 always 1040: floor 160. Against A1 alone the head would be +180, a regression.
+    const five = (value) => [value, value, value, value, value];
+    expect(compareMetric({ metric: 'lcp', a1: five(1000), a2: five(1040), b: five(1180) })).toMatchObject({ floor: 160, delta: 160, verdict: 'within noise' });
   });
 
   it('uses the minimum when the base never moves against itself', () => {
@@ -101,6 +155,29 @@ describe('compareMetric', () => {
     const flat = [1000, 1000, 1000, 1000, 1000];
     expect(compareMetric({ metric: 'lcp', a1: flat, a2: flat, b: [1040, 1040, 1040, 1040, 1040] })).toMatchObject({ floor: 50, floorSource: 'minimum', verdict: 'within noise' });
     expect(compareMetric({ metric: 'fcp', a1: flat, a2: flat, b: [1060, 1060, 1060, 1060, 1060] })).toMatchObject({ floor: 50, floorSource: 'minimum', verdict: 'regression' });
+  });
+});
+
+describe('reduceLoad', () => {
+  const lcp = [
+    { t: 800, el: 'img', url: '/a' },
+    { t: 1500.4, el: 'img[alt=Fixture] (portrait)', url: '/media/b' },
+  ];
+  // FCP at 300 and load at 2000, so long tasks count from 300 to 7000.
+  const longtasks = [
+    { t: 100, d: 200 }, // before FCP: out
+    { t: 400, d: 120 }, // 70 past 50 ms
+    { t: 2000, d: 50 }, // 0
+    { t: 2500, d: 80.6 }, // 30.6
+    { t: 7200, d: 300 }, // past load + 5 s: out
+  ];
+
+  it('sums each long task past 50 ms from FCP to load + 5 s, and takes the last LCP entry', () => {
+    expect(reduceLoad({ lcp, longtasks, fcp: 300 }, 2000, 5000)).toEqual({ lcp: 1500, tbt: 101, fcp: 300, load: 2000, longtasks: 5, lcpElement: 'img[alt=Fixture] (portrait)', lcpUrl: '/media/b' });
+  });
+
+  it('gives no LCP when the page reported none, and counts from 0 with no FCP', () => {
+    expect(reduceLoad({ lcp: [], longtasks: [{ t: 10, d: 70 }], fcp: null }, 1000, 5000)).toEqual({ lcp: null, tbt: 20, fcp: 0, load: 1000, longtasks: 1, lcpElement: null, lcpUrl: null });
   });
 });
 
@@ -127,8 +204,15 @@ describe('analyse and summaryMarkdown', () => {
     const { rows, regressions } = analyse(raw);
     expect(rows.map((row) => row.metric)).toEqual(['one phone lcp', 'one phone tbt', 'one desktop lcp', 'one desktop tbt']);
     expect(regressions.map((row) => row.metric)).toEqual(['one phone lcp']);
-    // The A/A gap's 1.5x is 15, under LCP's 50 ms minimum.
+    // The median A/A gap is 0, so LCP's 50 ms minimum sets the floor.
     expect(rows[0]).toMatchObject({ floor: 50, floorSource: 'minimum', delta: 200, verdict: 'regression' });
+  });
+
+  it('leaves a faster head out of the regressions', () => {
+    const raw = rawWith({ A1: [1000, 1000, 1000, 1000, 1000], A2: [1000, 1000, 1000, 1000, 1000], B: [700, 700, 700, 700, 700] });
+    const { rows, regressions } = analyse(raw);
+    expect(rows[0]).toMatchObject({ delta: -300, verdict: 'faster' });
+    expect(regressions).toEqual([]);
   });
 
   it('takes the median of the loads within a round before comparing rounds', () => {
@@ -146,11 +230,19 @@ describe('analyse and summaryMarkdown', () => {
   it('writes a table with both medians and spreads, the floor, and the rule it used', () => {
     const raw = rawWith({ A1: [1000, 1000, 1000, 1000, 1000], A2: [1010, 1000, 990, 1000, 1000], B: [1200, 1190, 1210, 1200, 1200] });
     const markdown = summaryMarkdown(raw, analyse(raw));
-    expect(markdown).toContain('| one phone lcp | 1000 (1000–1000) | 1200 (1190–1210) | +200 | 50 ms (minimum) | **regression** |');
+    expect(markdown).toContain('| Metric (ms) | Base (A1+A2)/2 | Head B | Head − base | Noise floor | Verdict |');
+    expect(markdown).toContain('| one phone lcp | 1000 (995–1005) | 1200 (1190–1210) | +200 | 50 ms (minimum) | **regression** |');
     expect(markdown).toContain('at least 50 ms for LCP, 20 ms for TBT, and 5% of the base median for any other timing');
-    expect(markdown).toContain('1.5 × the largest per-round |A1 − A2|');
+    expect(markdown).toContain('4 × the median per-round |A1 − A2|');
     expect(markdown).toContain('v1.7.0');
     expect(markdown).toMatch(/1 regression/);
+  });
+
+  it('shows A1 and A2 apart in the A/A table', () => {
+    const raw = rawWith({ A1: [1000, 1000, 1000, 1000, 1000], A2: [1010, 1000, 990, 1000, 1000], B: [1200, 1190, 1210, 1200, 1200] });
+    const markdown = summaryMarkdown(raw, analyse(raw));
+    expect(markdown).toContain('| Metric (ms) | A1 | A2 | Median gap | Floor |');
+    expect(markdown).toContain('| one phone lcp | 1000 (1000–1000) | 1000 (990–1010) | 0 | 50 ms (minimum) |');
   });
 });
 
