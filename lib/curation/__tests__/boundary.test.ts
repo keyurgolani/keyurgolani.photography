@@ -76,6 +76,8 @@ describe('the public routes', () => {
             'app/curation/inbox/journey.ts',
             'app/curation/inbox/loading.tsx',
             'app/curation/inbox/page.tsx',
+            // #14: the wait for hydration that the Inbox's bulk and item forms share.
+            'app/curation/inbox/useHydrated.ts',
             'app/curation/login/page.tsx',
             'app/curation/page.tsx',
             'app/curation/publish/HistoryContext.tsx',
