@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compare, completeHiddenSegments, failures, type Walk, type Walked } from '../e2e/themes/computed';
+import { compare, completeHiddenSegments, failures, type Walk, type Walked } from '../test/helpers/parityCompare';
 
 // #14's A8, from its CI: Dark parity's gate helpers. Without JavaScript, React leaves a streamed segment in a hidden
 // <div id="S:n"> at the end of the body and a <template id="P:n"> where it goes, and how the page's payload splits into
