@@ -481,7 +481,8 @@ describe('the poll', () => {
         fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(region).toHaveTextContent(/watcher stopped checking in/);
-        // The arrival line stays where it was, the same node, so it isn't read again, and its link is still there once.
+        // The arrival line stays where it was, the same node, and its link is still there once. The region isn't atomic,
+        // so a screen reader reads what was added beside it, not the whole region with the arrival again.
         expect(within(region).getByText(/1 new item needs judgment\./)).toBe(arrival);
         expect(within(region).getByRole('link', { name: 'Refresh the inbox' })).toBeInTheDocument();
         expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
@@ -493,6 +494,13 @@ describe('the poll', () => {
         expect(region).not.toHaveTextContent(/watcher stopped checking in/);
         expect(within(region).getByText(/1 new item needs judgment\./)).toBe(arrival);
         expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+    });
+
+    it('reads only what changed in its region: a status is atomic by default, so it says aria-atomic="false"', () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        // role="status" implies aria-atomic="true", and Chromium honours it: with two lines, a change to one would make
+        // NVDA or JAWS read the whole region again, the new-items line and its link included.
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveAttribute('aria-atomic', 'false');
     });
 
     it("puts its strips straight into the page, with no wrapper of its own, where next's watcher strip was (A8's CI, Dark parity)", () => {
