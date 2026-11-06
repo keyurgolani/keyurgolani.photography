@@ -171,6 +171,29 @@ const usage = (run: () => unknown): string => {
     throw new Error('No usage error.');
 };
 
+describe("a rollback plan's warnings", () => {
+    it('says a shared series title is a warning that blocks nothing, never that a publish goes ahead', { timeout: 120_000 }, async () => {
+        // Left under os.tmpdir() for whoever clears it: this test deletes nothing.
+        const catalog = await createTestCatalog({ seed: 331, photos: 3, series: [{ title: 'Fixture harbor' }, { title: 'FIXTURE HARBOR' }], variantBytes: VARIANT_BYTES });
+        const root = catalog.root;
+        const one = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger: quiet });
+        expect(one).toMatchObject({ outcome: 'PUBLISHED', errors: 0, warnings: 2 });
+        const series = (await readWorkingLayer(root)).series[1];
+        await writeAuthoredRecord({ ...series, title: 'Fixture other harbor' }, { expectedVersion: series.version, root });
+        expect(await publish({ dataRoot: root, actor: 'test', logger: quiet })).toMatchObject({ outcome: 'PUBLISHED', warnings: 0 });
+
+        const lines: string[] = [];
+        const args: RollbackArgs = { to: { revisionNumber: 1 }, reason: 'back to one', actor: 'curator', accept: [], yes: false };
+        expect(await runRollbackCommand(root, args, { out: (line) => lines.push(line), err: (line) => lines.push(line), confirm: null, logger: quiet })).toBe(3);
+        for (const id of ['ser_fixture-01', 'ser_fixture-02']) {
+            const at = lines.findIndex((line) => line.startsWith(`warning series ${id} title: `) && line.endsWith('(series.duplicate-title)'));
+            expect(at, lines.join('\n')).toBeGreaterThanOrEqual(0);
+            expect(lines[at + 1]).toBe('    Give each series its own title. This is a warning only; nothing is blocked.');
+        }
+        expect(lines.join('\n')).not.toContain('publish goes ahead');
+    });
+});
+
 describe('photos rollback --accept', () => {
     const base = ['--to', '3', '--reason', 'accent', '--actor', 'curator'];
 
