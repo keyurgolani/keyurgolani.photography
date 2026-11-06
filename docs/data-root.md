@@ -127,6 +127,10 @@ Compose files before #13's slice E (v1.6.0) also mounted `./.next-images-cache`,
 
 Until the migration below initializes the data root, the watcher writes only its heartbeat there and logs once that the identity step is off. It writes nothing in the library, then or ever. `GET /api/health` reports `uninitialized`. The site serves only a published catalog revision, so until the first publish, `GET /api/ready` answers 503 with `not-published`, and Home and Work show #21's error page. There is no legacy Home or Gallery to fall back to.
 
+### Who owns the data root
+
+uid 1001 owns the data root and everything in it, and every container runs as uid 1001, so `web`, the watcher, the curator and each `run --rm` command, the `photos.mjs` CLI included, are one uid. Keep it that way: run the CLI through `image-watcher`, as this page does, never as your own user or as root on the host. Most of what the CLI writes the others never read, but `web` reads `catalog/tombstones/` on every `/media` request, and purge, revoke and GC write those files `0600`. A tombstone another uid wrote is one `web` can't read: it passes the file over, so the set serves as the live revision says, and every publish and rollback stops on `assets.tombstoned` until the file reads again. So `photos purge --yes`, `photos purge --revoke --yes` and `photos gc --apply` (when it has a tombstone's marker to write) refuse, exit 1 and write nothing, when the uid they run as isn't the data root's owner, and name both uids. Their dry runs still report. Don't widen the files' modes instead. On Windows, which has no uids, the check is skipped.
+
 ### Who owns the photos
 
 The containers run as uid 1001, and since v1.7.0 (#13's slice E) none of them writes the photos. The library, `./public/assets/photos` on the host, is mounted read-only at `/data/library` in `image-watcher` alone, and `PHOTOGRAPHY_LIBRARY_DIR` points there:
