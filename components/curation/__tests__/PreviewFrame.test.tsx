@@ -1,4 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import postcss, { type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
 import PreviewFrame from '../PreviewFrame';
 
@@ -6,6 +9,18 @@ import PreviewFrame from '../PreviewFrame';
 // viewport, over a same-origin iframe of the draft's site.
 
 const SRC = `/curation/preview/rev_${'a'.repeat(64)}/site`;
+
+/** The frame's own stylesheet, which jsdom never applies (read from the repo root, as curatorThemes.test.ts does): each top-level rule's declarations, by selector. */
+const STYLES = (() => {
+    const rules = new Map<string, Record<string, string>>();
+    postcss.parse(fs.readFileSync(path.join(process.cwd(), 'components/curation/PreviewFrame.module.css'), 'utf8')).each((node) => {
+        if (node.type !== 'rule') return;
+        const decls: Record<string, string> = {};
+        (node as Rule).walkDecls((decl) => void (decls[decl.prop] = decl.value.replace(/\s+/g, ' ')));
+        rules.set((node as Rule).selector, { ...rules.get((node as Rule).selector), ...decls });
+    });
+    return rules;
+})();
 
 describe('PreviewFrame', () => {
     it('marks the preview outside the iframe, and frames the site it is given without sending a referrer', () => {
@@ -118,6 +133,16 @@ describe('PreviewFrame', () => {
         expect(toolbar.tagName).toBe('P');
         expect(toolbar.querySelectorAll('div, p, section, ul, ol')).toHaveLength(0);
         expect(within(toolbar).getByRole('group', { name: 'Frame size' }).tagName).toBe('SPAN');
+    });
+
+    it("gives the full toolbar's controls room for their focus ring above and below, and the Publish panel's toolbar none (A9 CI fix)", () => {
+        // The toolbar opens the page and is as tall as its 44 px controls, so a ring drawn outside a preset went above the
+        // viewport's top edge (contract rule 4). The room is the ring's own: its width plus its offset.
+        expect(STYLES.get(".frame:not([data-embedded='true']) .toolbar")).toMatchObject({ 'padding-block': 'calc(var(--focus-ring-width) + var(--focus-ring-offset))' });
+        // The panel's toolbar keeps next's styles, which Dark parity compares exactly.
+        expect(STYLES.get('.toolbar')).toMatchObject({ padding: '0 var(--site-gutter)', 'min-height': '44px' });
+        expect(STYLES.get('.toolbar')).not.toHaveProperty('padding-block');
+        expect(STYLES.get(".frame[data-embedded='true'] .toolbar")).toEqual({ padding: '0 0.875rem' });
     });
 
     it('keeps the embedded panel to its marker, with no presets', () => {
