@@ -121,11 +121,18 @@ describe('canvasSampler', () => {
     expect(context.getImageData).not.toHaveBeenCalled();
   });
 
-  it("refetches from the network in a curator's preview, where media is private, no-store", async () => {
+  it("refetches from the network a file that isn't public /media, as a curator's preview's private, no-store one", async () => {
+    // Shipped visitor code can't name the preview's routes (#16's boundary), so the sampler keys on the file: public
+    // /media is immutable for a year, from the cache only; any other same-origin file is fetched again.
+    await canvasSampler(slide({ current: '/curation/preview/d1/site/media/ph_x/sha256-r/p1/w1920.avif' }), source);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'force-cache', mode: 'same-origin' });
+    document.body.replaceChildren();
+    fetchMock.mockClear();
+    // A public file reads from the cache only, whatever page it's on.
     history.pushState({}, '', '/curation/preview/d1/site');
     try {
       await canvasSampler(slide(), source);
-      expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'force-cache', mode: 'same-origin' });
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'only-if-cached', mode: 'same-origin' });
     } finally {
       history.pushState({}, '', '/');
     }

@@ -254,8 +254,8 @@ const idle = () =>
  * size rule, a long task of about 90 ms at 4x CPU. Once the browser is idle, so after the slide's own load, it fetches
  * the file the slide shows (currentSrc) again, same origin and from the cache only (`only-if-cached`): public /media
  * is immutable for a year (lib/media/handler.ts), so on the site that's a cache hit and no bytes, and a browser with
- * no copy to share, as WebKit's private browsing, skips rather than download the slide again. Under /curation/preview
- * media is `private, no-store`, so a curator's preview fetches it again (`force-cache`). It decodes that Blob at TONE_SAMPLE_WIDTH, which the
+ * no copy to share, as WebKit's private browsing, skips rather than download the slide again. Any other same-origin
+ * file, as a curator's preview's `private, no-store` media, is fetched again (`force-cache`). It decodes that Blob at TONE_SAMPLE_WIDTH, which the
  * browser does off the main thread, from the same pixels the slide shows, so the tone is the one the image itself
  * gave. Home makes no other fetch() of /media, which is how ci/perf/measure.mjs finds it. The whole photograph is
  * scaled, with no crop rectangle, so the file's pixel density can't enter; the region is then read from the small
@@ -277,10 +277,11 @@ export const canvasSampler: ToneSampler = async (image, source) => {
   await idle();
   let bitmap: ImageBitmap;
   try {
-    // From the cache only: a browser with no copy to share, as WebKit's private browsing, rejects with no request and
-    // the tone skips, so it never downloads the slide again. A curator's preview serves media `private, no-store`, so
-    // it fetches it again there, as before.
-    const cache = window.location.pathname.startsWith('/curation/preview/') ? 'force-cache' : 'only-if-cached';
+    // Public /media is immutable for a year, so it's read from the cache only: a browser with no copy to share, as
+    // WebKit's private browsing, rejects with no request and the tone skips, so it never downloads the slide again.
+    // Any other same-origin file, as a curator's preview's media, served `private, no-store` under its own path, is
+    // fetched again. Keyed on the file, not the page: shipped visitor code never names the preview's routes (#16).
+    const cache = new URL(url, document.baseURI).pathname.startsWith('/media/') ? 'only-if-cached' : 'force-cache';
     const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
     if (!response.ok) return null;
     bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
