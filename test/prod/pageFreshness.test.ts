@@ -7,7 +7,7 @@
  * unless RUN_PROD_TESTS=1.
  *
  * In order, on one server started before the launch, so its pid only changes
- * where a row says it restarts (F5):
+ * where a row says it restarts (F5 and F9):
  * - E1: before anything is published, the series and Viewer error pages are
  *   Next's bare error shell: no title, meta tag or filled hidden segment
  *   after </head>, and tag for tag the body /work sends. Then the same on a second server whose
@@ -42,6 +42,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PHOTO_ID_RE } from '../../lib/identity/ids';
 import { VARIANT_BYTES } from '../../lib/catalog/__tests__/catalogFixtures';
 import { publish, type PublishResult } from '../../lib/catalog/publish';
 import { rollback } from '../../lib/catalog/rollback';
@@ -112,7 +113,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     let copy: StandaloneCopy | undefined;
     let catalog: TestCatalog | undefined;
     let server: StandaloneServer | undefined;
-    /** The server every row but E1's damaged pointer uses, and its pid, which no row here changes. */
+    /** The server every row but E1's damaged pointer and F8's copy uses, and its pid, which changes only where F5 and F9 restart it. */
     let pid = 0;
     let seriesId = '';
     let viewerPhotoId = '';
@@ -137,6 +138,8 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         const alt = catalog.photos.find((photo) => photo.id === viewerPhotoId)!.alt;
         viewerAlt = alt?.kind === 'described' ? alt.text : '';
         draftPhotoId = catalog.series.find((entry) => entry.slug === DRAFT_SLUG)!.photoIds[0];
+        // S1's draft row 404s for a malformed ID too, so it checks a real one or nothing.
+        expect(draftPhotoId).toMatch(PHOTO_ID_RE);
         server = await startStandalone({ cwd: copy.dir, dataRoot: catalog.root, library: copy.library, siteUrl: SITE_URL });
         pid = server.pid;
     }, 180_000);
@@ -461,7 +464,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     it('F5: still shows the rollback on Home after a restart', async () => {
         expect(r2, 'F1, F3, F6 published').not.toBe('');
         expect(server!.output()).not.toContain('catalog.read.failed');
-        // The one row that restarts: a new process on the same copy, roots and SITE_URL.
+        // A restart, as F9's is: a new process on the same copy, roots and SITE_URL.
         server = await restart(server!);
         expect(server.pid).not.toBe(pid);
         pid = server.pid;

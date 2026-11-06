@@ -129,6 +129,15 @@ describe("the Viewer's markup", () => {
         ]);
         expect(srcsetCandidates('')).toEqual([]);
     });
+
+    it('hears only the sr-only span as spoken, so a position shown on screen never counts as the spoken one', () => {
+        const shown = VIEWER.replace('<span class="sr-only ViewerChrome_spokenPosition">', '<span class="ViewerChrome_spokenPosition">');
+        expect(viewerMarkup(shown).headings).toEqual([{ text: 'Harbor, photograph 2 of 3', spoken: [] }]);
+    });
+
+    it("reads a density candidate's width as NaN, so a srcset in x descriptors fails the width check", () => {
+        expect(srcsetCandidates('/media/a.webp 2x')).toEqual([{ url: '/media/a.webp', width: Number.NaN }]);
+    });
 });
 
 describe("E1's bare error shell, after </head>", () => {
