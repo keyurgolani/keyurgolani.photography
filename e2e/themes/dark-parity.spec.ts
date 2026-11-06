@@ -566,7 +566,7 @@ const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr
  * A sanctioned departure (#175, B8): a Viewer photograph whose file failed says "This photograph could not be
  * loaded.", shows its alt and offers Retry, where the base had the missing-image label alone. Only the box's contents
  * are left out. The box itself is still compared, its Dark paint (ground, edge, diagonal) and its place included,
- * except the scroll it gains for a long alt (VIEWER_FAILED_SCROLL); so are the stage, the moves and the reading area.
+ * except the scroll it gains for a long alt (the viewer-missing allowance in ALLOWANCES); so are the stage, the moves and the reading area.
  */
 const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"] > *', why: '#175 (B8): a failed photograph says so, with its alt and Retry' };
 

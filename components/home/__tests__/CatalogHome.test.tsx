@@ -405,6 +405,23 @@ describe('CatalogHome', () => {
       expect(holds()).toBe('');
     });
 
+    it('an opening AVIF that failed before hydration takes its WebP retry, not a failure, and the WebP load commits (#6)', async () => {
+      vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+      const width = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+      vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(3).variants.w1200.avif.url}`);
+      await renderHome();
+      // ResponsivePhoto's mount check took the retry; the slide itself reports nothing at mount (B8 on B7's SlideImage).
+      expect(failure()).toBe('');
+      expect(loading()).toBe('true');
+      expect(mountedIds()).toEqual([id(3)]);
+      expect(slideImage(3)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
+      width.mockReturnValue(2400);
+      load(3);
+      expect(loading()).toBe('false');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      expect(failure()).toBe('');
+    });
+
     for (const [settled, naturalWidth] of [['loaded', 2400], ['failed', 0]] as const) {
       it(`counts an image that ${settled} before hydration, which fires no event`, async () => {
         vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
@@ -1175,6 +1192,21 @@ describe('CatalogHome', () => {
         await decodes.reject(0);
         expect(failure()).toBe('Couldn’t load photograph 04 of 04');
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      });
+
+      it('a decode() that rejects for an image that did load still commits it', async () => {
+        const decodes = holdDecodes();
+        await renderHome();
+        load(3);
+        await decodes.resolve(3);
+        click('Next photograph');
+        load(0);
+        // Its source changed under it, as a wider window picks a larger candidate, and the image it has is loaded.
+        vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+        vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(2400);
+        await decodes.reject(0);
+        expect(failure()).toBe('');
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
       });
 
       it('runs no automatic move while a manual move loads, and gives the commit a full interval', async () => {
