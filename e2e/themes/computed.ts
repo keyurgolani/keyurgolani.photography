@@ -279,6 +279,33 @@ export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = 
     }, [[...PROPERTIES], selectors, leaveOut, [...retag], [...fold], FOLD_PAINT] as const);
 }
 
+/**
+ * Without JavaScript, React leaves each segment it streamed late in a hidden `<div id="S:n">` at the end of the body,
+ * with a `<template id="P:n">` where it goes, for its `$RS` script to move. Which parts stream late follows the size of
+ * the page's payload, not its structure: A8's Inbox, with more on the page, streamed its rows one by one, where today's
+ * streams the item's facts alone. So inside content no-JS never shows (the Inbox's list and item stream in behind its
+ * loading state), this puts every segment where it goes, as `$RS` would, in both builds, and the walk compares the
+ * page as it's built. A placeholder in content the page shows is left alone: there no-JS really shows the hole. Runs in
+ * the page with no arguments (page.evaluate), and returns how many segments it moved.
+ */
+export function completeHiddenSegments(): number {
+    let moved = 0;
+    for (let again = true; again; ) {
+        again = false;
+        for (const placeholder of document.querySelectorAll('template[id^="P:"]')) {
+            const segment = document.getElementById(`S:${placeholder.id.slice(2)}`);
+            if (!segment || segment.contains(placeholder) || !placeholder.parentElement?.closest('[hidden]')) continue;
+            // As React's $RS: the segment's container goes, its children take the placeholder's place, and so does it.
+            segment.remove();
+            while (segment.firstChild) placeholder.before(segment.firstChild);
+            placeholder.remove();
+            moved++;
+            again = true;
+        }
+    }
+    return moved;
+}
+
 export interface Comparison {
     /** Elements in one build and not the other, by path. Fail. */
     structural: string[];
@@ -338,7 +365,15 @@ export function compare(base: Walk, head: Walk, allowances: Record<string, numbe
             });
         };
         lines('', b.styles, h.styles);
-        for (const which of new Set([...Object.keys(b.pseudos), ...Object.keys(h.pseudos)])) lines(which, b.pseudos[which] ?? null, h.pseudos[which] ?? null);
+        for (const which of new Set([...Object.keys(b.pseudos), ...Object.keys(h.pseudos)])) {
+            // Only a list item has a ::marker, so a sanctioned `display` that leaves list-item, or comes to it, takes the
+            // marker with it, listed with the departure (A8's Inbox rows). Under any other sanction it fails as before.
+            if (which === '::marker' && sanctioned[b.path]?.includes('display') && !b.pseudos[which] !== !h.pseudos[which]) {
+                result.sanctioned.push(`${b.path}::marker: ${b.pseudos[which] ? 'present' : 'absent'} against ${h.pseudos[which] ? 'present' : 'absent'}, with its display`);
+                continue;
+            }
+            lines(which, b.pseudos[which] ?? null, h.pseudos[which] ?? null);
+        }
         if (b.slot !== h.slot) result.structural.push(`the control's slot in one build only: ${b.path}`);
         if (b.slot || h.slot) continue;
         const delta = Math.max(...b.rect.map((value, i) => Math.abs(value - h.rect[i])));

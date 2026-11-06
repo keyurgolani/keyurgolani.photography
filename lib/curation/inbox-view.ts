@@ -995,3 +995,9 @@ export type InboxBulkState =
       };
 
 export const BULK_IDLE: InboxBulkState = { status: 'idle' };
+
+/**
+ * The bulk form's ID. The rows stay in the list's own lists, as before A8, so each row's checkbox names the form it
+ * belongs to with this, by its `form` attribute (A8's CI: Dark parity compares the list against next by position).
+ */
+export const BULK_FORM_ID = 'inbox-bulk';

@@ -1280,12 +1280,9 @@ main.state {
   background: transparent;
 }
 
-/* #14 (A8): the Inbox top: the watcher strip, the offline state and the poll's line, each a full-width strip. */
-.inboxTop {
-  display: contents;
-}
-
-/* The poll's live region is in the page from the start; with nothing said it takes no room. */
+/* #14 (A8): the Inbox top: the watcher strip, the offline state and the poll's line, each a full-width strip, each
+   straight in the page as the watcher strip was before A8. The poll's live region is in the page from the start; with
+   nothing said it takes no room. */
 .updatesEmpty:empty {
   display: block;
   height: 0;
@@ -1374,22 +1371,25 @@ main.state {
   margin: 0.5rem 1rem 0;
 }
 
-/* A row with a checkbox: the box in its own 44 px column, beside the row's link, never inside it. */
+/* A row with a checkbox: the box in its own 44 px column, beside the row's link, never inside it. The column is as
+   wide as what it holds and the link keeps its own padding, so with the column taken out the link sits where it was
+   before A8, as Dark parity compares it (A8's CI). */
 .pickRow {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: stretch;
 }
 
 .pick,
 .pickSpacer {
   display: grid;
+  width: 44px;
   place-items: center;
   border-bottom: 1px solid var(--curator-rule);
 }
 
 .pickRow > .item {
-  padding-left: 0.25rem;
+  grid-column: 2;
 }
 
 /* A native checkbox, drawn at the full 44 px target so its box is what gets the focus token, inset so the list's own

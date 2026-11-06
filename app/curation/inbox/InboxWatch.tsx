@@ -23,7 +23,8 @@ interface InboxWatchProps {
  * (lib/curation/inbox-watch.ts) of /api/curation/inbox/summary every 60 s; the offline state, when the browser goes
  * offline or the server can't be reached; and the one polite region that says what changed since the page loaded,
  * each thing once, with a way to refresh. The strip and the offline state are named regions, not live ones, so
- * nothing is said twice. It never reloads the page, and a session that ended stops it without a word.
+ * nothing is said twice. It never reloads the page, and a session that ended stops it without a word. Its pieces go
+ * straight into the page, with no wrapper, so the watcher strip is where it was before A8 (A8's CI, Dark parity).
  */
 export default function InboxWatch({ watcher, needsJudgment, cursor, item }: InboxWatchProps) {
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
@@ -96,7 +97,7 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
     }, []);
 
     return (
-        <div className={styles.inboxTop}>
+        <>
             <WatcherNotice watcher={current} />
             {offline ? (
                 <section className={`${styles.notice} ${styles.watcherNotice}`} data-tone="change" data-state="offline" aria-label="Offline" id="inbox-offline">
@@ -117,6 +118,6 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                     </p>
                 ) : null}
             </div>
-        </div>
+        </>
     );
 }
