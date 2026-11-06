@@ -15,9 +15,9 @@ import { REPO_ROOT } from './helpers/runTsx';
  * and function, with why it may delete, and any other one fails the build.
  *
  * A new delete call needs an entry here, reviewed like the code. An entry
- * marked `until` is allowed only until that work lands: A12 fences or removes
- * the legacy `utils/imageOptimizer.ts` deletes, and whichever of A10 and A12
- * merges second rebases and updates this list.
+ * marked `until` is allowed only until that work lands, and that work removes
+ * the entry. A12 removed the legacy `utils/imageOptimizer.ts` deletes but
+ * `removeQuietly()`, which only clears a build's own temp files.
  */
 
 interface Allowed {
@@ -94,10 +94,8 @@ const ALLOWLIST: readonly Allowed[] = [
         reason: "each module's own process-wide state slot on globalThis, under its Symbol.for() key; reaches no delete",
     },
     { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm(created, { recursive: true, force: true })'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
-    // Legacy derivatives, until A12 fences or removes them.
-    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm(file, { force: true })'], reason: 'inside the photo library, until A12: legacy derivative temp files, when a legacy build writes', until: 'A12' },
-    { file: 'utils/imageOptimizer.ts', fn: 'purgeDynamicCache', calls: ['fs.unlinkSync(path.join(paths.dynamicCache, name))'], reason: 'inside the photo library, until A12: legacy dynamic-cache files, when a legacy set is rebuilt', until: 'A12' },
-    { file: 'utils/imageOptimizer.ts', fn: 'forgetSetSource', calls: ['fs.rmSync(setSourceFile(filename, paths), { force: true })'], reason: "inside the photo library, until A12: a legacy set's source record, when its set may no longer be its own", until: 'A12' },
+    // The legacy pipeline's one delete left after A12, which removed purgeDynamicCache() and forgetSetSource().
+    { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm(file, { force: true })'], reason: 'only the temp files a legacy build staged itself; since A12 nothing but e2e/support/carry-over.ts runs that pipeline, on a temp library' },
 ];
 
 const SCANNED = shippedFiles();
@@ -181,16 +179,17 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
         expect(kindProblems({ ...base, kind: 'process', calls: ['fs.rmSync'], runs: 'fs.rmSync', reason: "only on x: it can't delete" })).toEqual(['a process entry holds delete call fs.rmSync', 'runs "fs.rmSync" isn\'t the call it pins']);
     });
 
-    it('gives every entry a reason that says when it runs, and allows the legacy imageOptimizer deletes only inside the photo library until A12', () => {
+    it('gives every entry a reason that says when it runs, and leaves the legacy imageOptimizer only removeQuietly(), with no entry waiting on later work', () => {
         // A delete or a process call says when it runs; a read the rail can't resolve says it reaches no delete, and only that kind may.
-        const WHEN = /^(?:only |on |at |when|whenever |inside the photo library, until A12)/;
+        const WHEN = /^(?:only |on |at |when|whenever )/;
         for (const entry of ALLOWLIST) {
             if (entry.kind === 'unresolvable-read') expect(entry.reason, key(entry)).toMatch(/reaches no delete$/);
             else expect(entry.reason, key(entry)).toMatch(WHEN);
             expect(/reaches no delete/.test(entry.reason), key(entry)).toBe(entry.kind === 'unresolvable-read');
         }
-        expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').every((entry) => entry.until === 'A12' && entry.reason.startsWith('inside the photo library, until A12'))).toBe(true);
-        expect(ALLOWLIST.filter((entry) => entry.until !== undefined).every((entry) => entry.file === 'utils/imageOptimizer.ts')).toBe(true);
+        // A12 removed purgeDynamicCache() and forgetSetSource(), and with them every `until` entry.
+        expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').map((entry) => entry.fn)).toEqual(['removeQuietly']);
+        expect(ALLOWLIST.filter((entry) => entry.until !== undefined).map(key)).toEqual([]);
     });
 
     it('lets a process call past only by its whole call, so changing its arguments fails the rail (items 39a and 43)', () => {
