@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { analyse, compareMetric, loopbackListeners, median, MIN_ROUNDS, NOISE_FACTOR, noiseFloor, parseRounds, roundOrder, summarize, summaryMarkdown } from '../ci/perf/stats.mjs';
+import { analyse, compareMetric, loopbackListeners, median, MIN_ROUNDS, MINIMUM_FLOOR_MS, MINIMUM_FLOOR_SHARE, minimumFloor, NOISE_FACTOR, noiseFloor, parseRounds, roundOrder, summarize, summaryMarkdown } from '../ci/perf/stats.mjs';
 
 describe('median and summarize', () => {
   it('takes the middle value, or the mean of the middle two', () => {
@@ -65,27 +65,42 @@ describe('noiseFloor', () => {
   });
 });
 
-describe('compareMetric', () => {
-  const a1 = [1000, 1020, 990, 1010, 1000];
-  const a2 = [1010, 1000, 1000, 1000, 1020];
-  // Largest A/A gap is 20, so the floor is 30. Base median 1000.
+describe('minimumFloor', () => {
+  it('is 50 ms for LCP, 20 ms for TBT, and 5% of the base median for any other timing', () => {
+    expect(MINIMUM_FLOOR_MS).toEqual({ lcp: 50, tbt: 20 });
+    expect(MINIMUM_FLOOR_SHARE).toBe(0.05);
+    expect(minimumFloor('lcp', 2400)).toBe(50);
+    expect(minimumFloor('tbt', 0)).toBe(20);
+    expect(minimumFloor('fcp', 1000)).toBe(50);
+    expect(minimumFloor('load', 3000)).toBe(150);
+  });
+});
 
-  it('flags a regression only past the floor', () => {
-    const over = compareMetric({ a1, a2, b: [1040, 1031, 1035, 1050, 1029] });
-    expect(over).toMatchObject({ floor: 30, delta: 35, verdict: 'regression' });
-    expect(over.base).toEqual({ median: 1000, min: 990, max: 1020, n: 5 });
-    expect(over.head).toEqual({ median: 1035, min: 1029, max: 1050, n: 5 });
+describe('compareMetric', () => {
+  const a1 = [1000, 1080, 960, 1040, 1000];
+  const a2 = [1040, 1000, 1000, 1000, 1080];
+  // Largest A/A gap is 80, so 1.5x is 120, past LCP's 50 ms minimum. Base median 1000.
+
+  it('uses 1.5x the largest A/A gap when that is past the minimum, and flags a regression only past it', () => {
+    const over = compareMetric({ metric: 'lcp', a1, a2, b: [1130, 1125, 1121, 1150, 1140] });
+    expect(over).toMatchObject({ floor: 120, floorSource: 'A/A', delta: 130, verdict: 'regression' });
+    expect(over.base).toEqual({ median: 1000, min: 960, max: 1080, n: 5 });
+    expect(over.head).toEqual({ median: 1130, min: 1121, max: 1150, n: 5 });
   });
 
   it('calls a change at or inside the floor noise, and one past it on the fast side faster', () => {
-    expect(compareMetric({ a1, a2, b: [1030, 1030, 1030, 1030, 1030] })).toMatchObject({ delta: 30, verdict: 'within noise' });
-    expect(compareMetric({ a1, a2, b: [970, 960, 965, 990, 940] })).toMatchObject({ delta: -35, verdict: 'faster' });
+    expect(compareMetric({ metric: 'lcp', a1, a2, b: [1120, 1120, 1120, 1120, 1120] })).toMatchObject({ delta: 120, verdict: 'within noise' });
+    expect(compareMetric({ metric: 'lcp', a1, a2, b: [870, 860, 865, 890, 840] })).toMatchObject({ delta: -135, verdict: 'faster' });
   });
 
-  it('flags any rise on a metric the base never moves on, since its floor is 0', () => {
+  it('uses the minimum when the base never moves against itself', () => {
     const zeros = [0, 0, 0, 0, 0];
-    expect(compareMetric({ a1: zeros, a2: zeros, b: [0, 0, 12, 20, 16] })).toMatchObject({ floor: 0, delta: 12, verdict: 'regression' });
-    expect(compareMetric({ a1: zeros, a2: zeros, b: zeros })).toMatchObject({ verdict: 'within noise' });
+    // One stray long-task tick is noise, not a regression.
+    expect(compareMetric({ metric: 'tbt', a1: zeros, a2: zeros, b: [0, 0, 12, 20, 16] })).toMatchObject({ floor: 20, floorSource: 'minimum', delta: 12, verdict: 'within noise' });
+    expect(compareMetric({ metric: 'tbt', a1: zeros, a2: zeros, b: [25, 30, 22, 40, 28] })).toMatchObject({ floor: 20, floorSource: 'minimum', delta: 28, verdict: 'regression' });
+    const flat = [1000, 1000, 1000, 1000, 1000];
+    expect(compareMetric({ metric: 'lcp', a1: flat, a2: flat, b: [1040, 1040, 1040, 1040, 1040] })).toMatchObject({ floor: 50, floorSource: 'minimum', verdict: 'within noise' });
+    expect(compareMetric({ metric: 'fcp', a1: flat, a2: flat, b: [1060, 1060, 1060, 1060, 1060] })).toMatchObject({ floor: 50, floorSource: 'minimum', verdict: 'regression' });
   });
 });
 
@@ -112,7 +127,8 @@ describe('analyse and summaryMarkdown', () => {
     const { rows, regressions } = analyse(raw);
     expect(rows.map((row) => row.metric)).toEqual(['one phone lcp', 'one phone tbt', 'one desktop lcp', 'one desktop tbt']);
     expect(regressions.map((row) => row.metric)).toEqual(['one phone lcp']);
-    expect(rows[0]).toMatchObject({ floor: 15, delta: 200, verdict: 'regression' });
+    // The A/A gap's 1.5x is 15, under LCP's 50 ms minimum.
+    expect(rows[0]).toMatchObject({ floor: 50, floorSource: 'minimum', delta: 200, verdict: 'regression' });
   });
 
   it('takes the median of the loads within a round before comparing rounds', () => {
@@ -130,7 +146,8 @@ describe('analyse and summaryMarkdown', () => {
   it('writes a table with both medians and spreads, the floor, and the rule it used', () => {
     const raw = rawWith({ A1: [1000, 1000, 1000, 1000, 1000], A2: [1010, 1000, 990, 1000, 1000], B: [1200, 1190, 1210, 1200, 1200] });
     const markdown = summaryMarkdown(raw, analyse(raw));
-    expect(markdown).toContain('| one phone lcp | 1000 (1000–1000) | 1200 (1190–1210) | +200 | 15 | **regression** |');
+    expect(markdown).toContain('| one phone lcp | 1000 (1000–1000) | 1200 (1190–1210) | +200 | 50 ms (minimum) | **regression** |');
+    expect(markdown).toContain('at least 50 ms for LCP, 20 ms for TBT, and 5% of the base median for any other timing');
     expect(markdown).toContain('1.5 × the largest per-round |A1 − A2|');
     expect(markdown).toContain('v1.7.0');
     expect(markdown).toMatch(/1 regression/);
