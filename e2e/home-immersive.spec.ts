@@ -711,15 +711,16 @@ test.describe('loading', () => {
         await expect(page).toHaveURL('/work');
     });
 
-    test('a failed first photograph ends loading at once with the chrome up', async ({ page }) => {
+    test('a failed first photograph walks on to the next one, whose arrival ends loading with nothing held (#4)', async ({ page }) => {
         setPhotoFixtures(page, ['white', 'gray', 'black']);
         await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.fulfill({ status: 404, body: '' }));
         await page.clock.install();
         await page.goto('/');
         await waitForHydration(page);
+        const following = HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + 1) % HOME_ORDER.length];
+        await expect(page.locator('[data-photo-id][aria-hidden="false"]')).toHaveAttribute('data-photo-id', following);
         await expect(main(page)).toHaveAttribute('data-home-loading', 'false');
-        await expect(main(page)).toHaveAttribute('data-chrome-holds', 'no-photo');
-        await expect(main(page)).toHaveAttribute('data-interface-state', 'interactive');
+        await expect(main(page)).not.toHaveAttribute('data-chrome-holds', /\bno-photo\b/);
     });
 
     test('a stalled photograph ends the intro, fade included, and loading by 6 s, and the photograph arriving lets the chrome recede', async ({ page }) => {

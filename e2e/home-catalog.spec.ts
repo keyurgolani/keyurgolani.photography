@@ -134,26 +134,163 @@ test('after the first tap reveals the chrome, a tap on Next, Pause, and Enter th
     await expect(page).toHaveURL(`/work/${HOME_SERIES.slug}`);
 });
 
-test('a failed next image keeps the photograph on screen, and Skip moves past it', async ({ page }, testInfo) => {
+/** The authored photograph `steps` on from the opening one, wrapping. */
+const after = (steps: number) => HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + steps) % HOME_ORDER.length];
+const status = (page: Page) => page.locator('[data-chrome-region="sequence"] [role="status"]');
+const homeState = (page: Page) => page.locator('[data-home-state]');
+const skip = (page: Page) => page.getByRole('button', { name: 'Skip', exact: true });
+const retry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
+
+/** Shift+Tab from where focus is until `target` has it, so it's keyboard focus. */
+async function shiftTabTo(page: Page, target: Locator, limit = 4) {
+    for (let press = 0; press < limit && !(await target.evaluate((el) => el === document.activeElement)); press++) await page.keyboard.press('Shift+Tab');
+    await expect(target).toBeFocused();
+}
+
+test('a failed next image keeps the photograph on screen, and a focused Skip that lands gives focus back to Next', async ({ page }, testInfo) => {
     runsOn(testInfo, 'desktop', 'mobile');
-    const start = HOME_ORDER.indexOf(HOME_OPENING);
-    const failing = HOME_ORDER[(start + 1) % HOME_ORDER.length];
-    const after = HOME_ORDER[(start + 2) % HOME_ORDER.length];
-    await page.route(`**/media/${failing}/**`, (route) => route.abort());
+    await page.route(`**/media/${after(1)}/**`, (route) => route.abort());
     await openHome(page);
     await expectShown(page, HOME_OPENING);
     await tabTo(page, next(page));
     await page.keyboard.press('Enter');
-    await expect(position(page)).toHaveText(at(failing));
-    await expect(page.getByRole('status')).toHaveText(`Photograph ${at(failing).replace(' / ', ' of ')} couldn’t load.`);
+    await expect(status(page)).toHaveText(`Couldn’t load photograph ${at(after(1)).replace(' / ', ' of ')}`);
     await expectShown(page, HOME_OPENING);
+    // The position stays on the photograph on screen.
+    await expect(position(page)).toHaveText(at(HOME_OPENING));
     // Skip sits before the slideshow controls, so Shift+Tab reaches it from Next.
-    const skip = page.getByRole('button', { name: 'Skip', exact: true });
-    for (let press = 0; press < 3 && !(await skip.evaluate((el) => el === document.activeElement)); press++) await page.keyboard.press('Shift+Tab');
-    await expect(skip).toBeFocused();
+    await shiftTabTo(page, skip(page));
     await page.keyboard.press('Enter');
-    await expectShown(page, after);
-    await expect(page.getByRole('status')).toHaveText('');
+    await expectShown(page, after(2));
+    await expect(status(page)).toHaveText('');
+    await expect(skip(page)).toHaveCount(0);
+    await expect(next(page)).toBeFocused();
+    await expect(page.locator('main')).toHaveAttribute('data-chrome-holds', /\bkeyboard-focus\b/);
+});
+
+test('two automatic failures in a row suspend playback with a polite note, and Play resumes it', async ({ page }, testInfo) => {
+    runsOn(testInfo, 'desktop', 'mobile');
+    test.setTimeout(90_000);
+    for (const steps of [1, 2]) await page.route(`**/media/${after(steps)}/**`, (route) => route.abort());
+    await openHome(page);
+    await expectShown(page, HOME_OPENING);
+    // The first tick finds after(1) failed and skips to after(2) at once, which fails too: playback suspends.
+    await expect(status(page)).toHaveText('Some photographs couldn’t load.', { timeout: 20_000 });
+    // A polite notice: the status region, never an alert. The app router mounts Next's route announcer on every page
+    // once it hydrates, an assertive role="alert" div in <next-route-announcer>'s shadow root that speaks only a route
+    // change's title. So: no alert but that one, and nothing in any alert, which says nothing on Home is assertive.
+    const alerts = page.getByRole('alert');
+    await expect(alerts.and(page.locator(':not(#__next-route-announcer__)'))).toHaveCount(0);
+    await expect(alerts.filter({ hasText: /\S/ })).toHaveCount(0);
+    await expect(page.locator('[data-playback]')).toHaveAttribute('data-playback', 'held');
+    await expectShown(page, HOME_OPENING);
+    await expect(play(page)).toBeAttached();
+    await play(page).dispatchEvent('click');
+    await expect(status(page)).toHaveText('');
+    await expect(page.locator('[data-playback]')).toHaveAttribute('data-playback', 'advancing');
+    // A full interval later it moves on past the failed one.
+    await expect(shownSlide(page)).toHaveAttribute('data-photo-id', after(3), { timeout: 20_000 });
+    await expectShown(page, after(3));
+});
+
+test('with every photograph failing, Home says so with Retry, and a focused Retry that lands gives focus to Enter the series', async ({ page }, testInfo) => {
+    runsOn(testInfo, 'desktop', 'mobile');
+    const asked = new Set<string>();
+    await page.route('**/media/ph_*/**', (route) => {
+        asked.add(new URL(route.request().url()).pathname.split('/')[2]);
+        return route.abort();
+    });
+    await page.goto('/');
+    await waitForHydration(page);
+    await expect(homeState(page)).toHaveAttribute('data-home-state', 'image-unavailable');
+    await expect(status(page)).toHaveText('These photographs can’t be shown right now.');
+    await expect(page.locator('main')).toHaveAttribute('data-home-loading', 'false');
+    await expect(page.locator('main')).toHaveAttribute('data-chrome-holds', /\bno-photo\b/);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(HOME_SERIES.title);
+    await expect(enter(page)).toBeVisible();
+    // The walk stops at two photographs: the opening and the next.
+    expect([...asked].sort()).toEqual([HOME_OPENING, after(1)].sort());
+    await page.unroute('**/media/ph_*/**');
+    await tabTo(page, retry(page));
+    await page.keyboard.press('Enter');
+    await expect(homeState(page)).toHaveAttribute('data-home-state', 'ready');
+    await expect(retry(page)).toHaveCount(0);
+    await expect(enter(page)).toBeFocused();
+});
+
+test('a failed opening walks on to the next photograph, which plays from its own position', async ({ page }, testInfo) => {
+    runsOn(testInfo, 'desktop', 'mobile');
+    await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.fulfill({ status: 500, body: '' }));
+    await openHome(page);
+    await expectShown(page, after(1));
+    await expect(position(page)).toHaveText(at(after(1)));
+    await expect(status(page)).toHaveText('');
+    await expect(homeState(page)).toHaveAttribute('data-home-state', 'ready');
+});
+
+for (const [name, hero] of [
+    ['delayed 10 s', async (page: Page) => page.route(`**/media/${HOME_OPENING}/**`, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        await route.fallback().catch(() => undefined);
+    })],
+    ['failing with 500', async (page: Page) => page.route(`**/media/${HOME_OPENING}/**`, (route) => route.fulfill({ status: 500, body: '' }))],
+] as const) {
+    test(`with the opening photograph ${name}, Next and Enter the series work within 3 s of DOMContentLoaded (#6 item 16)`, async ({ page }, testInfo) => {
+        runsOn(testInfo, 'desktop', 'mobile');
+        await hero(page);
+        await page.goto('/', { waitUntil: 'domcontentloaded' });
+        const start = Date.now();
+        await waitForHydration(page);
+        await tabTo(page, next(page));
+        await page.keyboard.press('Enter');
+        // Next moves on from the opening: the one after it shows, whatever the opening is doing.
+        await expect(shownSlide(page)).not.toHaveAttribute('data-photo-id', HOME_OPENING, { timeout: 3_000 });
+        await expect.poll(() => shownImage(page).evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0), { timeout: 3_000 }).toBe(true);
+        await tabTo(page, enter(page));
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(`/work/${HOME_SERIES.slug}`, { timeout: 3_000 });
+        expect(Date.now() - start, 'from DOMContentLoaded to the series page').toBeLessThan(3_000);
+    });
+}
+
+test('asks for the next photograph eagerly once the opening shows, Home\'s second eager image (#6 gap 32)', async ({ page }, testInfo) => {
+    runsOn(testInfo, 'desktop', 'mobile');
+    const asked: string[] = [];
+    page.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname.startsWith('/media/')) asked.push(url.pathname.split('/')[2]);
+    });
+    await openHome(page);
+    await expectShown(page, HOME_OPENING);
+    const second = page.locator(`[data-photo-id="${after(1)}"] img`);
+    await expect(second).toHaveAttribute('loading', 'eager');
+    await expect.poll(() => second.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    expect(new Set(asked)).toEqual(new Set([HOME_OPENING, after(1)]));
+});
+
+test('is a carousel named for the series, each slide N of M, with the live region off while it plays and polite after Next', async ({ page }, testInfo) => {
+    runsOn(testInfo, 'desktop', 'mobile');
+    await openHome(page);
+    const region = page.getByRole('region', { name: HOME_SERIES.title });
+    await expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    const count = HOME_ORDER.length;
+    await expect(shownSlide(page)).toHaveAttribute('aria-roledescription', 'slide');
+    await expect(shownSlide(page)).toHaveAttribute('aria-label', `${HOME_ORDER.indexOf(HOME_OPENING) + 1} of ${count}`);
+    const live = region.locator('[aria-live]');
+    await expect(live).toHaveAttribute('aria-live', 'off');
+    await tabTo(page, next(page));
+    await page.keyboard.press('Enter');
+    await expectShown(page, after(1));
+    await expect(live).toHaveAttribute('aria-live', 'polite');
+    await expect(live).toHaveText(`${HOME_ORDER.indexOf(after(1)) + 1} of ${count}, ${altOf(after(1))}`);
+});
+
+test('marks Home with its state and the revision it renders', async ({ page, request }, testInfo) => {
+    runsOn(testInfo, 'desktop', 'mobile');
+    const ready = (await (await request.get('/api/ready')).json()) as { revisionId: string };
+    await openHome(page);
+    await expect(homeState(page)).toHaveAttribute('data-home-state', 'ready');
+    await expect(page.locator('main')).toHaveAttribute('data-catalog-revision', ready.revisionId);
 });
 
 const whitePhoto = (format: 'avif' | 'webp') => sharp({ create: { width: 1920, height: 1280, channels: 3, background: '#ffffff' } })[format]().toBuffer();

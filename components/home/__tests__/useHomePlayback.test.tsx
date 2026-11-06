@@ -10,7 +10,7 @@ import { useHomePlayback, type HomePlayback } from '../useHomePlayback';
 const INTERVAL = HOME_AUTO_ADVANCE_MS;
 const ids = ['a', 'b', 'c', 'd'];
 
-type Props = { photoIds: readonly string[]; ready: boolean };
+type Props = { photoIds: readonly string[]; ready: boolean; settledPhotoId?: string | null };
 
 function renderPlayback(props: Props = { photoIds: ids, ready: true }) {
     return renderHook((current: Props) => useHomePlayback(current), { initialProps: props, wrapper: StrictMode });
@@ -267,6 +267,72 @@ describe('useHomePlayback', () => {
         act(() => handle.playback?.setHold('focus', true));
         expect(counts.child).toBe(settled + 1);
         expect(handle.playback?.playbackState).toBe('held');
+    });
+
+    describe('the commit model (#4): a move waits on its photograph', () => {
+        type Committed = Props & { settledPhotoId: string | null };
+        const renderCommitted = (props: Committed) =>
+            renderHook((current: Committed) => useHomePlayback(current), { initialProps: props, wrapper: StrictMode });
+
+        it('runs no timer while the photograph at the index is on its way, and its commit arms a fresh full interval', () => {
+            const { result, rerender } = renderCommitted({ photoIds: ids, ready: true, settledPhotoId: 'a' });
+            act(() => result.current.next());
+            expect(result.current.index).toBe(1);
+            // b hasn't committed: no tick, however long it takes.
+            advance(INTERVAL * 3);
+            expect(result.current.index).toBe(1);
+            expect(vi.getTimerCount()).toBe(0);
+            // The state stays what the visitor sees: the slideshow is running, waiting on a photograph.
+            expect(result.current.playbackState).toBe('advancing');
+            rerender({ photoIds: ids, ready: true, settledPhotoId: 'b' });
+            advance(INTERVAL - 1);
+            expect(result.current.index).toBe(1);
+            advance(1);
+            expect(result.current.index).toBe(2);
+        });
+
+        it('treats nothing settled yet as waiting, and leaves a Home that passes no settledPhotoId on the plain timer', () => {
+            const waiting = renderCommitted({ photoIds: ids, ready: true, settledPhotoId: null });
+            advance(INTERVAL * 2);
+            expect(waiting.result.current.index).toBe(0);
+            waiting.unmount();
+            const plain = renderPlayback();
+            advance(INTERVAL);
+            expect(plain.result.current.index).toBe(1);
+        });
+
+        it('names what made each move: manual for Previous and Next, auto for the timer, and skipFailed its own', () => {
+            const { result, rerender } = renderCommitted({ photoIds: ids, ready: true, settledPhotoId: 'a' });
+            expect(result.current.source).toBe('opening');
+            expect(result.current.moves).toBe(0);
+            advance(INTERVAL);
+            expect(result.current.index).toBe(1);
+            expect(result.current.source).toBe('auto');
+            rerender({ photoIds: ids, ready: true, settledPhotoId: 'b' });
+            act(() => result.current.next());
+            expect(result.current.source).toBe('manual');
+            act(() => result.current.prev());
+            expect(result.current.source).toBe('manual');
+            act(() => result.current.skipFailed('opening'));
+            expect(result.current.index).toBe(2);
+            expect(result.current.source).toBe('opening');
+            act(() => result.current.skipFailed('auto'));
+            expect(result.current.index).toBe(3);
+            expect(result.current.source).toBe('auto');
+            expect(result.current.moves).toBe(5);
+            // A Pause or a hold moves nothing, so it names no move.
+            act(() => result.current.togglePlayback());
+            act(() => result.current.setHold('focus', true));
+            expect(result.current.moves).toBe(5);
+        });
+
+        it('a one-photograph list makes no move, whoever asks', () => {
+            const { result } = renderCommitted({ photoIds: ['a'], ready: true, settledPhotoId: 'a' });
+            act(() => result.current.next());
+            act(() => result.current.skipFailed('auto'));
+            expect(result.current.moves).toBe(0);
+            expect(vi.getTimerCount()).toBe(0);
+        });
     });
 
     it('in Strict Mode, unmounting leaves no timers and balanced listeners', () => {

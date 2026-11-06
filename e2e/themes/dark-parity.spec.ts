@@ -6,7 +6,7 @@ import { chromium, expect, test, type Browser, type Locator, type Page } from '@
 import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
 import { retryOnAddrInUse } from '../../test/helpers/ports';
-import { HOME_OPENING, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
+import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
@@ -172,8 +172,11 @@ interface Pair {
     intro?: boolean;
     /** A signed-in curator page. */
     session?: boolean;
-    /** Home with its opening photograph failing to load, so the failure notice shows with Retry and Skip. */
-    failOpening?: boolean;
+    /**
+     * Home with the photograph after the opening one failing to load, so Next from the keyboard brings the failure
+     * notice with Retry and Skip. Since #4's opening walk (v2.0.0) a failed opening moves on instead of showing it.
+     */
+    failNext?: boolean;
     /** A page the head adds the control to, where the base had no toggle (the curator's header): the head's shot
      * takes the control out of the layout, as no JavaScript does, so the rest must match. */
     addsControl?: boolean;
@@ -191,6 +194,8 @@ interface Pair {
     gateOnly?: boolean;
     /** The page this is a state of, whose allowances it takes. */
     stateOf?: string;
+    /** Elements both walks leave out with their subtrees, where the builds differ on purpose and another pair compares them. */
+    leaveOut?: { selector: string; why: string }[];
 }
 
 let browser: Browser;
@@ -249,7 +254,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
     }, { value: stored, sheet: css });
     const page = await context.newPage();
-    if (pair.failOpening) await page.route(`**/media/${HOME_OPENING}/**`, (route) => route.abort());
+    if (pair.failNext) await page.route(`**/media/${HOME_ORDER[(HOME_ORDER.indexOf(HOME_OPENING) + 1) % HOME_ORDER.length]}/**`, (route) => route.abort());
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
     const timedOut: string[] = [];
@@ -499,6 +504,19 @@ const keyboardFocus = async (page: Page, target: Locator) => {
 const homeNext = (page: Page) => page.getByRole('button', { name: 'Next photograph' });
 const homeEnter = (page: Page) => page.getByRole('link', { name: /^Enter the series/ });
 const homeRetry = (page: Page) => page.getByRole('button', { name: 'Retry', exact: true });
+/**
+ * The slides, left out of the failure pairs' walks: on a failed Next the base puts the failed slide (its LQIP) on screen,
+ * and #4 keeps the photograph that showed (v2.0.0). The carousel itself is still compared, and every other Home pair
+ * compares the slides too.
+ */
+const FAILED_NEXT_STACK = [{ selector: '[data-photo-id]', why: '#4: a failed Next keeps the photograph on screen' }];
+/** Next from the keyboard onto the photograph failNext fails, which both builds answer with the notice, Retry and Skip. */
+const failNextFromKeyboard = async (page: Page) => {
+    await revealChrome(page);
+    await keyboardFocus(page, homeNext(page));
+    await page.keyboard.press('Enter');
+    await expect(homeRetry(page), 'the failure notice is up').toBeVisible();
+};
 const aboutLink = (page: Page) => page.locator('main article a').first();
 /**
  * The Inbox streams in after hydration, behind its loading state: an act before the list is in would focus a row that
@@ -676,9 +694,10 @@ const VISITOR: Pair[] = [
         url: '/',
         gateOnly: true,
         glass: true,
-        failOpening: true,
+        failNext: true,
+        leaveOut: FAILED_NEXT_STACK,
         act: async (page) => {
-            await expect(homeRetry(page), 'the failure notice is up').toBeVisible();
+            await failNextFromKeyboard(page);
         },
     },
     {
@@ -686,8 +705,13 @@ const VISITOR: Pair[] = [
         url: '/',
         gateOnly: true,
         glass: true,
-        failOpening: true,
-        act: (page) => hoverOn(homeRetry(page)),
+        failNext: true,
+        stateOf: 'home-failure',
+        leaveOut: FAILED_NEXT_STACK,
+        act: async (page) => {
+            await failNextFromKeyboard(page);
+            await hoverOn(homeRetry(page));
+        },
     },
     // The controls' hover is only with motion allowed and a fine pointer.
     {
@@ -752,6 +776,11 @@ const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
  * The gate's named allowances (spec §10). The Inbox's KG ring at 390 is back to 0 and its allowance is gone (the curator
  * PR). One sanctioned departure from today's site remains: the curator's selected row and tab take P2-8's 1 px outline
  * in every theme, Dark included, an accessibility fix, since today's fill alone is 1.32:1 against the list.
+ *
+ * Not compared, as a sanctioned departure: #4's `image-unavailable` Home (v2.0.0), where the opening walk gave up. The
+ * base has no such screen: with every photograph failing it offers the opening's notice with Retry and Skip, and the
+ * head says "These photographs can't be shown right now." with Retry alone. The notice, Retry and the controls it keeps
+ * are the ones home-failure and home-failure-hover compare.
  */
 /**
  * #145, the owner's request: on the wide layout the Inbox is one screen tall, its list and its form each scroll on
@@ -788,6 +817,7 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: 'header nav a[href="/curation/series"]', why: "#150: the curator header's Series link" },
     // The series header's first child, its only <p>, so nothing after it in the header changes its path.
     { selector: 'main > article > header > p:first-child:has(> a[href="/work"])', why: "#173 (B4): the series page's All work link above the title" },
+    { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
 ];
 
 /**
@@ -893,6 +923,13 @@ const ALLOWANCES: Allowance[] = [
     { page: 'inbox', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: the Inbox's selected tab's outline" },
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
     ...INDEPENDENT_PANELS,
+    // #4's failure copy (v2.0.0): "Couldn't load photograph 04 of 04" is 2.2 px narrower than "Photograph 04 of 04 couldn't load.".
+    ...['[data-chrome-region="sequence"] > div', '[data-chrome-region="sequence"] [role="status"]', '[data-chrome-region="sequence"] [role="status"] > p'].map((selector) => ({
+        page: 'home-failure',
+        selector,
+        maxDelta: 4,
+        why: "#4: the failure notice's new copy",
+    })),
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
@@ -949,7 +986,7 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
+        return { walk: await walk(page, selectors, [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
     } finally {
         await context.close();
     }

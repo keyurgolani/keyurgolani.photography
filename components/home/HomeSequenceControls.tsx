@@ -18,6 +18,9 @@ interface HomeSequenceControlsProps {
   onTogglePlayback: () => void;
   onPointerEnter?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerLeave?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  /** Previous and Next, for a caller that gives focus back to the one that started a move (#4). */
+  previousRef?: React.Ref<HTMLButtonElement>;
+  nextRef?: React.Ref<HTMLButtonElement>;
 }
 
 /** At least two digits, so the position reads 07 / 12 and 07 / 115. */
@@ -38,6 +41,8 @@ const HomeSequenceControls: React.FC<HomeSequenceControlsProps> = ({
   onTogglePlayback,
   onPointerEnter,
   onPointerLeave,
+  previousRef,
+  nextRef,
 }) => {
   const reducedMotion = usePrefersReducedMotion();
   const hintId = useId();
@@ -53,13 +58,13 @@ const HomeSequenceControls: React.FC<HomeSequenceControlsProps> = ({
       onPointerLeave={onPointerLeave}
     >
       <div className={styles.row}>
-        <button type="button" className={styles.button} aria-label="Previous photograph" onClick={onPrev}>
+        <button ref={previousRef} type="button" className={styles.button} aria-label="Previous photograph" onClick={onPrev}>
           <ChevronLeft size={24} aria-hidden="true" />
         </button>
         <span className={styles.position}>
           {pad(index + 1)} / {pad(count)}
         </span>
-        <button type="button" className={styles.button} aria-label="Next photograph" onClick={onNext}>
+        <button ref={nextRef} type="button" className={styles.button} aria-label="Next photograph" onClick={onNext}>
           <ChevronRight size={24} aria-hidden="true" />
         </button>
         {/* aria-disabled, not disabled, keeps it in the keyboard order under reduced motion. */}

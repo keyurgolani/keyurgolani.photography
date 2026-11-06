@@ -14,7 +14,11 @@ export interface HomeChromeApi {
   release: (reason: string) => void;
   reportPhoto: (status: 'shown' | 'none') => void;
   reportIntro: (phase: IntroPhase) => void;
+  /** #4's state on Home's `<main>`, as `data-home-state`: `ready`, `empty`, or `image-unavailable`. */
+  reportHomeState: (state: HomeState) => void;
 }
+
+export type HomeState = 'ready' | 'empty' | 'image-unavailable';
 
 export interface ChromeContextValue {
   api: HomeChromeApi;
