@@ -581,6 +581,9 @@ describe('two published series with one title, which Work would show as two link
         ['spaces around one', 'Fixture harbor', '  Fixture harbor\t'],
         ['another Unicode form of the same letters', 'Fixture caf\u00e9', 'Fixture cafe\u0301'],
         ['a sharp s that folds to ss', 'Fixture stra\u00dfe', 'FIXTURE STRASSE'],
+        // Work's titles have no white-space rule, so a run of spaces, or a non-breaking one, renders as one space.
+        ['a doubled space inside one', 'Fixture harbor light', 'Fixture harbor  light'],
+        ['a non-breaking space inside one', 'Fixture harbor light', 'Fixture harbor\u00a0light'],
     ])('warns on %s, on each series, naming both by slug', (_label, first, second) => {
         const ctx = context();
         const [a, b] = titled(ctx, first, second);
