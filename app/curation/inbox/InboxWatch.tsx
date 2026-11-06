@@ -30,7 +30,10 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
     const [offline, setOffline] = useState(false);
     const [watchState, setWatchState] = useState<InboxWatchState | null>(null);
-    const [line, setLine] = useState<{ text: string; refresh: boolean; serial: number } | null>(null);
+    // The new-items line, with its Refresh link, stays until the page refreshes; a later line that says nothing of new
+    // items goes beside it, so the prompt to refresh is never lost. Each is a node of its own, read once when it lands.
+    const [arrival, setArrival] = useState<{ text: string; serial: number } | null>(null);
+    const [line, setLine] = useState<{ text: string; serial: number } | null>(null);
     const page = useRef<InboxPageFacts>({ needsJudgment, watcher, item });
     // Arrivals count from the page's own cursor, until the server refuses it and answers its own.
     const since = useRef(cursor);
@@ -59,7 +62,11 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
             } else if (news.offline) setOffline(true);
             if (news.line) {
                 serial += 1;
-                setLine({ text: news.line, refresh: news.refresh, serial });
+                if (news.refresh) {
+                    // New arrivals: the line says everything this answer had, so what stood beside the last one goes.
+                    setArrival({ text: news.line, serial });
+                    setLine(null);
+                } else setLine({ text: news.line, serial });
             }
             // With the version the page showed, so the item raises its alert only while it still shows that one.
             if (news.itemChanged && page.current.item) window.dispatchEvent(new CustomEvent(ITEM_CHANGED_EVENT, { detail: { id: page.current.item.id, version: news.changedFrom } }));
@@ -109,17 +116,16 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
             ) : null}
             {/* The one live region for the poll, there from the start, so what's put in it is read out once. data-watch says
                 where the watch is (InboxWatchState), for nothing but tests that run the page's clock. */}
-            <div role="status" aria-label="Inbox updates" data-watch={watchState ?? undefined} className={line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
-                {line ? (
-                    <p key={line.serial}>
-                        {line.text}{' '}
-                        {line.refresh ? (
-                            <a href={`${window.location.pathname}${window.location.search}`} className={styles.updatesLink}>
-                                Refresh the inbox
-                            </a>
-                        ) : null}
+            <div role="status" aria-label="Inbox updates" data-watch={watchState ?? undefined} className={arrival || line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
+                {arrival ? (
+                    <p key={`arrival-${arrival.serial}`}>
+                        {arrival.text}{' '}
+                        <a href={`${window.location.pathname}${window.location.search}`} className={styles.updatesLink}>
+                            Refresh the inbox
+                        </a>
                     </p>
                 ) : null}
+                {line ? <p key={`line-${line.serial}`}>{line.text}</p> : null}
             </div>
         </>
     );
