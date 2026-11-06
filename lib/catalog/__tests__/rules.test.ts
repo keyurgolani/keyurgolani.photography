@@ -609,6 +609,37 @@ describe('two published series with one title, which Work would show as two link
         expect(findings(ctx)).toEqual([]);
     });
 
+    it.each([
+        ['empty', '', ''],
+        ['only whitespace', '   ', '\u00a0\t'],
+    ])('says nothing for two titles that are both %s, which description.series-copy reports', (_label, first, second) => {
+        const ctx = context();
+        titled(ctx, first, second);
+        expect(findings(ctx)).toEqual([]);
+        expect(runRules(ctx).some((issue) => issue.code === 'description.series-copy' && issue.field === 'title')).toBe(true);
+    });
+
+    it('names every series that shares the title by its slug, never its ID, in one message each, with the hint', () => {
+        const ctx = context();
+        const [a, b] = ctx.authored!.series;
+        const c = { ...structuredClone(b), id: 'ser_fixture-03' };
+        ctx.authored!.series.push(c);
+        // Slugs that the IDs don't hold, so a message built from IDs shows.
+        Object.assign(a, { slug: 'harbor-east', title: 'Fixture harbor' });
+        Object.assign(b, { slug: 'harbor-west', title: 'fixture harbor' });
+        Object.assign(c, { slug: 'harbor-north', title: ' FIXTURE  HARBOR ' });
+        const issues = findings(ctx);
+        expect(issues.map((issue) => issue.record.id)).toEqual(['ser_fixture-01', 'ser_fixture-02', 'ser_fixture-03']);
+        for (const issue of issues) {
+            expect(issue).toMatchObject({
+                severity: 'warning',
+                field: 'title',
+                message: 'The series harbor-east, harbor-west and harbor-north share this title, so Work shows 3 links with the same name.',
+                hint: 'Give each series its own title. This is a warning only; nothing is blocked.',
+            });
+        }
+    });
+
     it("says nothing for a draft series, which Work doesn't show", () => {
         const ctx = context();
         const [, b] = titled(ctx, 'Fixture harbor', 'Fixture harbor');
