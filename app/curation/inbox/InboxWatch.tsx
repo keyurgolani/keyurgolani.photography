@@ -117,6 +117,8 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                 atomic by default, so it says it isn't: a change to one line reads that line, never the whole region again.
                 data-watch says where the watch is (InboxWatchState), for nothing but tests that run the page's clock. */}
             <div role="status" aria-atomic="false" aria-label="Inbox updates" data-watch={watchState ?? undefined} className={arrival || line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
+                {/* The other line first, so "Back online." is read before the new items that came with it. */}
+                {line ? <p key={`line-${line.serial}`}>{line.text}</p> : null}
                 {arrival ? (
                     <p key={`arrival-${arrival.serial}`}>
                         {arrival.text}{' '}
@@ -125,7 +127,6 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                         </a>
                     </p>
                 ) : null}
-                {line ? <p key={`line-${line.serial}`}>{line.text}</p> : null}
             </div>
         </>
     );
