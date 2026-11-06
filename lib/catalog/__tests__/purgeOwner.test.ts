@@ -41,6 +41,31 @@ function locksState(root: string): number | null {
     return fs.existsSync(dir) ? fs.statSync(dir).mtimeMs : null;
 }
 
+/**
+ * Everything a refusal must leave alone, taken before it: the root's
+ * snapshot (which leaves locks/ out), and locks/ itself, absent or its mtime
+ * and every entry in it.
+ */
+function untouched(root: string): () => void {
+    const before = snapshot(root);
+    const locks = locksState(root);
+    const entries = lockEntries(root);
+    return () => {
+        // Nothing written.
+        expect(snapshot(root)).toEqual(before);
+        // locks/ untouched: made by none, and its mtime the same, so no lock was taken and released.
+        expect(locksState(root)).toBe(locks);
+        // No lock file created, or left.
+        expect(lockEntries(root)).toEqual(entries);
+        expect((lockEntries(root) ?? []).filter((name) => name.endsWith('.lock'))).toEqual([]);
+    };
+}
+
+function lockEntries(root: string): string[] | null {
+    const dir = path.join(root, 'locks');
+    return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : null;
+}
+
 /** Moves locks/ aside, inside the test's own temp root, so the next command would have to make it. */
 function withoutLocks(root: string): void {
     if (fs.existsSync(path.join(root, 'locks'))) fs.renameSync(path.join(root, 'locks'), path.join(path.dirname(root), `locks-aside-${path.basename(path.dirname(root))}`));
@@ -57,9 +82,8 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         expect(dry.outcome).toBe('PLANNED');
         expect(dry.plan?.summary).toMatch(/^Takes down /);
 
-        const before = snapshot(built.root);
-        const locks = locksState(built.root);
-        expect(locks).not.toBeNull();
+        expect(locksState(built.root)).not.toBeNull();
+        const check = untouched(built.root);
         const refused = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet });
         expect(refused.outcome).toBe('WRONG_OWNER');
         expect(PURGE_EXIT_CODES[refused.outcome]).toBe(1);
@@ -67,8 +91,7 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         expect(refused.message).toContain(`runs as uid ${owner + 1}, but uid ${owner} owns`);
         expect(refused.message).toMatch(/A tombstone this uid writes is one web can't read: \/media would pass it over and serve the set as the live revision says/);
         expect(refused.tombstone).toBeNull();
-        expect(snapshot(built.root)).toEqual(before);
-        expect(locksState(built.root)).toBe(locks);
+        check();
         expect(fs.existsSync(path.join(built.root, TOMBSTONES_DIR))).toBe(false);
 
         runAs(owner);
@@ -79,8 +102,11 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         const built = await purgeFixture(412);
         withoutLocks(built.root);
         runAs(ownerOf(built.root) + 1);
+        const check = untouched(built.root);
         const refused = await runPurge({ dataRoot: built.root, photoId: built.d, reason: 'r', actor: 'owner', yes: true, logger: quiet });
         expect(refused.outcome).toBe('WRONG_OWNER');
+        expect(PURGE_EXIT_CODES[refused.outcome]).toBe(1);
+        check();
         expect(locksState(built.root)).toBeNull();
     });
 
@@ -111,9 +137,13 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         expect(await runPurgeCommand(built.root, purgeArgs([built.d, '--reason', 'smoke', '--actor', 'ci'], {}), dry.io, { logger: quiet })).toBe(0);
         expect(dry.out[0]).toMatch(new RegExp(`^Takes down ${built.d}: `));
         const yes = io();
+        const check = untouched(built.root);
         expect(await runPurgeCommand(built.root, purgeArgs([built.d, '--reason', 'smoke', '--actor', 'ci', '--yes'], {}), yes.io, { logger: quiet })).toBe(1);
         expect(yes.err.at(-1)).toMatch(/^\[photos\] WRONG_OWNER: /);
         expect(yes.err.at(-1)).toMatch(WRONG);
+        // As the CLI refuses before any lock, it prints no plan: only the dry run reports.
+        expect(yes.out).toEqual([]);
+        check();
         expect(fs.existsSync(path.join(built.root, TOMBSTONES_DIR))).toBe(false);
     });
 
@@ -129,19 +159,21 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         expect(dry.outcome).toBe('REVOKE_PLANNED');
         expect(dry.revokePlan?.summary).toMatch(/^Revokes /);
 
-        const before = snapshot(built.root);
-        const locks = locksState(built.root);
+        const check = untouched(built.root);
         const refused = await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: true, logger: quiet });
         expect(refused.outcome).toBe('WRONG_OWNER');
         expect(PURGE_EXIT_CODES[refused.outcome]).toBe(1);
         expect(refused.message).toMatch(WRONG);
         expect(refused.message).toMatch(/A revoke this uid writes is one web can't read: \/media would keep answering 410 for the sets/);
         expect(refused.revoke).toBeNull();
-        expect(snapshot(built.root)).toEqual(before);
-        expect(locksState(built.root)).toBe(locks);
+        check();
 
         withoutLocks(built.root);
-        expect((await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: true, logger: quiet })).outcome).toBe('WRONG_OWNER');
+        const checkAbsent = untouched(built.root);
+        const again = await runRevoke({ dataRoot: built.root, tombstoneId, reason: 'r', actor: 'owner', yes: true, logger: quiet });
+        expect(again.outcome).toBe('WRONG_OWNER');
+        expect(PURGE_EXIT_CODES[again.outcome]).toBe(1);
+        checkAbsent();
         expect(locksState(built.root)).toBeNull();
 
         runAs(owner);
@@ -159,19 +191,21 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         expect(planned.outcome).toBe('PLANNED');
         expect(planned.plan?.delete.map((entry) => entry.path)).toEqual([`assets/${built.d}/${built.first[built.d]}`]);
 
-        const before = snapshot(built.root);
-        const locks = locksState(built.root);
+        const check = untouched(built.root);
         const refused = await runGc({ dataRoot: built.root, clock: later, logger: quiet, apply: planned.plan?.digest });
         expect(refused.outcome).toBe('WRONG_OWNER');
         expect(GC_EXIT_CODES[refused.outcome]).toBe(1);
         expect(refused.message).toMatch(WRONG);
         expect(refused.message).toMatch(/GC deletes and writes its markers only as the data root's owner/);
         expect(refused.deleted).toEqual([]);
-        expect(snapshot(built.root)).toEqual(before);
-        expect(locksState(built.root)).toBe(locks);
+        check();
 
         withoutLocks(built.root);
-        expect((await runGc({ dataRoot: built.root, clock: later, logger: quiet, apply: planned.plan?.digest })).outcome).toBe('WRONG_OWNER');
+        const checkAbsent = untouched(built.root);
+        const again = await runGc({ dataRoot: built.root, clock: later, logger: quiet, apply: planned.plan?.digest });
+        expect(again.outcome).toBe('WRONG_OWNER');
+        expect(GC_EXIT_CODES[again.outcome]).toBe(1);
+        checkAbsent();
         expect(locksState(built.root)).toBeNull();
         // The uid-matching apply is every other gc --apply test, run as the temp root's owner.
     });
@@ -182,12 +216,12 @@ describe.runIf(posix)('takedown writes and the data root owner (A11, ruling c)',
         const planned = await runGc({ dataRoot: built.root, logger: quiet });
         expect(planned.outcome).toBe('PLANNED');
         expect(planned.plan?.delete.filter((entry) => entry.class === 'tombstoned')).toEqual([]);
-        const before = snapshot(built.root);
-        const locks = locksState(built.root);
+        const check = untouched(built.root);
         const refused = await runGc({ dataRoot: built.root, logger: quiet, apply: planned.plan?.digest });
         expect(refused.outcome).toBe('WRONG_OWNER');
-        expect(snapshot(built.root)).toEqual(before);
-        expect(locksState(built.root)).toBe(locks);
+        expect(GC_EXIT_CODES[refused.outcome]).toBe(1);
+        expect(refused.message).toMatch(WRONG);
+        check();
     });
 });
 
