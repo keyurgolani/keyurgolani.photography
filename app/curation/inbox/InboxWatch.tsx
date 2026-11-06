@@ -112,8 +112,9 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                     <p>{OFFLINE_TEXT}</p>
                 </section>
             ) : null}
-            {/* The one live region for the poll, there from the start, so what's put in it is read out once. */}
-            <div role="status" aria-label="Inbox updates" className={arrival || line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
+            {/* The one live region for the poll, there from the start, so what's put in it is read out once. A status is
+                atomic by default, so it says it isn't: a change to one line reads that line, never the whole region again. */}
+            <div role="status" aria-atomic="false" aria-label="Inbox updates" className={arrival || line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
                 {arrival ? (
                     <p key={`arrival-${arrival.serial}`}>
                         {arrival.text}{' '}
