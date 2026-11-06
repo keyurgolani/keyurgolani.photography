@@ -160,16 +160,29 @@ sha256_of() {
 # ruling b). Step 11's commands run as it too, never as this machine's user.
 WEB_USER=1001:1001
 
-# Runs <command> in the image as web's uid, with the published root at
+# Runs <command> in the image as <user>, with the published root at
 # /data/portfolio and no network, as image-watcher's run --rm form does.
-as_web() {
-  docker run --rm --pull never --network none --user "$WEB_USER" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+as_uid() {
+  local user=$1
+  shift
+  docker run --rm --pull never --network none --user "$user" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
     -v "$PUBLISHED:/data/portfolio" "$IMAGE" "$@"
+}
+
+# Runs <command> in the image as web's uid.
+as_web() {
+  as_uid "$WEB_USER" "$@"
 }
 
 # Runs photos.mjs as web's uid on the published root with <args>.
 photos_as_web() {
   as_web node dist/scripts/photos.mjs "$@"
+}
+
+# Runs photos.mjs as root, uid 0, on the published root with <args>: the
+# mistake step 11 checks purge refuses.
+photos_as_root() {
+  as_uid 0 node dist/scripts/photos.mjs "$@"
 }
 
 # Hands the published root to web's uid, as docs/data-root.md's setup does
@@ -178,6 +191,20 @@ photos_as_web() {
 hand_to_web() {
   docker run --rm --pull never --network none --user 0 --entrypoint chown -v "$PUBLISHED:/data/portfolio" "$IMAGE" -R "$WEB_USER" /data/portfolio ||
     fail "Could not hand the published root to uid $WEB_USER."
+}
+
+# Prints locks/'s mtime, or `none` when there is no locks/, read as web's
+# uid. The listing leaves folders' mtimes out, so a lock taken and released
+# shows only here.
+locks_mtime() {
+  as_web node -e '
+    const fs = require("fs");
+    try {
+      console.log(fs.statSync("/data/portfolio/locks").mtimeMs);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      console.log("none");
+    }' || fail "Could not read locks/'s mtime."
 }
 
 # Writes every entry under the published root to <file>, sorted, read as
@@ -492,7 +519,8 @@ echo "photos history listed revision 1 as one a rollback can return to, photos r
 #     as in production, and nothing widens a mode: purge writes its tombstone
 #     0600, as web's uid, and the 410 below is the check that web can read it
 #     (a tombstone web can't read is passed over, and the set 404s). As
-#     another uid, purge --yes refuses and writes nothing. GC runs as a dry
+#     another uid, root here, purge --yes refuses, exit 1 and WRONG_OWNER,
+#     before any lock, and writes nothing, locks/ included. GC runs as a dry
 #     run only: the smoke never deletes.
 unlisted_set=assets/${unlisted#/media/}
 unlisted_set=${unlisted_set%/*}
@@ -512,6 +540,17 @@ grep -qF -- "    $unlisted_set: " "$TMP/purge-dry.txt" || fail "The purge dry ru
 grep -qF -- "[photos] PLANNED: This was a dry run. Nothing was written." "$TMP/purge-dry.txt" || fail "The purge dry run didn't say it wrote nothing: $(cat "$TMP/purge-dry.txt")"
 published_listing "$TMP/published-after-dry-run.txt" "$target"
 diff -u "$TMP/published-before-purge.txt" "$TMP/published-after-dry-run.txt" || fail "The purge dry run wrote under the published root."
+expect_code "$unlisted" 404
+# As root, which doesn't own the root: refused before any lock, so not even locks/ changes.
+locks_before=$(locks_mtime)
+purge_code=0
+photos_as_root purge "$unlisted_photo" --reason smoke --actor ci --yes >"$TMP/purge-as-root.txt" 2>&1 || purge_code=$?
+[ "$purge_code" = 1 ] || fail "photos purge --yes as root exited $purge_code, expected 1: $(cat "$TMP/purge-as-root.txt")"
+grep -qF -- "[photos] WRONG_OWNER: photos purge --yes runs as uid 0, but uid ${WEB_USER%%:*} owns the data root" "$TMP/purge-as-root.txt" ||
+  fail "photos purge --yes as root didn't refuse WRONG_OWNER: $(cat "$TMP/purge-as-root.txt")"
+published_listing "$TMP/published-after-root.txt" "$target"
+diff -u "$TMP/published-before-purge.txt" "$TMP/published-after-root.txt" || fail "photos purge --yes as root wrote under the published root."
+[ "$(locks_mtime)" = "$locks_before" ] || fail "photos purge --yes as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
 expect_code "$unlisted" 404
 purge_code=0
 photos_as_web purge "$unlisted_photo" --reason smoke --actor ci --yes >"$TMP/purge.txt" 2>&1 || purge_code=$?
@@ -550,5 +589,5 @@ fi
 published_listing "$TMP/published-after-gc.txt" "$target"
 diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-gc.txt" || fail "photos gc, a dry run, changed something under the published root."
 expect_code "$unlisted" 410
-echo "As web's uid, photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, --yes wrote $tombstone and web answered 410 for the set with no restart, and photos gc kept its asset-revision folder as within its 7 days and deleted nothing."
+echo "As web's uid, photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, as root --yes refused and wrote nothing, locks/ included, as web's uid --yes wrote $tombstone and web answered 410 for the set with no restart, and photos gc kept its asset-revision folder as within its 7 days and deleted nothing."
 echo "smoke-catalog passed."
