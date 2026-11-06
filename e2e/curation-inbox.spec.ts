@@ -335,10 +335,13 @@ test('scrolls the form alone under the wheel, to its end, and the list and the p
     test.skip(isMobile, 'A phone shows one side at a time');
     const { list, form } = await openShortWide(page);
     const photo = await photoTop(page);
+    // The list opens where it shows the open item's row (ReturnToRow's keepListPlace). Since A8 its filters and bulk
+    // actions sit above the rows, so at this height that's scrolled already (124 px on CI), not the top: it stays there.
+    const listPlace = await settledTop(list);
     await form.hover();
     await page.mouse.wheel(0, 5_000);
     await expect.poll(() => atEnd(form)).toBe(true);
-    expect(await scrollTop(list)).toBe(0);
+    expect(await scrollTop(list)).toBe(listPlace);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
     expect(await photoTop(page)).toBe(photo);
 });
@@ -406,7 +409,12 @@ test("reads times in the browser's zone with no hydration error, from server HTM
     // The HTML the server sends: every stored time in UTC, with the zone named. (Without JavaScript the inbox stays on its loading
     // state, since the page streams in behind it, so this reads the server's HTML rather than a page with JavaScript off.)
     const html = await (await page.request.get(url.replace(/#item$/, ''))).text();
-    const times = [...html.matchAll(/<time datetime="([^"]+T[^"]+)">([^<]+)<\/time>/gi)].map(([, at, text]) => ({ at, text }));
+    const all = [...html.matchAll(/<time datetime="([^"]+T[^"]+)">([^<]+)<\/time>/gi)].map(([, at, text]) => ({ at, text }));
+    // A8's row ages ("Opened 3 h ago") are relative, counted on the server from its read, so they name no zone, and the
+    // browser keeps the server's words. Every other time is a stored time, in UTC with the zone named.
+    const age = /^Opened (under a minute|\d+ (min|h|days)) ago$/;
+    expect(all.some(({ text }) => age.test(text))).toBe(true);
+    const times = all.filter(({ text }) => !age.test(text));
     expect(times.length).toBeGreaterThan(0);
     for (const { at, text } of times) {
         expect(text).toBe(humanTime(at));

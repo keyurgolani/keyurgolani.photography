@@ -81,6 +81,10 @@ for (const theme of ['light', 'dark'] as const) {
     // A phone shows one side at a time, so the list is checked in list view (no item in the URL), at both widths,
     // and the item view on its own (A8 review B2).
     test(`passes checkSurface() on the list, its filters, bulk actions and pager, in ${theme}`, async ({ page }) => {
+        // A full page is 50 rows and their 50 checkboxes, and checkSurface() focuses and measures each one three times,
+        // after axe and the Tab order over every row: about a minute on CI, past the default 30 s (A8's CI, which
+        // timed out on the 10th to the 29th checkbox, every locator resolved). As the other curator specs' long tests.
+        test.setTimeout(120_000);
         await page.evaluate((stored) => localStorage.setItem('theme', stored), theme);
         await openInbox(page);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
