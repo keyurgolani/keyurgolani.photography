@@ -776,10 +776,38 @@ describe('the poll', () => {
         render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/curation/inbox/summary?since=7', '/api/curation/inbox/summary']);
-        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('');
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent(/^The inbox has changed since this page loaded\. Refresh the inbox$/);
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher.mock.calls.at(-1)?.[0]).toBe('/api/curation/inbox/summary?since=3');
         expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('1 new item needs judgment.');
+    });
+
+    it('says the inbox changed, with its one Refresh link, when the server refuses the cursor after new items, never a count from the new cursor', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 5, arrived: 3, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        expect(region).toHaveTextContent('3 new items need judgment.');
+        // The data root was restored: the server refuses since=7, and the read without it counts from its own cursor.
+        // Even with a count in that answer, it's against a history the page never saw, so it isn't said.
+        fetcher.mockImplementation(async (url: string) =>
+            url.includes('since=7')
+                ? ({ status: 400, ok: false, type: 'basic', json: async () => ({ error: 'bad-cursor' }) } as Response)
+                : ({ status: 200, ok: true, type: 'basic', json: async () => summary({ cursor: 3, needsJudgment: 6, arrived: url.includes('since=3') ? 3 : 1, item: null }) } as Response),
+        );
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher.mock.calls.slice(-2).map(([url]) => url)).toEqual(['/api/curation/inbox/summary?since=7', '/api/curation/inbox/summary']);
+        const changed = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(changed).toHaveTextContent(/^The inbox has changed since this page loaded\. Refresh the inbox$/);
+        expect(region).not.toHaveTextContent('1 new item needs judgment.');
+        expect(region).not.toHaveTextContent('3 new items need judgment.');
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+        // From the new cursor on, a count is honest again, even one the page said before the restore.
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher.mock.calls.at(-1)?.[0]).toBe('/api/curation/inbox/summary?since=3');
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toHaveTextContent(/^3 new items need judgment\. Refresh the inbox$/);
+        expect(region).not.toHaveTextContent('The inbox has changed');
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
     });
 
     it('stops quietly once the session is gone, and never asks again', async () => {
