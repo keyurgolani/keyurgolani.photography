@@ -188,7 +188,7 @@ export type GcOutcome =
     | 'PLAN_CHANGED'
     | 'NOW_PROTECTED'
     | 'UNSAFE_PATH'
-    /** The A11 ruling (c): --apply with a tombstone's marker to write, as a uid that doesn't own the data root. */
+    /** The A11 ruling (c): any --apply as a uid that doesn't own the data root, refused before any lock. */
     | 'WRONG_OWNER'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
@@ -198,8 +198,8 @@ export type GcOutcome =
     | 'STORAGE_ERROR';
 
 /**
- * The CLI's exit codes, #13's: 1 for a layout GC refuses or a uid that
- * doesn't own the data root (WRONG_OWNER), 4 for a damaged
+ * The CLI's exit codes, #13's: 1 for a layout GC refuses or an --apply as
+ * a uid that doesn't own the data root (WRONG_OWNER), 4 for a damaged
  * file or I/O, and for #181's NOW_PROTECTED, a planned asset folder
  * something always protected names now, 3 for any other stop. Usage errors,
  * 2, are the CLI's own.
@@ -861,6 +861,18 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
     // The detail can carry a Node message with the root's absolute path, so it is said relative to the root.
     const detail = status.detail ? `: ${errorText(new Error(status.detail), [root])}` : '';
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${detail}. Nothing was deleted.`);
+    // The A11 ruling (c), review round 2: any --apply runs only as the data root's owner, the uid web runs as, asked before
+    // any lock. Its markers go where web reads, and a lock file a killed run left as another uid would stop the owner's commands.
+    // The dry run takes locks only to read, and still plans.
+    if (applying) {
+        let wrongOwner: string | null;
+        try {
+            wrongOwner = ownerRefusal(root, 'gc');
+        } catch (error) {
+            return finish('STORAGE_ERROR', `${sentence(errorText(error, [root]))} Nothing was deleted.`);
+        }
+        if (wrongOwner) return finish('WRONG_OWNER', `${wrongOwner} GC deleted nothing.`);
+    }
     let realRoot = root;
     if (applying) logEvent(logger, 'catalog.gc.started', { digest: options.apply });
 
@@ -905,9 +917,6 @@ export async function runGc(options: GcOptions): Promise<GcResult> {
         if (plan.delete.length > 0) {
             await hooks.afterPlan?.(plan);
             const tombstoned = plan.delete.filter((entry) => entry.class === 'tombstoned');
-            // The A11 ruling (c): a tombstone's marker goes in catalog/tombstones/ before the first delete, and only the uid web runs as writes there.
-            const wrongOwner = tombstoned.length > 0 ? ownerRefusal(root, 'photos gc --apply') : null;
-            if (wrongOwner) return finish('WRONG_OWNER', `${wrongOwner} GC deleted nothing.`);
             try {
                 // #15's AC 8 again, read fresh: an Inbox item or a build that came to name a folder since the scan stops it all.
                 for (const entry of tombstoned) {

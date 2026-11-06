@@ -83,7 +83,7 @@ export type PurgeOutcome =
     | 'ALREADY_COLLECTED'
     /** A folder a stopped GC run set aside whole: rename it back, then revoke. */
     | 'SET_ASIDE'
-    /** The A11 ruling (c): --yes as a uid that doesn't own the data root, so web couldn't read what it wrote. */
+    /** The A11 ruling (c): --yes as a uid that doesn't own the data root, refused before any lock, so web never meets a file it can't read. */
     | 'WRONG_OWNER'
     | 'CATALOG_LOCKED'
     | 'AUTHORED_LOCKED'
@@ -299,6 +299,18 @@ export async function runPurge(options: PurgeOptions): Promise<PurgeResult> {
 
     const status = dataRootStatus({ write: options.yes === true, root });
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${errorText(new Error(status.detail), root)}` : ''}.${NOTHING}`);
+    // The A11 ruling (c): only the uid web runs as writes a takedown file, so web can always read it. Asked before any lock,
+    // since a lock file a killed run left as another uid would stop the owner's commands. The dry run takes locks only to read.
+    if (options.yes) {
+        let wrongOwner: string | null;
+        try {
+            wrongOwner = ownerRefusal(root, 'purge');
+        } catch (error) {
+            const failed = failedText(error, root);
+            return finish(failed.outcome, failed.message);
+        }
+        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
+    }
     const waitMs = options.waitMs ?? PURGE_WAIT_MS;
     const leaseMs = options.leaseMs ?? CATALOG_LEASE_MS;
 
@@ -384,9 +396,6 @@ export async function runPurge(options: PurgeOptions): Promise<PurgeResult> {
         }
         options.onPlan?.(plan);
         if (!options.yes) return finish('PLANNED', `This was a dry run.${NOTHING} Run it again with --yes to take it down.`);
-        // The A11 ruling (c): only the uid web runs as writes a tombstone, so web can always read it. The dry run above still reports.
-        const wrongOwner = ownerRefusal(root, 'photos purge --yes');
-        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
 
         if (!(await stillHeld(locks))) return finish('LOCK_LOST', `Purge lost the catalog or authored lock.${NOTHING}`);
         await hooks.beforeWrite?.();
@@ -434,6 +443,18 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
 
     const status = dataRootStatus({ write: options.yes === true, root });
     if (status.state !== 'ready') return finish('DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${errorText(new Error(status.detail), root)}` : ''}.${NOTHING}`);
+    // The A11 ruling (c): only the uid web runs as writes a takedown file, so web can always read it. Asked before any lock,
+    // since a lock file a killed run left as another uid would stop the owner's commands. The dry run takes locks only to read.
+    if (options.yes) {
+        let wrongOwner: string | null;
+        try {
+            wrongOwner = ownerRefusal(root, 'revoke');
+        } catch (error) {
+            const failed = failedText(error, root);
+            return finish(failed.outcome, failed.message);
+        }
+        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
+    }
 
     try {
         return await withLock(CATALOG_LOCK, { root, leaseMs: options.leaseMs ?? CATALOG_LEASE_MS, waitMs: options.waitMs ?? PURGE_WAIT_MS }, (lock) => held(lock));
@@ -484,9 +505,6 @@ export async function runRevoke(options: RevokeOptions): Promise<PurgeResult> {
         result.revokePlan = revokePlan;
         options.onPlan?.(revokePlan);
         if (!options.yes) return finish('REVOKE_PLANNED', `This was a dry run.${NOTHING} Run it again with --yes to revoke it.`);
-        // The A11 ruling (c), as for purge: a revoke web can't read is a takedown file it passes over.
-        const wrongOwner = ownerRefusal(root, 'photos purge --revoke --yes');
-        if (wrongOwner) return finish('WRONG_OWNER', wrongOwner);
 
         if (!(await stillHeld([lock]))) return finish('LOCK_LOST', `Revoke lost the catalog lock.${NOTHING}`);
         await hooks.beforeWrite?.();
