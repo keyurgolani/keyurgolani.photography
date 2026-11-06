@@ -529,8 +529,9 @@ echo "photos history listed revision 1 as one a rollback can return to, photos r
 #     (a tombstone web can't read is passed over, and the set 404s). As
 #     another uid, root here, purge --yes refuses, exit 1 and WRONG_OWNER,
 #     before any lock, and writes nothing, locks/ included, and so does gc
-#     --set-aside of the folder the purge took down. GC runs as a dry run
-#     only: the smoke never deletes.
+#     --set-aside of the folder the purge took down, and gc's dry run, which
+#     takes its locks to read. GC runs as a dry run only, as web's uid: the
+#     smoke never deletes.
 unlisted_set=assets/${unlisted#/media/}
 unlisted_set=${unlisted_set%/*}
 unlisted_folder=${unlisted_set%/*}
@@ -595,6 +596,15 @@ grep -qF -- "[photos] WRONG_OWNER: photos gc --set-aside runs as uid 0, but uid 
 published_listing "$TMP/published-after-set-aside.txt" "$target"
 diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-set-aside.txt" || fail "photos gc --set-aside as root wrote under the published root."
 [ "$(locks_mtime)" = "$locks_before" ] || fail "photos gc --set-aside as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
+# Round 3b: a dry run that takes a lock to read writes a lock file, so gc's dry run as root refuses too.
+gc_root_code=0
+photos_as_root gc >"$TMP/gc-as-root.txt" 2>&1 || gc_root_code=$?
+[ "$gc_root_code" = 1 ] || fail "photos gc's dry run as root exited $gc_root_code, expected 1: $(cat "$TMP/gc-as-root.txt")"
+grep -qF -- "[photos] WRONG_OWNER: photos gc runs as uid 0, but uid ${WEB_USER%%:*} owns the data root" "$TMP/gc-as-root.txt" ||
+  fail "photos gc's dry run as root didn't refuse WRONG_OWNER: $(cat "$TMP/gc-as-root.txt")"
+published_listing "$TMP/published-after-gc-as-root.txt" "$target"
+diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-gc-as-root.txt" || fail "photos gc's dry run as root wrote under the published root."
+[ "$(locks_mtime)" = "$locks_before" ] || fail "photos gc's dry run as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
 gc_code=0
 photos_as_web gc >"$TMP/gc.txt" 2>&1 || gc_code=$?
 [ "$gc_code" = 0 ] || fail "photos gc exited $gc_code, expected 0: $(cat "$TMP/gc.txt")"
