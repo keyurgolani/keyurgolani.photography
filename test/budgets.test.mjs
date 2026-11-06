@@ -41,6 +41,21 @@ describe('npm run test:budgets', () => {
     expect(main).toContain("testIgnore: ['**/support/**', '**/themes/**', '**/budgets/**']");
   });
 
+  it('measures on a phone whose screen is its viewport, as image-sizes.spec.ts does', async () => {
+    // The project's Desktop Chrome use gives a context a 1920x1080 screen. Under a 390 px phone, Chromium's preload
+    // scanner resolves width=device-width to the screen, so the Viewer's preload took w1920 before the page took w1200:
+    // 532,480 declared bytes against 400 KiB, a phone no visitor has (CI run 42144161615; B2's 42014654268).
+    const spec = await read('e2e/budgets/budgets.spec.ts');
+    expect(spec).toContain('const screenOf = (viewport: { width: number; height: number }) => ({ viewport, screen: viewport });');
+    const profiles = spec.slice(spec.indexOf('const PROFILES'), spec.indexOf('};', spec.indexOf('const PROFILES')));
+    const phone = profiles.match(/^\s+phone: \{(.+)\},$/m)?.[1] ?? '';
+    const desktop = profiles.match(/^\s+desktop: \{(.+)\},$/m)?.[1] ?? '';
+    expect(phone).toContain('...screenOf({ width: 390, height: 844 })');
+    expect(phone).toContain("userAgent: devices['Pixel 7'].userAgent");
+    expect(desktop).toContain('...screenOf({ width: 1440, height: 900 })');
+    for (const profile of [phone, desktop]) expect(profile).not.toMatch(/\bviewport:/);
+  });
+
   it('writes .perf/report.json, which Git ignores', async () => {
     expect(await read('.gitignore')).toMatch(/^\/\.perf\/$/m);
     expect(await read('lib/perf/report.ts')).toContain("export const PERF_REPORT_FILE = path.join('.perf', 'report.json');");

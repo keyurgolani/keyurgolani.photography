@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { expect, test, type BrowserContextOptions, type Request } from '@playwright/test';
+import { devices, expect, test, type BrowserContextOptions, type Request } from '@playwright/test';
 import sharp from 'sharp';
 import type { BrowserProfile, BrowserScreen } from '../../lib/perf/budgets';
 import { browserChecks, declaredMediaBytes, openingPhotoId, type BrowserMeasurement, type BrowserRow } from '../../lib/perf/report';
@@ -31,10 +31,19 @@ const outFile = process.env.BUDGETS_BROWSER_OUT;
 const targets: Targets = targetsFile ? JSON.parse(fs.readFileSync(targetsFile, 'utf8')) : { mode: 'fixture', screens: [] };
 const fixture = targets.mode === 'fixture';
 
-// Dark, the site's look the suite was written against, as playwright.config.ts's contexts get it.
+/**
+ * Each profile's screen, the size of its viewport, as image-sizes.spec.ts sets it. A context left without one takes
+ * the project's Desktop Chrome screen, 1920x1080, and under a 390 px phone Chromium's preload scanner resolves
+ * `width=device-width` to that screen: the Viewer's preload took w1920 before the page, laid out at 390, took the
+ * w1200 its sizes ask for, 532,480 declared bytes for one photograph (CI run 42144161615). No phone has that screen.
+ */
+const screenOf = (viewport: { width: number; height: number }) => ({ viewport, screen: viewport });
+
+// Dark, the site's look the suite was written against, as playwright.config.ts's contexts get it. The phone has
+// Pixel 7's user agent, as every other phone context in the suite has.
 const PROFILES: Record<BrowserProfile, BrowserContextOptions> = {
-    phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: 'dark' },
-    desktop: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'dark' },
+    phone: { ...screenOf({ width: 390, height: 844 }), deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: devices['Pixel 7'].userAgent, colorScheme: 'dark' },
+    desktop: { ...screenOf({ width: 1440, height: 900 }), deviceScaleFactor: 2, colorScheme: 'dark' },
 };
 
 const QUIET_MS = 5_000;
@@ -101,7 +110,9 @@ for (const profile of Object.keys(PROFILES) as BrowserProfile[]) {
                 };
                 const checks = browserChecks(screen, profile, measured);
                 rows.push(...checks);
-                console.log(`[budgets] ${screen}/${profile} ${path} opening ${opening ?? 'none'} ${JSON.stringify(measured)}`);
+                // Each catalog image asked for, as the photograph's ID head and its rung, so an overage names its images.
+                const asked = media.map(({ pathname }) => pathname.replace(/^\/media\/(ph_[0-9a-f]{8})[^/]*\/.*\/(w\d+\.\w+)$/, '$1 $2'));
+                console.log(`[budgets] ${screen}/${profile} ${path} opening ${opening ?? 'none'} ${JSON.stringify(measured)} ${JSON.stringify(asked)}`);
                 if (fixture) {
                     for (const row of checks) expect(row.over, `${screen}/${profile} ${row.metric}: ${row.value} against ${row.budget}`).toBe(false);
                     // A normal first load: Home asks for its opening photograph and the next, both decoding.
