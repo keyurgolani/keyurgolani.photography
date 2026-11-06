@@ -3,6 +3,7 @@ import { expectNoA11yViolations } from './a11y';
 import { expectFocusRingVisible, expectNotObscured, expectRingNotClipped } from './focus';
 import { waitForHydration } from './hydration';
 import { expectTabOrderMatchesVisualOrder } from './keyboard';
+import type { Pseudo } from './measure';
 import { expectMinTargetSize } from './targets';
 
 type AriaRole = Parameters<Page['getByRole']>[0];
@@ -14,6 +15,11 @@ export interface Surface {
     controls?: readonly Locator[];
     /** Fixed chrome that can paint over a focused element. */
     chrome?: readonly Locator[];
+    /**
+     * Where the entries draw their target and ring, when it isn't their own box: a stretched link's `::after`, which
+     * covers its whole entry (#171, B3). Their order, size and ring are checked on it. Controls keep their own boxes.
+     */
+    pseudo?: Pseudo;
 }
 
 /**
@@ -21,19 +27,21 @@ export interface Surface {
  * entry order, 44 px targets, a visible and unclipped focus ring that `chrome`
  * doesn't obscure on every entry and control, and unique names.
  */
-export async function checkSurface(page: Page, { entries, controls = [], chrome = [] }: Surface): Promise<void> {
+export async function checkSurface(page: Page, { entries, controls = [], chrome = [], pseudo }: Surface): Promise<void> {
     await waitForHydration(page);
     const groups = entries ? [entries, ...controls] : [...controls];
     // Entries can arrive after hydration, as a series' later pages do, so axe waits for every group.
     for (const group of groups) await group.first().waitFor({ state: 'attached' });
     await expectNoA11yViolations(page);
-    if (entries) await expectTabOrderMatchesVisualOrder(page, entries);
-    for (const group of groups) await expectMinTargetSize(group, 44);
-    for (const group of groups) {
+    if (entries) await expectTabOrderMatchesVisualOrder(page, entries, { pseudo });
+    // Each group with where it draws: the entries on their pseudo-element when they have one, the controls on themselves.
+    const drawn = groups.map((group) => ({ group, options: group === entries ? { pseudo } : {} }));
+    for (const { group, options } of drawn) await expectMinTargetSize(group, 44, options);
+    for (const { group, options } of drawn) {
         for (const element of await group.all()) {
-            await expectFocusRingVisible(element);
-            await expectRingNotClipped(element);
-            await expectNotObscured(element, chrome);
+            await expectFocusRingVisible(element, options);
+            await expectRingNotClipped(element, options);
+            await expectNotObscured(element, chrome, options);
         }
     }
     await expectUniqueNames(groups);

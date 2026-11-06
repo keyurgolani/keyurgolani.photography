@@ -21,7 +21,7 @@ export interface WorkCoverImageProps {
 
 /**
  * A series cover in its reserved box on the dark ground, cropped around its
- * focal point. Decorative: the entry's text names the link. When there is no
+ * focal point. Decorative, outside the link: the title names it. When there is no
  * cover, or the image fails, the box holds a plain text fallback instead of a
  * broken image. An image that fails before hydration never fires onError, so
  * the mount check looks too. An empty currentSrc means a lazy image that
@@ -39,7 +39,7 @@ export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' 
     if (cover === null || failed) {
         return (
             <div className={`${styles.frame} ${styles.fallback}`} data-cover="unavailable">
-                {/* Hidden from the link's name, which the title starts, as the cover itself is decorative. */}
+                {/* Hidden from assistive tech, as the cover itself is decorative: the title names the entry's link. */}
                 <span className={styles.fallbackText} aria-hidden="true">
                     Cover unavailable
                 </span>

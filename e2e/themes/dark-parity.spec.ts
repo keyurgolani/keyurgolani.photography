@@ -534,13 +534,16 @@ const VISITOR: Pair[] = [
         },
     },
     { name: 'cover-fallback', url: series, act: (page) => failCover(page) },
-    // A focused Work entry: its ring's offset comes from [data-ring-room], 3 px in Dark as today.
+    // A focused Work entry. Today's ring is the entry link's own, outside it at [data-ring-room]'s 3 px in Dark; since
+    // #171 (B3) it's the title link's, inset on its ::after over the whole entry (WORK_ENTRY_FOCUS). The first link
+    // in the first entry, in either build.
     {
         name: 'work-focus',
         url: '/work',
+        stateOf: 'work',
         act: async (page) => {
             await page.keyboard.press('Shift');
-            await focusInPlace(page.getByRole('main').locator('ul > li > a').first());
+            await focusInPlace(page.getByRole('main').locator('ul > li a').first());
         },
     },
     {
@@ -632,8 +635,8 @@ const VISITOR: Pair[] = [
     { name: 'about', url: '/about' },
     { name: '404', url: '/no-such-page', measure: ['nav [class*="monogram"]', 'nav [class*="_end"]', '[data-theme-control], nav button'] },
     // Hover and focus (the review's Delta 2, item 3), walked by the gate only.
-    { name: 'nav-link-hover', url: '/work', gateOnly: true, act: (page) => hoverOn(navLink(page)) },
-    { name: 'nav-link-focus', url: '/work', gateOnly: true, act: (page) => keyboardFocus(page, navLink(page)) },
+    { name: 'nav-link-hover', url: '/work', gateOnly: true, stateOf: 'work', act: (page) => hoverOn(navLink(page)) },
+    { name: 'nav-link-focus', url: '/work', gateOnly: true, stateOf: 'work', act: (page) => keyboardFocus(page, navLink(page)) },
     { name: 'about-nav-link-hover', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => hoverOn(navLink(page)) },
     { name: 'about-link-hover', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => hoverOn(aboutLink(page)) },
     { name: 'about-link-focus', url: '/about', gateOnly: true, stateOf: 'about', act: (page) => keyboardFocus(page, aboutLink(page)) },
@@ -788,6 +791,58 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
 ];
 
 /**
+ * #171 (B3): Work's entries are heading links. Today each entry is one link round the cover, the h2, the statement and
+ * the count. In the head the entry is a box, and its link is the title, the h2's one child, whose ::after stretches
+ * over the whole entry as its target and draws its ring. Two rules keep the rest of the entry compared exactly, both
+ * on /work only:
+ * - RETAGGED: the head's entry box is walked as the `a` it replaces, so the cover, the copy and everything under them
+ *   keep today's paths, and their styles and boxes are compared as before;
+ * - FOLDED: the title link is left out of both walks, with no layout change, since it adds no element the base had.
+ *   Its own paint must equal its h2's (computed.ts's FOLD_PAINT): the same ink and type, no margin or padding, and no
+ *   fill, line, outline, band, decoration, clip, mask or compositing of its own. Its ::before and ::after are read
+ *   too, and paint nothing at rest. The ::after is the target, and in `work-focus` the ring, pinned to its values in
+ *   Dark as a departure of its own (B3's review, 2). work.spec.ts checks the target and the ring in every theme.
+ */
+const WORK_ENTRY = 'main > ul > li > div:has(> div > h2 > a)';
+const RETAGGED: { url: string; selector: string; as: string; why: string }[] = [
+    { url: '/work', selector: WORK_ENTRY, as: 'a', why: "#171 (B3): Work's entry box, the stretched link's, where today's entry link was" },
+];
+const FOLDED: { url: string; selector: string; why: string; focus?: { page: string; after: Record<string, string>; why: string } }[] = [
+    {
+        url: '/work',
+        selector: `${WORK_ENTRY} > div > h2 > a`,
+        why: "#171 (B3): Work's title link, its h2's one child, painting as the h2",
+        // The focused link's ::after draws the token inset, in Dark's white and black: the issue's "with the focus ring
+        // inset", where today's ring was the entry link's own, outside it (WORK_ENTRIES' work-focus departure).
+        focus: {
+            page: 'work-focus',
+            after: { 'outline-style': 'solid', 'outline-width': '3px', 'outline-offset': '-3px', 'outline-color': 'rgb(255, 255, 255)', 'box-shadow': 'rgb(0, 0, 0) 0px 0px 0px 6px inset' },
+            why: "#171 (B3): a focused Work entry's ring, inset on its title link's ::after",
+        },
+    },
+];
+const retagFor = (pair: Pair) => RETAGGED.filter((entry) => entry.url === pair.url).map(({ selector, as }) => ({ selector, as }));
+const foldFor = (pair: Pair) =>
+    FOLDED.filter((entry) => entry.url === pair.url).map(({ selector, focus }) => ({ selector, ...(focus && (focus.page === pair.name || focus.page === pair.stateOf) && { focused: { '::after': focus.after } }) }));
+
+/**
+ * #171 (B3), the two sanctioned departures on Work's entries, each named per entry (the visitor fixture has two
+ * series, e2e/support/homeFixture.ts): the entry box is `position: relative`, the containing block its title link's
+ * ::after stretches over, where today's static link was; and a focused entry's ring is no longer the entry box's own,
+ * outside it, but the title link's, inset on its ::after (the issue's "with the focus ring inset", in every theme).
+ * Nothing moves: every box, and every other style, is compared exactly.
+ */
+const WORK_ENTRIES: Allowance[] = [1, 2].flatMap((n) => {
+    const selector = `main > ul > li:nth-of-type(${n}) > :first-child`;
+    return [
+        { page: 'work', selector, properties: ['position'], why: "#171 (B3): Work's entry box holds its title link's stretched target" },
+        ...(n === 1
+            ? [{ page: 'work-focus', selector, properties: ['outline-color', 'outline-style', 'outline-width', 'outline-offset', 'box-shadow'], why: "#171 (B3): a focused Work entry's ring is inset on its title link's ::after" }]
+            : []),
+    ];
+});
+
+/**
  * #179, the portrait's frame (B1): 4:3 stacked under a cap of min(45svh, 28rem), and 4:5 side by side, from the
  * refined #12's mockup, where today's About sets a height (clamp(250px, 42svh, 380px) stacked, 420 px wide). Every
  * paint, type and style in About stays exact; only boxes in main move, and the page's height with them. At 390 the
@@ -830,6 +885,7 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
 })();
 
 const ALLOWANCES: Allowance[] = [
+    ...WORK_ENTRIES,
     ...ABOUT_FRAME,
     ...ABOUT_LINK_SCROLL,
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
@@ -893,7 +949,7 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector)), timedOut, ...painted };
+        return { walk: await walk(page, selectors, HEAD_ONLY.map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
     } finally {
         await context.close();
     }
@@ -918,18 +974,54 @@ function judge(label: string, width: number, c: Comparison, timedOut: string[] =
 }
 
 /**
+ * Waits, up to 30 s, until `origin`'s About carries its portrait's LQIP, and says whether it did. The server encodes it
+ * last, after every variant, in the background (lib/siteConfig/portraitVariants.ts), so one just started can serve
+ * About, and Home's intro, which shows the portrait too, without it for a while after the warm-up's load. A failed
+ * test starts the worker again, and the servers with it, so the next pair would walk one build with the LQIP and the
+ * other without it (B3's CI, and B1's). A wait that runs out fails the gate's rows, as any other wait does. Each fetch
+ * gets 5 s, so a hung one can't hold the wait past its 30.
+ */
+async function portraitWarm(origin: string): Promise<boolean> {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+        const html = await fetch(`${origin}/about`, { signal: AbortSignal.timeout(5_000) }).then((response) => response.text(), () => '');
+        if (html.includes('data:image/webp;base64,')) return true;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+}
+
+/**
+ * The properties the gate sanctions for `pair` at `width`, by the path each allowance resolved to in the base's walk.
+ * A path that two allowances name takes both their properties: a state takes its page's too, as work-focus does
+ * work's `position` on the entry box its own ring departure names (B3's CI).
+ */
+function sanctionedFor(pair: Pair, width: number, base: Walk): Record<string, string[]> {
+    const sanctioned: Record<string, string[]> = {};
+    for (const entry of allowancesFor(pair, width).filter((candidate) => candidate.properties && base.resolved[candidate.selector])) {
+        const path = base.resolved[entry.selector];
+        sanctioned[path] = [...new Set([...(sanctioned[path] ?? []), ...entry.properties!])];
+    }
+    return sanctioned;
+}
+
+/**
  * The gate, at each size: Dark in the head against the base, element by element, in all three of Dark's routes.
  * System on a dark device and today's stored `dark` against the base on its stored `dark`; no JavaScript against the
  * base without it. A wait that times out in either build fails the row, and a head with JavaScript that doesn't
  * hydrate fails it too (its hydration wait is one of them). Home's intro has a fourth route: motion allowed, held in
  * its loading phase, System against the base's stored `dark`, where the grain and the ripples are.
  */
-async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }) {
+async function gate(pair: Pair, origins: { base: string; head: string }, cookies?: { base: string; head: string }, { portrait = false }: { portrait?: boolean } = {}) {
     // One throwaway load in each build first: a server derives some things on first ask (About's portrait LQIP), so
     // the first walk of a page could catch one build before it has them.
     for (const [origin, session] of [[origins.base, cookies?.base], [origins.head, cookies?.head]] as const) {
         await styles(origin, 'dark', pair, VIEWPORTS.desktop, 'warm-up', { session });
     }
+    // On the visitor site, every page waits for the portrait's LQIP in both builds, since a restarted worker can come
+    // to any of them first.
+    const [baseWarm, headWarm] = portrait ? await Promise.all([portraitWarm(origins.base), portraitWarm(origins.head)]) : [true, true];
+    const unwarmed = [...(baseWarm ? [] : ['portrait LQIP (base)']), ...(headWarm ? [] : ['portrait LQIP (head)'])];
     for (const [size, viewport] of Object.entries(GATE_VIEWPORTS)) {
         const base = await styles(origins.base, 'dark', pair, viewport, 'base', { session: cookies?.base });
         const baseNoJs = await styles(origins.base, '', pair, viewport, 'base', { js: false, session: cookies?.base });
@@ -948,8 +1040,8 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
                 const paths = entry.subtree ? against.walk.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
                 for (const path of paths) allowances[path] = Math.max(allowances[path] ?? 0, entry.maxDelta!);
             }
-            const sanctioned = Object.fromEntries(named.filter((entry) => entry.properties).map((entry) => [against.walk.resolved[entry.selector], entry.properties!]));
-            const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
+            const sanctioned = sanctionedFor(pair, viewport.width, against.walk);
+            const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
@@ -957,7 +1049,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             const route = 'motion allowed, in the loading phase';
             const against = await styles(origins.base, 'dark', pair, viewport, 'base', { motion: LOADING });
             const head = await styles(origins.head, '', pair, viewport, 'head', { motion: LOADING });
-            const timedOut = [...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
+            const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
@@ -968,12 +1060,12 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
  * The gate (`gate`, computed style), then the pixel report (both passes, at every size and scale): not a gate, since
  * the base doesn't render the same pixels twice, but recorded, with the base against itself, for what only pixels show.
  */
-function parity(group: string, pairs: Pair[], origins: () => { base: string; head: string }, options: { legacy?: boolean; session?: () => { base: string; head: string } } = {}) {
+function parity(group: string, pairs: Pair[], origins: () => { base: string; head: string }, options: { legacy?: boolean; session?: () => { base: string; head: string }; portrait?: boolean } = {}) {
     for (const pair of pairs) {
         test(`${group}: ${pair.name}`, async () => {
             const { base, head } = origins();
             const cookies = pair.session ? options.session!() : undefined;
-            await gate(pair, { base, head }, cookies);
+            await gate(pair, { base, head }, cookies, { portrait: options.portrait });
             if (pair.gateOnly) return;
             for (const [size, viewport] of Object.entries(VIEWPORTS)) {
                 for (const scale of SCALES) {
@@ -1046,6 +1138,10 @@ test.afterAll(async () => {
             '',
             `Left out as new in the head, taken out of its layout and of both walks: ${HEAD_ONLY.map((entry) => `\`${entry.selector}\` (${entry.why})`).join('; ')}.`,
             '',
+            `Walked under the tag it replaces, so its subtree keeps the base's paths: ${RETAGGED.map((entry) => `\`${entry.selector}\` as \`${entry.as}\` on ${entry.url} (${entry.why})`).join('; ')}.`,
+            '',
+            `Left out of both walks in place, its own paint and its pseudo-elements' checked against its parent's: ${FOLDED.map((entry) => `\`${entry.selector}\` on ${entry.url} (${entry.why})${entry.focus ? `, with its focused ::after pinned in ${entry.focus.page} to ${Object.entries(entry.focus.after).map(([name, value]) => `${name}: ${value}`).join(', ')} (${entry.focus.why})` : ''}`).join('; ')}.`,
+            '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
             read(STYLE_ROWS).trimEnd(),
@@ -1082,7 +1178,7 @@ test.describe('the visitor site', () => {
         await Promise.all(servers.map((server) => server.stop()));
     });
 
-    parity('visitor', VISITOR, () => visitor, { legacy: true });
+    parity('visitor', VISITOR, () => visitor, { legacy: true, portrait: true });
 
     // Once, for the record (R2-P2-2): with the scrim on a layer of its own in both builds, does Home's old raster step
     // with its chrome show?
@@ -1118,18 +1214,29 @@ test.describe('the visitor site', () => {
             await revealChrome(page);
             await hoverOn(homeNext(page));
         }, SETTLED],
+        // The title link Work folds into its h2 (B3's review, 2 and 3): a paint on its ::after at rest, a padding or a
+        // border of its own, must fail as a style, though neither element is walked. Each must be seen as itself, not
+        // as any other fold line (B3's CI: a reset's `border: 0 solid` failed every fold, and these passed on it).
+        ["a folded link's ::after painting at rest", '/work', 'main ul li h2 a::after{background:rgb(255 0 0/.5)!important}', undefined, undefined, { seen: '(folded)::after background-color: rgba(255, 0, 0, 0.5)' }],
+        ["a folded link's padding", '/work', 'main ul li h2 a{padding-left:1px!important}', undefined, undefined, { seen: '(folded) padding-left: 1px' }],
+        ["a folded link's border", '/work', 'main ul li h2 a{border-bottom:1px solid!important}', undefined, undefined, { seen: '(folded) border-bottom-width: 1px' }],
+        ["a folded link's ::after border at rest", '/work', 'main ul li h2 a::after{border-top:1px solid!important}', undefined, undefined, { seen: '(folded)::after border-top-width: 1px' }],
         // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
         ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
     ] as const) {
-        const only = (rest[0] ?? null) as { within: string; property: string } | null;
+        const only = rest[0] && 'within' in rest[0] ? (rest[0] as { within: string; property: string }) : null;
+        const seen = rest[0] && 'seen' in rest[0] ? (rest[0] as { seen: string }).seen : null;
         test(`self-test: ${name} in the head fails the gate`, async () => {
-            const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion };
+            // Work's under its sanctioned departures, as the gate's `work` rows are, so B3's entry box (`position`)
+            // can't be what fails it: what's left is the injected change (B3's CI review, S1).
+            const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion, ...(url === '/work' && { stateOf: 'work' }) };
             const viewport = VIEWPORTS.desktop;
             const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'dark', pair, viewport, 'head')];
-            const comparison = compare(base.walk, head.walk);
+            const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk));
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
             // Seen as the change itself, in a style or a token, on loads that settled.
             expect(comparison.styles.length + comparison.tokens.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+            if (seen) expect(comparison.styles.filter((line) => line.includes(seen)).length, `${name}: seen as ${seen}`).toBeGreaterThan(0);
             if (only) {
                 // Seen where it was put, and nowhere else.
                 expect(comparison.styles.filter((line) => line.includes(only.property)).length, `${name}: seen as ${only.property}`).toBeGreaterThan(0);
@@ -1142,12 +1249,13 @@ test.describe('the visitor site', () => {
     // Black's page must never pass as Dark (the remap's review, L1): the head on a stored `black` fails both the gate's
     // paint check and its comparison, since Black's layer computes its own styles and tokens.
     test("self-test: Black's page in the head fails the gate as Dark", async () => {
-        const pair: Pair = { name: "self-test, Black's page", url: '/work' };
+        // Under Work's sanctioned departures, so B3's entry box can't be what the comparison sees (B3's CI review, S1).
+        const pair: Pair = { name: "self-test, Black's page", url: '/work', stateOf: 'work' };
         const viewport = VIEWPORTS.desktop;
         const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
         expect([...base.timedOut, ...head.timedOut], 'both loads settled').toEqual([]);
         expect(paintsDark(head), 'the gate sees Black').toEqual(['painted black, not dark']);
-        const comparison = compare(base.walk, head.walk);
+        const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk));
         expect(comparison.styles.length + comparison.tokens.length, "the comparison sees Black's styles too").toBeGreaterThan(0);
         // And a Dark head passes the same check, so the check isn't failing everything.
         expect(paintsDark(await styles(visitor.head, 'dark', pair, viewport, 'head')), 'a Dark head passes it').toEqual([]);

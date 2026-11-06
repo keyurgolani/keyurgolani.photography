@@ -107,6 +107,25 @@ describe('the public reader', { timeout: 60_000 }, () => {
         expect(await restarted.loadActiveCatalog(root)).toEqual({ state: 'unavailable', reason: 'active-unreadable' });
     });
 
+    // #171 (B3): Work's Try again after a missing pointer. A process that never loaded a revision has nothing to fall
+    // back on, so it serves nothing, and the first read after the pointer is back serves the revision, with no restart.
+    it('serves nothing while the pointer is missing in a process that never loaded, and serves the revision once it is back', async () => {
+        const { root, published } = await fixture(15);
+        const first = await published();
+        const aside = `${catalogPaths(root).active}.aside`;
+        fs.renameSync(catalogPaths(root).active, aside);
+        const { loadActiveCatalog } = await freshProcess();
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        expect(await loadActiveCatalog(root)).toEqual({ state: 'unavailable', reason: 'active-unreadable' });
+        expect(await loadActiveCatalog(root)).toEqual({ state: 'unavailable', reason: 'active-unreadable' });
+        // One line, when reads start failing, naming the reason and never a path.
+        expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{ event: 'catalog.read.failed', reason: 'active-unreadable', error: 'missing' }]);
+        expect(errors.mock.calls.join('\n')).not.toContain(root);
+
+        fs.renameSync(aside, catalogPaths(root).active);
+        expect(await loadActiveCatalog(root)).toMatchObject({ state: 'ok', active: { revisionId: first.revisionId } });
+    });
+
     it('serves the last revision it loaded while the newest pointer version is damaged, and a new process sees the publish in it', async () => {
         const { root, published } = await fixture(12);
         const { loadActiveCatalog } = await freshProcess();

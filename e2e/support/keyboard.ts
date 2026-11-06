@@ -1,33 +1,34 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { waitForHydration } from './hydration';
+import { boxOf, type PseudoOption } from './measure';
 
 /** Entries whose top edges sit within this many px of a row's first entry share that row. */
 const ROW_TOLERANCE = 8;
 
 /**
  * Contract rule 6: DOM order equals row-major visual order (top edge, then
- * left edge), and Tab moves through the entries in DOM order.
+ * left edge), and Tab moves through the entries in DOM order. With `pseudo`,
+ * an entry's place is that pseudo-element's box, as a stretched link's ::after
+ * is the whole entry, where the link's own box is only its title.
  */
-export async function expectTabOrderMatchesVisualOrder(page: Page, entries: Locator): Promise<void> {
+export async function expectTabOrderMatchesVisualOrder(page: Page, entries: Locator, options: PseudoOption = {}): Promise<void> {
     await waitForHydration(page);
     await entries.first().waitFor({ state: 'attached' });
     const count = await entries.count();
     const domOrder = Array.from({ length: count }, (_, index) => index);
 
-    const visualOrder = await entries.evaluateAll((elements, tolerance) => {
-        const items = elements.map((el, index) => {
-            const { top, left } = el.getBoundingClientRect();
-            return { index, top, left };
-        });
-        items.sort((a, b) => a.top - b.top || a.left - b.left);
-        const rows: (typeof items)[] = [];
-        for (const item of items) {
-            const row = rows[rows.length - 1];
-            if (row && item.top - row[0].top <= tolerance) row.push(item);
-            else rows.push([item]);
-        }
-        return rows.flatMap((row) => row.sort((a, b) => a.left - b.left).map((item) => item.index));
-    }, ROW_TOLERANCE);
+    const places = options.pseudo
+        ? await Promise.all((await entries.all()).map((entry) => boxOf(entry, options)))
+        : await entries.evaluateAll((elements) => elements.map((el) => el.getBoundingClientRect()).map(({ top, left }) => ({ top, left })));
+    const items = places.map(({ top, left }, index) => ({ index, top, left }));
+    items.sort((a, b) => a.top - b.top || a.left - b.left);
+    const rows: (typeof items)[] = [];
+    for (const item of items) {
+        const row = rows[rows.length - 1];
+        if (row && item.top - row[0].top <= ROW_TOLERANCE) row.push(item);
+        else rows.push([item]);
+    }
+    const visualOrder = rows.flatMap((row) => row.sort((a, b) => a.left - b.left).map((item) => item.index));
     expect(visualOrder, `Row-major visual order of ${entries} must equal DOM order`).toEqual(domOrder);
 
     const focusedIndex = () => entries.evaluateAll((elements) => elements.findIndex((el) => el.contains(document.activeElement)));

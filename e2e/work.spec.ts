@@ -1,21 +1,30 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Locator, Page, Route } from '@playwright/test';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
+import { catalogPaths } from '../lib/catalog/working-layer';
 import { assetDir } from '../lib/media/path';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
+import { expectFocusRingVisible, expectRingNotClipped } from './support/focus';
+import { measure } from './support/measure';
 import { checkSurface } from './support/surface';
+import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
 import { expectSingleTapActivates } from './support/touch';
 
 // Work (#3) on a published catalog, on both #1 projects: authored order and
 // the published series only, nothing unpublished in the HTML or the RSC
 // payload, the /gallery 308, the #1 surface checks, Enter and a single tap on
-// an entry, and the cover fallback. Each project's worker publishes its own
-// fixture catalog and serves it from a second `next start`, so the harness
-// server stays unpublished for every other spec.
+// an entry, and the cover fallback. Each entry is a heading link named by its
+// title, its statement and count its description, its ::after the whole
+// entry's target and ring in every theme (#171, B3). Each project's worker
+// publishes its own fixture catalog and serves it from a second `next start`,
+// so the harness server stays unpublished for every other spec. Try again
+// after a missing pointer has a server of its own, which has never loaded.
 
 test.describe.configure({ mode: 'serial' });
 
@@ -62,6 +71,8 @@ const CONTAIN_COVER = 'ridge';
 
 let catalog: TestCatalog | undefined;
 let server: CatalogServer | undefined;
+/** The revision the fixture's publish activated. */
+let revisionId: string | null = null;
 
 test.beforeAll(async () => {
     test.setTimeout(HOOK_TIMEOUT);
@@ -109,6 +120,7 @@ test.beforeAll(async () => {
     });
     const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+    revisionId = outcome.revisionId;
     // The quarry cover's derivative set goes missing, as after a partial derivative failure.
     const cover = catalog.content.photos.find((record) => record.id === P[5]);
     if (!cover) throw new Error('The quarry cover is not in the published content');
@@ -130,8 +142,17 @@ const origin = () => {
     return server.origin;
 };
 const primary = (page: Page) => page.getByRole('navigation', { name: 'Primary' });
+/** Each entry's one link, its title in its h2. */
 const entries = (page: Page) => page.getByRole('main').getByRole('listitem').getByRole('link');
 const entry = (page: Page, slug: string) => page.getByRole('main').locator(`a[href="/work/${slug}"]`);
+/** The entry's list item: its cover, title, statement and count. */
+const items = (page: Page) => page.getByRole('main').getByRole('listitem');
+// `has` is queried inside each list item, so it names the link from there: `entry`'s main, which no list item holds,
+// would match none, and every wait on the item would run out (B3's CI).
+const item = (page: Page, slug: string) => items(page).filter({ has: page.locator(`a[href="/work/${slug}"]`) });
+/** Where an entry draws its target and its ring: the link's ::after, stretched over the whole entry. */
+const STRETCHED = { pseudo: '::after' } as const;
+const countLabel = (count: number) => (count === 1 ? '1 photograph' : `${count} photographs`);
 
 async function openWork(page: Page): Promise<void> {
     await page.goto(`${origin()}/work`);
@@ -147,18 +168,27 @@ test('/gallery answers 308 to bare /work, and /work renders, once a revision is 
     expect(work.status()).toBe(200);
 });
 
-test('Work lists only the published series, in authored order, each one link with its title, statement, and count', async ({ page }) => {
+test('Work lists only the published series, in authored order, each one heading link named by its title, its statement and count its description', async ({ page }) => {
     await openWork(page);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bodies of work');
     await expect(entries(page)).toHaveCount(PUBLISHED.length);
     for (const [index, series] of PUBLISHED.entries()) {
         const link = entries(page).nth(index);
         await expect(link).toHaveAttribute('href', `/work/${series.slug}`);
-        await expect(link.getByRole('heading', { level: 2 })).toHaveText(series.title);
-        await expect(link).toContainText(`Fixture short statement`);
-        await expect(link).toContainText(series.count === 1 ? '1 photograph' : `${series.count} photographs`);
+        await expect(link).toHaveAccessibleName(series.title);
+        await expect(link).toHaveText(series.title);
+        await expect(link).toHaveAccessibleDescription(`${statements()[index]} ${countLabel(series.count)}`);
+        // The link is the h2's own text, and the entry's only link.
+        await expect(items(page).nth(index).getByRole('heading', { level: 2 })).toHaveText(series.title);
+        await expect(items(page).nth(index).getByRole('heading', { level: 2 }).getByRole('link')).toHaveCount(1);
+        await expect(items(page).nth(index).getByRole('link')).toHaveCount(1);
+        await expect(items(page).nth(index)).toContainText(statements()[index]);
+        await expect(items(page).nth(index)).toContainText(countLabel(series.count));
+        // The cover is outside the link, with an empty alt.
+        await expect(link.locator('img, [data-cover]')).toHaveCount(0);
+        for (const image of await items(page).nth(index).locator('img').all()) await expect(image).toHaveAttribute('alt', '');
         // Visible at rest, without hover.
-        await expect(link.getByRole('heading', { level: 2 })).toBeVisible();
+        await expect(link).toBeVisible();
     }
     for (const sentinel of ['SENTINEL draft title', 'SENTINEL hidden title']) await expect(page.getByText(sentinel)).toHaveCount(0);
 });
@@ -193,11 +223,152 @@ test('nothing unpublished reaches the served HTML or the RSC payload of a client
 
 test('Work passes the #1 checks, with SiteNav outside main, Work current, and no data-surface', async ({ page }) => {
     await openWork(page);
-    await checkSurface(page, { entries: entries(page), controls: [primary(page).locator('a, button')] });
+    await checkSurface(page, { entries: entries(page), pseudo: '::after', controls: [primary(page).locator('a, button')] });
     await expectHoverRulesGated(page);
     await expect(page.locator('main nav')).toHaveCount(0);
     await expect(primary(page).locator('[aria-current="page"]')).toHaveText(['Work']);
     await expect(page.locator('[data-surface]')).toHaveCount(0);
+});
+
+/** Clicks the middle of `target` with the mouse, wherever the hit lands, as a visitor's click does. */
+async function clickMiddleOf(page: Page, target: Locator): Promise<void> {
+    await target.scrollIntoViewIfNeeded();
+    const box = await target.boundingBox();
+    if (!box) throw new Error(`${target} is not rendered`);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+}
+
+type Edges = { left: number; top: number; right: number; bottom: number };
+/** Whether `outer` holds `inner` grown by `by` px on every side, to half a pixel. */
+const holds = (outer: Edges, inner: Edges, by = 0) =>
+    outer.left <= inner.left - by + 0.5 && outer.top <= inner.top - by + 0.5 && outer.right >= inner.right + by - 0.5 && outer.bottom >= inner.bottom + by - 0.5;
+
+/** The five choices: System paints Light or Dark from the device, and the other four paint themselves. */
+const THEMES = ['system', 'light', 'bright', 'dark', 'black'] as const;
+/** Each painted theme's surround room, sm below 40rem and md above (styles/themes.css). Dark and Black have none. */
+const ROOM: Record<string, { sm: number; md: number }> = { dark: { sm: 0, md: 0 }, black: { sm: 0, md: 0 }, light: { sm: 7, md: 12 }, bright: { sm: 6, md: 12 } };
+
+for (const theme of THEMES) {
+    test(`in ${theme}, the whole entry is its link's target, cover, surround and copy, and the ring is the token's, inset on it and unclipped`, async ({ page }) => {
+        await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+        await openWork(page);
+        await expect(page.locator('html')).toHaveAttribute('data-theme-choice', theme);
+        const painted = (await page.locator('html').getAttribute('data-theme')) ?? '';
+        const width = page.viewportSize()?.width ?? 0;
+        const room = ROOM[painted][width < 640 ? 'sm' : 'md'];
+        for (const series of PUBLISHED) {
+            const link = entry(page, series.slug);
+            const listItem = item(page, series.slug);
+            await listItem.scrollIntoViewIfNeeded();
+            const target = (await measure(link, STRETCHED)).box;
+            const parts = await listItem.evaluate((el) => {
+                const box = (node: Element | null) => {
+                    const r = (node ?? el).getBoundingClientRect();
+                    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+                };
+                return { entry: box(el), cover: box(el.querySelector('[data-cover]')) };
+            });
+            // The target holds the whole list item, and the cover with its surround's room on every side.
+            expect(holds(target, parts.entry), `${series.slug}'s target holds its entry: ${JSON.stringify({ target, entry: parts.entry })}`).toBe(true);
+            expect(holds(target, parts.cover, room), `${series.slug}'s target holds its cover and its ${room} px surround`).toBe(true);
+            // Every point of the entry in view lands on the link: the cover, the title, the statement, the count, and between.
+            const misses = await listItem.evaluate((el, slug) => {
+                const r = el.getBoundingClientRect();
+                const link = el.querySelector(`a[href="/work/${slug}"]`);
+                const missed: string[] = [];
+                for (let i = 0; i < 7; i++) {
+                    for (let j = 0; j < 7; j++) {
+                        const x = r.left + ((i + 0.5) * r.width) / 7;
+                        const y = r.top + ((j + 0.5) * r.height) / 7;
+                        if (y < 0 || y > innerHeight || x < 0 || x > innerWidth) continue;
+                        const hit = document.elementFromPoint(x, y);
+                        if (!hit || hit.closest('a') !== link) missed.push(`${Math.round(x)},${Math.round(y)} on ${hit?.tagName.toLowerCase() ?? 'nothing'}`);
+                    }
+                }
+                return missed;
+            }, series.slug);
+            expect(misses, `${series.slug}: every point of the entry is its link's`).toEqual([]);
+            await expectMinTargetSize(link, 44, STRETCHED);
+            await expectFocusRingVisible(link, STRETCHED);
+            await expectRingNotClipped(link, STRETCHED);
+            // Inset: the outline lies inside the target, so the screen's edge, a neighbour or the print never covers it.
+            const ring = await measure(link, STRETCHED);
+            expect(ring.outline.offset + ring.outline.width, `${series.slug}'s ring is inset`).toBeLessThanOrEqual(0);
+            // The link's own box draws no second ring round the title.
+            const own = await measure(link);
+            expect(own.outline.style, `${series.slug}'s title draws no ring of its own`).toBe('none');
+            expect(own.boxShadow, `${series.slug}'s title draws no band of its own`).toBe('none');
+            // The ring never paints over the copy (B3's review, 1): every line of the title, statement and count lies
+            // inside the target shrunk by what the ring paints, its outline and band (width plus offset).
+            const painted = await link.evaluate((el) => {
+                const style = getComputedStyle(el);
+                return parseFloat(style.getPropertyValue('--focus-ring-width')) + parseFloat(style.getPropertyValue('--focus-ring-offset'));
+            });
+            const clear = { left: target.left + painted, top: target.top + painted, right: target.right - painted, bottom: target.bottom - painted };
+            const lines = await listItem.evaluate((el) => {
+                const found: { text: string; left: number; top: number; right: number; bottom: number }[] = [];
+                const walker = document.createTreeWalker(el.querySelector('h2')?.parentElement ?? el, NodeFilter.SHOW_TEXT);
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                    if (!node.textContent?.trim()) continue;
+                    const range = document.createRange();
+                    range.selectNodeContents(node);
+                    for (const r of range.getClientRects()) found.push({ text: node.textContent.trim().slice(0, 24), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+                }
+                return found;
+            });
+            expect(lines.length, `${series.slug} has copy to check`).toBeGreaterThan(0);
+            const covered = lines.filter((line) => !holds(clear, line)).map((line) => `"${line.text}" at ${JSON.stringify(line)} against ${JSON.stringify(clear)}`);
+            expect(covered, `${series.slug}: the ring paints over none of the copy`).toEqual([]);
+        }
+    });
+}
+
+/** Each entry's target, the link's ::after, in Work order. */
+const targets = async (page: Page) => Promise.all(PUBLISHED.map((series) => measure(entry(page, series.slug), STRETCHED).then((m) => m.box)));
+
+// B3's review, 1: the target grows past the copy by the ring's width and offset, so it must still stay on screen at the
+// narrowest phone, inside the gutter where the theme has one, and two neighbours' must never meet at the narrowest
+// column gap, at 768.
+test.describe('the grown target', () => {
+    test.skip(({ isMobile }) => isMobile, 'It sets its own sizes. The desktop project covers it.');
+
+    for (const theme of THEMES) {
+        test(`in ${theme}, the grown target stays inside the gutter at 375, and neighbours' targets never meet at 768`, async ({ page }) => {
+            await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+            await page.setViewportSize({ width: 375, height: 812 });
+            await openWork(page);
+            const painted = (await page.locator('html').getAttribute('data-theme')) ?? '';
+            const viewport = await page.evaluate(() => document.documentElement.clientWidth);
+            for (const [index, box] of (await targets(page)).entries()) {
+                // Black's covers meet the screen's edge, so its target does too, and no further.
+                const margin = painted === 'black' ? 0 : 1;
+                expect(box.left, `entry ${index + 1}'s target on the left`).toBeGreaterThanOrEqual(margin);
+                expect(viewport - box.right, `entry ${index + 1}'s target on the right`).toBeGreaterThanOrEqual(margin);
+            }
+            await page.setViewportSize({ width: 768, height: 1024 });
+            await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length)).toBe(0);
+            const boxes = await targets(page);
+            // Two to a row: the 1st and 2nd, the 3rd and 4th.
+            for (const [left, right] of [[0, 1], [2, 3]] as const) {
+                expect(Math.abs(boxes[left].top - boxes[right].top), `entries ${left + 1} and ${right + 1} share a row`).toBeLessThan(1);
+                expect(boxes[right].left - boxes[left].right, `entries ${left + 1} and ${right + 1}'s targets never meet`).toBeGreaterThanOrEqual(0);
+            }
+        });
+    }
+});
+
+// Work's revision marker (#171, B3): the list carries the revision its entries came from, as Home's main (B6) and the
+// series page's main (B4) do, for B12's freshness rows.
+test('the series list carries the served revision, the one /api/ready names', async ({ page, request }) => {
+    await openWork(page);
+    expect(revisionId, 'the publish named its revision').toMatch(/^rev_/);
+    await expect(page.getByRole('main').getByRole('list')).toHaveAttribute('data-catalog-revision', revisionId ?? '');
+    await expect(page.locator('[data-catalog-revision]')).toHaveCount(1);
+    const ready = (await (await request.get(`${origin()}/api/ready`)).json()) as { revisionId: string | null };
+    expect(ready.revisionId).toBe(revisionId);
+    // In the server HTML too, so B12 reads it without a script.
+    const html = await (await request.get(`${origin()}/work`)).text();
+    expect(html).toMatch(new RegExp(`<ul [^>]*data-catalog-revision="${revisionId}"`));
 });
 
 test('Tab reaches the entries right after SiteNav, in order, and Enter opens the focused series', async ({ page }) => {
@@ -223,6 +394,17 @@ test('one tap on an entry opens its series', async ({ page }, testInfo) => {
     await expectSingleTapActivates(target, () => expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[2].slug}`));
 });
 
+test('one tap on an entry\'s cover opens its series too, since the whole entry is the target', async ({ page }, testInfo) => {
+    test.skip(!testInfo.project.use.hasTouch, 'Touch runs on the mobile project.');
+    await openWork(page);
+    const cover = item(page, PUBLISHED[1].slug).locator('[data-cover]');
+    await cover.scrollIntoViewIfNeeded();
+    const box = await cover.boundingBox();
+    if (!box) throw new Error('The cover is not rendered');
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[1].slug}`);
+});
+
 /** The reserved box's width over height for the entry at `index`: 4:3 below 768 px, then wide 3:2 and narrow 4:5 alternating by row. */
 const frameRatio = (index: number, width: number) => (width < 768 ? 4 / 3 : index % 4 === 0 || index % 4 === 3 ? 3 / 2 : 4 / 5);
 
@@ -234,13 +416,13 @@ test('each cover holds its reserved box before its image loads, cropped at its f
     await page.goto(`${origin()}/work`, { waitUntil: 'domcontentloaded' });
     await waitForHydration(page);
     await expect(entries(page)).toHaveCount(PUBLISHED.length);
-    const first = entry(page, PUBLISHED[0].slug);
+    const first = item(page, PUBLISHED[0].slug);
     await expect.poll(() => held.length, 'the eager cover was requested and is held').toBeGreaterThan(0);
     expect(await first.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth), 'nothing painted yet').toBe(0);
 
     const width = page.viewportSize()?.width ?? 0;
     for (const [index, series] of PUBLISHED.entries()) {
-        const box = await entry(page, series.slug).locator('[data-cover]').boundingBox();
+        const box = await item(page, series.slug).locator('[data-cover]').boundingBox();
         expect(box, series.slug).not.toBeNull();
         expect(box?.height ?? 0, `${series.slug} keeps its height`).toBeGreaterThan(0);
         expect((box?.width ?? 0) / (box?.height ?? 1), `${series.slug} keeps its ratio`).toBeCloseTo(frameRatio(index, width), 1);
@@ -248,31 +430,31 @@ test('each cover holds its reserved box before its image loads, cropped at its f
 
     const fit = (link: Locator) => link.locator('img').evaluate((image) => ({ fit: getComputedStyle(image).objectFit, position: getComputedStyle(image).objectPosition }));
     expect(await fit(first)).toEqual({ fit: 'cover', position: `${FIRST_FOCAL.x * 100}% ${FIRST_FOCAL.y * 100}%` });
-    expect((await fit(entry(page, CONTAIN_COVER))).fit).toBe('contain');
+    expect((await fit(item(page, CONTAIN_COVER))).fit).toBe('contain');
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
     for (const route of held) await route.continue().catch(() => undefined);
     await expect.poll(() => coverLoaded(first)).toBe(true);
 });
 
-/** Whether `link`'s cover image has loaded and painted. */
-const coverLoaded = (link: Locator) => link.locator('img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0);
+/** Whether the entry's cover image has loaded and painted. */
+const coverLoaded = (entryItem: Locator) => entryItem.locator('img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0);
 
 test('covers load from /media, and a cover /media can\'t serve gives the text fallback, never a broken image', async ({ page }) => {
     await openWork(page);
-    await expect.poll(() => coverLoaded(entry(page, PUBLISHED[0].slug))).toBe(true);
-    const broken = entry(page, BROKEN_COVER);
+    await expect.poll(() => coverLoaded(item(page, PUBLISHED[0].slug))).toBe(true);
+    const broken = item(page, BROKEN_COVER);
     await broken.scrollIntoViewIfNeeded();
     await expect(broken.locator('[data-cover="unavailable"]')).toBeVisible();
     await expect(broken.locator('img')).toHaveCount(0);
     // The link and its copy stay intact.
-    await expect(broken).toHaveAttribute('href', `/work/${BROKEN_COVER}`);
+    await expect(entry(page, BROKEN_COVER)).toHaveAccessibleName('Fixture quarry');
     await expect(broken.getByRole('heading', { level: 2 })).toHaveText('Fixture quarry');
-    for (const series of PUBLISHED.filter((item) => item.slug !== BROKEN_COVER)) {
-        const link = entry(page, series.slug);
-        await link.scrollIntoViewIfNeeded();
-        await expect.poll(() => coverLoaded(link)).toBe(true);
-        expect(await link.locator('img').getAttribute('src')).toMatch(/^\/media\/ph_[^/]+\/sha256-[0-9a-f]{64}\/p_[0-9a-f]+\/w1200\.webp$/);
+    for (const series of PUBLISHED.filter((published) => published.slug !== BROKEN_COVER)) {
+        const entryItem = item(page, series.slug);
+        await entryItem.scrollIntoViewIfNeeded();
+        await expect.poll(() => coverLoaded(entryItem)).toBe(true);
+        expect(await entryItem.locator('img').getAttribute('src')).toMatch(/^\/media\/ph_[^/]+\/sha256-[0-9a-f]{64}\/p_[0-9a-f]+\/w1200\.webp$/);
     }
 });
 
@@ -290,7 +472,8 @@ const asHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;
 test('the server HTML holds the h1, and every published series title and short statement, in Work order', async ({ request }) => {
     const html = await (await request.get(`${origin()}/work`)).text();
     expect(html).toMatch(/<h1[^>]*>Bodies of work<\/h1>/);
-    const titles = [...html.matchAll(/<h2[^>]*>([^<]*)<\/h2>/g)].map(([, title]) => title);
+    // Each title is its h2's one link (#171, B3).
+    const titles = [...html.matchAll(/<h2[^>]*><a [^>]*>([^<]*)<\/a><\/h2>/g)].map(([, title]) => title);
     expect(titles).toEqual(PUBLISHED.map((series) => asHtml(series.title)));
     let from = 0;
     for (const [index, statement] of statements().entries()) {
@@ -310,14 +493,18 @@ test.describe('with JavaScript disabled', () => {
         for (const [index, series] of PUBLISHED.entries()) {
             const link = entries(page).nth(index);
             await expect(link).toHaveAttribute('href', `/work/${series.slug}`);
-            await expect(link.getByRole('heading', { level: 2 })).toHaveText(series.title);
-            await expect(link).toContainText(statements()[index]);
-            await expect(link).toContainText(series.count === 1 ? '1 photograph' : `${series.count} photographs`);
+            await expect(link).toHaveAccessibleName(series.title);
+            await expect(link).toHaveAccessibleDescription(`${statements()[index]} ${countLabel(series.count)}`);
+            await expect(items(page).nth(index).getByRole('heading', { level: 2 })).toHaveText(series.title);
+            await expect(items(page).nth(index)).toContainText(statements()[index]);
+            await expect(items(page).nth(index)).toContainText(countLabel(series.count));
         }
         // The first cover is in the server HTML and loads without a script.
-        await expect.poll(() => coverLoaded(entry(page, PUBLISHED[0].slug))).toBe(true);
+        await expect.poll(() => coverLoaded(item(page, PUBLISHED[0].slug))).toBe(true);
         await expect(primary(page).getByRole('link', { name: 'Work', exact: true })).toHaveAttribute('aria-current', 'page');
-        await entry(page, PUBLISHED[1].slug).click();
+        // The stretched target is CSS, so it holds without a script: a click on the cover opens the series. By the
+        // mouse, since the link's ::after takes the click, which a click on the cover's locator would refuse.
+        await clickMiddleOf(page, item(page, PUBLISHED[1].slug).locator('[data-cover]'));
         await expect(page).toHaveURL(`${origin()}/work/${PUBLISHED[1].slug}`);
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(PUBLISHED[1].title);
     });
@@ -365,7 +552,7 @@ test.describe('at 320 px with 200% text', () => {
         await expect
             .poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length))
             .toBe(0);
-        const boxes = await entries(page).evaluateAll((links) => links.map((link) => link.getBoundingClientRect().toJSON() as DOMRect));
+        const boxes = await items(page).evaluateAll((listItems) => listItems.map((listItem) => listItem.getBoundingClientRect().toJSON() as DOMRect));
         const width = await page.evaluate(() => document.documentElement.clientWidth);
         for (const [index, box] of boxes.entries()) {
             expect(box.left, `entry ${index + 1}'s left edge`).toBeGreaterThanOrEqual(-0.5);
@@ -374,9 +561,81 @@ test.describe('at 320 px with 200% text', () => {
         }
         expect(await clippedText(page)).toEqual([]);
         // Synthetic: a long title and statement, with a 40-character unbroken token, swapped into the live page.
-        const first = entry(page, PUBLISHED[0].slug);
-        await first.getByRole('heading', { level: 2 }).evaluate((el) => (el.textContent = 'A much longer series title that wraps over several lines'));
+        const first = item(page, PUBLISHED[0].slug);
+        await first.getByRole('link').evaluate((el) => (el.textContent = 'A much longer series title that wraps over several lines'));
         await first.locator('p').first().evaluate((el) => (el.textContent = `${'A short statement that runs long. '.repeat(4)}Supercalifragilisticexpialidocious12345`));
         expect(await clippedText(page)).toEqual([]);
+    });
+});
+
+// #171 (B3), from the old Work browser suite: a missing pointer gives #21's 500 with Try again and no path, and once
+// the pointer is back, Try again brings the entries back with no reload. It needs a server that has never loaded a
+// revision: one that has serves its last revision while the pointer is missing (lib/catalog/public-reader.ts). So it
+// has a catalog and a server of its own, and the rest of the file never sees its pointer go.
+test.describe('with the pointer missing', () => {
+    const MISSING = [
+        { slug: 'cove', title: 'Fixture cove' },
+        { slug: 'dune', title: 'Fixture dune' },
+    ] as const;
+    const missingId = (n: number) => `ph_00000000-0000-4000-8000-${String(n + 301).padStart(12, '0')}`;
+    let own: TestCatalog | undefined;
+    let missing: CatalogServer | undefined;
+    let active = '';
+    let aside = '';
+
+    test.beforeAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        // In a temp folder of its own: createTestCatalog refuses one inside the repo, which Playwright's output folder is. Nothing here deletes it.
+        own = await createTestCatalog({
+            root: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-missing-pointer-')), 'root'),
+            seed: 47,
+            withAssets: true,
+            photos: [0, 1].map((n) => ({ id: missingId(n), width: 900, height: 600 })),
+            series: MISSING.map((series, n) => ({ id: `ser_e2e-${series.slug}`, ...series, photoIds: [missingId(n)] })),
+            seriesOrder: MISSING.map((series) => `ser_e2e-${series.slug}`),
+        });
+        const outcome = await publish({ dataRoot: own.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
+        expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+        active = catalogPaths(own.root).active;
+        aside = `${active}.aside`;
+        // Moved aside, never deleted, before the server ever reads it.
+        fs.renameSync(active, aside);
+        // Above the ports the file's own servers take when E2E_CATALOG_PORT pins them, one per worker, as
+        // curator-login.spec.ts does.
+        const base = Number(process.env.E2E_CATALOG_PORT);
+        const port = Number.isInteger(base) && base > 0 ? base + 1 + test.info().config.workers + test.info().parallelIndex : undefined;
+        missing = await startCatalogServer(own.root, port, { unavailable: true });
+    });
+
+    test.afterAll(async () => {
+        test.setTimeout(HOOK_TIMEOUT);
+        await missing?.stop();
+    });
+
+    test('Work is the 500 with Try again and no path, and once the pointer is back Try again shows the entries, without a reload', async ({ page }) => {
+        if (!own || !missing) throw new Error('The missing-pointer server did not start');
+        const response = await page.request.get(`${missing.origin}/work`);
+        expect(response.status()).toBe(500);
+        const body = await response.text();
+        for (const leak of [own.root, path.basename(own.root), 'catalog/active', 'ENOENT', 'active-unreadable', 'CatalogUnavailableError']) {
+            expect(body, `the 500 says nothing of ${leak}`).not.toContain(leak);
+        }
+
+        await page.goto(`${missing.origin}/work`);
+        await waitForHydration(page);
+        const tryAgain = page.getByRole('main').getByRole('button', { name: 'Try again' });
+        await expect(tryAgain).toBeVisible();
+        await expect(entries(page)).toHaveCount(0);
+        await expect(page.getByRole('main')).not.toContainText(own.root);
+        // A mark on this document: a reload would drop it.
+        await page.evaluate(() => Object.assign(window, { workSameDocument: true }));
+
+        fs.renameSync(aside, active);
+        await tryAgain.click();
+        await expect(entries(page)).toHaveCount(MISSING.length);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bodies of work');
+        for (const [index, series] of MISSING.entries()) await expect(entries(page).nth(index)).toHaveAccessibleName(series.title);
+        await expect(page).toHaveURL(`${missing.origin}/work`);
+        expect(await page.evaluate(() => (window as { workSameDocument?: boolean }).workSameDocument), 'Try again kept the document').toBe(true);
     });
 });
