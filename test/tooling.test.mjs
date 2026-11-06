@@ -204,3 +204,16 @@ describe("CI's retried browser installs", () => {
     }
   });
 });
+
+describe("the smokes' temp roots", () => {
+  it('go under $RUNNER_TEMP, the job\'s own temp folder in CI, or $TMPDIR elsewhere, each named for its smoke', async () => {
+    const dir = path.join(REPO_ROOT, 'ci');
+    const smokes = (await fs.readdir(dir)).filter((name) => /^smoke-.+\.sh$/.test(name)).sort();
+    expect(smokes).toEqual(['smoke-catalog.sh', 'smoke-image.sh', 'smoke-ingest.sh', 'smoke-media.sh', 'smoke-watcher-once.sh']);
+    for (const name of smokes) {
+      const text = await fs.readFile(path.join(dir, name), 'utf8');
+      const calls = [...text.matchAll(/mktemp\b[^)\n]*/g)].map((match) => match[0]);
+      expect(calls, name).toEqual([`mktemp -d "\${RUNNER_TEMP:-\${TMPDIR:-/tmp}}/photography-${name.replace(/\.sh$/, '')}.XXXXXX"`]);
+    }
+  });
+});
