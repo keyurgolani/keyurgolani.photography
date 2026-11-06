@@ -640,6 +640,31 @@ const SLICE_A_RULES: RuleDefinition[] = [
             }))),
     },
     {
+        // Work lists every published series by its title, so two that share one show as links with the same name. A
+        // warning, the owner's call: it names each series by slug, and never blocks a publish or changes an exit code.
+        // Titles match after trim, then foldName()'s NFC and case-fold, so "Harbor", " harbor" and "HARBOR" are one.
+        id: 'series.duplicate-title',
+        severity: 'warning',
+        gate: 'publish',
+        check: (ctx) => {
+            const byTitle = new Map<string, SeriesLike[]>();
+            for (const series of publishedSeries(ctx)) {
+                const key = foldName(series.title.trim());
+                if (key !== '') byTitle.set(key, [...(byTitle.get(key) ?? []), series]);
+            }
+            return [...byTitle.values()].filter((group) => group.length > 1).flatMap((group) => {
+                const slugs = group.map((series) => series.slug);
+                const named = `${slugs.slice(0, -1).join(', ')} and ${slugs[slugs.length - 1]}`;
+                return group.map((series) => ({
+                    record: seriesRecord(series.id),
+                    field: 'title',
+                    message: `The series ${named} share this title, so Work shows ${group.length} links with the same name.`,
+                    hint: 'Give each series its own title. This is a warning only: the publish goes ahead.',
+                }));
+            });
+        },
+    },
+    {
         id: 'route.slug-format',
         severity: 'error',
         gate: 'render',
