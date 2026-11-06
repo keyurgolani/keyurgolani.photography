@@ -533,6 +533,55 @@ describe('the poll', () => {
         expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
     });
 
+    it('replaces the new-items line with a new one when more items arrive, and clears the watcher line beside the old one', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const first = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent(/watcher stopped checking in/);
+        // One more arrived, and the watcher is still stopped, which was said: only the new count is news.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 4, arrived: 2, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const second = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(second).toHaveTextContent(/^2 new items need judgment\. Refresh the inbox$/);
+        // A new node, so the region reads the new count as an addition.
+        expect(second).not.toBe(first);
+        expect(first.isConnected).toBe(false);
+        expect(region).not.toHaveTextContent(/watcher stopped checking in/);
+        expect(region).not.toHaveTextContent('1 new item needs judgment.');
+        expect(region.querySelectorAll('p')).toHaveLength(1);
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+    });
+
+    it('puts each new word on the other line in a node of its own, offline and then the watcher, beside the new-items line', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        const offline = within(region).getByText(OFFLINE_TEXT);
+        expect(offline).not.toBe(arrival);
+        // A check gets through: back online, and the watcher stopped meanwhile.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_ONLINE_GAP_MS);
+        const watcher = within(region).getByText(/watcher stopped checking in/);
+        expect(watcher).toHaveTextContent(/^Back online\./);
+        expect(watcher).not.toBe(offline);
+        expect(offline.isConnected).toBe(false);
+        expect(region).not.toHaveTextContent(OFFLINE_TEXT);
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
+        expect(region.querySelectorAll('p')).toHaveLength(2);
+    });
+
     it('reads only what changed in its region: a status is atomic by default, so it says aria-atomic="false"', () => {
         render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         // role="status" implies aria-atomic="true", and Chromium honours it: with two lines, a change to one would make
