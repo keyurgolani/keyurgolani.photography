@@ -471,19 +471,18 @@ describe('what the watch says', () => {
     const page = { needsJudgment: 2, watcher: { state: 'running' } as const, item: { id: ID, version: 3 } };
 
     it('says nothing when nothing changed', () => {
-        expect(inboxNews(page, { kind: 'summary', summary: summary() }, new Set())).toEqual({ line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, refresh: false, watcher: { state: 'running' } });
+        expect(inboxNews(page, { kind: 'summary', summary: summary() }, new Set())).toEqual({ arrival: '', line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, watcher: { state: 'running' } });
     });
 
     it('says new items need judgment once per count, and points to Refresh', () => {
         const news = inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set());
-        expect(news.line).toBe('3 new items need judgment.');
-        expect(news.refresh).toBe(true);
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment.');
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set(news.keys)).line).toBe('');
+        expect(news).toMatchObject({ arrival: '3 new items need judgment.', line: '' });
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 1 }) }, new Set()).arrival).toBe('1 new item needs judgment.');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ arrived: 3 }) }, new Set(news.keys)).arrival).toBe('');
         // Arrivals, not the net count (A8 review B4): one came in while another was decided elsewhere.
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 2, arrived: 1 }) }, new Set()).line).toBe('1 new item needs judgment.');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 2, arrived: 1 }) }, new Set()).arrival).toBe('1 new item needs judgment.');
         // And a count that went up only because the page's own count was out of date says nothing.
-        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 9, arrived: 0 }) }, new Set()).line).toBe('');
+        expect(inboxNews(page, { kind: 'summary', summary: summary({ needsJudgment: 9, arrived: 0 }) }, new Set())).toMatchObject({ arrival: '', line: '' });
     });
 
     it('gives the new-items sentence apart from the rest of the answer, so the Inbox keeps it with its link alone', () => {
