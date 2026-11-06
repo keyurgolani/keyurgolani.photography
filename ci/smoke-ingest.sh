@@ -74,6 +74,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Hands data root <dir>, inside this run's temp root, to uid 1001, the
+# image's user, as docs/data-root.md's setup does (chown -R 1001:1001, chmod
+# 700), so the owner gate lets the image's commands write it on any runner.
+hand_to_image() {
+  docker run --rm --pull never --network none --user 0 --entrypoint sh -v "$1:/d" "$IMAGE" -c 'chown -R 1001:1001 /d && chmod 700 /d' ||
+    fail "Could not hand $1 to uid 1001."
+}
+
 # Runs a command in the image as its user, with the library read-only at
 # /data/library and the data root at /data/portfolio, as
 # docker-compose.prod.yml mounts them for image-watcher, and the owner's input
@@ -177,7 +185,8 @@ inbox_all() {
 #    checkout's fixtures mounted read-only, and an empty data root, all
 #    writable by the image's user, and the owner's input folder.
 mkdir "$LIB" "$EXTRAS" "$DATA" "$INPUT"
-chmod 777 "$LIB" "$EXTRAS" "$DATA"
+chmod 777 "$LIB" "$EXTRAS"
+hand_to_image "$DATA"
 docker run --rm --pull never --network none -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
 docker run --rm --pull never --network none -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$EXTRAS:/library" \

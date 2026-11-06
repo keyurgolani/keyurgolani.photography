@@ -100,6 +100,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Hands data root <dir>, inside this run's temp root, to uid 1001, the
+# image's user, as docs/data-root.md's setup does (chown -R 1001:1001, chmod
+# 700), so the owner gate lets the image's commands write it on any runner.
+hand_to_image() {
+  docker run --rm --pull never --network none --user 0 --entrypoint sh -v "$1:/d" "$IMAGE" -c 'chown -R 1001:1001 /d && chmod 700 /d' ||
+    fail "Could not hand $1 to uid 1001."
+}
+
 # Runs a command in the image as its user, with the library and the first
 # data root where docker-compose.prod.yml mounts them for image-watcher: the
 # library read-only at /data/library.
@@ -185,12 +193,11 @@ photos_as_root() {
   as_uid 0 node dist/scripts/photos.mjs "$@"
 }
 
-# Hands the published root to web's uid, as docs/data-root.md's setup does
-# with chown -R 1001:1001, so the commands run as web's uid own what they
-# write. It changes no mode: web reads every file as its owner.
+# Hands the published root to web's uid, as hand_to_image does, so the
+# commands step 11 runs as web's uid own what they write. web reads every
+# file as its owner.
 hand_to_web() {
-  docker run --rm --pull never --network none --user 0 --entrypoint chown -v "$PUBLISHED:/data/portfolio" "$IMAGE" -R "$WEB_USER" /data/portfolio ||
-    fail "Could not hand the published root to uid $WEB_USER."
+  hand_to_image "$PUBLISHED"
 }
 
 # Prints locks/'s mtime, or `none` when there is no locks/, read as web's
@@ -317,7 +324,8 @@ check_unpublished() {
 #    checkout's fixtures mounted read-only, and an empty data root, both
 #    writable by the image's user. The watcher mounts the library read-only.
 mkdir "$LIB" "$DATA"
-chmod 777 "$LIB" "$DATA"
+chmod 777 "$LIB"
+hand_to_image "$DATA"
 docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
 

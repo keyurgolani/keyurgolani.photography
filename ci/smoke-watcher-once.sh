@@ -83,6 +83,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Hands data root <dir>, inside this run's temp root, to uid 1001, the
+# image's user, as docs/data-root.md's setup does (chown -R 1001:1001, chmod
+# 700), so the owner gate lets the image's commands write it on any runner.
+hand_to_image() {
+  docker run --rm --pull never --network none --user 0 --entrypoint sh -v "$1:/d" "$IMAGE" -c 'chown -R 1001:1001 /d && chmod 700 /d' ||
+    fail "Could not hand $1 to uid 1001."
+}
+
 # Runs a command in the image as image-watcher does: the library read-only at
 # /data/library, and the data root read-write.
 in_watcher() {
@@ -178,7 +186,8 @@ echo "The image ships dist/scripts and no dev dependencies, tsx, or script sourc
 #    fixtures mounted read-only, and a data root uid 1001 can write, which
 #    the migration initializes as docs/data-root.md runs it.
 mkdir "$LIB" "$ROOT"
-chmod 777 "$LIB" "$ROOT"
+chmod 777 "$LIB"
+hand_to_image "$ROOT"
 docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
 for base in landscape portrait square; do
@@ -312,7 +321,7 @@ check_unpublished() {
 #    no library at all since v1.7.0. This one does, so a file Next would serve
 #    from public/ is there to be refused.
 mkdir "$DATA"
-chmod 755 "$DATA"
+hand_to_image "$DATA"
 docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
   -v "$PUBLIC:/app/public/assets/photos:ro" -v "$DATA:/data/portfolio:ro" "$IMAGE" >/dev/null
 WEB_STARTED=true
