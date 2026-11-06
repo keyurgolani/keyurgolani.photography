@@ -9,7 +9,7 @@ import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
 import { createInboxFixture, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { publishHomeFixture } from '../support/homeFixture';
-import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
+import { compare, completeHiddenSegments, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 
 // Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
 // same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
@@ -841,6 +841,15 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
     // After Enter the series, its last child, so nothing before it in the story changes its path.
     { selector: '[data-chrome-region="story"] > div > a[href="/work"]:last-child', why: "#4 (B7): Home's All bodies of work link after Enter the series" },
+    // #180's A8, the curation Inbox screen. Each is new beside what next has, which stays where it was: the poll's live
+    // region straight in the page, as the watcher strip is; the filters and the bulk form above the list's rows, which
+    // stay in the list's own lists; and in each row, its checkbox's column beside the link and its age under the ID.
+    { selector: 'div:has(> main > #inbox-list) > [role="status"][aria-label="Inbox updates"]', why: "#180 (A8): the Inbox poll's live region, empty until there's news" },
+    { selector: '#inbox-list > form[role="search"]', why: "#180 (A8): the Inbox's Status and Type filters" },
+    { selector: '#inbox-list > form#inbox-bulk', why: "#180 (A8): the Inbox's bulk Decide later and Leave unassigned" },
+    { selector: '#inbox-list li > label:has(> input[type="checkbox"][form="inbox-bulk"])', why: "#180 (A8): an Inbox row's bulk checkbox, in its own column" },
+    { selector: '#inbox-list li > span[aria-hidden="true"]:first-child', why: "#180 (A8): the empty checkbox column of a row no bulk action takes" },
+    { selector: '#inbox-list a[data-row] > span > span:has(> time)', why: "#180 (A8): an Inbox row's age, as \"Opened 3 h ago\"" },
 ];
 
 /**
@@ -972,6 +981,21 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
     ];
 })();
 
+/**
+ * #180's A8, the curation Inbox screen: a row a bulk action can take is a grid of two columns, its checkbox's and its
+ * link's, where next's row is a plain list item. The checkbox's column is HEAD_ONLY's, and its track is as wide as what
+ * it holds, so with it taken out the link sits exactly where next's does: every box and every other style is compared
+ * exactly. Only the row's own `display` departs, list-item to grid, and the ::marker that only a list item has goes
+ * with it (computed.ts). The inbox fixture opens 8 items (e2e/support/curation-inbox.ts's openInboxItems), all needing
+ * judgment, in the list's one ul, and every one of them has the column, an empty one for the missing source.
+ */
+const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: 8 }, (_, index) => ({
+    page: 'inbox',
+    selector: `#inbox-list > ul > li:nth-of-type(${index + 1})`,
+    properties: ['display'],
+    why: "#180 (A8): an Inbox row is a grid of its checkbox's column and its link",
+}));
+
 const ALLOWANCES: Allowance[] = [
     ...WORK_ENTRIES,
     ...WORK_REVEAL,
@@ -989,6 +1013,7 @@ const ALLOWANCES: Allowance[] = [
         maxDelta: 4,
         why: "#4: the failure notice's new copy",
     })),
+    ...INBOX_PICK_ROWS,
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
@@ -1070,6 +1095,10 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
+        // Without JavaScript, React's late segments wait at the end of the body. Where they go is content no-JS never
+        // shows, so they're put there in both builds, and the walk compares the page as it's built, not how its payload
+        // split (A8's CI: the Inbox's rows streamed one by one).
+        if (!js) await page.evaluate(completeHiddenSegments);
         return { walk: await walk(page, selectors, [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
     } finally {
         await context.close();

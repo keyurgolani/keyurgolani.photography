@@ -5,7 +5,7 @@ import EmptyArrival from './EmptyArrival';
 import EventBadge from './EventBadge';
 import ReturnToRow from './ReturnToRow';
 import { ageLabel, ANY_QUERY, bulkChoices, inboxQueryString, listPage, rowLabels, STATUS_FILTERS, TYPE_FILTERS, type InboxQuery } from '@/lib/curation/inbox-list';
-import { fileParts, itemName, summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
+import { BULK_FORM_ID, fileParts, itemName, summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
 
 type ReadyView = Extract<InboxView, { state: 'ready' }>;
 
@@ -50,13 +50,14 @@ const rowHref = (item: Pick<InboxItem, 'id'>, query: InboxQuery) => `/curation/i
 /**
  * #14 (A8): a row's checkbox for the bulk actions, beside its link, never in it. It sends the row's item and the
  * version the page showed, and it's keyed by both, so a row the refresh after an action moved on starts unchecked.
- * A row no bulk action can take keeps the column, empty, so the rows stay aligned.
+ * It belongs to the bulk form by its `form` attribute, so the rows stay in the list's own lists, where they were
+ * before A8. A row no bulk action can take keeps the column, empty, so the rows stay aligned.
  */
 function Pick({ item, label, pickable }: { item: InboxItem; label: string; pickable: boolean }) {
     if (!pickable) return <span className={styles.pickSpacer} aria-hidden="true" />;
     return (
         <label className={styles.pick}>
-            <input key={`${item.id}:${item.version}`} className={styles.pickBox} type="checkbox" name="items" id={`pick-${item.id}`} value={`${item.id}:${item.version}`} />
+            <input key={`${item.id}:${item.version}`} className={styles.pickBox} type="checkbox" name="items" form={BULK_FORM_ID} id={`pick-${item.id}`} value={`${item.id}:${item.version}`} />
             <span className={styles.visuallyHidden}>Select {label}</span>
         </label>
     );
@@ -245,13 +246,9 @@ export default function InboxList({ view, listView = false, query = ANY_QUERY }:
                     <p>Add photographs to the library folder. The watcher picks them up, and each one shows up here as a draft suggestion. Nothing publishes from the inbox.</p>
                 </div>
             ) : null}
-            {bulk ? (
-                <BulkActions base={view.activeRevisionId} rows={rows} canDefer={canDefer} canUnassign={canUnassign} firstPick={firstPick === null ? null : `pick-${firstPick}`}>
-                    {groups}
-                </BulkActions>
-            ) : (
-                groups
-            )}
+            {/* The bulk form above the rows, which stay where they were before A8: each checkbox names the form (A8's CI). */}
+            {bulk ? <BulkActions base={view.activeRevisionId} rows={rows} canDefer={canDefer} canUnassign={canUnassign} firstPick={firstPick === null ? null : `pick-${firstPick}`} /> : null}
+            {groups}
             <Pager query={listQuery} page={shown.page} pages={shown.pages} />
             {view.placementUnknown ? (
                 <p className={styles.empty} role="status">
