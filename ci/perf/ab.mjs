@@ -202,10 +202,11 @@ async function measure(argv) {
   // Both servers are measured by one browser: system Chrome, through the head's Playwright.
   const { chromium } = createRequire(path.join(opts.head, 'package.json'))('@playwright/test');
   /** @type {import('@playwright/test').Browser} */
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // Every host but 127.0.0.1 unresolvable, so no request leaves the runner and the cache can stay on (measure.mjs).
+  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'] });
   const raw = {
     meta: { base: { ref: opts.baseRef, sha: shaOf(opts.base) }, head: { ref: opts.headRef, sha: shaOf(opts.head) }, rounds: opts.rounds, loads: opts.loads, browser: `Chrome ${browser.version()}`, runner: process.env.ImageOS ? `${process.env.ImageOS} ${process.env.ImageVersion ?? ''}`.trim() : os.platform(), startedAt: new Date().toISOString() },
-    /** @type {Record<string, { rounds: import('./stats.mjs').Round[], cacheOn?: import('./stats.mjs').Load }>} */
+    /** @type {Record<string, { rounds: import('./stats.mjs').Round[] }>} */
     fixtures: {},
     /** @type {{ base: import('./stats.mjs').RouteJs[], head: import('./stats.mjs').RouteJs[] } | undefined} */
     firstLoadJs: undefined,
@@ -247,11 +248,6 @@ async function measure(argv) {
             log(`${fixture} round ${round + 1}/${opts.rounds} ${server}: ${lcps.join(', ')}`);
           }
         }
-        // One phone load of the head with the cache on, after the rounds and in none of them: what the tone fetch costs a
-        // visitor, whose browser keeps the slide's file. Reference only (stats.mjs summaryMarkdown()).
-        const cacheOn = await measureLoad(browser, `${/** @type {{ origin: string }} */ (servers.B).origin}/`, PROFILES.phone, { cache: true });
-        raw.fixtures[fixture].cacheOn = cacheOn;
-        log(`${fixture} cache-on phone load of B: tone fetch ${cacheOn.toneFetchBytes ?? 'none'} B, ${cacheOn.toneFetchAfterLcp ?? 'none'} ms after LCP`);
       } finally {
         for (const server of SERVERS) await servers[server]?.stop();
       }

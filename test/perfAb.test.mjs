@@ -6,6 +6,7 @@ import {
   INFO_METRICS,
   informational,
   loopbackListeners,
+  offLoopbackRequests,
   MAX_ROUNDS,
   median,
   MIN_ROUNDS,
@@ -293,20 +294,15 @@ describe('informational and its table', () => {
     expect(markdown).toMatch(/No regressions past the noise floor\./);
   });
 
-  it('prints the one cache-on phone load of the head per fixture, beside the cache-off table, and gates on it never', () => {
-    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 520]] });
-    raw.fixtures.one.cacheOn = { lcp: 1000, tbt: 400, toneFetchAfterLcp: 900, toneFetchBytes: 0 };
+  it('names every load that asked for something off 127.0.0.1, and gates on none of them', () => {
+    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 0]] });
+    expect(summaryMarkdown(raw, analyse(raw))).not.toContain('Requests off 127.0.0.1');
+    raw.fixtures.one.rounds[2].servers.B.phone[0].offLoopback = ['https://fonts.example/a.woff2'];
     const markdown = summaryMarkdown(raw, analyse(raw));
-    expect(markdown).toContain('### The tone fetch with the cache on (one phone load of the head, not gated)');
-    expect(markdown).toContain('| one | 0 | 900 |');
+    expect(offLoopbackRequests(raw)).toEqual([{ where: 'one round 3 B phone load 1', urls: ['https://fonts.example/a.woff2'] }]);
+    expect(markdown).toContain('### Requests off 127.0.0.1');
+    expect(markdown).toContain('- one round 3 B phone load 1: https://fonts.example/a.woff2');
     expect(analyse(raw).regressions).toEqual([]);
-  });
-
-  it('shows none for a cache-on load that made no tone fetch, and leaves the table out when no fixture has one', () => {
-    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 520]] });
-    expect(summaryMarkdown(raw, analyse(raw))).not.toContain('with the cache on');
-    raw.fixtures.one.cacheOn = { lcp: 1000, tbt: 0, toneFetchAfterLcp: null, toneFetchBytes: null };
-    expect(summaryMarkdown(raw, analyse(raw))).toContain('| one | none | none |');
   });
 });
 

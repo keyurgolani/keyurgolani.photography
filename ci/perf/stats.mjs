@@ -49,7 +49,7 @@ export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 /**
  * @typedef {{
  *   meta: { base: Tree, head: Tree, rounds: number, loads: number, browser: string, runner?: string },
- *   fixtures: Record<string, { rounds: Round[], cacheOn?: Load }>,
+ *   fixtures: Record<string, { rounds: Round[] }>,
  *   firstLoadJs?: { base: RouteJs[], head: RouteJs[] },
  * }} Raw
  */
@@ -249,6 +249,28 @@ const floorCell = (row) => `${ms(row.floor)} ms${row.floorSource === 'minimum' ?
 /** @param {Tree} tree */
 const named = (tree) => `\`${tree.ref}\` (${tree.sha.slice(0, 12)})`;
 
+/**
+ * Every recorded load that asked for something off 127.0.0.1 (measure.mjs `offLoopback`), as where and what.
+ * @param {Raw} raw
+ */
+export function offLoopbackRequests(raw) {
+  /** @type {{ where: string, urls: string[] }[]} */
+  const found = [];
+  for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
+    for (const round of rounds) {
+      for (const [server, byProfile] of Object.entries(round.servers)) {
+        for (const [profile, loads] of Object.entries(byProfile ?? {})) {
+          loads.forEach((load, index) => {
+            const urls = Array.isArray(load.offLoopback) ? load.offLoopback.filter((url) => typeof url === 'string') : [];
+            if (urls.length > 0) found.push({ where: `${fixture} round ${round.round + 1} ${server} ${profile} load ${index + 1}`, urls });
+          });
+        }
+      }
+    }
+  }
+  return found;
+}
+
 /** The job summary: the setup, the rule, the table, and first-load JS for reference. @param {Raw} raw @param {{ rows: Row[], regressions: Row[] }} analysis */
 export function summaryMarkdown(raw, { rows, regressions }) {
   const { meta } = raw;
@@ -283,26 +305,22 @@ export function summaryMarkdown(raw, { rows, regressions }) {
       '',
       '### Bytes and the tone fetch (for reference, not gated)',
       '',
-      'Bytes are each load\'s transferSize summed over the document and every resource. The tone fetch is Home\'s copy-tone sampler\'s one fetch() of /media: when it started, less the load\'s LCP, so positive is after LCP, and what it transferred, 0 from the cache. Every load here runs with the cache off, so that fetch reads the file\'s size even where the site would serve it from the cache. Same per-round medians as above, over the loads that have a value; the last column counts those loads, base then head. No floor, no verdict.',
+      'Bytes are each load\'s transferSize summed over the document and every resource. The tone fetch is Home\'s copy-tone sampler\'s one fetch() of /media: when it started, less the load\'s LCP, so positive is after LCP, and what it transferred, 0 from the cache. Every load is a first visit in a fresh context with the cache on, so that fetch reads 0 where the browser served it from the cache, and a fetch the cache refused (only-if-cached) counts as none. Same per-round medians as above, over the loads that have a value; the last column counts those loads, base then head. No floor, no verdict.',
       '',
       '| Metric | Base (A1+A2)/2 | Head B | Head − base | Loads with a value |',
       '|---|---|---|---|---|',
       ...info.map((row) => `| ${label(row.metric)} | ${cell(row.base)} | ${cell(row.head)} | ${row.delta === null ? 'n/a' : `${row.delta > 0 ? '+' : ''}${ms(row.delta)}`} | ${row.baseLoads.with}/${row.baseLoads.of}, ${row.headLoads.with}/${row.headLoads.of} |`),
     );
   }
-  const cacheOn = Object.entries(raw.fixtures).filter(([, fixture]) => fixture.cacheOn);
-  if (cacheOn.length > 0) {
-    /** @param {unknown} value */
-    const value = (value) => (typeof value === 'number' ? String(value) : 'none');
+  const stray = offLoopbackRequests(raw);
+  if (stray.length > 0) {
     lines.push(
       '',
-      '### The tone fetch with the cache on (one phone load of the head, not gated)',
+      '### Requests off 127.0.0.1',
       '',
-      'One more phone load of the head per fixture, after the rounds, in a fresh context with the cache left on, as a visitor\'s browser has it. The slide\'s file is in the cache by the time the sampler refetches it, so its transferSize reads 0 where the cache served it; positive start − LCP is after LCP. None means the load made no tone fetch.',
+      `**${stray.length} load${stray.length === 1 ? '' : 's'} asked for something off 127.0.0.1.** The browser resolves no other host, so none reached it, but a page that asks the outside world for something isn't the page a visitor gets. Not gated.`,
       '',
-      '| Fixture | Tone fetch transferred (B) | Tone fetch − LCP (ms) |',
-      '|---|---|---|',
-      ...cacheOn.map(([name, fixture]) => `| ${name} | ${value(fixture.cacheOn?.toneFetchBytes)} | ${value(fixture.cacheOn?.toneFetchAfterLcp)} |`),
+      ...stray.map(({ where, urls }) => `- ${where}: ${urls.join(', ')}`),
     );
   }
   const js = raw.firstLoadJs;
