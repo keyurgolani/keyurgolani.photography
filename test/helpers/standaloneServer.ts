@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import type { Issue } from '../../lib/catalog/types';
 import { readAuthoredRecord } from '../../lib/catalog/working-layer';
 import { writeAuthoredRecord } from '../../lib/catalog/working-layer-writer';
 import { retryOnAddrInUse } from './ports';
@@ -301,6 +302,18 @@ export function errorShellProblems(body: string): string[] {
         if (inside.replace(EMPTY_BOUNDARY_RE, '') !== '') problems.push(`a hidden div holding more than an empty boundary: ${inside}`);
     }
     return problems;
+}
+
+/**
+ * A publish's or rollback's outcome and message, then each issue that
+ * blocked it (its rule ID, record, field and message), one per line, so a
+ * refused publish says why in the test's log.
+ */
+export function blockingText(result: { outcome: string; message: string; issues: readonly Issue[] }): string {
+    const blocking = result.issues
+        .filter((issue) => issue.severity === 'error')
+        .map((issue) => `  ${issue.code} on ${issue.record.kind} ${issue.record.id}${issue.field ? `, ${issue.field}` : ''}: ${issue.message}`);
+    return [`${result.outcome}: ${result.message}`, ...blocking].join('\n');
 }
 
 // ---- C1's window rule. ----

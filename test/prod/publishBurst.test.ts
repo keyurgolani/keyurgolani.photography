@@ -25,6 +25,7 @@ import { VARIANT_BYTES } from '../../lib/catalog/__tests__/catalogFixtures';
 import { publish } from '../../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import {
+    blockingText,
     copyStandalone,
     editSeries,
     get,
@@ -81,7 +82,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('C1: a series page during a 
 
         // R0, then the server, warmed by both agents.
         const launch = await publish({ dataRoot: root, actor: 'test', confirmLaunch: true, logger: quiet });
-        expect(launch.outcome, launch.message).toBe('PUBLISHED');
+        expect(launch.outcome, blockingText(launch)).toBe('PUBLISHED');
         const revisions = [launch.revisionId!];
         server = await startStandalone({ cwd: copy!.dir, dataRoot: root, library: copy!.library });
         for (const agent of ['browser', 'bot'] as const) {
@@ -123,7 +124,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('C1: a series page during a 
                     },
                 },
             });
-            expect(result.outcome, result.message).toBe('PUBLISHED');
+            expect(result.outcome, blockingText(result)).toBe('PUBLISHED');
             expect(Number.isFinite(entry.afterStep10) && Number.isFinite(entry.afterStep11), `publish ${i} ran steps 10 and 11`).toBe(true);
             revisions.push(result.revisionId!);
             times.push(entry);

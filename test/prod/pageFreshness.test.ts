@@ -21,7 +21,8 @@
  * - S1, the series half: the canonical URL, an alias and a case variant, an
  *   unknown slug and a draft, with the same status, Location and
  *   Cache-Control for both agents, and every 404 the not-found page.
- * - F4: a rollback to R1 from this process shows on Home.
+ * - F4: a rollback to R1 from this process, through rollback() as the CLI's
+ *   is, so the working layer rebases onto R1 too, shows on Home.
  * - F5: a restart, and Home still shows R1.
  * - F2, F7 (Home, Work and the series page): after a third publish shows on
  *   all three, a rollback to R1 through the photos CLI, in a child process,
@@ -32,14 +33,14 @@
 import fs from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { VARIANT_BYTES } from '../../lib/catalog/__tests__/catalogFixtures';
-import { activateRevision, publish, type PublishResult } from '../../lib/catalog/publish';
-import { CATALOG_LOCK } from '../../lib/catalog/repository';
+import { publish, type PublishResult } from '../../lib/catalog/publish';
+import { rollback } from '../../lib/catalog/rollback';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../../lib/catalog/testing';
-import { catalogPaths, readActivePointer } from '../../lib/catalog/working-layer';
+import { catalogPaths, readActivePointer, readAuthoredRecord } from '../../lib/catalog/working-layer';
 import { versionFile } from '../../lib/storage/document';
-import { withLock } from '../../lib/storage/lock';
 import { runTsx } from '../helpers/runTsx';
 import {
+    blockingText,
     bodyOf,
     copyStandalone,
     DYNAMIC_CACHE_CONTROL,
@@ -121,7 +122,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
 
     async function published(confirmLaunch = false): Promise<PublishResult> {
         const result = await publish({ dataRoot: catalog!.root, actor: 'test', confirmLaunch, logger: quiet });
-        expect(result.outcome, result.message).toBe('PUBLISHED');
+        expect(result.outcome, blockingText(result)).toBe('PUBLISHED');
         return result;
     }
 
@@ -222,7 +223,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         const damaged = await createTestCatalog(fixture(67));
         extra.push(() => damaged.cleanup());
         const result = await publish({ dataRoot: damaged.root, actor: 'test', confirmLaunch: true, logger: quiet });
-        expect(result.outcome, result.message).toBe('PUBLISHED');
+        expect(result.outcome, blockingText(result)).toBe('PUBLISHED');
         // The newest pointer version, the one readActivePointer() reads, before any server has loaded the revision.
         const pointer = await readActivePointer(damaged.root);
         fs.writeFileSync(versionFile(catalogPaths(damaged.root).active, pointer!.version), 'not json');
@@ -321,15 +322,13 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
 
     it('F4: shows a rollback from this process on Home', async () => {
         expect(r2, 'F1, F3, F6 published').not.toBe('');
-        const rollback = await withLock(CATALOG_LOCK, { root: catalog!.root }, (lock) => activateRevision({
-            lock,
-            revisionId: r1,
-            expectedActiveRevisionId: r2,
-            kind: 'rollback',
-            actor: 'test',
-            reason: 'F4',
-        }));
-        expect(rollback.outcome, rollback.message).toBe('ACTIVATED');
+        // rollback(), not activateRevision() alone: it also rebases the working layer onto R1, as every rollback the
+        // curator runs does. activateRevision() alone left the draft on R2, so slot 4's R3 edit raised
+        // working.conflicts on the statement (this field changed here and in the active revision).
+        const rolled = await rollback({ dataRoot: catalog!.root, revisionId: r1, expectedActiveRevisionId: r2, actor: 'test', reason: 'F4', logger: quiet });
+        expect(rolled.outcome, blockingText(rolled)).toBe('ROLLED_BACK');
+        expect(rolled.rebased, 'the working layer rebased onto R1').toBe(true);
+        expect(rolled.conflicts ?? [], 'the rebase raised no conflicts').toEqual([]);
         await expectHomeAt(r1);
         expect(await readyRevision()).toBe(r1);
         expectSameProcess();
@@ -349,7 +348,9 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
 
     it('F2, F7: shows a rollback by the photos CLI on the first GET of Home, Work and the series page', async () => {
         expect(r2, 'F1, F3, F6 published').not.toBe('');
-        // A third revision, shown on every page, so the rollback below is a change each page has to follow.
+        // A third revision, shown on every page, so the rollback below is a change each page has to follow. The edit
+        // reads the draft as F4's rebase left it, on R1, and writes at its version.
+        expect((await readAuthoredRecord(catalog!.root, 'series', seriesId))?.statement, 'the draft after F4').toBe(statement(1));
         await editSeries(catalog!.root, seriesId, { statement: statement(3) });
         r3 = (await published()).revisionId!;
         expect([r1, r2]).not.toContain(r3);
