@@ -509,6 +509,26 @@ export async function buildTestCatalog(options: TestCatalogOptions = {}): Promis
 }
 
 /**
+ * The derivative files createTestCatalog() would write with `withAssets`, in
+ * memory, by the `/media` URL each photo's public record names, with those
+ * records. Nothing is written. For tests that read a fixture's own image
+ * bytes, as the copy tone's sampler does.
+ */
+export async function buildTestAssetFiles(options: TestCatalogOptions = {}): Promise<{ photos: CandidateContent['photos']; files: Map<string, Buffer> }> {
+    const { content, manifests } = await compose({ ...options, withAssets: true });
+    const files = new Map<string, Buffer>();
+    for (const { manifest, files: written } of manifests) {
+        const photo = content.photos.find((record) => record.id === manifest.photoId);
+        if (!photo) throw new Error(`No public record for ${manifest.photoId}.`);
+        for (const file of written) {
+            const [variant, format] = file.name.split('.') as [VariantWidth, VariantFormat];
+            if (file.data) files.set(photo.variants[variant][format].url, file.data);
+        }
+    }
+    return { photos: content.photos, files };
+}
+
+/**
  * Build a test catalog. Writes `data-root.json`, `authored/`, and
  * `identity/registry/`, plus `assets/<photoId>/<assetRevision>/<profileId>/`
  * with `withAssets` or `variantBytes`. Without either, the profile is

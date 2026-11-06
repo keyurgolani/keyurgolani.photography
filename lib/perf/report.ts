@@ -150,6 +150,28 @@ export function reportMarkdown(report: PerfReport): string {
 
 const MEDIA_RUNG = /^\/media\/ph_[^/]+\/[^/]+\/[^/]+\/(w\d+)\.(avif|webp)$/;
 
+/** How many times a load may re-read, with fetch(), the /media files it asked for as images: the copy tone's measures today. */
+export const MAX_TONE_REREADS_PER_IMAGE = 2;
+
+/**
+ * A load's eager catalog images, from its finished requests: every `/media` request but a `fetch()`, at the bytes
+ * the caller counted. A `fetch()` of `/media` is the copy tone's re-read of a file the slide already shows
+ * (components/badgePlace.ts canvasSampler()), `only-if-cached`: a cache hit or no request at all in a real browser,
+ * 0 B in the A/B's cache-on loads. budgets.spec.ts's fixture routes /media, and Playwright's routing turns the cache
+ * off, so there it reaches the route and would count as a second download (#208's CI). It's left out only while it
+ * re-reads a path the same load asked for as an image, at most MAX_TONE_REREADS_PER_IMAGE times per image; anything
+ * else is a problem, so the exclusion can't hide another file or a loop.
+ */
+export function eagerMedia(finished: readonly { resourceType: string; pathname: string; bytes: number }[]): { bytes: number; count: number; rereads: number; problems: string[] } {
+    const media = finished.filter(({ pathname }) => pathname.startsWith('/media/'));
+    const images = media.filter(({ resourceType }) => resourceType !== 'fetch');
+    const rereads = media.filter(({ resourceType }) => resourceType === 'fetch');
+    const asked = new Set(images.map(({ pathname }) => pathname));
+    const problems = [...new Set(rereads.map(({ pathname }) => pathname).filter((pathname) => !asked.has(pathname)))].map((pathname) => `${pathname} was fetched, but this load never asked for it as an image`);
+    if (rereads.length > MAX_TONE_REREADS_PER_IMAGE * images.length) problems.push(`${rereads.length} re-reads of /media files by fetch(), more than ${MAX_TONE_REREADS_PER_IMAGE} for each of the load's ${images.length} images`);
+    return { bytes: images.reduce((sum, { bytes }) => sum + bytes, 0), count: images.length, rereads: rereads.length, problems };
+}
+
 /** What the fixture declares a `/media` path's file to be, by its rung and format, or null for any other path. */
 export function declaredMediaBytes(pathname: string): number | null {
     const match = MEDIA_RUNG.exec(pathname);

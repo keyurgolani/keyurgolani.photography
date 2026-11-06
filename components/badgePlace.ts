@@ -220,16 +220,52 @@ export const unionOf = (boxes: Box[]): Box | null =>
         bottom: Math.max(...boxes.map((box) => box.bottom)),
       };
 
-/** Returns the pixels of `source` (natural pixels) of `image`, or null with no canvas; it throws on a tainted canvas. */
+/** Returns the pixels of `source` (natural pixels) of `image`, or null when it can't sample; a throw also means it can't. */
 export type ToneSampler = (image: HTMLImageElement, source: Source) => Promise<ArrayLike<number> | null>;
 
+/** How long the sampler waits for an idle moment before it fetches anyway. */
+export const TONE_IDLE_TIMEOUT_MS = 2000;
+
+/** Where the browser can't say when it's idle (WebKit has no requestIdleCallback), how long after the page's load it waits. */
+export const TONE_IDLE_FALLBACK_MS = 1000;
+
+/** When the page's load ended, in performance.now() time, or 0 where the browser can't say. */
+const pageLoadEnd = () => (performance.getEntriesByType?.('navigation')[0] as PerformanceNavigationTiming | undefined)?.loadEventEnd || 0;
+
 /**
- * The browser's sampler (H1). The whole image is scaled to TONE_SAMPLE_WIDTH, with no crop rectangle, so its pixel
- * density can't enter: createImageBitmap's and drawImage's crop rectangles count the image's intrinsic pixels, and a
- * srcset candidate's intrinsic size isn't its natural size. The region is then read from the small copy, in natural
- * pixels scaled by the same factor. createImageBitmap scales off the main thread where the browser can.
+ * Resolves once the browser is idle, or after TONE_IDLE_TIMEOUT_MS. Where it can't say, as in WebKit, it waits for
+ * the page's load and until TONE_IDLE_FALLBACK_MS after it, so the first sample stays clear of the slide's own load
+ * and of LCP; a later slide, long after the load, samples at once.
+ */
+const idle = () =>
+  new Promise<void>((resolve) => {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => resolve(), { timeout: TONE_IDLE_TIMEOUT_MS });
+      return;
+    }
+    const after = (loadEnd: number) => setTimeout(resolve, Math.max(0, loadEnd + TONE_IDLE_FALLBACK_MS - performance.now()));
+    if (document.readyState === 'complete') after(pageLoadEnd());
+    else window.addEventListener('load', () => after(performance.now()), { once: true });
+  });
+
+/**
+ * The browser's sampler (H1, v2.0.0 TBT). It never decodes the image on screen: drawing an <img> into a canvas, or
+ * createImageBitmap() of one, decodes it whole on the main thread, and the slide is w1920 on a 3x phone under #6's
+ * size rule, a long task of about 90 ms at 4x CPU. Once the browser is idle, so after the slide's own load, it fetches
+ * the file the slide shows (currentSrc) again, same origin and from the cache only (`only-if-cached`): public /media
+ * is immutable for a year (lib/media/handler.ts), so on the site that's a cache hit and no bytes, and a browser with
+ * no copy to share, as WebKit's private browsing, skips rather than download the slide again. Any other same-origin
+ * file, as a curator's preview's `private, no-store` media, is fetched again (`force-cache`). It decodes that Blob at TONE_SAMPLE_WIDTH, which the
+ * browser does off the main thread, from the same pixels the slide shows, so the tone is the one the image itself
+ * gave. Home makes no other fetch() of /media, which is how ci/perf/measure.mjs finds it. The whole photograph is
+ * scaled, with no crop rectangle, so the file's pixel density can't enter; the region is then read from the small
+ * copy, in natural pixels scaled by the same factor. With no createImageBitmap, no same-origin currentSrc, a fetch or
+ * decode that fails, or a decode that ignored the resize, it skips (null), and the theme keeps its own scrim.
  */
 export const canvasSampler: ToneSampler = async (image, source) => {
+  const url = image.currentSrc;
+  if (!url || typeof createImageBitmap !== 'function' || typeof fetch !== 'function') return null;
+  if (new URL(url, document.baseURI).origin !== window.location.origin) return null;
   const width = TONE_SAMPLE_WIDTH;
   const height = Math.max(1, Math.round((width * image.naturalHeight) / image.naturalWidth));
   const k = width / image.naturalWidth;
@@ -238,13 +274,29 @@ export const canvasSampler: ToneSampler = async (image, source) => {
   canvas.height = height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return null;
-  if (typeof createImageBitmap === 'function') {
-    const bitmap = await createImageBitmap(image, { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
-    context.drawImage(bitmap, 0, 0);
+  await idle();
+  let bitmap: ImageBitmap;
+  try {
+    // Public /media is immutable for a year, so it's read from the cache only: a browser with no copy to share, as
+    // WebKit's private browsing, rejects with no request and the tone skips, so it never downloads the slide again.
+    // Any other same-origin file, as a curator's preview's media, served `private, no-store` under its own path, is
+    // fetched again. Keyed on the file, not the page: shipped visitor code never names the preview's routes (#16).
+    const cache = new URL(url, document.baseURI).pathname.startsWith('/media/') ? 'only-if-cached' : 'force-cache';
+    const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
+    if (!response.ok) return null;
+    bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
+  } catch {
+    return null;
+  }
+  // A browser that ignored the resize gives the file's own size, and drawing that at 0, 0 would read its corner.
+  if (bitmap.width !== width || bitmap.height !== height) {
     bitmap.close();
-  } else {
-    // The five-argument form draws the whole image.
-    context.drawImage(image, 0, 0, width, height);
+    return null;
+  }
+  try {
+    context.drawImage(bitmap, 0, 0);
+  } finally {
+    bitmap.close();
   }
   const x = Math.min(width - 1, Math.floor(source.x * k));
   const y = Math.min(height - 1, Math.floor(source.y * k));
@@ -264,9 +316,9 @@ export const positionOf = (value: string) => {
  * `copy`, the union of the story's boxes and the title's panel.
  * - Null when it can't measure now (the image not in, as mid-swap to a larger srcset candidate, or not under the
  *   copy), so the caller keeps what it has and measures again when the image loads (M5).
- * - 'light', the theme's own scrim, when it can't measure at all: no canvas, or a tainted one. Home's media is
- *   same-origin, so it isn't tainted; media moved to another origin would need `crossOrigin` and CORS, or the tone
- *   would stay 'light'.
+ * - 'light', the theme's own scrim, when it can't measure at all: no canvas, no createImageBitmap, no currentSrc,
+ *   or a fetch or decode that fails (canvasSampler()). Home's media is same-origin; media moved to another origin
+ *   would leave the tone 'light' until the sampler fetched it with CORS.
  */
 export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 } }: { sample?: ToneSampler; position?: { x: number; y: number } } = {}): Promise<CopyTone | null> {
   if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) return null;

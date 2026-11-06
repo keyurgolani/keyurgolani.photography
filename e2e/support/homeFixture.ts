@@ -24,21 +24,13 @@ import type { Activation } from '../../lib/catalog/types';
 import { readActivePointer } from '../../lib/catalog/working-layer';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import { withLock } from '../../lib/storage/lock';
-import { HOME_OPENING, HOME_ORDER, HOME_OTHER_PHOTO_ID, HOME_PHOTO_IDS, HOME_SERIES, VARIETY_PHOTO_IDS, VARIETY_SERIES, VARIETY_UNFEATURED } from './catalog-home';
+import { HOME_FIXTURE_CATALOG, VARIETY_FIXTURE_CATALOG } from '../../test/helpers/homeFixtureCatalogs';
+
+export { HOME_FIXTURE_CATALOG, VARIETY_FIXTURE_CATALOG };
 
 /** Publishes the fixture into `root`, an empty data root outside the repository, or a temp one without it. */
 export async function publishHomeFixture(root?: string): Promise<{ catalog: TestCatalog; revisionId: string }> {
-    const catalog = await createTestCatalog({
-        root,
-        withAssets: true,
-        seed: 4,
-        photos: [...HOME_PHOTO_IDS, HOME_OTHER_PHOTO_ID].map((id) => ({ id })),
-        series: [
-            { ...HOME_SERIES, photoIds: [...HOME_ORDER], openingPhotoId: HOME_OPENING },
-            { slug: 'e2e-other', title: 'Another fixture series', photoIds: [HOME_OTHER_PHOTO_ID] },
-        ],
-        featuredSeriesIds: [HOME_SERIES.id],
-    });
+    const catalog = await createTestCatalog({ root, ...HOME_FIXTURE_CATALOG });
     const result = await publish({ dataRoot: catalog.root, actor: 'e2e', reason: 'fixture', confirmLaunch: true, logger: { log: () => undefined } });
     if (result.outcome !== 'PUBLISHED' || result.revisionId === null) throw new Error(`The Home fixture didn't publish: ${result.outcome}: ${result.message} ${result.issues.map((issue) => issue.code).join(', ')}`);
     return { catalog, revisionId: result.revisionId };
@@ -50,14 +42,7 @@ export async function publishHomeFixture(root?: string): Promise<{ catalog: Test
  * and one that isn't featured, listed first in Work order.
  */
 export async function publishHomeVarietyFixture(root?: string): Promise<{ catalog: TestCatalog; revisionId: string }> {
-    const catalog = await createTestCatalog({
-        root,
-        withAssets: true,
-        seed: 5,
-        photos: VARIETY_PHOTO_IDS.map((id) => ({ id })),
-        series: [{ ...VARIETY_UNFEATURED, photoIds: [...VARIETY_UNFEATURED.photoIds] }, ...VARIETY_SERIES.map((series) => ({ ...series, photoIds: [...series.photoIds] }))],
-        featuredSeriesIds: VARIETY_SERIES.map((series) => series.id),
-    });
+    const catalog = await createTestCatalog({ root, ...VARIETY_FIXTURE_CATALOG });
     const result = await publish({ dataRoot: catalog.root, actor: 'e2e', reason: 'fixture', confirmLaunch: true, logger: { log: () => undefined } });
     if (result.outcome !== 'PUBLISHED' || result.revisionId === null) throw new Error(`The variety fixture didn't publish: ${result.outcome}: ${result.message} ${result.issues.map((issue) => issue.code).join(', ')}`);
     return { catalog, revisionId: result.revisionId };

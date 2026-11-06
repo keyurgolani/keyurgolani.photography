@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { devices, expect, test, type BrowserContextOptions, type Request } from '@playwright/test';
 import sharp from 'sharp';
 import type { BrowserProfile, BrowserScreen } from '../../lib/perf/budgets';
-import { browserChecks, declaredMediaBytes, openingPhotoId, type BrowserMeasurement, type BrowserRow } from '../../lib/perf/report';
+import { browserChecks, declaredMediaBytes, eagerMedia, openingPhotoId, type BrowserMeasurement, type BrowserRow } from '../../lib/perf/report';
 
 // #6's browser budgets: each screen's first load at the refined table's two
 // profiles, from navigation to `load` and the network going quiet (5 s at
@@ -99,19 +99,24 @@ for (const profile of Object.keys(PROFILES) as BrowserProfile[]) {
                 const documentEnd = documentTiming.startTime + documentTiming.responseEnd;
                 const isMedia = (pathname: string) => pathname.startsWith('/media/');
                 const media = finished.filter(({ pathname }) => isMedia(pathname));
+                // The copy tone's fetch() re-reads of files the slide already shows aren't downloads: only-if-cached,
+                // a cache hit or no request in a real browser. This route turns the cache off, so they reach it here;
+                // eagerMedia() leaves them out, and fails one of any other file or more than two per image.
+                const eager = eagerMedia(finished.map(({ request, pathname, bytes }) => ({ resourceType: request.resourceType(), pathname, bytes })));
+                expect(eager.problems, `${screen}/${profile}: the /media fetch() re-reads`).toEqual([]);
                 const others = finished.filter(({ request, pathname }) => request.resourceType() === 'image' && !isMedia(pathname));
                 const openingStarts = media.filter(({ pathname }) => opening !== null && pathname.startsWith(`/media/${opening}/`)).map(({ request }) => request.timing().startTime);
                 const measured: BrowserMeasurement = {
                     documentBytes: doc.transfer,
-                    eagerImageBytes: media.reduce((sum, { bytes }) => sum + bytes, 0),
-                    eagerImages: media.length,
+                    eagerImageBytes: eager.bytes,
+                    eagerImages: eager.count,
                     otherImageBytes: others.reduce((sum, { bytes }) => sum + bytes, 0),
                     firstImageMs: openingStarts.length > 0 ? Math.round(Math.min(...openingStarts) - documentEnd) : null,
                 };
                 const checks = browserChecks(screen, profile, measured);
                 rows.push(...checks);
                 // Each catalog image asked for, as the photograph's ID head and its rung, so an overage names its images.
-                const asked = media.map(({ pathname }) => pathname.replace(/^\/media\/(ph_[0-9a-f]{8})[^/]*\/.*\/(w\d+\.\w+)$/, '$1 $2'));
+                const asked = media.filter(({ request }) => request.resourceType() !== 'fetch').map(({ pathname }) => pathname.replace(/^\/media\/(ph_[0-9a-f]{8})[^/]*\/.*\/(w\d+\.\w+)$/, '$1 $2'));
                 console.log(`[budgets] ${screen}/${profile} ${path} opening ${opening ?? 'none'} ${JSON.stringify(measured)} ${JSON.stringify(asked)}`);
                 if (fixture) {
                     for (const row of checks) expect(row.over, `${screen}/${profile} ${row.metric}: ${row.value} against ${row.budget}`).toBe(false);

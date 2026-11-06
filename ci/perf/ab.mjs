@@ -202,7 +202,8 @@ async function measure(argv) {
   // Both servers are measured by one browser: system Chrome, through the head's Playwright.
   const { chromium } = createRequire(path.join(opts.head, 'package.json'))('@playwright/test');
   /** @type {import('@playwright/test').Browser} */
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // Every host but 127.0.0.1 unresolvable, so no request leaves the runner and the cache can stay on (measure.mjs).
+  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'] });
   const raw = {
     meta: { base: { ref: opts.baseRef, sha: shaOf(opts.base) }, head: { ref: opts.headRef, sha: shaOf(opts.head) }, rounds: opts.rounds, loads: opts.loads, browser: `Chrome ${browser.version()}`, runner: process.env.ImageOS ? `${process.env.ImageOS} ${process.env.ImageVersion ?? ''}`.trim() : os.platform(), startedAt: new Date().toISOString() },
     /** @type {Record<string, { rounds: import('./stats.mjs').Round[] }>} */

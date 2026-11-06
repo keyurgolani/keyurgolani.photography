@@ -25,6 +25,10 @@ export const MINIMUM_FLOOR_MS = /** @type {Readonly<Record<string, number>>} */ 
 export const MINIMUM_FLOOR_SHARE = 0.05;
 /** What each load records that the job compares, in ms. */
 export const METRICS = /** @type {const} */ (['lcp', 'tbt']);
+/** What each load records for reference only: bytes transferred, and the tone sampler's fetch start against LCP and its bytes. */
+export const INFO_METRICS = /** @type {const} */ (['bytes', 'toneFetchAfterLcp', 'toneFetchBytes']);
+/** Their labels in the job summary. */
+const INFO_LABELS = /** @type {Readonly<Record<string, string>>} */ ({ bytes: 'bytes transferred (B)', toneFetchAfterLcp: 'tone fetch − LCP (ms)', toneFetchBytes: 'tone fetch transferred (B)' });
 /** The three servers, by role. */
 export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 
@@ -108,20 +112,26 @@ export function treeFor(server, { base, head }) {
 }
 
 /**
- * @typedef {{ lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null }} PageEntries
+ * @typedef {{
+ *   lcp: { t: number, el: string | null, url: string }[], longtasks: { t: number, d: number }[], fcp: number | null,
+ *   bytes?: number | null, toneFetch?: number | null, toneFetchBytes?: number | null,
+ * }} PageEntries
  */
 
 /**
  * One load's numbers from what the page observed (measure.mjs). LCP is the last `largest-contentful-paint` entry, or
  * null when there was none. TBT is the sum of each long task past 50 ms that starts from FCP (0 without one) to
- * `loadAt` + `settleMs`.
+ * `loadAt` + `settleMs`. For reference, not gated: `bytes`, what the load transferred; `toneFetchAfterLcp`, when
+ * Home's copy-tone sampler started its fetch (measure.mjs) against LCP, negative before it; and `toneFetchBytes`, what
+ * that fetch transferred, 0 from the cache. Null where there's none.
  * @param {PageEntries} entries @param {number} loadAt @param {number} settleMs
  */
-export function reduceLoad({ lcp, longtasks, fcp }, loadAt, settleMs) {
+export function reduceLoad({ lcp, longtasks, fcp, bytes = null, toneFetch = null, toneFetchBytes = null }, loadAt, settleMs) {
   const from = fcp ?? 0;
   const tbt = longtasks.filter((task) => task.t >= from && task.t <= loadAt + settleMs).reduce((sum, task) => sum + Math.max(0, task.d - 50), 0);
   const last = lcp.at(-1) ?? null;
-  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null };
+  const toneFetchAfterLcp = last && typeof toneFetch === 'number' ? Math.round(toneFetch - last.t) : null;
+  return { lcp: last ? Math.round(last.t) : null, tbt: Math.round(tbt), fcp: Math.round(from), load: loadAt, longtasks: longtasks.length, lcpElement: last?.el ?? null, lcpUrl: last?.url ?? null, bytes: typeof bytes === 'number' ? bytes : null, toneFetchAfterLcp, toneFetchBytes: typeof toneFetchBytes === 'number' ? toneFetchBytes : null };
 }
 
 /** A metric's least noise floor: MINIMUM_FLOOR_MS for LCP and TBT, else MINIMUM_FLOOR_SHARE of the base median. @param {string} metric @param {number} baseMedian */
@@ -181,6 +191,55 @@ export function analyse(raw) {
   return { rows, regressions: rows.filter((row) => row.verdict === 'regression') };
 }
 
+/**
+ * @typedef {{
+ *   metric: string, base: Summary | null, head: Summary | null, delta: number | null,
+ *   baseLoads: { with: number, of: number }, headLoads: { with: number, of: number },
+ * }} InfoRow
+ */
+
+/**
+ * INFO_METRICS for every fixture and profile in `raw`, base and head, by the same per-round medians as analyse(), with
+ * no floor and no verdict. A load without the value (no sampler fetch, say) is left out, a round's base is the mean of
+ * whichever of A1 and A2 has one, and a side with none in any round is null. Each side counts its loads with a value.
+ * @param {Raw} raw @returns {InfoRow[]}
+ */
+export function informational(raw) {
+  /** @type {InfoRow[]} */
+  const rows = [];
+  for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
+    if (rounds.length === 0) throw new Error(`Fixture ${fixture} has no rounds.`);
+    for (const profile of Object.keys(rounds[0].servers.A1 ?? {})) {
+      for (const metric of INFO_METRICS) {
+        const baseLoads = { with: 0, of: 0 };
+        const headLoads = { with: 0, of: 0 };
+        /** @type {number[]} */
+        const base = [];
+        /** @type {number[]} */
+        const head = [];
+        for (const round of rounds) {
+          /** @param {Server} server @param {{ with: number, of: number }} count */
+          const value = (server, count) => {
+            const loads = round.servers[server]?.[profile] ?? [];
+            const values = loads.map((load) => load[metric]).filter((v) => typeof v === 'number' && Number.isFinite(v));
+            count.with += values.length;
+            count.of += loads.length;
+            return values.length > 0 ? median(values) : null;
+          };
+          const pair = [value('A1', baseLoads), value('A2', baseLoads)].filter((v) => v !== null);
+          if (pair.length > 0) base.push(pair.reduce((sum, v) => sum + v, 0) / pair.length);
+          const b = value('B', headLoads);
+          if (b !== null) head.push(b);
+        }
+        const baseSummary = base.length > 0 ? summarize(base) : null;
+        const headSummary = head.length > 0 ? summarize(head) : null;
+        rows.push({ metric: `${fixture} ${profile} ${metric}`, base: baseSummary, head: headSummary, delta: baseSummary && headSummary ? headSummary.median - baseSummary.median : null, baseLoads, headLoads });
+      }
+    }
+  }
+  return rows;
+}
+
 /** @param {number} value */
 const ms = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
 /** @param {Summary} summary */
@@ -189,6 +248,55 @@ const spread = (summary) => `${ms(summary.median)} (${ms(summary.min)}–${ms(su
 const floorCell = (row) => `${ms(row.floor)} ms${row.floorSource === 'minimum' ? ' (minimum)' : ''}`;
 /** @param {Tree} tree */
 const named = (tree) => `\`${tree.ref}\` (${tree.sha.slice(0, 12)})`;
+
+/**
+ * Per fixture and server, how many loads recorded their requests off 127.0.0.1 (measure.mjs `offLoopback`), and how
+ * many of those had one. A load without the record, from an older raw.json, isn't counted.
+ * @param {Raw} raw
+ */
+export function offLoopbackCounts(raw) {
+  /** @type {{ fixture: string, server: string, loads: number, stray: number }[]} */
+  const rows = [];
+  for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
+    for (const server of /** @type {Server[]} */ (['A1', 'A2', 'B'])) {
+      let loads = 0;
+      let stray = 0;
+      for (const round of rounds) {
+        for (const list of Object.values(round.servers[server] ?? {})) {
+          for (const load of list) {
+            if (!Array.isArray(load.offLoopback)) continue;
+            loads++;
+            if (load.offLoopback.length > 0) stray++;
+          }
+        }
+      }
+      if (loads > 0) rows.push({ fixture, server, loads, stray });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Every recorded load that asked for something off 127.0.0.1 (measure.mjs `offLoopback`), as where and what.
+ * @param {Raw} raw
+ */
+export function offLoopbackRequests(raw) {
+  /** @type {{ where: string, urls: string[] }[]} */
+  const found = [];
+  for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
+    for (const round of rounds) {
+      for (const [server, byProfile] of Object.entries(round.servers)) {
+        for (const [profile, loads] of Object.entries(byProfile ?? {})) {
+          loads.forEach((load, index) => {
+            const urls = Array.isArray(load.offLoopback) ? load.offLoopback.filter((url) => typeof url === 'string') : [];
+            if (urls.length > 0) found.push({ where: `${fixture} round ${round.round + 1} ${server} ${profile} load ${index + 1}`, urls });
+          });
+        }
+      }
+    }
+  }
+  return found;
+}
 
 /** The job summary: the setup, the rule, the table, and first-load JS for reference. @param {Raw} raw @param {{ rows: Row[], regressions: Row[] }} analysis */
 export function summaryMarkdown(raw, { rows, regressions }) {
@@ -214,6 +322,40 @@ export function summaryMarkdown(raw, { rows, regressions }) {
     '',
     '</details>',
   ];
+  const info = informational(raw);
+  if (info.some((row) => row.base || row.head)) {
+    /** @param {Summary | null} summary */
+    const cell = (summary) => (summary ? spread(summary) : 'none');
+    /** @param {string} metric */
+    const label = (metric) => metric.replace(/(\S+)$/, (name) => INFO_LABELS[name] ?? name);
+    lines.push(
+      '',
+      '### Bytes and the tone fetch (for reference, not gated)',
+      '',
+      'Bytes are each load\'s transferSize summed over the document and every resource. The tone fetch is Home\'s copy-tone sampler\'s one fetch() of /media: when it started, less the load\'s LCP, so positive is after LCP, and what it transferred, 0 from the cache. Every load is a first visit in a fresh context with the cache on, so that fetch reads 0 where the browser served it from the cache, and a fetch the cache refused (only-if-cached) counts as none. Same per-round medians as above, over the loads that have a value; the last column counts those loads, base then head. No floor, no verdict.',
+      '',
+      '| Metric | Base (A1+A2)/2 | Head B | Head − base | Loads with a value |',
+      '|---|---|---|---|---|',
+      ...info.map((row) => `| ${label(row.metric)} | ${cell(row.base)} | ${cell(row.head)} | ${row.delta === null ? 'n/a' : `${row.delta > 0 ? '+' : ''}${ms(row.delta)}`} | ${row.baseLoads.with}/${row.baseLoads.of}, ${row.headLoads.with}/${row.headLoads.of} |`),
+    );
+  }
+  const checked = offLoopbackCounts(raw);
+  if (checked.length > 0) {
+    const stray = offLoopbackRequests(raw);
+    lines.push(
+      '',
+      '### Requests off 127.0.0.1 (none is the pass; not gated)',
+      '',
+      'Every round load\'s requests, the page\'s, a service worker\'s and its WebSockets, base and head alike; the warm-up loads aren\'t counted. The browser resolves no hostname but 127.0.0.1, and each request off loopback is named below: a page that asks for something there isn\'t the page a visitor gets.',
+      '',
+      '| Fixture | Server | Round loads checked | Loads with a request off 127.0.0.1 |',
+      '|---|---|---|---|',
+      ...checked.map((row) => `| ${row.fixture} | ${row.server} | ${row.loads} | ${row.stray} |`),
+    );
+    if (stray.length > 0) {
+      lines.push('', `**${stray.length} load${stray.length === 1 ? '' : 's'} asked for something off 127.0.0.1.**`, '', ...stray.map(({ where, urls }) => `- ${where}: ${urls.join(', ')}`));
+    }
+  }
   const js = raw.firstLoadJs;
   if (js) {
     /** @param {RouteJs | undefined} route */

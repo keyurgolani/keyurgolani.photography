@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   analyse,
   compareMetric,
+  INFO_METRICS,
+  informational,
   loopbackListeners,
+  offLoopbackCounts,
+  offLoopbackRequests,
   MAX_ROUNDS,
   median,
   MIN_ROUNDS,
@@ -173,11 +177,20 @@ describe('reduceLoad', () => {
   ];
 
   it('sums each long task past 50 ms from FCP to load + 5 s, and takes the last LCP entry', () => {
-    expect(reduceLoad({ lcp, longtasks, fcp: 300 }, 2000, 5000)).toEqual({ lcp: 1500, tbt: 101, fcp: 300, load: 2000, longtasks: 5, lcpElement: 'img[alt=Fixture] (portrait)', lcpUrl: '/media/b' });
+    expect(reduceLoad({ lcp, longtasks, fcp: 300 }, 2000, 5000)).toEqual({ lcp: 1500, tbt: 101, fcp: 300, load: 2000, longtasks: 5, lcpElement: 'img[alt=Fixture] (portrait)', lcpUrl: '/media/b', bytes: null, toneFetchAfterLcp: null, toneFetchBytes: null });
+  });
+
+  it("carries the bytes transferred, and when the tone's sampler fetch started against LCP and what it transferred", () => {
+    expect(reduceLoad({ lcp, longtasks, fcp: 300, bytes: 812_345, toneFetch: 2100.6, toneFetchBytes: 0 }, 2000, 5000)).toMatchObject({ bytes: 812_345, toneFetchAfterLcp: 600, toneFetchBytes: 0 });
+    // A fetch before LCP reads as negative.
+    expect(reduceLoad({ lcp, longtasks, fcp: 300, bytes: 1, toneFetch: 1000 }, 2000, 5000)).toMatchObject({ toneFetchAfterLcp: -500 });
+    // No sampler fetch, or no LCP to time it against.
+    expect(reduceLoad({ lcp, longtasks, fcp: 300, bytes: 1, toneFetch: null }, 2000, 5000)).toMatchObject({ toneFetchAfterLcp: null });
+    expect(reduceLoad({ lcp: [], longtasks, fcp: 300, bytes: 1, toneFetch: 900 }, 2000, 5000)).toMatchObject({ toneFetchAfterLcp: null });
   });
 
   it('gives no LCP when the page reported none, and counts from 0 with no FCP', () => {
-    expect(reduceLoad({ lcp: [], longtasks: [{ t: 10, d: 70 }], fcp: null }, 1000, 5000)).toEqual({ lcp: null, tbt: 20, fcp: 0, load: 1000, longtasks: 1, lcpElement: null, lcpUrl: null });
+    expect(reduceLoad({ lcp: [], longtasks: [{ t: 10, d: 70 }], fcp: null }, 1000, 5000)).toEqual({ lcp: null, tbt: 20, fcp: 0, load: 1000, longtasks: 1, lcpElement: null, lcpUrl: null, bytes: null, toneFetchAfterLcp: null, toneFetchBytes: null });
   });
 });
 
@@ -243,6 +256,61 @@ describe('analyse and summaryMarkdown', () => {
     const markdown = summaryMarkdown(raw, analyse(raw));
     expect(markdown).toContain('| Metric (ms) | A1 | A2 | Median gap | Floor |');
     expect(markdown).toContain('| one phone lcp | 1000 (1000–1000) | 1000 (990–1010) | 0 | 50 ms (minimum) |');
+  });
+});
+
+describe('informational and its table', () => {
+  /** Five rounds where each server's phone loads carry `bytes` and `toneFetchAfterLcp` from `values`. */
+  function rawWithInfo(values) {
+    const raw = rawWith({ A1: [1000, 1000, 1000, 1000, 1000], A2: [1000, 1000, 1000, 1000, 1000], B: [1000, 1000, 1000, 1000, 1000] });
+    for (const round of raw.fixtures.one.rounds) {
+      for (const server of ['A1', 'A2', 'B']) round.servers[server].phone = values[server].map(([bytes, toneFetchAfterLcp, toneFetchBytes = null]) => ({ lcp: 1000, tbt: 0, bytes, toneFetchAfterLcp, toneFetchBytes }));
+    }
+    return raw;
+  }
+
+  it('reports bytes and the tone fetch per fixture and profile, base and head, from the per-round medians, and gates on neither', () => {
+    expect(INFO_METRICS).toEqual(['bytes', 'toneFetchAfterLcp', 'toneFetchBytes']);
+    const raw = rawWithInfo({ A1: [[800_000, null], [800_200, null]], A2: [[800_400, null], [800_600, null]], B: [[803_000, 1200, 0], [803_400, 1400, 0]] });
+    const rows = informational(raw);
+    expect(rows.map((row) => row.metric)).toEqual(['one phone bytes', 'one phone toneFetchAfterLcp', 'one phone toneFetchBytes', 'one desktop bytes', 'one desktop toneFetchAfterLcp', 'one desktop toneFetchBytes']);
+    // Each round's base is the mean of A1's median, 800,100, and A2's, 800,500.
+    expect(rows[0]).toMatchObject({ base: { median: 800_300 }, head: { median: 803_200 }, delta: 2900, baseLoads: { with: 20, of: 20 }, headLoads: { with: 10, of: 10 } });
+    // The base never fetched for the tone; the head did in every load.
+    expect(rows[1]).toMatchObject({ base: null, head: { median: 1300 }, delta: null, baseLoads: { with: 0, of: 20 }, headLoads: { with: 10, of: 10 } });
+    // A cache hit on the head reads 0, which counts as a value.
+    expect(rows[2]).toMatchObject({ base: null, head: { median: 0 }, headLoads: { with: 10, of: 10 } });
+    // The desktop loads in rawWith() record none of them.
+    expect(rows[3]).toMatchObject({ base: null, head: null, baseLoads: { with: 0, of: 10 } });
+    expect(analyse(raw).rows.map((row) => row.metric)).toEqual(['one phone lcp', 'one phone tbt', 'one desktop lcp', 'one desktop tbt']);
+  });
+
+  it('prints them in a table of their own, marked as not gated', () => {
+    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 0]] });
+    const markdown = summaryMarkdown(raw, analyse(raw));
+    expect(markdown).toContain('### Bytes and the tone fetch (for reference, not gated)');
+    expect(markdown).toContain('| one phone bytes transferred (B) | 800200 (800200–800200) | 803000 (803000–803000) | +2800 | 10/10, 5/5 |');
+    expect(markdown).toContain('| one phone tone fetch − LCP (ms) | none | 1250 (1250–1250) | n/a | 0/10, 5/5 |');
+    expect(markdown).toContain('| one phone tone fetch transferred (B) | none | 0 (0–0) | n/a | 0/10, 5/5 |');
+    expect(markdown).toMatch(/No regressions past the noise floor\./);
+  });
+
+  it('names every load that asked for something off 127.0.0.1, and gates on none of them', () => {
+    const raw = rawWithInfo({ A1: [[800_000, null]], A2: [[800_400, null]], B: [[803_000, 1250, 0]] });
+    for (const round of raw.fixtures.one.rounds) for (const server of ['A1', 'A2', 'B']) for (const load of round.servers[server].phone) load.offLoopback = [];
+    // Shown on every run, per server, so an empty list reads as the pass it is rather than as nothing measured.
+    const clean = summaryMarkdown(raw, analyse(raw));
+    expect(clean).toContain('### Requests off 127.0.0.1 (none is the pass; not gated)');
+    expect(clean).toContain('| one | A1 | 5 | 0 |');
+    expect(clean).toContain('| one | B | 5 | 0 |');
+    expect(clean).not.toContain('asked for something off 127.0.0.1');
+    raw.fixtures.one.rounds[2].servers.B.phone[0].offLoopback = ['https://fonts.example/a.woff2'];
+    const markdown = summaryMarkdown(raw, analyse(raw));
+    expect(offLoopbackRequests(raw)).toEqual([{ where: 'one round 3 B phone load 1', urls: ['https://fonts.example/a.woff2'] }]);
+    expect(markdown).toContain('| one | B | 5 | 1 |');
+    expect(markdown).toContain('**1 load asked for something off 127.0.0.1.**');
+    expect(markdown).toContain('- one round 3 B phone load 1: https://fonts.example/a.woff2');
+    expect(analyse(raw).regressions).toEqual([]);
   });
 });
 
