@@ -32,6 +32,30 @@ describe("the parity gate's exact shift", () => {
         expect(checkShift(box, [box[0], box[1] - 160, box[2], box[3] + 1], SHIFT).off).toBe(1);
     });
 
+    // A box with no area in either build, as Next's hidden metadata <div hidden> under body, has nothing to scroll:
+    // display: none gives it 0 0 0 0 wherever the page is. It's compared exactly, unshifted.
+    describe('a box with no area in either build', () => {
+        const NONE: Box = [0, 0, 0, 0];
+
+        it('is where the base has it, unshifted', () => {
+            expect(checkShift(NONE, NONE, SHIFT)).toEqual({ delta: 0, off: 0 });
+        });
+
+        it('is off if it moves, by the shift or by anything else', () => {
+            expect(checkShift(NONE, [0, -160, 0, 0], SHIFT).off).toBe(160);
+            expect(checkShift(NONE, [0, 1, 0, 0], SHIFT).off).toBe(1);
+            expect(checkShift([12, 30, 0, 0], [12, 30.015625, 0, 0], SHIFT).off).toBe(0.015625);
+        });
+
+        it('takes the shift once it has area in either build', () => {
+            // A box that gains a width or a height in the head, or had one in the base, must make the exact move.
+            expect(checkShift(NONE, [0, 0, 1, 0], SHIFT).off).toBe(160);
+            expect(checkShift(NONE, [0, -160, 0, 1], SHIFT).off).toBe(1);
+            expect(checkShift([0, 300, 10, 0], [0, 140, 10, 0], SHIFT)).toEqual({ delta: 160, off: 0 });
+            expect(checkShift([0, 300, 0, 10], [0, 300, 0, 10], SHIFT).off).toBe(160);
+        });
+    });
+
     it('names the box, its move, the shift and how far off it is', () => {
         const box = BOXES[2];
         const head = moved(box, -161);
