@@ -126,6 +126,12 @@ export interface TestCatalogOptions {
     withAssets?: boolean;
     /** Write each variant as a sparse file of this size instead, and mark the profile ready. */
     variantBytes?: VariantByteTable;
+    /**
+     * With `variantBytes`: each AVIF file starts with a real AVIF at its variant's size, and an ISOBMFF free box fills
+     * it to its declared bytes, still sparse, so a browser decodes it and the first load takes the success path. WebP
+     * stays zeros, which no browser that takes AVIF asks for until an AVIF file fails.
+     */
+    decodableAvif?: boolean;
     /** Defaults to #10's current profile. */
     profileId?: string;
 }
@@ -197,6 +203,33 @@ function zeroDigest(bytes: number): string {
     return digest;
 }
 
+const headedDigests = new Map<string, string>();
+
+/**
+ * A sparse file that decodes (TestCatalogOptions.decodableAvif): `image`, then a free box's header for the rest of
+ * `bytes`, whose body is the zeros a sparse file reads as. ISOBMFF decoders skip a free box.
+ */
+function decodableHead(image: Buffer, bytes: number): Buffer {
+    const rest = bytes - image.length;
+    if (rest < 8) throw new Error(`A ${image.length}-byte AVIF and its free box don't fit in ${bytes} bytes.`);
+    const free = Buffer.alloc(8);
+    free.writeUInt32BE(rest, 0);
+    free.write('free', 4, 'latin1');
+    return Buffer.concat([image, free]);
+}
+
+/** The SHA-256 of `head` followed by zeros to `bytes`, which is what a sparse file written from `head` reads as. */
+function headedDigest(key: string, head: Buffer, bytes: number): string {
+    const cacheKey = `${key}:${bytes}`;
+    const cached = headedDigests.get(cacheKey);
+    if (cached) return cached;
+    const hash = createHash('sha256').update(head);
+    for (let left = bytes - head.length; left > 0; left -= ZEROS.length) hash.update(left >= ZEROS.length ? ZEROS : ZEROS.subarray(0, left));
+    const digest = hash.digest('hex');
+    headedDigests.set(cacheKey, digest);
+    return digest;
+}
+
 /** A plausible size for a variant when no file backs it. */
 function estimatedBytes(width: number, height: number, format: VariantFormat): number {
     return Math.max(1, Math.round(width * height * (format === 'avif' ? 0.08 : 0.11)));
@@ -257,7 +290,8 @@ function present(value: string | undefined): string | undefined {
 interface AssetDir {
     dir: string;
     manifest: AssetManifest;
-    files: { name: string; data: Buffer | null; bytes: number }[];
+    /** `head`, where set, is written at the start of a sparse file (TestCatalogOptions.decodableAvif). */
+    files: { name: string; data: Buffer | null; bytes: number; head?: Buffer }[];
 }
 
 /** Everything createTestCatalog() writes, built in memory. Asset dirs are relative to the data root. */
@@ -293,24 +327,29 @@ async function compose(options: TestCatalogOptions): Promise<Composed> {
 
         const variants = {} as CandidatePhotoRecord['variants'];
         const manifestVariants = {} as AssetManifest['variants'];
-        const files: { name: string; data: Buffer | null; bytes: number }[] = [];
+        const files: AssetDir['files'] = [];
         for (const variant of VARIANT_WIDTHS) {
             const size = variantSize(variant, width, height);
             variants[variant] = {} as CandidatePhotoRecord['variants'][VariantWidth];
             manifestVariants[variant] = {} as Record<VariantFormat, VariantFile>;
             for (const format of VARIANT_FORMATS) {
                 let data: Buffer | null = null;
+                let head: Buffer | undefined;
                 let bytes: number;
                 let digest: string;
                 if (assets === 'files') {
                     data = await solidImage(size.width, size.height, color, format);
                     bytes = data.length;
                     digest = createHash('sha256').update(data).digest('hex');
+                } else if (assets === 'sparse' && options.decodableAvif && format === 'avif') {
+                    bytes = options.variantBytes?.[variant][format] ?? estimatedBytes(size.width, size.height, format);
+                    head = decodableHead(await solidImage(size.width, size.height, color, format), bytes);
+                    digest = headedDigest(`${format}:${size.width}x${size.height}:${color.r},${color.g},${color.b}`, head, bytes);
                 } else {
                     bytes = options.variantBytes?.[variant][format] ?? estimatedBytes(size.width, size.height, format);
                     digest = zeroDigest(bytes);
                 }
-                files.push({ name: `${variant}.${format}`, data, bytes });
+                files.push({ name: `${variant}.${format}`, data, bytes, ...(head && { head }) });
                 manifestVariants[variant][format] = { ...size, bytes, sha256: digest };
                 variants[variant][format] = { url: mediaUrl({ photoId: id, assetRevision, profileId }, variant, format), ...size, bytes };
             }
@@ -569,9 +608,10 @@ export async function createTestCatalog(options: TestCatalogOptions = {}): Promi
             if (file.data) {
                 await fs.promises.writeFile(target, file.data, { mode: PRIVATE_FILE_MODE });
             } else {
-                // A sparse file: its declared size, read back as zeros, using no disk space.
+                // A sparse file: its declared size, read back as zeros, using no disk space, after its head if it has one.
                 const handle = await fs.promises.open(target, 'w', PRIVATE_FILE_MODE);
                 try {
+                    if (file.head) await handle.write(file.head, 0, file.head.length, 0);
                     await handle.truncate(file.bytes);
                 } finally {
                     await handle.close();

@@ -1,4 +1,5 @@
 import { devices, type Browser, type BrowserContextOptions, type Page, type Request } from '@playwright/test';
+import sharp from 'sharp';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { BUDGET_FIXTURE, BUDGET_VARIANT_BYTES } from '../lib/perf/fixture';
@@ -14,9 +15,11 @@ import { expect, test } from './support/test';
 // checks each image asks for the rung its sizes and the device need and no
 // more, adds up the image bytes the server declares, and checks the server
 // HTML already holds the lead photograph and its preload. Variant files are
-// sparse, so every image fails to decode: that's the failed-derivative case,
-// and each screen's boxes and navigation have to hold through it. Nothing
-// here looks at pixels.
+// sparse, and each AVIF file starts with a real AVIF of its size
+// (decodableAvif), so every image decodes and the first load is the success
+// path the policy counts: a browser that takes AVIF asks for nothing else. The
+// rescue, an AVIF file that fails and takes its one WebP retry, is a case of
+// its own at the end. Nothing here looks at pixels.
 //
 // The library is about 45,000 files and takes minutes to write and publish,
 // so this runs once, on the desktop project, and opens the phone as its own
@@ -35,7 +38,7 @@ const report: Record<string, unknown> = {};
 test.beforeAll(async () => {
     test.skip(test.info().project.name !== 'desktop', 'One library per run: the phone opens as a context of its own.');
     test.setTimeout(HOOK_TIMEOUT);
-    catalog = await createTestCatalog(BUDGET_FIXTURE);
+    catalog = await createTestCatalog({ ...BUDGET_FIXTURE, decodableAvif: true });
     const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
     // Above the ports the other catalog specs take when E2E_CATALOG_PORT pins them.
@@ -125,6 +128,11 @@ interface Measured {
     page: Page;
     document: { transfer: number };
     media: MediaRequest[];
+    /**
+     * Home's copy-tone sampler's fetch() of the file its slide shows (components/badgePlace.ts's canvasSampler), from
+     * the cache only (`only-if-cached`): a second read of an image already loaded, never a download. Not an image request.
+     */
+    reads: string[];
     api: string[];
     /** About's portrait, which Home's intro and badge show: the variants asked for. Not catalog images, but part of the first load. */
     portraits: string[];
@@ -134,10 +142,11 @@ interface Measured {
 const MEDIA = /^\/media\/(ph_[^/]+)\/[^/]+\/[^/]+\/w(\d+)\.(avif|webp)$/;
 const PORTRAIT = /^\/about\/portrait\/[0-9a-f]{32}\/w(\d+)\.(avif|webp)$/;
 
-/** Open `path` in a fresh context, wait until the first load is quiet, and sort what it asked for. */
-async function measure(browser: Browser, profile: Profile, path: string): Promise<Measured> {
+/** Open `path` in a fresh context, wait until the first load is quiet, and sort what it asked for. `prepare` runs before the load. */
+async function measure(browser: Browser, profile: Profile, path: string, prepare?: (page: Page) => Promise<void>): Promise<Measured> {
     const context = await browser.newContext(PROFILES[profile]);
     const page = await context.newPage();
+    await prepare?.(page);
     const finished: Promise<void>[] = [];
     const seen: { request: Request; bytes: number; transfer: number }[] = [];
     page.on('requestfinished', (request) => {
@@ -157,6 +166,7 @@ async function measure(browser: Browser, profile: Profile, path: string): Promis
 
     const all = [...seen.map((entry) => ({ ...entry, failed: false })), ...failed.map((request) => ({ request, bytes: 0, transfer: 0, failed: true }))];
     const media: MediaRequest[] = [];
+    const reads: string[] = [];
     const api: string[] = [];
     let other = 0;
     const portraits: string[] = [];
@@ -165,19 +175,20 @@ async function measure(browser: Browser, profile: Profile, path: string): Promis
         const url = new URL(request.url());
         const match = MEDIA.exec(url.pathname);
         if (request.resourceType() === 'document') document = { transfer };
+        else if (match && request.resourceType() === 'fetch') reads.push(url.pathname);
         else if (match) media.push({ photoId: match[1], rung: Number(match[2]), format: match[3], url: url.pathname, bytes });
         else if (url.pathname.startsWith('/api/')) api.push(url.pathname);
         else if (PORTRAIT.test(url.pathname)) portraits.push(url.pathname);
         else other += 1;
     }
-    return { page, document, media, api, portraits, other };
+    return { page, document, media, reads, api, portraits, other };
 }
 
 for (const profile of Object.keys(PROFILES) as Profile[]) {
     for (const screen of SCREENS) {
         test(`${screen} on the ${profile}: the first viewport's requests, rungs, and reach stay inside the policy`, async ({ browser }) => {
             const policy = POLICY[screen];
-            const { page, document: doc, media, api, portraits, other } = await measure(browser, profile, pathOf(screen));
+            const { page, document: doc, media, reads, api, portraits, other } = await measure(browser, profile, pathOf(screen));
             try {
                 const bytes = media.reduce((sum, request) => sum + request.bytes, 0);
                 // Every screen leads with the featured series' first photograph: Home's opening, Work's first cover, the series cover, the Viewer's photograph.
@@ -188,6 +199,7 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                     imageKiB: Number((bytes / KIB).toFixed(1)),
                     rungs: [...new Set(media.map((request) => request.rung))].sort((a, b) => a - b),
                     api: api.length,
+                    reads: reads.length,
                     portraits: portraits.length,
                     other,
                 };
@@ -199,6 +211,10 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                 // The browser takes AVIF, so the AVIF-only preload is the request the <picture> makes, never a second format.
                 for (const request of media) expect(request.format, request.url).toBe('avif');
                 expect(new Set(media.map((request) => request.url)).size, 'no image is asked for twice').toBe(media.length);
+                // Only Home's copy tone reads a file again, and only one its images already loaded, from the cache.
+                if (screen !== 'home') expect(reads, 'fetch() of /media').toEqual([]);
+                for (const url of reads) expect(media.map((request) => request.url), `${url} is read again, not fetched new`).toContain(url);
+                expect(reads.length, "the copy tone's reads").toBeLessThanOrEqual(media.length);
 
                 // Each image at no more than the rung its sizes ask for at this width and pixel ratio.
                 expect(media.map((request) => request.photoId), 'the lead photograph is asked for').toContain(leadId);
@@ -245,6 +261,44 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
         });
     }
 }
+
+// The rescue (#6): the Viewer's photograph, whose AVIF file fails, takes exactly one WebP retry, at the rung the AVIF
+// was, and loads from it. Its AVIF file may be asked for twice, the preload and the image's own try, both the same file;
+// nothing else is fetched. The WebP the route serves is a real one at that rung's size, since the fixture's are zeros.
+test('the viewer on the desktop: an AVIF file that fails takes one WebP retry at the same rung, and nothing else is fetched', async ({ browser }) => {
+    const leadId = featured().photoIds[0];
+    const lead = catalog!.content.photos.find((photo) => photo.id === leadId);
+    if (!lead) throw new Error('No lead photograph');
+    const leadMedia = (url: URL) => MEDIA.exec(url.pathname)?.[1] === leadId;
+    const { page, media, reads, api } = await measure(browser, 'desktop', pathOf('viewer'), async (page) => {
+        await page.route(
+            (url) => leadMedia(url),
+            async (route) => {
+                const [, , rung, format] = MEDIA.exec(new URL(route.request().url()).pathname)!;
+                if (format === 'avif') return route.fulfill({ status: 404, body: '' });
+                const size = lead.variants[`w${rung}` as keyof typeof lead.variants].webp;
+                const body = await sharp({ create: { width: size.width, height: size.height, channels: 3, background: { r: 90, g: 110, b: 130 } } }).webp().toBuffer();
+                return route.fulfill({ status: 200, contentType: 'image/webp', headers: { 'content-length': String(body.length) }, body });
+            },
+        );
+    });
+    try {
+        const avif = media.filter((request) => request.format === 'avif');
+        const webp = media.filter((request) => request.format === 'webp');
+        expect(media.every((request) => request.photoId === leadId), 'only the lead photograph is asked for').toBe(true);
+        expect(new Set(avif.map((request) => request.url)).size, 'one AVIF file').toBe(1);
+        expect(avif.length, 'the preload and the image, at most').toBeLessThanOrEqual(2);
+        expect(webp, 'one WebP retry').toHaveLength(1);
+        expect(webp[0].rung, 'the retry at the rung the AVIF was').toBe(avif[0].rung);
+        expect([reads, api]).toEqual([[], []]);
+        // The retry rescued it: the photograph shows from WebP, and no failure stands in for it.
+        await expect(page.locator('[data-viewer-current] img').first()).toHaveJSProperty('complete', true);
+        expect(await page.locator('[data-viewer-current] img').first().evaluate((image: HTMLImageElement) => [image.naturalWidth > 0, new URL(image.currentSrc).pathname])).toEqual([true, webp[0].url]);
+        await expect(page.locator('[data-surface="viewer"] [data-photo="unavailable"]')).toHaveCount(0);
+    } finally {
+        await page.context().close();
+    }
+});
 
 test('each server HTML holds its lead photograph and a preload carrying the same srcset and sizes', async ({ request }) => {
     for (const screen of SCREENS) {
