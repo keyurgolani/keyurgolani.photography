@@ -567,14 +567,14 @@ const failCover = async (page: Page) => {
  * after the padded numbers, gone in the head. Screen-reader only, so neither build gives it room; the padded
  * numbers, the heading and the header around them are still compared.
  */
-const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr-only', why: '#175 (B8): the position is said in the heading' }];
+const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr-only', why: '#175: the position is said in the heading' }];
 /**
  * A sanctioned departure (#175): a Viewer photograph whose file failed says "This photograph could not be
  * loaded.", shows its alt and offers Retry, where the base had the missing-image label alone. Only the box's contents
  * are left out. The box itself is still compared, its Dark paint (ground, edge, diagonal) and its place included,
  * except the scroll it gains for a long alt (the viewer-missing allowance in ALLOWANCES); so are the stage, the moves and the reading area.
  */
-const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"] > *', why: '#175 (B8): a failed photograph says so, with its alt and Retry' };
+const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"] > *', why: '#175: a failed photograph says so, with its alt and Retry' };
 
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true, glass: true },
@@ -918,7 +918,7 @@ const FOLDED: { url: string; selector: string; why: string; focus?: { page: stri
     ...[`${series}/photo/${HOME_OPENING}`, `${series}/photo/${HOME_PHOTO_IDS[1]}`, series].map((url) => ({
         url,
         selector: '[data-surface="viewer"] header h1 > span[aria-hidden="true"]:only-child',
-        why: "#175 (B8): the Viewer heading's shown title, hidden from screen readers under its aria-label",
+        why: "#175: the Viewer heading's shown title, hidden from screen readers under its aria-label",
     })),
 ];
 const retagFor = (pair: Pair) => RETAGGED.filter((entry) => entry.url === pair.url).map(({ selector, as }) => ({ selector, as }));
@@ -1047,7 +1047,7 @@ const VIEWER_ZOOM: Allowance[] = [
             page: 'viewer-zoomed',
             selector: `[data-surface="viewer"] [data-zoomed] ${part}`,
             maxDelta: 2400,
-            why: '#175 (B8): Zoom is clamp(fitted, 2 * fitted, the largest file)',
+            why: '#175: Zoom is clamp(fitted, 2 * fitted, the largest file)',
         }),
     ),
     // The zoomed print's two <source>s, AVIF and WebP, on desktop and tablet on the routes with JavaScript, where Zoom
@@ -1061,7 +1061,7 @@ const VIEWER_ZOOM: Allowance[] = [
                 routes: SCRIPTED_ROUTES,
                 selector: `[data-surface="viewer"] [data-zoomed] figure > picture > source:nth-of-type(${n})`,
                 maxDelta: 2400,
-                why: "#175 (B8): Zoom's sources follow the zoomed img",
+                why: "#175: Zoom's sources follow the zoomed img",
             }),
         ),
     ),
@@ -1089,7 +1089,7 @@ const ALLOWANCES: Allowance[] = [
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
     ...VIEWER_ZOOM,
     // The failed box scrolls a long alt or enlarged text inside itself (overflow-y: auto, which makes overflow-x auto).
-    { page: 'viewer-missing', selector: '[data-surface="viewer"] [data-photo="unavailable"]', properties: ['overflow-x', 'overflow-y'], why: '#175 (B8): the failed box scrolls its alt' },
+    { page: 'viewer-missing', selector: '[data-surface="viewer"] [data-photo="unavailable"]', properties: ['overflow-x', 'overflow-y'], why: '#175: the failed box scrolls its alt' },
 ];
 /** A state's own allowances, and those of the page it's a state of. On one of the gate's routes, or on any when it's left out. */
 const allowancesFor = (pair: Pair, width: number, route?: string) =>
@@ -1273,7 +1273,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             if (pair.cameraRows) {
                 const camera = cameraRowDeparture(against.facts, head.facts);
                 comparison.structural.push(...camera.failing.map((line) => `the details list: ${line}`));
-                if (camera.failing.length === 0) comparison.sanctioned.push(...camera.record.map((line) => `#175 (B8), the details list: ${line}`));
+                if (camera.failing.length === 0) comparison.sanctioned.push(...camera.record.map((line) => `#175, the details list: ${line}`));
             }
             const failing = [...judge(`${pair.name}, ${route}`, viewport.width, comparison, timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
