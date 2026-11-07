@@ -13,7 +13,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => router }));
 
 const REVISION = `rev_${'a'.repeat(64)}`;
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-const record = (n: number): HomePhoto => ({ id: id(n), alt: `Photograph ${n}`, focalPoint: { x: 0.5, y: 0.5 }, image: null });
+const record = (n: number): HomePhoto => ({ id: id(n), alt: `Photograph ${n}`, focalPoint: { x: 0.5, y: 0.5 }, crop: 'cover', image: null });
 const ORDER = [0, 1, 2, 3, 4, 5].map(id);
 /** Two featured series in Home's loop: 0 to 3 in the first, 4 and 5 in the second. */
 const SERIES_OF = new Map(ORDER.map((photoId, at) => [photoId, at < 4 ? 'ser_fixture-a' : 'ser_fixture-b'] as const));

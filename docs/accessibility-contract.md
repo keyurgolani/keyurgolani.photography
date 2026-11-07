@@ -27,7 +27,7 @@ Every visitor and curator surface follows these rules. #1 added them with the br
 
 | Surface | Spec | Owner |
 |---|---|---|
-| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, `e2e/home-immersive.spec.ts` from #18, and `e2e/home-catalog.spec.ts` from #4, all on the catalog server's published Home since #13's slice E, and `e2e/home-empty.spec.ts` for #4's empty state on a server of its own | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
+| Home, `/` | `e2e/home.spec.ts` from #1 slice 4, `e2e/home-playback.spec.ts` from #2, `e2e/home-immersive.spec.ts` from #18, and `e2e/home-catalog.spec.ts` from #4, all on the catalog server's published Home since #13's slice E, `e2e/home-empty.spec.ts` for #4's empty state on a server of its own, and `e2e/home-framing.spec.ts` for #4's focal-point and contain framing on another | #1, #2 for playback and reduced motion, then #18 for immersive mode and #4 for the authored sequence |
 | About, `/about` | `e2e/about.spec.ts` from #1 slice 4, and `e2e/about-links.spec.ts` from #11 | #1 for the subset below, #11 for the links, then #12 for the artist statement |
 | The focus token on `SiteNav` and its theme control | `e2e/focus-ring.spec.ts` from #1 slice 2, moved onto `SiteNav` by #21 | #1, with #21 for `SiteNav` |
 | Work catalog, `/work` | `e2e/work.spec.ts` from #3, on a published fixture catalog its own server serves, with #171's heading-link entries, their target and ring in all five themes, and Try again after a missing pointer on a server of its own | #3, then #171 for the entries |

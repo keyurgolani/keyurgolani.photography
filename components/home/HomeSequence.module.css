@@ -11,7 +11,10 @@
   background-color: var(--gah-mat-fill, #000);
 }
 
+/* CatalogSequence sets each slide's --focal-x and --focal-y from its photograph's focal point (#4), the centre when it
+   has none, and its LQIP crops there too. */
 .slide {
+  --photo-lqip-position: var(--focal-x, 50%) var(--focal-y, 50%);
   position: absolute;
   top: 0;
   left: 0;
@@ -19,6 +22,11 @@
   height: 100%;
   transition: opacity var(--transition-duration) var(--transition-ease);
   opacity: 0;
+}
+
+/* A contain crop is shown whole and centred: the focal point is where a cover crop is cut, and this one isn't. */
+.slide[data-crop='contain'] {
+  --photo-lqip-position: center;
 }
 
 .slide.active {
@@ -71,37 +79,22 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center;
+  object-position: var(--focal-x, 50%) var(--focal-y, 50%);
   transition: opacity 0.5s ease;
 }
 
-.thumbnailLayer {
-  filter: blur(0);
-  z-index: 1;
+/* The print sits on the carousel's ground, the theme's mat (--gah-mat-fill; Dark's and Black's black), and the slide
+   paints nothing of its own over it. ResponsivePhoto draws the LQIP as an inline `background-size: cover` across the
+   whole box, which would wash the mat, so the LQIP takes the print's box too: only !important outranks inline. */
+.slide[data-crop='contain'] .slideImage {
+  object-fit: contain;
+  object-position: center;
+  background-size: contain !important;
+  background-repeat: no-repeat;
 }
 
-.optimizedLayer {
-  z-index: 2;
-}
-
-.slidePlaceholder {
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    135deg,
-    #0a0a0a 0%,
-    #1a1a1a 50%,
-    #0a0a0a 100%
-  );
-  background-size: 200% 200%;
-  animation: shimmer 2s ease-in-out infinite;
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
+/* Once the print has decoded, its LQIP goes: the LQIP's own shape drifts from the photograph's, so it would show as a
+   strip on the mat around the print. A cover slide's LQIP sits under the print and never shows. */
+.slide[data-crop='contain'][data-decoded] .slideImage {
+  background-image: none !important;
 }

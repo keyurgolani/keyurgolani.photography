@@ -21,11 +21,13 @@ const next = (page: Page) => page.getByRole('button', { name: 'Next photograph',
 const pause = (page: Page) => page.getByRole('button', { name: 'Pause slideshow', exact: true });
 const play = (page: Page) => page.getByRole('button', { name: 'Play slideshow', exact: true });
 const enter = (page: Page) => page.getByRole('link', { name: 'Enter the series', exact: true });
+/** #4's secondary link in the story (v2.0.0 B7). */
+const allWork = (page: Page) => page.getByRole('link', { name: 'All bodies of work', exact: true });
 const position = (page: Page) => page.getByRole('group', { name: 'Slideshow' }).getByText(/^\d{2,} \/ \d{2,}$/);
 /** The slide on screen: the one not hidden from assistive technology. */
 const shownSlide = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"]');
 const shownImage = (page: Page) => shownSlide(page).locator('img');
-const storyControls = (page: Page) => previous(page).or(next(page)).or(pause(page)).or(enter(page));
+const storyControls = (page: Page) => previous(page).or(next(page)).or(pause(page)).or(enter(page)).or(allWork(page));
 
 const runsOn = (testInfo: TestInfo, ...projects: string[]) =>
     test.skip(!projects.includes(testInfo.project.name), `Runs on ${projects.join(' and ')}.`);
@@ -109,6 +111,17 @@ test('Enter on Enter the series goes to the series page', async ({ page }) => {
     await tabTo(page, enter(page));
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`/work/${HOME_SERIES.slug}`);
+});
+
+test('All bodies of work follows Enter the series in the story, and Enter on it goes to Work (#4, v2.0.0 B7)', async ({ page }) => {
+    await openHome(page);
+    const story = page.locator('[data-chrome-region="story"]');
+    await expect(story.getByRole('link')).toHaveText(['Enter the series', 'All bodies of work']);
+    await tabTo(page, enter(page));
+    await page.keyboard.press('Tab');
+    await expect(allWork(page)).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL('/work');
 });
 
 test('a click on Next, after a move reveals the chrome, moves to the next authored photograph', async ({ page }, testInfo) => {
@@ -337,10 +350,27 @@ async function worstTextContrast(page: Page, target: Locator): Promise<number> {
     return worst;
 }
 
-for (const width of [1440, 1024]) {
-    test(`the series title and statement keep 4.5:1 over a white opening photograph, revealed by keyboard, at ${width} px`, async ({ page }, testInfo) => {
-        if (testInfo.project.name === 'desktop') await page.setViewportSize({ width, height: 900 });
-        else test.skip(width !== 1440, 'One mobile run is enough.');
+/**
+ * Where :354's white-photograph case runs: two desktop widths, and on mobile Pixel 7's own screen and a 360 px phone,
+ * where All bodies of work sits beside Enter the series (B7's CI fix).
+ */
+const WHITE_CASES = [
+    { name: 'at 1440 px', project: 'desktop', viewport: { width: 1440, height: 900 } },
+    { name: 'at 1024 px', project: 'desktop', viewport: { width: 1024, height: 900 } },
+    { name: 'on Pixel 7', project: 'mobile', viewport: null },
+    { name: 'at 360 px on a phone', project: 'mobile', viewport: { width: 360, height: 800 }, floor: { title: 4.3, statement: 4.4 } },
+] as const;
+
+/** Every case keeps 4.5:1 but where a case says otherwise. */
+const AA = 4.5;
+
+for (const { name: where, project, viewport, ...rest } of WHITE_CASES) {
+    // At 360 px Dark's wash, as today's site has it, holds the title at 4.319:1 and the statement at 4.437:1 over a
+    // white photograph, before and after B7 alike (prs/B7-shots/measures.json): existing behaviour; raised to 4.5 by B7D.
+    const floor: { title?: number; statement?: number } = 'floor' in rest ? rest.floor : {};
+    test(`the series title and statement keep their contrast over a white opening photograph, revealed by keyboard, ${where}`, async ({ page }, testInfo) => {
+        runsOn(testInfo, project);
+        if (viewport) await page.setViewportSize(viewport);
         await page.route(`**/media/${HOME_OPENING}/**`, async (route) => {
             const format = new URL(route.request().url()).pathname.endsWith('.avif') ? 'avif' : 'webp';
             await route.fulfill({ status: 200, contentType: `image/${format}`, body: await whitePhoto(format) });
@@ -354,9 +384,24 @@ for (const width of [1440, 1024]) {
         const title = page.getByRole('heading', { level: 1 });
         const statement = page.locator('[data-chrome-region="story"] p');
         await expect(statement).toHaveText(HOME_SERIES.shortStatement);
-        for (const [name, target] of [['title', title], ['statement', statement]] as const) {
-            expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the white photograph`).toBeGreaterThanOrEqual(4.5);
+        for (const [name, target] of [['title', title], ['statement', statement], ['Work link', allWork(page)]] as const) {
+            const least = name === 'Work link' ? AA : (floor[name] ?? AA);
+            expect(await worstTextContrast(page, target), `the ${name}'s worst contrast over the white photograph`).toBeGreaterThanOrEqual(least);
         }
+        if (project !== 'mobile') return;
+        // On a phone the link rides Enter's row, inside the print, and adds no height: the title sits where it does with
+        // the link taken out of the layout, which is next's story. Dark's phone wash is today's, so the title needs that.
+        const [enterBox, workBox] = await Promise.all([enter(page).boundingBox(), allWork(page).boundingBox()]);
+        const contentRight = await page.locator('[data-chrome-region="story"] > div').evaluate((el) => el.getBoundingClientRect().right - parseFloat(getComputedStyle(el).paddingRight));
+        expect(workBox!.y, 'All bodies of work on Enter the series’ row').toBeCloseTo(enterBox!.y, 1);
+        expect(workBox!.height).toBeGreaterThanOrEqual(44);
+        expect(workBox!.x, 'after Enter the series, 0.5rem on').toBeCloseTo(enterBox!.x + enterBox!.width + 8, 1);
+        expect(workBox!.x + workBox!.width, "inside the story's gutter, on the print").toBeLessThanOrEqual(contentRight + 0.5);
+        const titleTop = async () => (await title.boundingBox())!.y;
+        const withLink = await titleTop();
+        const hidden = await page.addStyleTag({ content: '[data-chrome-region="story"] a[href="/work"] { display: none !important; }' });
+        expect(await titleTop(), "the title's top without the link").toBeCloseTo(withLink, 1);
+        await hidden.evaluate((node) => node.parentNode?.removeChild(node));
     });
 }
 

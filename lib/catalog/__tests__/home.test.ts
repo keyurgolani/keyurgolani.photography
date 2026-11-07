@@ -259,14 +259,14 @@ describe('the Home projection', () => {
         const series = featured(homeOf());
         expect(Object.keys(series).sort()).toEqual(['href', 'id', 'openingPhotoId', 'photoIds', 'records', 'shortStatement', 'slug', 'title']);
         for (const photo of [...series.records, ...everyRecord()]) {
-            expect(Object.keys(photo).sort()).toEqual(['alt', 'focalPoint', 'id', 'image']);
+            expect(Object.keys(photo).sort()).toEqual(['alt', 'crop', 'focalPoint', 'id', 'image']);
         }
         for (const photo of series.records) {
             expect(Object.keys(photo.image ?? {}).sort()).toEqual(photo.id === series.openingPhotoId ? ['height', 'lqip', 'variants', 'width'] : ['height', 'variants', 'width']);
         }
         const serialized = JSON.stringify(series);
         for (const sentinel of Object.values(SENTINELS)) expect(serialized).not.toContain(sentinel);
-        expect(serialized).not.toMatch(/accent|caption|credit|location|technical|capturedAt|assetRevision|profileId|crop/);
+        expect(serialized).not.toMatch(/accent|caption|credit|location|technical|capturedAt|assetRevision|profileId/);
     });
 
     it('takes the alt from the alt union: described text, else empty', () => {
@@ -318,6 +318,18 @@ describe('the Home projection', () => {
         expect(byId.get(P[4])).toEqual({ x: 0.2, y: 0.8 });
         expect(byId.get(P[1])).toEqual({ x: 0.5, y: 0.5 });
         expect(byId.get(P[0])).toEqual({ x: 0.5, y: 0.5 });
+    });
+
+    // #4 (v2.0.0 B7): Home frames a cover crop on its focal point, and a contain one on the theme's mat.
+    it('takes the authored crop, else cover', () => {
+        const held = content();
+        const odd = held.photos.find((photo) => photo.id === P[0]);
+        if (!odd) throw new Error('Missing fixture photo');
+        (odd as { crop: unknown }).crop = 'fill';
+        const byId = new Map(everyRecord(held).map((photo) => [photo.id, photo.crop]));
+        expect(byId.get(P[4])).toBe('contain');
+        expect(byId.get(P[1])).toBe('cover');
+        expect(byId.get(P[0])).toBe('cover');
     });
 
     it('keeps a focal point on either bound of either axis and centers one outside them', () => {

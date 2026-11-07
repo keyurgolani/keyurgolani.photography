@@ -6,8 +6,10 @@ import { V110_LANE } from '@/components/badgePlace';
 import HeroReveal from '@/components/HeroReveal';
 import { useDocumentVisible } from '@/components/motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
+import { padPosition } from '@/components/positionLabel';
 import LoadingState from '@/components/site/LoadingState';
 import SiteNav from '@/components/site/SiteNav';
+import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 import type { HomeLoopSeries, HomeSeries, PublishedHome } from '@/lib/catalog/projections/home';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { hasCompletedHomeHeroIntro, markHomeHeroIntroCompleted } from '@/utils/homeHeroCache';
@@ -75,9 +77,6 @@ function EmptyHome() {
   );
 }
 
-/** At least two digits, as HomeSequenceControls shows the position. */
-const pad = (value: number) => String(value).padStart(2, '0');
-
 /** One featured series: nothing follows it. */
 const NONE: readonly HomeLoopSeries[] = [];
 
@@ -126,6 +125,7 @@ interface FeaturedHomeProps {
  */
 function FeaturedHome({ revisionId, opening, following = NONE, portrait }: FeaturedHomeProps) {
   const { reportPhoto, reportIntro, reportHomeState, loading } = useHomeChrome();
+  const routes = useSiteRoutes();
   const reducedMotion = usePrefersReducedMotion();
   const visible = useDocumentVisible();
   const [isSettled, setIsSettled] = useState(hasCompletedHomeHeroIntro);
@@ -419,6 +419,10 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
             <Link ref={enterRef} href={series.href} className={styles.enter}>
               Enter the series
             </Link>
+            {/* #4's secondary way on, to every series rather than this one. Its href is the site's, so a preview keeps it. */}
+            <Link href={routes.workHref()} className={styles.work}>
+              All bodies of work
+            </Link>
           </div>
         }
         sequence={
@@ -497,9 +501,12 @@ function skipsOnItsOwn(playback: Pick<HomePlayback, 'source' | 'advancing'>): bo
   return playback.source === 'auto' && playback.advancing;
 }
 
-/** "Couldn't load photograph 05 of 12", naming the series when it isn't the one on screen. */
+/**
+ * "Couldn't load photograph 05 of 12", naming the series when it isn't the one on screen. Padded to the digits of its
+ * series' total, as the counter is: 005 of 120.
+ */
 function noticeText({ entry, position, count }: { entry: HomeLoopSeries; position: number; count: number }, seriesOnScreen: string): string {
-  return `Couldn’t load photograph ${pad(position + 1)} of ${pad(count)}${entry.id !== seriesOnScreen ? ` in ${entry.title}` : ''}`;
+  return `Couldn’t load photograph ${padPosition(position + 1, count)} of ${padPosition(count, count)}${entry.id !== seriesOnScreen ? ` in ${entry.title}` : ''}`;
 }
 
 /** A ref that always holds this render's `value`, for a callback that must stay the same across renders. */

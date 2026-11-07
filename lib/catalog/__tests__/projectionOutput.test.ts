@@ -188,9 +188,10 @@ describe('every screen projection serializes byte for byte as pinned', () => {
         const out = await screens(publicRoutes);
         expect(Object.fromEntries(Object.entries(out).map(([screen, values]) => [screen, sha256(values)]))).toEqual({
             // v1.5.0: Home plays every featured series as a loop from the one it picks, so a refused first one is skipped.
-            home: 'af0f2602377f16fc4db84f3fbf38fd2ae0cde8b6f84e469f37cf0963266099d6',
+            // v2.0.0 B7: each record carries its photograph's crop (#4), here and in the loop's windows.
+            home: 'e541b0e04fd821f5ae28e4ceaa184b5a07184c20d6aa0cfdfba587a3bfdac032',
             // v1.6.0 removed v1.4.0's records route, and its pin, homePhotos, with it.
-            homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
+            homeLoop: '5999cf58decb7068fd1c216d131a9fddb125ae81192d61dcf9477a96beb6f889',
             work: 'e87f9f9531d894505ef0d31df859b27a0bc38e95d7aa86a7d3b711199b637be3',
             // v2.0.0 B4: the cover carries its photograph's title, and 'Pinned-Long' answers a 308, not a not-found.
             // v2.0.0 B5: each page carries prevHref (null on the first) and focusPhotoId (null without ?photo=), and the walk
@@ -206,8 +207,9 @@ describe('every screen projection serializes byte for byte as pinned', () => {
     it('on a preview route builder', async () => {
         const out = await screens(previewRoutes);
         expect(Object.fromEntries(Object.entries(out).map(([screen, values]) => [screen, sha256(values)]))).toEqual({
-            home: 'fbe7025fd56a8204208693fd10e1a6e47ba0aa7d6c036538b9f2d00539650c0c',
-            homeLoop: '7c5208ce9eaa6bcc6f73772b669d635ee81cc331213504869f435f7930df2edf',
+            // v2.0.0 B7: as on the public routes.
+            home: 'd7b92f5ffdc0789a3c442d623fb459065f87dd851adb40a58e710d3c324e8d12',
+            homeLoop: '5999cf58decb7068fd1c216d131a9fddb125ae81192d61dcf9477a96beb6f889',
             work: '97961e986a7d4bea8bc005f8681ac88436337e467112928a0c29e0185c23a569',
             // 16-2: a series page's continuation path comes from the route builder, so a preview's points at its own mirror.
             // v2.0.0 B4: as on the public routes.

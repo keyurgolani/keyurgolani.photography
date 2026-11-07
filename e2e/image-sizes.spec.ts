@@ -43,7 +43,10 @@ const looks: Look[] = [
 ];
 const spec = (photoId: string, look: Look): TestPhotoSpec => ({ id: photoId, ...SHAPES[look.shape], ...(look.crop === 'contain' ? { crop: 'contain' } : {}) });
 
-/** The featured series: long enough for one Show more (pages of 100), opening on a landscape photograph, then a portrait one. */
+/**
+ * The featured series: long enough for one Show more (pages of 100). Home opens on its fifth photograph, a portrait one
+ * shown whole, then the next, a landscape one cropped to cover, so its exact check covers both fits (#4, v2.0.0 B7).
+ */
 const LONG = Array.from({ length: 130 }, (_, n) => id(n + 1));
 /** Work's other entries, by their cover: every shape and crop, on wide and narrow spans both. */
 const COVERS: Look[] = [
@@ -61,6 +64,10 @@ const lookOf = new Map<string, Look>([
     ...others.flatMap(({ look, photoIds }) => [[photoIds[0], look] as const, [photoIds[1], { shape: 'landscape', crop: 'cover' } as Look] as const]),
 ]);
 
+/** Home's opening photograph, a portrait one shown whole, and the one after it, a landscape one cropped to cover. */
+const HOME_OPENING = LONG[4];
+const HOME_NEXT = LONG[5];
+
 let catalog: TestCatalog | undefined;
 let server: CatalogServer | undefined;
 /** Every screen's numbers at every width, attached to the run and printed, for the PR's table. */
@@ -70,7 +77,7 @@ test.beforeAll(async () => {
     test.skip(test.info().project.name !== 'desktop', 'One fixture per run: each width opens as a context of its own.');
     test.setTimeout(HOOK_TIMEOUT);
     const series: TestSeriesSpec[] = [
-        { id: 'ser_e2e-sizes-long', slug: 'sizes-long', title: 'Sizes, the featured series', photoIds: LONG },
+        { id: 'ser_e2e-sizes-long', slug: 'sizes-long', title: 'Sizes, the featured series', photoIds: LONG, openingPhotoId: HOME_OPENING },
         ...others.map(({ slug, photoIds }) => ({ id: `ser_e2e-${slug}`, slug, title: `Sizes, ${slug}`, photoIds })),
     ];
     catalog = await createTestCatalog({
@@ -248,6 +255,12 @@ for (const screen of Object.keys(PATHS) as Screen[]) {
                 const { page, images, media } = await open(browser, width, path, TARGETS[screen]);
                 try {
                     expect(images.length, `${path} at ${width} px has images to check`).toBeGreaterThan(0);
+                    // Home's check covers a contain slide and a cover one, both mounted (#4, v2.0.0 B7).
+                    if (screen === 'home') {
+                        expect(images.map((image) => [image.photoId, image.fit]), `Home at ${width} px mounts its contain opening and the cover one after it`).toEqual(
+                            expect.arrayContaining([[HOME_OPENING, 'contain'], [HOME_NEXT, 'cover']]),
+                        );
+                    }
                     const rows = images.map((image) => {
                         const rule = rungFor(image.candidates, needed(image, dpr));
                         const asked = rungFor(image.candidates, image.sizesPx * dpr);

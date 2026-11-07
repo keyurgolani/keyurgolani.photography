@@ -53,8 +53,9 @@ const removeFrom = (set: ReadonlySet<string>, id: string) => {
  * The catalog Home's slide stack, controlled by useHomePlayback, as #4's
  * carousel: a region named for the series on screen, each slide a group
  * named "N of M". Each slide is one #10 derivative set through
- * ResponsivePhoto. A slide commits only once its image's decode() resolves:
- * the photograph on screen changes only to one that has, so while the next
+ * ResponsivePhoto, framed by its record (frameOf, `data-crop`). A slide
+ * commits only once its image's decode() resolves: the photograph on screen
+ * changes only to one that has, so while the next
  * one loads, or if it fails, the one before stays, and a failed image never
  * blanks Home. Before anything has decoded, the photograph at `index` is on
  * screen, over its LQIP. It mounts only the photograph on screen, the one at
@@ -136,7 +137,9 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
         const outgoing = stage.outgoing.includes(id);
         const mounted = on || outgoing || id === activeId || (anyDecoded && id === nextId);
         if (!mounted) return null;
-        const image = photos.get(id)?.image ?? null;
+        const record = photos.get(id);
+        const image = record?.image ?? null;
+        const crop = record?.crop === 'contain' ? 'contain' : 'cover';
         const className = [styles.slide, on && styles.active, (on || outgoing) && styles.zoom, outgoing && styles.outgoing].filter(Boolean).join(' ');
         return (
           <div
@@ -147,6 +150,9 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
             aria-label={slideLabel(id)}
             aria-hidden={!on}
             data-photo-id={id}
+            data-crop={crop}
+            data-decoded={decoded.has(id) ? '' : undefined}
+            style={frameOf(record?.focalPoint)}
             onTransitionEnd={(event) => {
               if (outgoing && event.propertyName === 'opacity' && event.target === event.currentTarget) {
                 setStage((current) => (current.outgoing.includes(id) ? { ...current, outgoing: current.outgoing.filter((other) => other !== id) } : current));
@@ -158,7 +164,8 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
                 key={attempts[id] ?? 0}
                 id={id}
                 image={image}
-                alt={photos.get(id)?.alt ?? ''}
+                crop={crop}
+                alt={record?.alt ?? ''}
                 priority={id === activeId}
                 lead={id === openingId}
                 onDecoded={markDecoded}
@@ -181,9 +188,24 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
   );
 }
 
+/**
+ * A slide's frame (#4): its photograph's focal point as `--focal-x` and
+ * `--focal-y`, which HomeSequence.module.css cuts a cover crop on, its LQIP
+ * included. On the slide, so the server HTML frames the opening photograph as
+ * the client does. A contain crop is shown whole and centred instead.
+ */
+function frameOf(focalPoint: CatalogPhoto['focalPoint'] | undefined): React.CSSProperties {
+  const { x, y } = focalPoint ?? { x: 0.5, y: 0.5 };
+  // To two places, so floating point never writes 7.000000000000001%.
+  const percent = (value: number) => `${Math.round(value * 10000) / 100}%`;
+  return { '--focal-x': percent(x), '--focal-y': percent(y) } as React.CSSProperties;
+}
+
 interface SlideImageProps {
   id: string;
   image: NonNullable<CatalogPhoto['image']>;
+  /** How the slide draws it, which picks the rung #6's size rule gives it. */
+  crop: CatalogPhoto['crop'];
   alt: string;
   priority: boolean;
   /** The opening photograph: preloaded from the head, with the srcset and sizes its <picture> has. */
@@ -218,7 +240,7 @@ function decodeThen(element: HTMLImageElement, live: () => boolean, onDecoded: (
 }
 
 /** One attempt at a photograph's image. Retry remounts it with a new key, since a failed image's decode() doesn't fetch again. */
-function SlideImage({ id, image, alt, priority, lead, onDecoded, onGone, onFailed }: SlideImageProps) {
+function SlideImage({ id, image, crop, alt, priority, lead, onDecoded, onGone, onFailed }: SlideImageProps) {
   const ref = useRef<HTMLImageElement>(null);
   const mounted = useRef(false);
   const settle = useCallback(() => {
@@ -245,8 +267,8 @@ function SlideImage({ id, image, alt, priority, lead, onDecoded, onGone, onFaile
       ref={ref}
       asset={image}
       alt={alt}
-      // Every slide is drawn to cover the viewport (HomeSequence.module.css), whatever its crop.
-      sizes={heroSizes(image)}
+      // #6's size rule for the slide's crop, so a contain one asks for the smaller rung it needs. The preload takes it too.
+      sizes={heroSizes(image, crop)}
       loading="eager"
       fetchPriority={priority ? 'high' : 'auto'}
       preload={lead}

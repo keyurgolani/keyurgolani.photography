@@ -98,12 +98,64 @@
   font-size: var(--gah-type-ui);
   font-weight: 500;
   text-decoration: none;
+  /* All bodies of work sits beside it on a phone (below). */
+  anchor-name: --home-enter;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .enter:hover {
     background: var(--gah-action-hover, #fff);
     color: var(--gah-action-hover-ink, var(--gah-action-ink));
+  }
+}
+
+/* "All bodies of work", the secondary action under it (#4): the controls' own scrim and ink, as Retry and Skip have,
+   so it holds 4.5:1 over any photograph without competing with Enter's fill. */
+.work {
+  display: inline-flex;
+  align-self: flex-start;
+  min-height: 44px;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--gah-rule-strong);
+  border-radius: var(--gah-radius);
+  background: var(--gah-control-scrim, rgba(0, 0, 0, 0.65));
+  color: var(--gah-control-ink, #fff);
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  text-decoration: none;
+}
+
+/* On a phone at default text it sits beside Enter the series, top to top and the stacked pair's 0.5rem apart, so the
+   story is no taller than without it (B7's CI fix). Under Enter it lifted the copy 52 px, and Dark's fixed phone wash,
+   which stays today's (HomeChrome.module.css), then left the title at 4.03:1 over a white photograph on Pixel 7. Both fit
+   from 360 px in every theme (Inter's advances: 140 + 8 + 153 px, against Bright's 304 px inside the print, the
+   narrowest). Below 360, or with the text enlarged, it stays under Enter, and Dark's wash follows the copy there as it
+   does today. Without anchoring it rides Enter's row at the story's right edge, its margin taking back its height. */
+@media (min-width: 22.5rem) and (max-width: 39.99rem) {
+  @supports (anchor-name: --home-enter) {
+    :global(main:not([data-text-enlarged])) .work {
+      position: absolute;
+      position-anchor: --home-enter;
+      top: anchor(top);
+      left: anchor(right);
+      margin-top: 0;
+      margin-left: 0.5rem;
+    }
+  }
+
+  @supports not (anchor-name: --home-enter) {
+    :global(main:not([data-text-enlarged])) .work {
+      align-self: flex-end;
+      margin-top: -44px;
+    }
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .work:hover {
+    border-color: var(--gah-control-ink, #fff);
   }
 }
 
