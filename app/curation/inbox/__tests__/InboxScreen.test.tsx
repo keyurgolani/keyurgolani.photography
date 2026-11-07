@@ -3,6 +3,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BULK_IDLE, type InboxActionState, type InboxBulkState, type InboxDetail, type InboxItem, type InboxView, type ReadyInboxSummary, type SeriesOption } from '@/lib/curation/inbox-view';
 import { INBOX_WATCH_INTERVAL_MS, INBOX_WATCH_ONLINE_GAP_MS, OFFLINE_TEXT } from '@/lib/curation/inbox-watch';
+import { SUBMIT_GATE_SCRIPT } from '@/components/site/submitGateScript';
 
 // #14's A8 on the Inbox's pieces: the filters, paging and age labels, the bulk actions and their error summary, an
 // item's error summary, the stale alert that keeps unsaved edits, and the poll with its offline state. The server
@@ -105,6 +106,12 @@ function view(overrides: Partial<Ready> = {}): Ready {
 }
 
 const ANY = { status: null, type: null, page: 1 } as const;
+
+/** Every form that sends an action: one with an intent button, and Archive's, whose first step has none. */
+const actionForms = (root: ParentNode) => [...root.querySelectorAll('form')].filter((form) => form.querySelector('button[name="intent"], #archive-reason'));
+/** What's disabled, by what it is, so the server's markup and the mounted page can be compared. */
+const disabledSet = (root: ParentNode) =>
+    [...root.querySelectorAll('[disabled]')].map((el) => `${el.localName}${el.getAttribute('name') ? ` ${el.getAttribute('name')}` : ''}${el.getAttribute('value') ? `=${el.getAttribute('value')}` : ''} ${(el.textContent ?? '').trim().slice(0, 30)}`);
 
 async function press(button: HTMLElement) {
     await act(async () => {
@@ -278,17 +285,27 @@ describe('the bulk answers (A8 review)', () => {
         expect(screen.queryByRole('region', { name: /left as/ })).toBeNull();
     });
 
-    it('render the bulk buttons disabled in the server HTML, so a press before the page hydrates posts nothing the plain way', () => {
+    it('never disable anything for the submit gate: the bulk form waits at it in the server HTML, its buttons and the row checkboxes enabled, and nothing else disabled than once mounted', () => {
         const html = document.createElement('div');
         html.innerHTML = renderToString(<InboxList view={view()} query={ANY} />);
         const form = html.querySelector('#inbox-bulk') as HTMLFormElement;
         const buttons = [...form.querySelectorAll('button[name="intent"]')] as HTMLButtonElement[];
         expect(buttons.map((button) => button.value)).toEqual(['defer', 'unassigned']);
-        for (const button of buttons) expect(button).toBeDisabled();
+        // Without JavaScript nothing gates, so nothing is disabled for want of it; with it, the head's script drops a
+        // press until the form says it's ready.
+        for (const button of buttons) expect(button).toBeEnabled();
+        const boxes = [...html.querySelectorAll('input[type="checkbox"][form="inbox-bulk"]')];
+        expect(boxes.length).toBeGreaterThan(0);
+        for (const box of boxes) expect(box).toBeEnabled();
+        expect(form).toHaveAttribute('data-submit-gate', 'waiting');
+        const { container, unmount } = render(<InboxList view={view()} query={ANY} />);
+        expect(disabledSet(html)).toEqual(disabledSet(container));
+        unmount();
     });
 
-    it('enable the bulk buttons once the page has hydrated', () => {
+    it('mark the bulk form ready once it has mounted, with its buttons enabled', () => {
         render(<InboxList view={view()} query={ANY} />);
+        expect(document.getElementById('inbox-bulk')).toHaveAttribute('data-submit-gate', 'ready');
         expect(screen.getByRole('button', { name: 'Decide later on selected' })).toBeEnabled();
         expect(screen.getByRole('button', { name: 'Leave selected unassigned' })).toBeEnabled();
     });
@@ -334,33 +351,67 @@ describe("an item's answers", () => {
         );
     };
 
-    // Every item form posts by hand and has no plain-post route, so its submit buttons wait for the page to hydrate.
+    // Every item form posts by hand, so the head's script drops a press until the form has mounted. Nothing is disabled
+    // for it, so with no JavaScript, where nothing gates, the server's markup is all there is.
     const everyForm = () => detail({ can: { approve: true, edit: true, defer: true, dismiss: true, retry: true, reopen: true, confirm: false, bind: true, archive: true } });
     const replacement = () => detail({ type: 'replacement', title: 'Replacement ready', can: { approve: false, edit: false, defer: true, dismiss: false, retry: false, reopen: false, confirm: true, bind: false, archive: false }, primaryUnavailable: null });
     const submits = (root: ParentNode) => [...root.querySelectorAll('form button[type="submit"]')] as HTMLButtonElement[];
 
-    it("render every item form's submit buttons disabled in the server HTML, so a press before the page hydrates posts nothing the plain way", () => {
+    it('never disable anything for the submit gate: what the server disables is what the mounted page does for the same state, and the controls the gate covers are enabled', () => {
         for (const [d, intents] of [
             [everyForm(), ['edit', 'defer', 'approve', 'retry', 'reopen', 'bind', 'dismiss']],
             [replacement(), ['defer', 'confirm']],
         ] as const) {
             const html = document.createElement('div');
             html.innerHTML = renderToString(<InboxDetailView view={view({ selected: d })} />);
-            const buttons = submits(html);
-            expect(buttons.map((button) => button.value)).toEqual(intents);
-            for (const button of buttons) expect(button).toBeDisabled();
-            // Archive's form has no submit button until its second step, so Enter in its reason would send it the plain
-            // way: the reason waits for hydration too.
-            if (d.can.archive) expect(html.querySelector('#archive-reason')).toBeDisabled();
+            const forms = actionForms(html);
+            expect(forms.length).toBeGreaterThan(0);
+            for (const form of forms) expect(form).toHaveAttribute('data-submit-gate', 'waiting');
+            // The controls the gate covers, in their enabled state: its submit buttons and Archive's reason.
+            const covered = forms.flatMap((form) => [...form.querySelectorAll<HTMLButtonElement>('button[name="intent"]')]);
+            expect(covered.map((button) => button.value)).toEqual(intents);
+            for (const button of covered) expect(button).toBeEnabled();
+            if (d.can.archive) expect(html.querySelector('#archive-reason')).toBeEnabled();
+            // Anything else the server disables is the item's own state (a position with no series, the description when
+            // Decorative, an action it can't take yet), and the mounted page disables the same.
+            const { container, unmount } = render(<InboxDetailView view={view({ selected: d })} />);
+            expect(disabledSet(html)).toEqual(disabledSet(container));
+            unmount();
         }
     });
 
-    it("enable every item form's submit buttons once the page has hydrated", async () => {
+    it('take a press at once in the forms the client mounts after an answer, as the next item after Decide later, never waiting at the gate', async () => {
+        // The head's script, as the page runs it, so a form that waited would drop the press.
+        new Function(SUBMIT_GATE_SCRIPT)();
+        const all = { approve: true, edit: true, defer: true, dismiss: true, retry: true, reopen: true, confirm: false, bind: true, archive: true };
+        const first = detail({ can: all });
+        const next = detail({ ...item(2), can: all });
+        const { container, rerender } = render(<InboxDetailView view={view({ selected: first })} />);
+        const before = container.querySelector('form[aria-label="Review"]');
+        const flips = new MutationObserver(() => undefined);
+        flips.observe(container, { subtree: true, attributes: true, attributeFilter: ['data-submit-gate'], attributeOldValue: true });
+        // The refresh after an answer shows the next item: ItemActions is keyed by the item, so its forms mount anew.
+        rerender(<InboxDetailView view={view({ selected: next })} />);
+        const waited = flips.takeRecords().map((record) => `${(record.target as Element).getAttribute('aria-label') ?? 'a form'}: ${record.oldValue} then ${(record.target as Element).getAttribute('data-submit-gate')}`);
+        flips.disconnect();
+        expect(container.querySelector('form[aria-label="Review"]')).not.toBe(before);
+        // Mounted ready: no form of the new item ever said `waiting`, so there was no moment a press would drop.
+        expect(waited).toEqual([]);
+        const forms = actionForms(container);
+        expect(forms.length).toBeGreaterThan(1);
+        for (const form of forms) expect(form).toHaveAttribute('data-submit-gate', 'ready');
+        await press(within(container.querySelector('form[aria-label="Review"]') as HTMLElement).getByRole('button', { name: 'Decide later' }));
+        expect(sent.forms.map((form) => form.action)).toEqual(['defer']);
+        expect(sent.forms[0].fields).toContainEqual(['eventId', EVT(2)]);
+    });
+
+    it('mark every action form ready once it has mounted, with every submit button enabled', async () => {
         for (const d of [everyForm(), replacement()]) {
             const { container, unmount } = render(<InboxDetailView view={view({ selected: d })} />);
             const buttons = submits(container);
             expect(buttons.length).toBeGreaterThan(0);
             for (const button of buttons) expect(button).toBeEnabled();
+            for (const form of actionForms(container)) expect(form).toHaveAttribute('data-submit-gate', 'ready');
             // Archive's own submit shows once its first press asks to confirm, after hydration, and is enabled too.
             const archive = screen.queryByRole('button', { name: /^Archive/ });
             if (archive) {
