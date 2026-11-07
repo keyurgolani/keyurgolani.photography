@@ -10,7 +10,6 @@ import StoryViewer from '../StoryViewer';
 import SiteRoutesProvider from '@/components/site/SiteRoutes';
 import ViewerShell from '../ViewerShell';
 import type { ViewerMode } from '../viewerContext';
-import { applyViewerRule } from './viewerRule';
 
 // jsdom has HTMLDialogElement but no showModal() or close(), so these stand in:
 // showModal() opens the dialog and focuses its first control, as the browser's
@@ -272,7 +271,7 @@ describe('ViewerShell, on a page', () => {
     it('sends whole server HTML: the photograph renders the header and the steps until the shell takes them', () => {
         const html = renderToString(<ViewerShell mode="page">{photo(1)}</ViewerShell>);
         expect(html.match(/<header/g)).toHaveLength(1);
-        expect(html).toMatch(/<h1[^>]*>Fixture series<span class="sr-only[^"]*">, photograph 1 of 3<\/span><\/h1>/);
+        expect(html).toMatch(/<h1[^>]*aria-label="Fixture series, photograph 1 of 3"[^>]*><span aria-hidden="true">Fixture series<\/span><\/h1>/);
         expect(html).toContain('01 / 03');
         // Before hydration, a direction with a photograph is a link, so it works without the shell.
         expect(html).toMatch(new RegExp(`<a(?=[^>]*aria-label="Next photograph")(?=[^>]*href="${photoHref(2)}")`));
@@ -297,11 +296,14 @@ describe('ViewerShell, as the modal', () => {
         expect(within(dialog() as HTMLElement).queryByRole('link')).toBeNull();
     });
 
-    it('names the dialog "Fixture series, photograph 2 of 3" under the page\'s CSS, with no space before the comma', () => {
+    it('names the dialog "Fixture series, photograph 2 of 3" through the heading\'s aria-label', () => {
         renderShell('modal', 2);
-        // The page's own rule for the heading's spoken part: a part that isn't inline gets a space on each side in the name.
-        applyViewerRule(dialog() as HTMLElement, '.series > .spokenPosition', 'header h1 > span.sr-only');
         expect(screen.getByRole('dialog')).toHaveAccessibleName('Fixture series, photograph 2 of 3');
+        const heading = within(dialog() as HTMLElement).getByRole('heading', { level: 1 });
+        expect(heading).toHaveAttribute('aria-label', 'Fixture series, photograph 2 of 3');
+        expect(heading).toHaveAccessibleName('Fixture series, photograph 2 of 3');
+        // The dialog is named by the header line that holds the heading.
+        expect(heading.closest('[id]')).toBe(document.getElementById(dialog()!.getAttribute('aria-labelledby')!));
     });
 
     it('closes with one Back however many cancel, close, and Close presses arrive', () => {

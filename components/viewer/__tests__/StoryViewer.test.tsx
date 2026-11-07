@@ -6,7 +6,6 @@ import { mediaUrl } from '@/lib/media/url';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import StoryViewer, { type StoryViewerProps } from '../StoryViewer';
 import { fitSizes } from '../viewerSizes';
-import { applyViewerRule } from './viewerRule';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 import { FAILED_LABEL, HIDE_TECHNICAL, RETRY_LABEL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, positionLabel, positionText, technicalFacts, viewerTitle } from '../viewerLabels';
 
@@ -462,17 +461,28 @@ describe('StoryViewer', () => {
         expect(within(header).getByRole('heading', { level: 1 })).toHaveAccessibleName('Fixture series, photograph 7 of 120');
     });
 
-    // The page's own rule for the spoken part, applied: a part that isn't inline gets a space on each side in the name,
-    // which put one before the comma (e2e viewer-modal and viewer-touch, B8's CI).
+    // The heading's name is its aria-label, from the same data as its visible text, and what shows is hidden from
+    // screen readers, so the title is said once, with no space before the comma and no text drawn at no size (B8's CI).
     it.each([
         ['Fixture series', 'Fixture series, photograph 3 of 12'],
         ['Fixture shapes along the northern shoreline at the turn of the tide', 'Fixture shapes along the northern shoreline at the turn of the tide, photograph 3 of 12'],
-    ])('reads the heading "%s" with its place and no space before the comma, under the page\'s CSS', (title, name) => {
+    ])('names the heading "%s" by its aria-label, with its place, and hides the title it shows', (title, name) => {
         const { container } = renderViewer({ viewer: model({}, { series: { id: 'ser_fixture', slug: 'fixture', title, accent: null } }) });
-        applyViewerRule(container, '.series > .spokenPosition', 'header h1 > span.sr-only');
         const heading = within(container.querySelector('header')!).getByRole('heading', { level: 1 });
+        expect(heading).toHaveAttribute('aria-label', name);
         expect(heading).toHaveAccessibleName(name);
-        expect(heading).toHaveTextContent(name, { normalizeWhitespace: false });
+        // On screen: the series title alone, whole, in one part a screen reader skips.
+        expect(heading.textContent).toBe(title);
+        expect([...heading.childNodes].map((node) => (node instanceof Element ? node.getAttribute('aria-hidden') : `text: ${node.textContent}`))).toEqual(['true']);
+        expect(heading.querySelector('.sr-only')).toBeNull();
+    });
+
+    it('names the heading of a photograph named by its place by the series title alone, in its aria-label', () => {
+        const { container } = renderViewer({ viewer: model({ title: null, caption: null, description: null, alt: 'Photograph 3 of 12', namedByPlace: true, technical: {} }) });
+        const heading = within(container.querySelector('header')!).getByRole('heading', { level: 1 });
+        expect(heading).toHaveAttribute('aria-label', 'Fixture series');
+        expect(heading.textContent).toBe('Fixture series');
+        expect([...heading.childNodes].map((node) => (node instanceof Element ? node.getAttribute('aria-hidden') : `text: ${node.textContent}`))).toEqual(['true']);
     });
 
     it('renders authored text as text, never as markup', () => {

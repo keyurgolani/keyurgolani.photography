@@ -153,7 +153,7 @@ describe('the Viewer route', () => {
         expect(page.match(/data-surface="viewer"/g)).toHaveLength(1);
         expect(page).not.toContain('aria-label="Primary"');
         // "{series title}, photograph 1 of 3" (#7), with the padded numbers for the eye only.
-        expect(page).toMatch(/<h1[^>]*>Route A<span class="sr-only[^"]*">, photograph 1 of 3<\/span><\/h1>/);
+        expect(page).toMatch(/<h1[^>]*aria-label="Route A, photograph 1 of 3"[^>]*><span aria-hidden="true">Route A<\/span><\/h1>/);
         expect(page).toMatch(/<span aria-hidden="true">01 \/ 03<\/span>/);
         // With a caption the reading area shows only the caption, and the image's alt says the description.
         expect(page).toMatch(/<img[^>]*alt="Route description one\."/);
