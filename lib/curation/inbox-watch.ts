@@ -303,7 +303,12 @@ export interface InboxPageFacts {
 }
 
 export interface InboxNews {
-    /** What the polite region says, or '' for nothing new. */
+    /**
+     * The new-items sentence, or '' for none. The polite region keeps it, with the "Refresh the inbox" link after it,
+     * until the page refreshes, so it comes apart from the rest of the answer, which a later answer replaces.
+     */
+    arrival: string;
+    /** What else the polite region says, every other sentence of this answer, or '' for nothing new. */
     line: string;
     /** What it said, so the next answer doesn't say it again. */
     keys: string[];
@@ -313,8 +318,6 @@ export interface InboxNews {
     itemChanged: boolean;
     /** The version the page showed when it changed, so the item raises its alert only while it still shows that one. */
     changedFrom: number | null;
-    /** The line tells of new items, so the region follows it with the "Refresh the inbox" link. */
-    refresh: boolean;
     offline: boolean;
     /** The watcher as this answer says it, or null when it says nothing about it. */
     watcher: InboxWatcher | null;
@@ -322,13 +325,18 @@ export interface InboxNews {
 
 const OFFLINE_LINE = OFFLINE_TEXT;
 const BACK_LINE = 'Back online. The inbox is checking for changes again.';
+/**
+ * Said in place of a count when the server refused the page's cursor: what arrived since the page loaded can't be
+ * counted. It starts the new-items line until the page refreshes, with any later count after it.
+ */
+export const REBASED_LINE = 'The inbox has changed since this page loaded.';
 
 /**
  * The news in one answer, against what the page knows and what was said already, each said once: new items needing
  * judgment (by how many more than the page shows), the watcher stopping or coming back, the browser offline or back.
  */
 export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announced: ReadonlySet<string>): InboxNews {
-    const news: InboxNews = { line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, refresh: false, watcher: null };
+    const news: InboxNews = { arrival: '', line: '', keys: [], forget: [], itemChanged: false, changedFrom: null, offline: false, watcher: null };
     if (answer.kind === 'signed-out' || answer.kind === 'unavailable') return news;
     if (answer.kind === 'offline') {
         news.offline = true;
@@ -349,9 +357,22 @@ export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announ
     // The items that arrived after the page's cursor, by the server's own order, not the net count, which an item
     // decided elsewhere would cancel out.
     const more = summary.arrived ?? 0;
-    if (more > 0 && !announced.has(`arrived:${more}`)) {
-        lines.push(more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`);
-        news.refresh = true;
+    if (answer.rebased) {
+        // The server refused the page's cursor, as after a restore of the data root, and this answer counts from a new
+        // one, against a history the page never saw. A count from it would undercount what the page hasn't seen, so the
+        // line says the inbox changed, with the same Refresh link, and the page is stale until it refreshes. Counts from
+        // the new cursor start afresh, so each one said before is forgotten. A refusal with no count said since the last
+        // one has nothing new to say.
+        const counted = [...announced].filter((key) => key.startsWith('arrived:'));
+        news.forget.push(...counted);
+        if (!announced.has('rebased') || counted.length > 0) {
+            news.arrival = REBASED_LINE;
+            if (!announced.has('rebased')) news.keys.push('rebased');
+        }
+    } else if (more > 0 && !announced.has(`arrived:${more}`)) {
+        const count = more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`;
+        // After a refusal the page stays stale until it refreshes, so the count follows the sentence that says so.
+        news.arrival = announced.has('rebased') ? `${REBASED_LINE} ${count}` : count;
         news.keys.push(`arrived:${more}`);
     }
     const wasRunning = page.watcher.state === 'running';

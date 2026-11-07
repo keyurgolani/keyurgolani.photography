@@ -65,7 +65,10 @@ export const UNAVAILABLE_HTML = `<!doctype html>
 `;
 
 const STYLE_HASH = `'sha256-${createHash('sha256').update(STYLE).digest('base64')}'`;
-/** The theme script, allowed by its hash too, so the 503 paints in the visitor's stored theme like every other page. */
+/**
+ * The theme script, allowed by its hash too, so the 503 paints in the visitor's stored theme like every other page. The
+ * 503 holds no form, so it carries no submit gate script; a page that does and sends script-src allows both alike.
+ */
 const SCRIPT_HASH = `'sha256-${createHash('sha256').update(THEME_INIT_SCRIPT).digest('base64')}'`;
 
 /** Allows the one inline stylesheet and the theme script, by their hashes, and nothing else, and no framing, like every curator response. */

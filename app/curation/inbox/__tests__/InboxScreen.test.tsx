@@ -1,7 +1,10 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { hydrateRoot, type Root } from 'react-dom/client';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BULK_IDLE, type InboxActionState, type InboxBulkState, type InboxDetail, type InboxItem, type InboxView, type ReadyInboxSummary, type SeriesOption } from '@/lib/curation/inbox-view';
 import { INBOX_WATCH_INTERVAL_MS, INBOX_WATCH_ONLINE_GAP_MS, OFFLINE_TEXT } from '@/lib/curation/inbox-watch';
+import { SUBMIT_GATE_SCRIPT } from '@/components/site/submitGateScript';
 
 // #14's A8 on the Inbox's pieces: the filters, paging and age labels, the bulk actions and their error summary, an
 // item's error summary, the stale alert that keeps unsaved edits, and the poll with its offline state. The server
@@ -11,6 +14,7 @@ const sent = vi.hoisted(() => ({
     forms: [] as { action: string; fields: [string, string][] }[],
     answer: null as InboxActionState | null,
     bulk: null as InboxBulkState | null,
+    hold: null as Promise<void> | null,
 }));
 
 vi.mock('../actions', () => {
@@ -30,6 +34,7 @@ vi.mock('../actions', () => {
         archiveItem: make('archive'),
         bulkItems: async (_previous: InboxBulkState, form: FormData): Promise<InboxBulkState> => {
             sent.forms.push({ action: 'bulk', fields: [...form.entries()].map(([name, value]) => [name, String(value)]) });
+            if (sent.hold) await sent.hold;
             return sent.bulk ?? BULK_IDLE;
         },
     };
@@ -46,6 +51,7 @@ beforeEach(() => {
     sent.forms = [];
     sent.answer = null;
     sent.bulk = null;
+    sent.hold = null;
     window.sessionStorage.clear();
     window.history.replaceState(null, '', '/');
 });
@@ -101,6 +107,12 @@ function view(overrides: Partial<Ready> = {}): Ready {
 }
 
 const ANY = { status: null, type: null, page: 1 } as const;
+
+/** Every form that sends an action: one with an intent button, and Archive's, whose first step has none. */
+const actionForms = (root: ParentNode) => [...root.querySelectorAll('form')].filter((form) => form.querySelector('button[name="intent"], #archive-reason'));
+/** What's disabled, by what it is, so the server's markup and the mounted page can be compared. */
+const disabledSet = (root: ParentNode) =>
+    [...root.querySelectorAll('[disabled]')].map((el) => `${el.localName}${el.getAttribute('name') ? ` ${el.getAttribute('name')}` : ''}${el.getAttribute('value') ? `=${el.getAttribute('value')}` : ''} ${(el.textContent ?? '').trim().slice(0, 30)}`);
 
 async function press(button: HTMLElement) {
     await act(async () => {
@@ -274,12 +286,130 @@ describe('the bulk answers (A8 review)', () => {
         expect(screen.queryByRole('region', { name: /left as/ })).toBeNull();
     });
 
+    it('never disable anything for the submit gate: the bulk form waits at it in the server HTML, its buttons and the row checkboxes enabled, and nothing else disabled than once mounted', () => {
+        const html = document.createElement('div');
+        html.innerHTML = renderToString(<InboxList view={view()} query={ANY} />);
+        const form = html.querySelector('#inbox-bulk') as HTMLFormElement;
+        const buttons = [...form.querySelectorAll('button[name="intent"]')] as HTMLButtonElement[];
+        expect(buttons.map((button) => button.value)).toEqual(['defer', 'unassigned']);
+        // Without JavaScript nothing gates, so nothing is disabled for want of it; with it, the head's script drops a
+        // press until the form says it's ready.
+        for (const button of buttons) expect(button).toBeEnabled();
+        const boxes = [...html.querySelectorAll('input[type="checkbox"][form="inbox-bulk"]')];
+        expect(boxes.length).toBeGreaterThan(0);
+        for (const box of boxes) expect(box).toBeEnabled();
+        expect(form).toHaveAttribute('data-submit-gate', 'waiting');
+        const { container, unmount } = render(<InboxList view={view()} query={ANY} />);
+        expect(disabledSet(html)).toEqual(disabledSet(container));
+        unmount();
+    });
+
+    it('mark the bulk form ready once it has mounted, with its buttons enabled', () => {
+        render(<InboxList view={view()} query={ANY} />);
+        expect(document.getElementById('inbox-bulk')).toHaveAttribute('data-submit-gate', 'ready');
+        expect(screen.getByRole('button', { name: 'Decide later on selected' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Leave selected unassigned' })).toBeEnabled();
+    });
+
+    it('keep a pressed bulk button enabled and focused while its action is out, aria-disabled only', async () => {
+        let release = () => undefined as void;
+        sent.hold = new Promise<void>((done) => {
+            release = done;
+        });
+        render(<InboxList view={view()} query={ANY} />);
+        const button = screen.getByRole('button', { name: 'Decide later on selected' });
+        try {
+            button.focus();
+            await press(button);
+            expect(button).toHaveAttribute('aria-disabled', 'true');
+            expect(button).toBeEnabled();
+            expect(button).toHaveFocus();
+        } finally {
+            await act(async () => {
+                release();
+            });
+        }
+        expect(button).not.toHaveAttribute('aria-disabled');
+    });
+
     it("send nothing for a submit no bulk button made, as Enter in a checkbox does (N5)", async () => {
         render(<InboxList view={view()} query={ANY} />);
         await act(async () => {
             fireEvent.submit(document.getElementById('inbox-bulk') as HTMLFormElement);
         });
         expect(sent.forms).toEqual([]);
+    });
+});
+
+describe('a change by script before the page is ready', () => {
+    // The head's script holds typing, ticks and select keys until a form is ready, but a script can still set a value
+    // (selectOption, el.value =). Hydration and the re-render once each form is ready write React's state back to
+    // every controlled field, so what the screen shows is what the form sends: the server's state, not the script's.
+    const fields = (form: HTMLFormElement) => [...new FormData(form).entries()].map(([name, value]) => [name, String(value)]).sort();
+    async function hydrateAfter(d: InboxDetail, change: (holder: HTMLElement) => void) {
+        const tree = <InboxDetailView view={view({ selected: d })} />;
+        const pristine = document.createElement('div');
+        pristine.innerHTML = renderToString(tree);
+        const holder = document.createElement('div');
+        document.body.append(holder);
+        holder.innerHTML = renderToString(tree);
+        change(holder);
+        const errors: unknown[] = [];
+        let root: Root | undefined;
+        await act(async () => {
+            root = hydrateRoot(holder, tree, { onRecoverableError: (error) => errors.push(error) });
+        });
+        return {
+            pristine,
+            holder,
+            errors,
+            unmount: async () => {
+                await act(async () => root?.unmount());
+                holder.remove();
+            },
+        };
+    }
+    const review = (root: ParentNode) => root.querySelector('form[aria-label="Review"]') as HTMLFormElement;
+
+    it("shows and sends the server's state once ready, after a script set the series, the description and Decorative", async () => {
+        const { pristine, holder, errors, unmount } = await hydrateAfter(detail(), (root) => {
+            const form = review(root);
+            const select = form.querySelector('select') as HTMLSelectElement;
+            select.value = [...select.options].find((option) => option.value !== select.value)!.value;
+            (form.querySelector('textarea') as HTMLTextAreaElement).value = 'Set by a script before the page was ready.';
+            const decorative = within(form).getByRole('checkbox', { name: /Decorative/ }) as HTMLInputElement;
+            decorative.checked = !decorative.checked;
+        });
+        try {
+            expect(errors).toEqual([]);
+            const shown = review(holder);
+            const was = review(pristine);
+            expect((shown.querySelector('select') as HTMLSelectElement).value).toBe((was.querySelector('select') as HTMLSelectElement).value);
+            expect((shown.querySelector('textarea') as HTMLTextAreaElement).value).toBe((was.querySelector('textarea') as HTMLTextAreaElement).value);
+            expect((within(shown).getByRole('checkbox', { name: /Decorative/ }) as HTMLInputElement).checked).toBe((within(was).getByRole('checkbox', { name: /Decorative/ }) as HTMLInputElement).checked);
+            expect(fields(shown)).toEqual(fields(was));
+            await press(within(shown).getByRole('button', { name: 'Save edits' }));
+            expect(sent.forms).toHaveLength(1);
+            expect(sent.forms[0].fields.filter(([name]) => name !== 'intent').sort()).toEqual(fields(was));
+        } finally {
+            await unmount();
+        }
+    });
+
+    it('keeps a saved description when a script edits it before the page is ready', async () => {
+        const saved = 'A harbour wall at low tide.';
+        const { holder, errors, unmount } = await hydrateAfter(detail({ edits: { description: { kind: 'described', text: saved } } as InboxDetail['edits'] }), (root) => {
+            const area = review(root).querySelector('textarea') as HTMLTextAreaElement;
+            expect(area.value).toBe(saved);
+            area.value = 'Overwritten before the page was ready.';
+        });
+        try {
+            expect(errors).toEqual([]);
+            expect((review(holder).querySelector('textarea') as HTMLTextAreaElement).value).toBe(saved);
+            expect(fields(review(holder))).toContainEqual(['description', saved]);
+        } finally {
+            await unmount();
+        }
     });
 });
 
@@ -293,6 +423,81 @@ describe("an item's answers", () => {
             </main>,
         );
     };
+
+    // Every item form posts by hand, so the head's script drops a press until the form has mounted. Nothing is disabled
+    // for it, so with no JavaScript, where nothing gates, the server's markup is all there is.
+    const everyForm = () => detail({ can: { approve: true, edit: true, defer: true, dismiss: true, retry: true, reopen: true, confirm: false, bind: true, archive: true } });
+    const replacement = () => detail({ type: 'replacement', title: 'Replacement ready', can: { approve: false, edit: false, defer: true, dismiss: false, retry: false, reopen: false, confirm: true, bind: false, archive: false }, primaryUnavailable: null });
+    const submits = (root: ParentNode) => [...root.querySelectorAll('form button[type="submit"]')] as HTMLButtonElement[];
+
+    it('never disable anything for the submit gate: what the server disables is what the mounted page does for the same state, and the controls the gate covers are enabled', () => {
+        for (const [d, intents] of [
+            [everyForm(), ['edit', 'defer', 'approve', 'retry', 'reopen', 'bind', 'dismiss']],
+            [replacement(), ['defer', 'confirm']],
+        ] as const) {
+            const html = document.createElement('div');
+            html.innerHTML = renderToString(<InboxDetailView view={view({ selected: d })} />);
+            const forms = actionForms(html);
+            expect(forms.length).toBeGreaterThan(0);
+            for (const form of forms) expect(form).toHaveAttribute('data-submit-gate', 'waiting');
+            // The controls the gate covers, in their enabled state: its submit buttons and Archive's reason.
+            const covered = forms.flatMap((form) => [...form.querySelectorAll<HTMLButtonElement>('button[name="intent"]')]);
+            expect(covered.map((button) => button.value)).toEqual(intents);
+            for (const button of covered) expect(button).toBeEnabled();
+            if (d.can.archive) expect(html.querySelector('#archive-reason')).toBeEnabled();
+            // Anything else the server disables is the item's own state (a position with no series, the description when
+            // Decorative, an action it can't take yet), and the mounted page disables the same.
+            const { container, unmount } = render(<InboxDetailView view={view({ selected: d })} />);
+            expect(disabledSet(html)).toEqual(disabledSet(container));
+            unmount();
+        }
+    });
+
+    it('take a press at once in the forms the client mounts after an answer, as the next item after Decide later, never waiting at the gate', async () => {
+        // The head's script, as the page runs it, so a form that waited would drop the press.
+        new Function(SUBMIT_GATE_SCRIPT)();
+        const all = { approve: true, edit: true, defer: true, dismiss: true, retry: true, reopen: true, confirm: false, bind: true, archive: true };
+        const first = detail({ can: all });
+        const next = detail({ ...item(2), can: all });
+        const { container, rerender } = render(<InboxDetailView view={view({ selected: first })} />);
+        const before = container.querySelector('form[aria-label="Review"]');
+        const flips = new MutationObserver(() => undefined);
+        flips.observe(container, { subtree: true, attributes: true, attributeFilter: ['data-submit-gate'], attributeOldValue: true });
+        // The refresh after an answer shows the next item: ItemActions is keyed by the item, so its forms mount anew.
+        rerender(<InboxDetailView view={view({ selected: next })} />);
+        const waited = flips.takeRecords().map((record) => `${(record.target as Element).getAttribute('aria-label') ?? 'a form'}: ${record.oldValue} then ${(record.target as Element).getAttribute('data-submit-gate')}`);
+        flips.disconnect();
+        expect(container.querySelector('form[aria-label="Review"]')).not.toBe(before);
+        // Mounted ready: no form of the new item ever said `waiting`, so there was no moment a press would drop.
+        expect(waited).toEqual([]);
+        const forms = actionForms(container);
+        expect(forms.length).toBeGreaterThan(1);
+        for (const form of forms) expect(form).toHaveAttribute('data-submit-gate', 'ready');
+        await press(within(container.querySelector('form[aria-label="Review"]') as HTMLElement).getByRole('button', { name: 'Decide later' }));
+        expect(sent.forms.map((form) => form.action)).toEqual(['defer']);
+        expect(sent.forms[0].fields).toContainEqual(['eventId', EVT(2)]);
+    });
+
+    it('mark every action form ready once it has mounted, with every submit button enabled', async () => {
+        for (const d of [everyForm(), replacement()]) {
+            const { container, unmount } = render(<InboxDetailView view={view({ selected: d })} />);
+            const buttons = submits(container);
+            expect(buttons.length).toBeGreaterThan(0);
+            for (const button of buttons) expect(button).toBeEnabled();
+            for (const form of actionForms(container)) expect(form).toHaveAttribute('data-submit-gate', 'ready');
+            // Archive's own submit shows once its first press asks to confirm, after hydration, and is enabled too.
+            const archive = screen.queryByRole('button', { name: /^Archive/ });
+            if (archive) {
+                const reason = screen.getByRole('textbox', { name: 'Reason for archiving' });
+                expect(reason).toBeEnabled();
+                fireEvent.change(reason, { target: { value: 'Taken down at the owner’s request.' } });
+                await press(archive);
+                for (const button of submits(container)) expect(button).toBeEnabled();
+                expect(submits(container).map((button) => button.value)).toContain('archive');
+            }
+            unmount();
+        }
+    });
 
     it('show a refused submit as one error summary that links the item', async () => {
         sent.answer = { status: 'refused', action: 'approve', eventId: EVT(1), message: "This photograph is already in a series, and approving doesn't take it out of one. Nothing was written.", serial: 1 };
@@ -431,6 +636,138 @@ describe('the poll', () => {
         expect(region.querySelector('p')).toBe(said);
     });
 
+    it('keeps the new-items line and its link when a later check says only something about the watcher, and adds that beside it', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByText(/1 new item needs judgment\./);
+        // The same arrival, said already, and now the watcher stopped: only the watcher is news.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent(/watcher stopped checking in/);
+        // The arrival line stays where it was, the same node, and its link is still there once. The region isn't atomic,
+        // so a screen reader reads what was added beside it, not the whole region with the arrival again.
+        expect(within(region).getByText(/1 new item needs judgment\./)).toBe(arrival);
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' })).toBeInTheDocument();
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+        expect(region.textContent?.match(/1 new item needs judgment\./g)).toHaveLength(1);
+        // A third word about the watcher replaces the second, beside the arrival, which still holds.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent('The watcher is checking in again.');
+        expect(region).not.toHaveTextContent(/watcher stopped checking in/);
+        expect(within(region).getByText(/1 new item needs judgment\./)).toBe(arrival);
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+    });
+
+    it('keeps only the new-items sentence beside its link: what else that answer said is the other line, which a later word replaces', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(arrival).toHaveTextContent(/^1 new item needs judgment\. Refresh the inbox$/);
+        expect(region).toHaveTextContent(/watcher stopped checking in/);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent('The watcher is checking in again.');
+        expect(region).not.toHaveTextContent(/watcher stopped checking in/);
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
+    });
+
+    it('says "Back online." beside the new-items line, not in it, so going offline again replaces it', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_ONLINE_GAP_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(arrival).toHaveTextContent(/^1 new item needs judgment\. Refresh the inbox$/);
+        expect(region).toHaveTextContent('Back online.');
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        expect(region).toHaveTextContent(OFFLINE_TEXT);
+        expect(region).not.toHaveTextContent('Back online.');
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
+    });
+
+    it('replaces the new-items line with a new one when more items arrive, and clears the watcher line beside the old one', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const first = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveTextContent(/watcher stopped checking in/);
+        // One more arrived, and the watcher is still stopped, which was said: only the new count is news.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 4, arrived: 2, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const second = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(second).toHaveTextContent(/^2 new items need judgment\. Refresh the inbox$/);
+        // A new node, so the region reads the new count as an addition.
+        expect(second).not.toBe(first);
+        expect(first.isConnected).toBe(false);
+        expect(region).not.toHaveTextContent(/watcher stopped checking in/);
+        expect(region).not.toHaveTextContent('1 new item needs judgment.');
+        expect(region.querySelectorAll('p')).toHaveLength(1);
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+    });
+
+    it('puts each new word on the other line in a node of its own, offline and then the watcher, beside the new-items line', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        const arrival = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        const offline = within(region).getByText(OFFLINE_TEXT);
+        expect(offline).not.toBe(arrival);
+        // A check gets through: back online, and the watcher stopped meanwhile.
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null, watcher: { state: 'missing' } }) }) as Response);
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_ONLINE_GAP_MS);
+        const watcher = within(region).getByText(/watcher stopped checking in/);
+        expect(watcher).toHaveTextContent(/^Back online\./);
+        expect(watcher).not.toBe(offline);
+        expect(offline.isConnected).toBe(false);
+        expect(region).not.toHaveTextContent(OFFLINE_TEXT);
+        expect(within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p')).toBe(arrival);
+        expect(region.querySelectorAll('p')).toHaveLength(2);
+    });
+
+    it('puts "Back online." before the new-items line when one answer brings both, so it is read first', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 3, arrived: 1, item: null }) }) as Response);
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_ONLINE_GAP_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        expect([...region.querySelectorAll('p')].map((line) => line.textContent)).toEqual(['Back online. The inbox is checking for changes again.', '1 new item needs judgment. Refresh the inbox']);
+    });
+
+    it('reads only what changed in its region: a status is atomic by default, so it says aria-atomic="false"', () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        // role="status" implies aria-atomic="true", and Chromium honours it: with two lines, a change to one would make
+        // NVDA or JAWS read the whole region again, the new-items line and its link included.
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveAttribute('aria-atomic', 'false');
+    });
+
     it("puts its strips straight into the page, with no wrapper of its own, where next's watcher strip was (A8's CI, Dark parity)", () => {
         render(
             <div data-testid="page">
@@ -563,10 +900,42 @@ describe('the poll', () => {
         render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/curation/inbox/summary?since=7', '/api/curation/inbox/summary']);
-        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('');
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent(/^The inbox has changed since this page loaded\. Refresh the inbox$/);
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher.mock.calls.at(-1)?.[0]).toBe('/api/curation/inbox/summary?since=3');
         expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('1 new item needs judgment.');
+    });
+
+    it('says the inbox changed, with its one Refresh link, when the server refuses the cursor after new items, never a count from the new cursor', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        fetcher.mockImplementation(async () => ({ status: 200, ok: true, type: 'basic', json: async () => summary({ needsJudgment: 5, arrived: 3, item: null }) }) as Response);
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        expect(region).toHaveTextContent('3 new items need judgment.');
+        // The data root was restored: the server refuses since=7, and the read without it counts from its own cursor.
+        // Even with a count in that answer, it's against a history the page never saw, so it isn't said.
+        fetcher.mockImplementation(async (url: string) =>
+            url.includes('since=7')
+                ? ({ status: 400, ok: false, type: 'basic', json: async () => ({ error: 'bad-cursor' }) } as Response)
+                : ({ status: 200, ok: true, type: 'basic', json: async () => summary({ cursor: 3, needsJudgment: 6, arrived: url.includes('since=3') ? 3 : 1, item: null }) } as Response),
+        );
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher.mock.calls.slice(-2).map(([url]) => url)).toEqual(['/api/curation/inbox/summary?since=7', '/api/curation/inbox/summary']);
+        const changed = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(changed).toHaveTextContent(/^The inbox has changed since this page loaded\. Refresh the inbox$/);
+        expect(region).not.toHaveTextContent('1 new item needs judgment.');
+        expect(region).not.toHaveTextContent('3 new items need judgment.');
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
+        // From the new cursor on, a count is said, even one the page said before the restore, but the page is stale until
+        // it refreshes, so the count follows the sentence that says so, in the same line, a new node.
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher.mock.calls.at(-1)?.[0]).toBe('/api/curation/inbox/summary?since=3');
+        const counted = within(region).getByRole('link', { name: 'Refresh the inbox' }).closest('p') as HTMLElement;
+        expect(counted).toHaveTextContent(/^The inbox has changed since this page loaded\. 3 new items need judgment\. Refresh the inbox$/);
+        expect(counted).not.toBe(changed);
+        expect(region.querySelectorAll('p')).toHaveLength(1);
+        expect(region.textContent?.match(/The inbox has changed/g)).toHaveLength(1);
+        expect(region.textContent?.match(/Refresh the inbox/g)).toHaveLength(1);
     });
 
     it('stops quietly once the session is gone, and never asks again', async () => {
@@ -587,8 +956,8 @@ describe('the poll', () => {
         await tick(INBOX_WATCH_INTERVAL_MS);
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(region).toHaveAttribute('data-watch', 'stopped');
-        // Invisible to everyone: no ARIA attribute beyond its name, and nothing said.
-        expect(region.getAttributeNames().filter((name) => name.startsWith('aria-'))).toEqual(['aria-label']);
+        // Invisible to everyone: no ARIA attribute beyond its name and its aria-atomic="false", and nothing said.
+        expect(region.getAttributeNames().filter((name) => name.startsWith('aria-')).sort()).toEqual(['aria-atomic', 'aria-label']);
         expect(region).toHaveTextContent('');
     });
 
