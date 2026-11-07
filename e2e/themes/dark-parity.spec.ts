@@ -548,11 +548,25 @@ const failNextFromKeyboard = async (page: Page) => {
 const aboutLink = (page: Page) => page.locator('main article a').first();
 /**
  * The Inbox streams in after hydration, behind its loading state: an act before the list is in would focus a row that
- * the list then replaces, leaving focus on the body.
+ * the list then replaces, leaving focus on the body. React's inline script shows the list before the Inbox hydrates,
+ * and html[data-hydrated] is the shell's, so the act also waits for the Inbox's own forms: none still waiting at the
+ * submit gate, and each one claimed by React. The base (v1.2.0) has no gate, so that half holds there at once, and
+ * the React half is the wait in both builds.
  */
 const inboxIn = async (page: Page) => {
     await expect(page.locator('main ul a[data-row]').first(), 'the Inbox list is in').toBeVisible();
     await expect(page.getByText('Loading the inbox'), "the Inbox's loading state is gone").toBeHidden();
+    await expect
+        .poll(
+            () =>
+                page.evaluate(
+                    () =>
+                        document.querySelectorAll('form[data-submit-gate="waiting"]').length === 0 &&
+                        [...document.querySelectorAll('main form')].every((form) => Object.keys(form).some((key) => key.startsWith('__reactFiber$'))),
+                ),
+            { message: "the Inbox's forms have hydrated", timeout: 30_000 },
+        )
+        .toBe(true);
 };
 const inboxRow = (page: Page) => page.locator('main ul a[data-row]').first();
 const inboxRefresh = (page: Page) => page.getByRole('button', { name: 'Refresh inbox' });
