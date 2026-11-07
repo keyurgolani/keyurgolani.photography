@@ -840,7 +840,7 @@ const STYLE_DETAILS = path.join(OUT, 'dark-styles.details');
  * 695.7 px taller at these sizes, and the photograph sits 28.5 px lower, centred in a shorter frame. A phone (390) is
  * unchanged, so nothing here applies to it.
  */
-const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width) => {
+const INDEPENDENT_PANELS: Allowance[] = [1024, 1440].flatMap((width): Allowance[] => {
     const why = '#145: the Inbox list and form scroll independently on a wide screen';
     const page = 'inbox';
     const tall = 700;
@@ -932,7 +932,7 @@ const foldFor = (pair: Pair) =>
  * outside it, but the title link's, inset on its ::after (the issue's "with the focus ring inset", in every theme).
  * Nothing moves: every box, and every other style, is compared exactly.
  */
-const WORK_ENTRIES: Allowance[] = [1, 2].flatMap((n) => {
+const WORK_ENTRIES: Allowance[] = [1, 2].flatMap((n): Allowance[] => {
     const selector = `main > ul > li:nth-of-type(${n}) > :first-child`;
     return [
         { page: 'work', selector, properties: ['position'], why: "#171 (B3): Work's entry box holds its title link's stretched target" },
@@ -991,7 +991,7 @@ const ABOUT_FRAME: Allowance[] = (
         [1024, 25],
         [1440, 210],
     ] as const
-).flatMap(([width, maxDelta]) => {
+).flatMap(([width, maxDelta]): Allowance[] => {
     const why = "#179: About's portrait frame, 4:3 stacked and 4:5 side by side";
     return [
         { page: 'about', width, selector: 'body', maxDelta, why },
@@ -1008,7 +1008,7 @@ const ABOUT_FRAME: Allowance[] = (
  * frame takes back 105. Only this state, and only at 390: its focus twin focuses without scrolling, and at 1024 and
  * 1440 the hover passes under ABOUT_FRAME's bounds. Every paint, type and style is still compared exactly.
  */
-const ABOUT_LINK_SCROLL: Allowance[] = (() => {
+const ABOUT_LINK_SCROLL: Allowance[] = ((): Allowance[] => {
     const why = "#179: About's portrait frame, 4:3 stacked; the base's hover scrolls to the link, the head's doesn't";
     const at = { page: 'about-link-hover', width: 390, maxDelta: 165, why };
     return [
@@ -1027,7 +1027,7 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
  * with it (test/helpers/parityWalk.ts). Every item openInboxItems() opens needs judgment, so each is a row of the
  * list's one ul, and every row has the column, an empty one for the missing source.
  */
-const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: OPENED_INBOX_ITEMS }, (_, index) => ({
+const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: OPENED_INBOX_ITEMS }, (_, index): Allowance => ({
     page: 'inbox',
     selector: `#inbox-list > ul > li:nth-of-type(${index + 1})`,
     properties: ['display'],
@@ -1078,7 +1078,7 @@ const ALLOWANCES: Allowance[] = [
     { page: 'publish', selector: 'header nav a[aria-current="page"]', properties: ['box-shadow'], why: "P2-8: Publish's selected tab's outline" },
     ...INDEPENDENT_PANELS,
     // #4's failure copy (v2.0.0): "Couldn't load photograph 04 of 04" is 2.2 px narrower than "Photograph 04 of 04 couldn't load.".
-    ...['[data-chrome-region="sequence"] > div', '[data-chrome-region="sequence"] [role="status"]', '[data-chrome-region="sequence"] [role="status"] > p'].map((selector) => ({
+    ...['[data-chrome-region="sequence"] > div', '[data-chrome-region="sequence"] [role="status"]', '[data-chrome-region="sequence"] [role="status"] > p'].map((selector): Allowance => ({
         page: 'home-failure',
         selector,
         maxDelta: 4,
@@ -1086,7 +1086,7 @@ const ALLOWANCES: Allowance[] = [
     })),
     ...INBOX_PICK_ROWS,
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
-    ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
+    ...(['inbox', 'publish'] as const).map((page): Allowance => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
     ...VIEWER_ZOOM,
     // The failed box scrolls a long alt or enlarged text inside itself (overflow-y: auto, which makes overflow-x auto).
     { page: 'viewer-missing', selector: '[data-surface="viewer"] [data-photo="unavailable"]', properties: ['overflow-x', 'overflow-y'], why: '#175: the failed box scrolls its alt' },
