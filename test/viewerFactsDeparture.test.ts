@@ -147,12 +147,24 @@ describe("the Viewer details list's departure", () => {
             expect(cameraRowDeparture(BASE, page(headWith('ISO', '\u00a0200'))).failing).toEqual(['row 5: "ISO: 200" in the base against "ISO: \u00a0200" in the head']);
         });
 
+        it.each([
+            ['a second dd', '<div><dt>Exposure</dt><dd>1/250 s</dd><dd>2 s</dd></div>'],
+            ['a second dt', '<div><dt>Exposure</dt><dt>Shutter</dt><dd>1/250 s</dd></div>'],
+        ])('fails a row with %s, though its first dt and dd match', (_, row) => {
+            const rows = page(HEAD);
+            document.querySelectorAll(FACT_ROWS)[3].outerHTML = row;
+            const read = readFactRows(FACT_ROWS);
+            expect(read[3]).toBeNull();
+            expect(cameraRowDeparture(BASE, read).failing).toContain("the head's row 4 doesn't have exactly one dt and one dd");
+            expect(rows).toEqual(HEAD);
+        });
+
         it('fails a row with no dd, in either build, and never reads it as an empty value', () => {
             const rows = page(HEAD.map(([label, value]): [string, string | null] => [label, label === 'ISO' ? null : value]));
             expect(rows[4]).toBeNull();
-            expect(cameraRowDeparture(BASE, rows).failing).toContain("the head's row 5 has no dt or no dd");
+            expect(cameraRowDeparture(BASE, rows).failing).toContain("the head's row 5 doesn't have exactly one dt and one dd");
             const both = page(BASE.map(([label, value]): [string, string | null] => [label, label === 'ISO' ? null : value]));
-            expect(cameraRowDeparture(both, rows).failing).toEqual(["the base's row 6 has no dt or no dd", "the head's row 5 has no dt or no dd"]);
+            expect(cameraRowDeparture(both, rows).failing).toEqual(["the base's row 6 doesn't have exactly one dt and one dd", "the head's row 5 doesn't have exactly one dt and one dd"]);
         });
     });
 });
