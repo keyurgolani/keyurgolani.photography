@@ -69,14 +69,14 @@ describe('npm run test:budgets', () => {
     // The job is one the CI result needs, so a failed budget fails the pull request.
     expect(workflow).toMatch(/needs: \[[^\]]*\be2e\b[^\]]*\]/);
     // Its own ceiling, so a hang fails the step and the uploads after it still run, inside a job with room for it.
-    expect(workflow).toMatch(/- name: Check #6's budgets\n\s+timeout-minutes: 12\n\s+run: npm run test:budgets\n/);
+    expect(workflow).toMatch(/- name: "Check #6's budgets"\n\s+timeout-minutes: 12\n\s+run: npm run test:budgets\n/);
     expect(workflow).toMatch(/\n {2}e2e:\n(?:.*\n)*? {4}timeout-minutes: 55\n/);
     expect(workflow).not.toContain('about 19 minutes');
   });
 
   it('uploads the report and puts its numbers in the step summary, pass or fail', async () => {
     const workflow = await read('.github/workflows/ci.yml');
-    expect(workflow).toMatch(/- if: always\(\)\n\s+name: Summarize #6's budgets\n\s+run: cat \.perf\/report\.md >> "\$GITHUB_STEP_SUMMARY" \|\| true\n/);
+    expect(workflow).toMatch(/- if: always\(\)\n\s+name: "Summarize #6's budgets"\n\s+run: cat \.perf\/report\.md >> "\$GITHUB_STEP_SUMMARY" \|\| true\n/);
     expect(workflow).toMatch(/- if: always\(\)\n\s+uses: actions\/upload-artifact@v7\n\s+with:\n\s+name: budgets-report\n\s+path: \.perf\/report\.json\n\s+if-no-files-found: ignore\n/);
   });
 

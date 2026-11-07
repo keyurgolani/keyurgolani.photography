@@ -123,12 +123,13 @@ jobs:
       # #6's budgets on the build test:e2e just made: a generated library on 127.0.0.1:3200, Chromium only, no
       # network. A budget over its number in lib/perf/budgets.ts fails the job, and so the pull request. Its own
       # ceiling, so a hang fails this step and the uploads below still run.
-      - name: Check #6's budgets
+      # Quoted: unquoted, YAML reads " #" as a comment's start and the step's name as "Check".
+      - name: "Check #6's budgets"
         timeout-minutes: 12
         run: npm run test:budgets
 
       - if: always()
-        name: Summarize #6's budgets
+        name: "Summarize #6's budgets"
         run: cat .perf/report.md >> "$GITHUB_STEP_SUMMARY" || true
 
       - if: always()
