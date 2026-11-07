@@ -18,8 +18,8 @@ const REPLAYED = [
 /**
  * Moves the mouse just outside the viewport, where no element is under it.
  * Chromium sends a resting pointer native hovers when the content under it
- * changes, as Home's does while it loads, so a test that wants no hover at
- * all parks the pointer first.
+ * changes, as Home's does while it loads, at the start of the next frame, so a
+ * test that wants no hover at all parks the pointer first.
  */
 export async function parkPointer(page: Page): Promise<void> {
     await page.mouse.move(-1, -1);
