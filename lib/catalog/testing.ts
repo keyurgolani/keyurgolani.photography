@@ -47,7 +47,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const FIXTURE_TIME = '2026-01-01T00:00:00.000Z';
 /** A 10 px WebP, for content built without image files. */
 const PLACEHOLDER_LQIP = 'data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAQCdASoKAAoAAUAmJYgCdAEO9ACA/v9P9f96f1AAAAAAfQ==';
-const DEFAULT_TECHNICAL: Partial<Record<TechnicalKey, string>> = {
+export const DEFAULT_TECHNICAL: Partial<Record<TechnicalKey, string>> = {
     Make: 'Fixture Make',
     Model: 'Fixture Model',
     FocalLength: '35',
