@@ -1107,6 +1107,12 @@ main.state {
     text-decoration: none;
   }
 
+  /* It spans the window's width, so its ring sits inside it, as a row's and a panel's do, or the window cuts its sides. */
+  .backToList:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-width));
+    box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark) !important;
+  }
+
   .watcherPointer {
     display: block;
     margin: 0;
