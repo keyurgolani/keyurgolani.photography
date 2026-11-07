@@ -12,6 +12,7 @@ import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, completeHiddenSegments, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
 import { cameraRowDeparture, FACT_ROWS, readFactRows, type FactRow } from '../../test/helpers/viewerFacts';
+import { INBOX_HYDRATION_TIMEOUT, waitForInboxForms } from '../../test/helpers/inboxReady';
 
 // Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
 // same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
@@ -553,20 +554,12 @@ const aboutLink = (page: Page) => page.locator('main article a').first();
  * submit gate, and each one claimed by React. The base (v1.2.0) has no gate, so that half holds there at once, and
  * the React half is the wait in both builds.
  */
-const inboxIn = async (page: Page) => {
+const inboxIn = async (page: Page, { timeout = INBOX_HYDRATION_TIMEOUT }: { timeout?: number } = {}) => {
     await expect(page.locator('main ul a[data-row]').first(), 'the Inbox list is in').toBeVisible();
     await expect(page.getByText('Loading the inbox'), "the Inbox's loading state is gone").toBeHidden();
-    await expect
-        .poll(
-            () =>
-                page.evaluate(
-                    () =>
-                        document.querySelectorAll('form[data-submit-gate="waiting"]').length === 0 &&
-                        [...document.querySelectorAll('main form')].every((form) => Object.keys(form).some((key) => key.startsWith('__reactFiber$'))),
-                ),
-            { message: "the Inbox's forms have hydrated", timeout: 30_000 },
-        )
-        .toBe(true);
+    // Bounded, and named when it fails (test/helpers/inboxReady.ts): a form that never hydrates fails the pair, never a
+    // walk of a page that isn't there yet.
+    await waitForInboxForms(page, { timeout });
 };
 const inboxRow = (page: Page) => page.locator('main ul a[data-row]').first();
 const inboxRefresh = (page: Page) => page.getByRole('button', { name: 'Refresh inbox' });
@@ -1612,6 +1605,39 @@ test.describe('the curator and its 503', () => {
 
     test.afterAll(async () => {
         await Promise.all(servers.map((server) => server.stop()));
+    });
+
+    // The self-test for the Inbox's own hydration wait: it passes on the base, which has no submit gate, and fails by name
+    // on the head when a form is kept waiting, or one React never claimed is there.
+    test('self-test: the Inbox act fails by name when a form never hydrates, and passes on the base', async () => {
+        const load = async (which: 'base' | 'head') => {
+            const context = await browser.newContext({ viewport: VIEWPORTS.desktop, colorScheme: 'dark', reducedMotion: 'reduce' });
+            await context.addCookies(JSON.parse(cookies[which]).map((cookie: { name: string; value: string }) => ({ ...cookie, url: curator[which] })));
+            const page = await context.newPage();
+            await page.goto(`${curator[which]}/curation/inbox`);
+            await page.locator('html[data-hydrated]').waitFor({ state: 'attached' });
+            return { context, page };
+        };
+        const base = await load('base');
+        try {
+            await inboxIn(base.page);
+        } finally {
+            await base.context.close();
+        }
+        for (const [form, reason] of [
+            ['<form aria-label="Kept waiting" data-submit-gate="waiting"></form>', /^The Inbox didn't hydrate within \d+ ms: an Inbox form kept waiting: Kept waiting$/],
+            ['<form aria-label="Never claimed"></form>', /^The Inbox didn't hydrate within \d+ ms: an Inbox form was never claimed by React: Never claimed$/],
+        ] as const) {
+            const head = await load('head');
+            try {
+                await inboxIn(head.page);
+                // A form the server never sent and React never saw, put where the Inbox's forms are.
+                await head.page.evaluate((html) => document.querySelector('main')!.insertAdjacentHTML('beforeend', html), form);
+                await expect(inboxIn(head.page, { timeout: 3000 })).rejects.toThrow(reason);
+            } finally {
+                await head.context.close();
+            }
+        }
     });
 
     parity('curator', CURATOR, () => curator, { legacy: true, session: () => cookies });
