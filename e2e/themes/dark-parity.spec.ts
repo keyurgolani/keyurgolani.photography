@@ -1344,6 +1344,11 @@ test.describe('the visitor site', () => {
     });
 
     // The gate sees what it claims to: each of these, injected into the head, must fail it. Recorded, and asserted.
+    // The Viewer heading's shown title, longer in the head; the base has no such span, so nothing changes there.
+    const changeViewerTitle = (page: Page) =>
+        page.evaluate(() => {
+            for (const span of document.querySelectorAll('[data-surface="viewer"] header h1 > span[aria-hidden="true"]')) span.append(' at dusk');
+        });
     const hoverNavLink = (page: Page) => page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Work', exact: true }).hover();
     for (const [name, url, headStyle, act, motion, ...rest] of [
         ["Home's scrim, +1 on one channel", '/', '[class*="vignette"]{background:linear-gradient(90deg,rgb(9 10 9/.9) 0%,rgb(9 10 9/.46) 38%,rgb(9 10 9/.08) 70%)!important}', revealChrome, undefined],
@@ -1369,19 +1374,37 @@ test.describe('the visitor site', () => {
         ["a folded link's ::after border at rest", '/work', 'main ul li h2 a::after{border-top:1px solid!important}', undefined, undefined, { seen: '(folded)::after border-top-width: 1px' }],
         // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
         ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
+        // The Viewer heading's folded title (#175, B8): its own ink must fail as a fold line, the first mutant on any fold
+        // that its inherited check sees. A size change needs none: the h1's box, compared at 0 px, catches it.
+        ["the Viewer heading's title red", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"] header h1 > span{color:rgb(255 0 0)!important}', undefined, undefined, { seen: '>span (folded) color: rgb(255, 0, 0)' }],
+        // A changed title, in the head only (nothing in the base matches the span): left out of the walk as a fold, it
+        // must still fail, by the h1's box.
+        ["the Viewer heading's title changed", `${series}/photo/${HOME_OPENING}`, '', changeViewerTitle, undefined, { box: '>h1:nth-of-type(1): ' }],
     ] as const) {
         const only = rest[0] && 'within' in rest[0] ? (rest[0] as { within: string; property: string }) : null;
         const seen = rest[0] && 'seen' in rest[0] ? (rest[0] as { seen: string }).seen : null;
+        const box = rest[0] && 'box' in rest[0] ? (rest[0] as { box: string }).box : null;
         test(`self-test: ${name} in the head fails the gate`, async () => {
             // Work's under its sanctioned departures, as the gate's `work` rows are, so B3's entry box (`position`)
-            // can't be what fails it: what's left is the injected change (B3's CI review, S1).
-            const pair: Pair = { name: `self-test, ${name}`, url, headStyle, act, motion, ...(url === '/work' && { stateOf: 'work' }) };
+            // can't be what fails it: what's left is the injected change (B3's CI review, S1). The Viewer's leaves out
+            // what its gate rows do, the old spoken position and the base's Camera make row, for the same reason.
+            const pair: Pair = {
+                name: `self-test, ${name}`,
+                url,
+                headStyle,
+                act,
+                motion,
+                ...(url === '/work' && { stateOf: 'work' }),
+                ...(url === `${series}/photo/${HOME_OPENING}` && { leaveOut: VIEWER_POSITION, cameraRows: true as const }),
+            };
             const viewport = VIEWPORTS.desktop;
             const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'dark', pair, viewport, 'head')];
             const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk));
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
-            // Seen as the change itself, in a style or a token, on loads that settled.
-            expect(comparison.styles.length + comparison.tokens.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
+            // Seen as the change itself, in a style or a token, on loads that settled; a change that moves only a box, in its
+            // geometry, at that box.
+            if (box) expect(comparison.geometry.filter((line) => line.includes(box)).length, `${name}: seen as the box ${box}`).toBeGreaterThan(0);
+            else expect(comparison.styles.length + comparison.tokens.length, `${name}: the computed-style gate sees it`).toBeGreaterThan(0);
             if (seen) expect(comparison.styles.filter((line) => line.includes(seen)).length, `${name}: seen as ${seen}`).toBeGreaterThan(0);
             if (only) {
                 // Seen where it was put, and nowhere else.

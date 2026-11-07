@@ -114,6 +114,8 @@ export const FOLD_PAINT = {
         'padding-top': '0px', 'padding-right': '0px', 'padding-bottom': '0px', 'padding-left': '0px',
     },
     pseudo: {
+        // No text: a rendered ::before or ::after of a folded element is an empty box at most, as Work's title link's ::after is.
+        content: '""',
         'background-color': 'rgba(0, 0, 0, 0)',
         'background-image': 'none',
         'border-top-width': '0px', 'border-right-width': '0px', 'border-bottom-width': '0px', 'border-left-width': '0px',
