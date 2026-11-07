@@ -1371,6 +1371,8 @@ test.describe('the visitor site', () => {
         ["a folded link's padding", '/work', 'main ul li h2 a{padding-left:1px!important}', undefined, undefined, { seen: '(folded) padding-left: 1px' }],
         ["a folded link's border", '/work', 'main ul li h2 a{border-bottom:1px solid!important}', undefined, undefined, { seen: '(folded) border-bottom-width: 1px' }],
         ["a folded link's ::after border at rest", '/work', 'main ul li h2 a::after{border-top:1px solid!important}', undefined, undefined, { seen: '(folded)::after border-top-width: 1px' }],
+        // FOLD_PAINT pins a folded element's ::before and ::after to no text (B8): a word on the title link's ::after must fail.
+        ["a folded link's ::after with text at rest", '/work', 'main ul li h2 a::after{content:"x"!important}', undefined, undefined, { seen: '(folded)::after content: "x"' }],
         // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
         ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
         // The Viewer heading's folded title (#175, B8): its own ink must fail as a fold line, the first mutant on any fold

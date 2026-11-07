@@ -3,7 +3,7 @@ import { compare, walk, type EvaluatingPage } from './helpers/parityWalk';
 
 // The Dark parity walk (test/helpers/parityWalk.ts) in jsdom, through a page that runs the walk's own function here.
 // jsdom has no layout, so every box is zero; what this checks is which elements the walk calls the theme control's slot.
-const page = { evaluate: (fn: (args: unknown) => unknown, args: unknown) => Promise.resolve(fn(args)) } as unknown as EvaluatingPage;
+const page: EvaluatingPage = { evaluate: async (fn, arg) => fn(arg) };
 
 /** The base's markup and the head's, walked in turn, with the head's added elements left out as HEAD_ONLY leaves them. */
 async function walkBoth(base: string, head: string, leaveOut: string[]) {
