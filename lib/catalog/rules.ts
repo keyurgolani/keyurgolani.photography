@@ -642,9 +642,10 @@ const SLICE_A_RULES: RuleDefinition[] = [
     {
         // Work lists every published series by its title, so two that share one show as links with the same name. A
         // warning, the owner's call: it names each series by slug, and never blocks a publish or changes an exit code.
-        // Titles match after normalized()'s trim and collapse of every run of whitespace, a non-breaking space among
-        // them, since Work's titles have no white-space rule and render each run as one space, then foldName()'s NFC and
-        // case-fold: "Harbor light", " harbor  light" and "HARBOR\u00a0LIGHT" are one.
+        // Titles match after normalized()'s trim and collapse of every run of whitespace, then foldName()'s NFC and
+        // case-fold: "Harbor light", " harbor  light" and "HARBOR\u00a0LIGHT" are one. Work's titles have no white-space
+        // rule, so a run of ordinary spaces renders as one. A non-breaking space doesn't collapse, but it looks like an
+        // ordinary space, so a title with one reads the same, and \s matches it.
         id: 'series.duplicate-title',
         severity: 'warning',
         gate: 'publish',
