@@ -8,15 +8,18 @@ export const CAMERA_MAKE = 'Camera make';
 export const FACT_ROWS = '[data-surface="viewer"] dl > div';
 
 /**
- * Each row under `selector`: its dt's text and its dd's, exactly as read, untrimmed, or null where either is missing.
+ * Each row under `selector`: its dt's text and its dd's, exactly as read, untrimmed, or null unless it has exactly one
+ * of each.
  * StoryViewer renders <dt>{label}</dt><dd>{value}</dd> with no whitespace, so there's nothing to trim; JavaScript's
  * trim() would also strip U+00A0, U+202F and U+FEFF, and hide them from the exact-string check. Self-contained, as the
  * parity spec runs it in the page with page.evaluate().
  */
 export function readFactRows(selector: string): (FactRow | null)[] {
     return [...document.querySelectorAll(selector)].map((row): FactRow | null => {
-        const label = row.querySelector('dt')?.textContent ?? null;
-        const value = row.querySelector('dd')?.textContent ?? null;
+        // Exactly one of each: a second dd or dt would otherwise hide behind a first that matches.
+        const [labels, values] = [row.querySelectorAll('dt'), row.querySelectorAll('dd')];
+        if (labels.length !== 1 || values.length !== 1) return null;
+        const [label, value] = [labels[0].textContent, values[0].textContent];
         return label === null || value === null ? null : [label, value];
     });
 }
@@ -41,15 +44,15 @@ export const UNIT_ROWS: Readonly<Record<string, readonly [base: string, head: st
  * - a unit row has the same label in both, the base's value is the table's base string and the head's is its head
  *   string, exactly;
  * - every other row's label and value are byte-equal, in order.
- * - every row has a dt and a dd.
+ * - every row has exactly one dt and one dd.
  * `record` lists both builds' rows and each unit row, for the report's sanctioned departures.
  */
 export function cameraRowDeparture(baseRead: readonly (FactRow | null)[], headRead: readonly (FactRow | null)[]): { failing: string[]; record: string[] } {
     const failing: string[] = [];
-    // A row with no dt or no dd fails, in either build, and is never compared as an empty value.
+    // A row without exactly one dt and one dd fails, in either build, and is never compared as an empty value.
     for (const [build, rows] of [['base', baseRead], ['head', headRead]] as const) {
         rows.forEach((row, i) => {
-            if (row === null) failing.push(`the ${build}'s row ${i + 1} has no dt or no dd`);
+            if (row === null) failing.push(`the ${build}'s row ${i + 1} doesn't have exactly one dt and one dd`);
         });
     }
     const base = baseRead.filter((row): row is FactRow => row !== null);
