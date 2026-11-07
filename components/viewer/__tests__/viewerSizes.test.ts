@@ -97,3 +97,19 @@ describe('the failed photograph\'s sentence (#7)', () => {
         expect(transforms).not.toContain('uppercase');
     });
 });
+
+describe("the heading's spoken position (#7)", () => {
+    it('stays inline in the title\'s line and takes no room, so the name runs on from the title and the ellipsis is the title\'s', () => {
+        const declared: Record<string, string> = {};
+        css.walkRules('.series > .spokenPosition', (rule: Rule) => {
+            rule.walkDecls((decl) => {
+                declared[decl.prop] = decl.value;
+            });
+        });
+        // Inline and in flow: sr-only's absolute place would be past a long title's ellipsis, and any box that isn't
+        // inline puts a space before the comma in the heading's name and the modal's.
+        expect(declared).toMatchObject({ position: 'static', display: 'inline', margin: '0' });
+        // sr-only's 1 px box and clip don't apply to an inline box, so its text is hidden by taking no room at all.
+        expect(declared).toMatchObject({ 'font-size': '0', 'letter-spacing': '0', 'word-spacing': '0' });
+    });
+});
