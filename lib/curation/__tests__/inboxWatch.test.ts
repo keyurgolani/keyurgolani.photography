@@ -7,6 +7,7 @@ import {
     INBOX_WATCH_MAX_CHECKS,
     INBOX_WATCH_MAX_ERRORS,
     INBOX_WATCH_MIN_GAP_MS,
+    INBOX_WATCH_ONLINE_GAP_MS,
     inboxNews,
     OFFLINE_TEXT,
     type InboxWatchAnswer,
@@ -15,8 +16,9 @@ import {
 import type { ReadyInboxSummary } from '../inbox-view';
 
 // #14's A8: the Inbox's poll of /api/curation/inbox/summary, on A9's model. One check at a time, none while the tab is
-// hidden or the browser is offline, a 15 s gap on refocus, errors backing off to 10 minutes, five in a row or 120
-// checks and it stops, and quietly once the server says the session is gone.
+// hidden or the browser is offline, a 15 s gap on refocus, a check at once on coming back online (2 s apart at most),
+// errors backing off to 10 minutes, five in a row or 120 checks and it stops, and quietly once the server says the
+// session is gone.
 
 const ID = `evt_${'a'.repeat(24)}`;
 
@@ -160,24 +162,46 @@ describe('the Inbox watch', () => {
         expect(h.heard.every((answer) => answer.kind === 'offline')).toBe(true);
     });
 
-    it('comes back with resume() once the browser is online again, with the backoff reset, and keeps the 15 s gap (A8 review S5)', async () => {
+    it('comes back with resume() once the browser is online again: one check at once, the backoff reset, then the minute', async () => {
         const h = harness([new Error('down'), new Error('down')]);
         h.watch.start();
         await h.advance(INBOX_WATCH_INTERVAL_MS);
         await h.advance(2 * INBOX_WATCH_INTERVAL_MS);
         expect(h.state.checks).toBe(2);
-        // Straight after a check: it waits out the gap, then checks once.
+        // Back online 3 s after the last check, well inside the 15 s a refocus keeps: it checks at once, so the offline
+        // state can clear as soon as the server answers.
+        await h.advance(3_000);
         h.watch.resume();
-        await h.advance(INBOX_WATCH_MIN_GAP_MS - 1);
-        expect(h.state.checks).toBe(2);
-        await h.advance(1);
+        await h.advance(0);
         expect(h.state.checks).toBe(3);
+        expect(h.timers).toHaveLength(1);
         expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_INTERVAL_MS);
-        // Long after the last check: at once.
+        // Long after the last check: at once too.
         await h.advance(INBOX_WATCH_INTERVAL_MS - 1);
         h.watch.resume();
         await h.advance(0);
         expect(h.state.checks).toBe(4);
+    });
+
+    it('waits out 2 s when the browser comes back online within 2 s of a check, then checks once', async () => {
+        const h = harness([new Error('down')]);
+        h.watch.start();
+        await h.advance(INBOX_WATCH_INTERVAL_MS);
+        expect(h.state.checks).toBe(1);
+        await h.advance(500);
+        h.watch.resume();
+        await h.advance(INBOX_WATCH_ONLINE_GAP_MS - 500 - 1);
+        expect(h.state.checks).toBe(1);
+        await h.advance(1);
+        expect(h.state.checks).toBe(2);
+        // Flapping on and offline sends no more than one check per 2 s.
+        h.watch.resume();
+        h.watch.resume();
+        await h.advance(INBOX_WATCH_ONLINE_GAP_MS - 1);
+        expect(h.state.checks).toBe(2);
+        await h.advance(1);
+        expect(h.state.checks).toBe(3);
+        expect(INBOX_WATCH_ONLINE_GAP_MS).toBe(2_000);
     });
 
     it('starts again from wake() after errors stopped it, at the backoff cap (A8 review S5)', async () => {
