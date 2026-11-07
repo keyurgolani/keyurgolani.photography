@@ -28,6 +28,13 @@ describe("the parity gate's exact shift", () => {
         expect(checkShift(BOXES[2], moved(BOXES[2], -160, 1), SHIFT).off).toBe(1);
     });
 
+    it("takes the shift's x as well as its y", () => {
+        const across: Shift = [7, -160];
+        const box = BOXES[2];
+        expect(checkShift(box, moved(box, -160, 7), across).off).toBe(0);
+        expect(checkShift(box, moved(box, -160, -7), across).off).toBe(14);
+    });
+
     it('finds a box the head resized off', () => {
         const box = BOXES[2];
         expect(checkShift(box, [box[0], box[1] - 160, box[2], box[3] + 1], SHIFT).off).toBe(1);
@@ -83,6 +90,10 @@ describe("the parity gate's exact shift", () => {
             expect(checkShift(NONE, [0, -160, 0, 1], SHIFT).off).toBe(1);
             expect(checkShift([0, 300, 10, 0], [0, 140, 10, 0], SHIFT)).toEqual({ delta: 160, off: 0 });
             expect(checkShift([0, 300, 0, 10], [0, 300, 0, 10], SHIFT).off).toBe(160);
+        });
+
+        it('takes the shift for a box at the origin with a height and no width, in both builds', () => {
+            expect(checkShift([0, 0, 0, 5], [0, 0, 0, 5], SHIFT).off).toBe(160);
         });
 
         it('is off as a size change when it has area in one build and none in the other, even at the exact shift', () => {
@@ -143,6 +154,21 @@ describe("the parity gate's comparison under a shift", () => {
         const c = compare(walkOf(page(0)), walkOf(head), {}, {}, shifts);
         expect(c.styles).toEqual(['body>p:nth-of-type(2) color: rgb(1, 2, 3) against rgb(1, 2, 4)']);
         expect(c.geometry).toEqual([]);
+    });
+
+    it("still compares a no-box element's styles under the shift", () => {
+        const head = page(-160);
+        head[head.length - 1] = at(HIDDEN, [0, 0, 0, 0], ['color: rgb(9, 9, 9)']);
+        const c = compare(walkOf(page(0)), walkOf(head), {}, {}, shifts);
+        expect(c.styles).toEqual([`${HIDDEN} color: rgb(1, 2, 3) against rgb(9, 9, 9)`]);
+        expect(c.geometry).toEqual([]);
+    });
+
+    it('fails a box off by less than 1/64 px, and says by how much, unrounded', () => {
+        const off = 2 ** -20;
+        const c = compare(walkOf(page(0)), walkOf(page(-160 - off)), {}, {}, shifts);
+        expect(c.geometry).toHaveLength(BOXES.length + 1);
+        expect(c.geometry.every((line) => line.endsWith(`off by ${off} px)`))).toBe(true);
     });
 
     it('fails the same 160 px move on a box the shift doesn\'t name', () => {

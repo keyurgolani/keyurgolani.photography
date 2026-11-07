@@ -15,9 +15,16 @@ const HOME = 'test/helpers/parityWalk.ts';
 const COMPUTED = 'e2e/themes/computed.ts';
 const GATE = 'e2e/themes/dark-parity.spec.ts';
 const SCANNED = ['test', 'e2e', '__tests__'];
+const SHIFT_HOME = 'test/helpers/parityShift.ts';
 const SYMBOLS = ['compare', 'walk', 'failures', 'FOLD_PAINT', 'PROPERTIES', 'GEOMETRY_SLACK', 'completeHiddenSegments'] as const;
+/** The parity types, each an interface or a type in parityWalk.ts. Box isn't one: specs keep boxes of their own. */
+const TYPES = ['Allowance', 'Walk', 'Walked', 'Comparison', 'WalkOptions', 'FoldedFocus', 'EvaluatingPage'] as const;
+/** The shift's helpers, which parityWalk.ts's compare() imports from parityShift.ts. */
+const SHIFT_SYMBOLS = ['checkShift', 'shiftLine', 'boxDelta'] as const;
+/** Each guarded name and the one file that defines it. */
+const HOMES: Record<string, string> = Object.fromEntries([...[...SYMBOLS, ...TYPES].map((name) => [name, HOME]), ...SHIFT_SYMBOLS.map((name) => [name, SHIFT_HOME])]);
 /** The gate's helpers and the parity types, which the gate takes from ./computed alone. */
-const GATE_NAMES = [...SYMBOLS, 'Walk', 'Walked', 'Comparison', 'Allowance', 'WalkOptions', 'FoldedFocus', 'EvaluatingPage'];
+const GATE_NAMES = [...SYMBOLS, ...TYPES];
 
 const parse = (source: string, file = 'fixture.ts') => {
     const kind = /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JS : file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -135,6 +142,27 @@ function declarations(source: string, name: string, file?: string): number {
     return count;
 }
 
+/**
+ * Each `javascript` key in `source`: an object literal's property (as an allowance's `javascript: true`), a read of
+ * one (`allowance.javascript`, `allowance['javascript']`), and a member of an interface or type named Allowance. An
+ * allowance says which routes it holds on with `routes`, so it can't hold on a route without JavaScript by accident.
+ */
+function javascriptKeys(source: string, file?: string): string[] {
+    const found: string[] = [];
+    const named = (name: ts.PropertyName | ts.Expression | undefined) =>
+        !!name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) && name.text === 'javascript';
+    const allowance = (node: ts.Node) => (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) && node.name.text === 'Allowance';
+    for (const node of nodes(parse(source, file))) {
+        if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && named(node.name)) found.push('a javascript property');
+        else if (ts.isPropertyAccessExpression(node) && node.name.text === 'javascript') found.push('a read of javascript');
+        else if (ts.isElementAccessExpression(node) && named(node.argumentExpression)) found.push('a read of javascript');
+        else if (allowance(node)) {
+            for (const member of nodes(node)) if (ts.isPropertySignature(member) && named(member.name)) found.push('Allowance.javascript');
+        }
+    }
+    return found;
+}
+
 /** `source` without its comments and blank lines. */
 const code = (source: string) =>
     source
@@ -228,20 +256,42 @@ describe('the matchers this check counts with', () => {
     });
 });
 
+describe('the matchers for the parity types and the javascript key', () => {
+    it('count an interface and a type alias as a top-level definition', () => {
+        expect(definitions('export interface Walk {\n    elements: Walked[];\n}\n', 'Walk')).toBe(1);
+        expect(definitions('export type Allowance = { page: string };\n', 'Allowance')).toBe(1);
+        expect(definitions('function f() {\n    interface Walk { x: 1 }\n}\n', 'Walk')).toBe(0);
+    });
+
+    it('find a javascript property, a read of one, and a javascript member of Allowance', () => {
+        expect(javascriptKeys("const VIEWER_ZOOM = [{ page: 'viewer', selector: 'img', javascript: true }];")).toEqual(['a javascript property']);
+        expect(javascriptKeys("const z = [{ 'javascript': true }];")).toEqual(['a javascript property']);
+        expect(javascriptKeys('allowances.filter((a) => !a.javascript || js);')).toEqual(['a read of javascript']);
+        expect(javascriptKeys("allowances.filter((a) => a['javascript']);")).toEqual(['a read of javascript']);
+        expect(javascriptKeys('export interface Allowance {\n    page: string;\n    /** Only with JavaScript. */\n    javascript?: true;\n}')).toEqual(['Allowance.javascript']);
+        expect(javascriptKeys('export type Allowance = { routes?: readonly string[]; javascript?: boolean };')).toEqual(['Allowance.javascript']);
+    });
+
+    it('find none in routes, in a context option, or in prose', () => {
+        expect(javascriptKeys("const z = [{ page: 'viewer', routes: SCRIPTED_ROUTES }];\nbrowser.newContext({ javaScriptEnabled: false });\n// javascript: true")).toEqual([]);
+        expect(javascriptKeys("const why = 'only with javascript: true';")).toEqual([]);
+    });
+});
+
 describe("the Dark parity gate's helpers", () => {
     const all = sources();
     const gate = all.find((source) => source.file === GATE);
 
     it('scans the parity files', () => {
-        expect(all.map((source) => source.file)).toEqual(expect.arrayContaining([HOME, COMPUTED, GATE]));
+        expect(all.map((source) => source.file)).toEqual(expect.arrayContaining([HOME, SHIFT_HOME, COMPUTED, GATE]));
     });
 
-    it.each(SYMBOLS)('define %s once, in test/helpers/parityWalk.ts', (name) => {
+    it.each(Object.entries(HOMES))('define %s once, in %s', (name, home) => {
         const where = all.flatMap(({ file, text }) => Array.from({ length: definitions(text, name, file) }, () => file));
-        expect(where).toEqual([HOME]);
+        expect(where).toEqual([home]);
     });
 
-    it.each(SYMBOLS)('never name %s in an export list, so nothing can shadow the star export', (name) => {
+    it.each(Object.keys(HOMES))('never name %s in an export list, so nothing can shadow the star export', (name) => {
         const where = all.filter(({ file, text }) => namedExports(text, name, file) > 0).map(({ file }) => file);
         expect(where).toEqual([]);
     });
@@ -258,5 +308,10 @@ describe("the Dark parity gate's helpers", () => {
 
     it.each(SYMBOLS)('leave %s undeclared in the gate, at any depth, so nothing there shadows the import', (name) => {
         expect(declarations(gate?.text ?? '', name, GATE)).toBe(0);
+    });
+
+    it('hold no javascript key in the gate, nor in Allowance', () => {
+        expect(javascriptKeys(gate?.text ?? '', GATE)).toEqual([]);
+        expect(javascriptKeys(all.find((source) => source.file === HOME)?.text ?? '', HOME)).toEqual([]);
     });
 });
