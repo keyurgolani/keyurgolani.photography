@@ -49,8 +49,15 @@ export interface Allowance {
     maxDelta?: number;
     /** Computed properties that may differ, by name. */
     properties?: readonly string[];
-    /** `maxDelta` covers every element under it too, for a departure that moves a whole section's layout. */
+    /**
+     * The box is the base's moved by exactly this, in CSS px, as a sanctioned scroll moves it: no tolerance band. Any
+     * other move, a fraction off, or none, fails, and so does a box whose size changed.
+     */
+    shift?: { x: number; y: number };
+    /** `maxDelta` or `shift` covers every element under it too, for a departure that moves a whole section's layout. */
     subtree?: boolean;
+    /** Only on these of the gate's routes, by name. Every route when it's left out. */
+    routes?: readonly string[];
     why: string;
 }
 
@@ -299,10 +306,17 @@ export interface Comparison {
 }
 
 /**
- * `allowances` maps a path to the most its box may move, and `sanctioned` a path to the properties that may differ;
- * every other box and property must match exactly.
+ * `allowances` maps a path to the most its box may move, `sanctioned` a path to the properties that may differ, and
+ * `shifts` a path to the exact move, x and y in CSS px, its box must make (Allowance.shift); every other box and
+ * property must match exactly.
  */
-export function compare(base: Walk, head: Walk, allowances: Record<string, number> = {}, sanctioned: Record<string, readonly string[]> = {}): Comparison {
+export function compare(
+    base: Walk,
+    head: Walk,
+    allowances: Record<string, number> = {},
+    sanctioned: Record<string, readonly string[]> = {},
+    shifts: Record<string, readonly [number, number]> = {},
+): Comparison {
     const result: Comparison = { structural: [], styles: [], geometry: [], deltas: [], largest: 0, tokens: [], added: [], sanctioned: [] };
     // A folded element that paints for itself is a style the walk can't compare, so it fails as one.
     result.styles.push(...(base.folded ?? []).map((line) => `base ${line}`), ...(head.folded ?? []).map((line) => `head ${line}`));
@@ -342,6 +356,17 @@ export function compare(base: Walk, head: Walk, allowances: Record<string, numbe
         if (b.slot !== h.slot) result.structural.push(`the control's slot in one build only: ${b.path}`);
         if (b.slot || h.slot) continue;
         const delta = Math.max(...b.rect.map((value, i) => Math.abs(value - h.rect[i])));
+        const shift = shifts[b.path];
+        if (shift) {
+            // Exactly the base's box moved by the shift, compared as the boxes are: no slack.
+            const expected = [b.rect[0] + shift[0], b.rect[1] + shift[1], b.rect[2], b.rect[3]];
+            const off = Math.max(...expected.map((value, i) => Math.abs(value - h.rect[i])));
+            const line = `${b.path}: ${b.rect.map((v) => +v.toFixed(3)).join(' ')} against ${h.rect.map((v) => +v.toFixed(3)).join(' ')} (${+delta.toFixed(3)} px, the sanctioned shift ${shift[0]} ${shift[1]}, off by ${+off.toFixed(3)} px)`;
+            result.deltas.push(line);
+            result.largest = Math.max(result.largest, delta);
+            if (off > 0) result.geometry.push(line);
+            continue;
+        }
         if (delta > 0) {
             const allowed = allowances[b.path] ?? GEOMETRY_SLACK;
             const line = `${b.path}: ${b.rect.map((v) => +v.toFixed(3)).join(' ')} against ${h.rect.map((v) => +v.toFixed(3)).join(' ')} (${+delta.toFixed(3)} px${b.path in allowances ? `, allowed ${allowed}` : ''})`;

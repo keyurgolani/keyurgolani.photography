@@ -896,6 +896,36 @@ const WORK_ENTRIES: Allowance[] = [1, 2].flatMap((n) => {
 });
 
 /**
+ * #171, Work's entry reveal, a sanctioned departure: keyboard focus on an entry's link brings the whole entry into
+ * view in the frame after the focus, within html's scroll paddings (components/work/WorkEntryLink.tsx). In
+ * work-focus at 1440 by 900 the first entry is 633 px tall, 645 px with its ring, so it fits the 676 px room (the
+ * screen less the 96 and 128 px paddings), but its foot is at 932, past the screen: the reveal scrolls it to the
+ * room's foot at 772, exactly 160 px. So every box on the page is the base's moved up exactly 160 px, with no
+ * tolerance band: a move of 159 or 161 px, a fraction off, or none fails the row (the self-tests below, and
+ * test/parityShift.test.ts), and every style is still compared exactly. Only in the two routes with JavaScript, at
+ * 1440: with none nothing reveals, and at 1024 and 390 the entry needs no scroll, so those rows stay exact.
+ *
+ * The ring is WORK_ENTRIES' departure above, inset on the title link's ::after. Measured at 1x and 2x in both routes
+ * (CI run 42337453713, e2e/themes/work-focus-probe.spec.ts on a test branch), its light band is 19.85:1 against the
+ * ground outside it and at least 5.26:1 against the cover inside it (19.85:1 where the inside is the ground), so it
+ * keeps at least 3:1 on both sides, as the base's ring does. The reveal stays under test: work.spec.ts's Tab and
+ * Shift+Tab test, and the self-tests below.
+ */
+const WORK_REVEAL_SCROLL = 160;
+const SCRIPTED_ROUTES = ['System on a dark device', 'a stored `dark`'] as const;
+const WORK_REVEAL: Allowance[] = [
+    {
+        page: 'work-focus',
+        width: 1440,
+        routes: SCRIPTED_ROUTES,
+        selector: 'body',
+        subtree: true,
+        shift: { x: 0, y: -WORK_REVEAL_SCROLL },
+        why: "#171: keyboard focus on Work's first entry scrolls it 160 px into the room between html's scroll paddings",
+    },
+];
+
+/**
  * #179, the portrait's frame (B1): 4:3 stacked under a cap of min(45svh, 28rem), and 4:5 side by side, from the
  * refined #12's mockup, where today's About sets a height (clamp(250px, 42svh, 380px) stacked, 420 px wide). Every
  * paint, type and style in About stays exact; only boxes in main move, and the page's height with them. At 390 the
@@ -939,6 +969,7 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
 
 const ALLOWANCES: Allowance[] = [
     ...WORK_ENTRIES,
+    ...WORK_REVEAL,
     ...ABOUT_FRAME,
     ...ABOUT_LINK_SCROLL,
     // Drawn on the rules around the row (the design review's P2-1): its own separator takes the outline's colour.
@@ -956,8 +987,33 @@ const ALLOWANCES: Allowance[] = [
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page) => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
 ];
-/** A state's own allowances, and those of the page it's a state of. */
-const allowancesFor = (pair: Pair, width: number) => ALLOWANCES.filter((entry) => (entry.page === pair.name || entry.page === pair.stateOf) && (entry.width === undefined || entry.width === width));
+/** A state's own allowances, and those of the page it's a state of. On one of the gate's routes, or on any when it's left out. */
+const allowancesFor = (pair: Pair, width: number, route?: string) =>
+    ALLOWANCES.filter(
+        (entry) =>
+            (entry.page === pair.name || entry.page === pair.stateOf) &&
+            (entry.width === undefined || entry.width === width) &&
+            (route === undefined || entry.routes === undefined || entry.routes.includes(route)),
+    );
+
+/**
+ * The box allowances for `pair` at `width` on `route`, by the paths they resolved to in the base's walk: the most a box
+ * may move, and the exact move a box must make. A subtree allowance covers the element and every path under it. A path
+ * that two allowances name (a state's own and its page's) takes the larger move.
+ */
+function geometryFor(pair: Pair, width: number, route: string, base: Walk): { allowances: Record<string, number>; shifts: Record<string, readonly [number, number]> } {
+    const allowances: Record<string, number> = {};
+    const shifts: Record<string, readonly [number, number]> = {};
+    for (const entry of allowancesFor(pair, width, route).filter((candidate) => base.resolved[candidate.selector])) {
+        const root = base.resolved[entry.selector];
+        const paths = entry.subtree ? base.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
+        for (const path of paths) {
+            if (entry.maxDelta !== undefined) allowances[path] = Math.max(allowances[path] ?? 0, entry.maxDelta);
+            if (entry.shift) shifts[path] = [entry.shift.x, entry.shift.y];
+        }
+    }
+    return { allowances, shifts };
+}
 
 interface Walked2 {
     walk: Walk;
@@ -1056,9 +1112,9 @@ async function portraitWarm(origin: string): Promise<boolean> {
  * A path that two allowances name takes both their properties: a state takes its page's too, as work-focus does
  * work's `position` on the entry box its own ring departure names (B3's CI).
  */
-function sanctionedFor(pair: Pair, width: number, base: Walk): Record<string, string[]> {
+function sanctionedFor(pair: Pair, width: number, base: Walk, route?: string): Record<string, string[]> {
     const sanctioned: Record<string, string[]> = {};
-    for (const entry of allowancesFor(pair, width).filter((candidate) => candidate.properties && base.resolved[candidate.selector])) {
+    for (const entry of allowancesFor(pair, width, route).filter((candidate) => candidate.properties && base.resolved[candidate.selector])) {
         const path = base.resolved[entry.selector];
         sanctioned[path] = [...new Set([...(sanctioned[path] ?? []), ...entry.properties!])];
     }
@@ -1091,18 +1147,10 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             ['no JavaScript', '', false, baseNoJs],
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
-            const named = allowancesFor(pair, viewport.width).filter((entry) => against.walk.resolved[entry.selector]);
-            // A subtree allowance covers the element and every path under it in the base's walk. A path that two
-            // allowances name (a state's own and its page's) takes the larger.
-            const allowances: Record<string, number> = {};
-            for (const entry of named.filter((candidate) => candidate.maxDelta !== undefined)) {
-                const root = against.walk.resolved[entry.selector];
-                const paths = entry.subtree ? against.walk.elements.map((element) => element.path).filter((path) => path === root || path.startsWith(`${root}>`)) : [root];
-                for (const path of paths) allowances[path] = Math.max(allowances[path] ?? 0, entry.maxDelta!);
-            }
-            const sanctioned = sanctionedFor(pair, viewport.width, against.walk);
+            const { allowances, shifts } = geometryFor(pair, viewport.width, route, against.walk);
+            const sanctioned = sanctionedFor(pair, viewport.width, against.walk, route);
             const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned, shifts), timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
@@ -1303,6 +1351,31 @@ test.describe('the visitor site', () => {
                 expect(comparison.styles.filter((line) => !line.includes(only.within)), `${name}: seen only under ${only.within}`).toEqual([]);
             }
             expect([...base.timedOut, ...head.timedOut], `${name}: both loads settled`).toEqual([]);
+        });
+    }
+
+    // Work's reveal (WORK_REVEAL) is sanctioned as exactly 160 px. A px more or less on the room's foot padding moves it
+    // 161 or 159 px, and the gate, under that sanction, must fail every box, off by 1 px, and see nothing else.
+    for (const [moved, padding] of [
+        [161, 'calc(8rem + 1px)'],
+        [159, 'calc(8rem - 1px)'],
+    ] as const) {
+        test(`self-test: Work's reveal at ${moved} px, not 160, in the head fails the gate`, async () => {
+            const focus = VISITOR.find((candidate) => candidate.name === 'work-focus')!;
+            // The work-focus pair itself, so its sanctions and its pinned ring apply; html isn't walked, so the padding
+            // is seen only through the scroll it changes.
+            const pair: Pair = { ...focus, headStyle: `html{scroll-padding-bottom:${padding}!important}` };
+            const viewport = VIEWPORTS.desktop;
+            const route = SCRIPTED_ROUTES[0];
+            const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, '', pair, viewport, 'head')];
+            expect([...base.timedOut, ...head.timedOut], 'both loads settled').toEqual([]);
+            const { allowances, shifts } = geometryFor(pair, viewport.width, route, base.walk);
+            expect(Object.keys(shifts).length, 'the reveal sanction applies to the page').toBeGreaterThan(0);
+            const comparison = compare(base.walk, head.walk, allowances, sanctionedFor(pair, viewport.width, base.walk, route), shifts);
+            judge(`self-test, Work's reveal at ${moved} px`, viewport.width, comparison);
+            expect(comparison.geometry.length, `the gate sees a ${moved} px reveal`).toBeGreaterThan(0);
+            expect(comparison.geometry.filter((line) => !line.includes('off by 1 px')), 'every box is off the sanctioned shift by 1 px').toEqual([]);
+            expect([...comparison.structural, ...comparison.styles, ...comparison.tokens], 'and nothing else differs').toEqual([]);
         });
     }
 
