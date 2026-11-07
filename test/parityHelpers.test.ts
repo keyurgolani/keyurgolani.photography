@@ -331,7 +331,12 @@ describe("the Dark parity gate's helpers", () => {
         expect(gate?.text).toMatch(/from '\.\/computed'/);
     });
 
-    it.each(SYMBOLS)('leave %s undeclared in the gate, at any depth, so nothing there shadows the import', (name) => {
+    it('reach the gate\'s details-list helpers from test/helpers/viewerFacts.ts alone', () => {
+        expect(takenElsewhere(gate?.text ?? '', FACTS_SYMBOLS, '../../test/helpers/viewerFacts', GATE)).toEqual([]);
+        expect(gate?.text).toMatch(/from '\.\.\/\.\.\/test\/helpers\/viewerFacts'/);
+    });
+
+    it.each([...SYMBOLS, ...FACTS_SYMBOLS])('leave %s undeclared in the gate, at any depth, so nothing there shadows the import', (name) => {
         expect(declarations(gate?.text ?? '', name, GATE)).toBe(0);
     });
 
