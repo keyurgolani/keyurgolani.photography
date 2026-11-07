@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import type { ComponentProps, FocusEvent } from 'react';
+// The app router's own context, the one next/navigation's useRouter() and Link read. Link reads it as this does, and
+// renders without it; useRouter() throws when it's empty.
+import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
+import { useContext, type ComponentProps, type FocusEvent } from 'react';
 
 export type IntentPrefetchLinkProps = Omit<ComponentProps<typeof Link>, 'href' | 'prefetch' | 'onPointerEnter' | 'onTouchStart'> & {
     href: string;
@@ -24,11 +26,16 @@ function savesData(): boolean {
  * keeps one per page however often it's asked. With saveData on, nothing is
  * fetched ahead. A caller's onFocus runs after the prefetch. It renders the
  * same <a> Link does.
+ *
+ * It renders wherever Link does, as Link does: with no app router mounted,
+ * as when Work is rendered to a string outside Next (the payload budgets'
+ * scale test), it's the same <a> and an intent prefetches nothing, since
+ * there's no router to ask.
  */
 export default function IntentPrefetchLink({ href, onFocus, ...rest }: IntentPrefetchLinkProps) {
-    const router = useRouter();
+    const router = useContext(AppRouterContext);
     const prefetch = () => {
-        if (!savesData()) router.prefetch(href);
+        if (router !== null && !savesData()) router.prefetch(href);
     };
     const focused = (event: FocusEvent<HTMLAnchorElement>) => {
         prefetch();

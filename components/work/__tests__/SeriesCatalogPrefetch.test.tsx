@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { fireEvent, screen, within } from '@testing-library/react';
+import type { ReactElement, ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkCatalog, WorkSeriesSummary } from '@/lib/catalog/projections/work';
+import { renderInAppRouter, withAppRouter } from '@/test/helpers/appRouter';
 import SeriesCatalog from '../SeriesCatalog';
 
 // Work's intent prefetch (#6 item 9, B10): no entry prefetches its series because it came into view, so a visitor
@@ -11,7 +12,9 @@ import SeriesCatalog from '../SeriesCatalog';
 
 const router = vi.hoisted(() => ({ prefetch: vi.fn(), push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), refresh: vi.fn() }));
 
-vi.mock('next/navigation', () => ({ useRouter: () => router }));
+// Work's entry links read the router from the app router's context, as Link does, so each render mounts this one.
+const render = (ui: ReactElement) => renderInAppRouter(router, ui);
+const InAppRouter = withAppRouter(router);
 
 vi.mock('next/link', () => ({
     default: ({ href, prefetch, children, ...rest }: { href: string; prefetch?: boolean | null; children: ReactNode }) => (
@@ -49,7 +52,11 @@ describe('Work\'s intent prefetch', () => {
     });
 
     it('prefetches nothing as it renders, on the server or in the browser', () => {
-        renderToString(<SeriesCatalog work={work(ENTRIES)} />);
+        renderToString(
+            <InAppRouter>
+                <SeriesCatalog work={work(ENTRIES)} />
+            </InAppRouter>,
+        );
         render(<SeriesCatalog work={work(ENTRIES)} />);
         expect(router.prefetch).not.toHaveBeenCalled();
     });

@@ -36,11 +36,23 @@ describe('IntentPrefetchLink with no app router mounted', () => {
     it('renders in the browser, and a pointer, focus or touch on it does nothing', () => {
         render(<IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>);
         const link = screen.getByRole('link', { name: 'Fixture harbor' });
-        expect(() => {
-            fireEvent.pointerEnter(link);
-            fireEvent.focus(link);
-            fireEvent.touchStart(link);
-        }).not.toThrow();
+        // React reports a handler's throw to the window, not to the dispatch, so the window's errors are read too.
+        const errors: unknown[] = [];
+        const onError = (event: ErrorEvent) => {
+            errors.push(event.error);
+            event.preventDefault();
+        };
+        window.addEventListener('error', onError);
+        try {
+            expect(() => {
+                fireEvent.pointerEnter(link);
+                fireEvent.focus(link);
+                fireEvent.touchStart(link);
+            }).not.toThrow();
+        } finally {
+            window.removeEventListener('error', onError);
+        }
+        expect(errors).toEqual([]);
         expect(link).toHaveAttribute('href', HREF);
     });
 });
