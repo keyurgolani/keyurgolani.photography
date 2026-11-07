@@ -114,6 +114,20 @@ export interface Blocker {
     link: BlockerLink;
 }
 
+/**
+ * A warning the last check of the draft found: a rule of severity warning, which never blocks a publish. Its message
+ * and hint are the rule's own, as the diagnostics hold them and `photos validate` prints them; `record` names the
+ * series or photograph, and `href` is its edit page where the curator has one (a series), else null.
+ */
+export interface PublishWarning {
+    key: string;
+    record: string;
+    field: string;
+    message: string;
+    hint: string | null;
+    href: string | null;
+}
+
 /** A revision as the page names it. */
 export interface RevisionFacts {
     revisionId: string;
@@ -162,15 +176,18 @@ export interface ScreenView {
     ledger: Ledger;
     /** The blockers the review context shows on load, before any Validate. */
     blockers: Blocker[];
+    /** The warnings the last check of this draft found, from its diagnostics, or none when no check has run under these rules. */
+    warnings?: PublishWarning[];
     panel: PanelView;
     /** Whether the active revision is rollback-ready (#117), which the line while a draft is pending says. */
     rollbackReady: RollbackReadiness;
 }
 
 export type Answer =
-    | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger }
-    | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger }
-    | { kind: 'valid'; stakes: string }
+    | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger; warnings?: PublishWarning[] }
+    | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger; warnings?: PublishWarning[] }
+    /** `warnings`: what this check found that never blocks, in the rules' own words. */
+    | { kind: 'valid'; stakes: string; warnings?: PublishWarning[] }
     /** 15-4: `history` is History read again, on every answer that moved the pointer or found it moved. */
     | { kind: 'published'; live: RevisionFacts; previous: RevisionFacts | null; history?: HistoryView }
     | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null; history?: HistoryView }
@@ -259,6 +276,8 @@ export interface DisplayFacts {
     /** The ledger and blockers to show: the latest answer's when it carries a fresh join, else the page's. */
     ledger: Ledger;
     blockers: Blocker[];
+    /** The warnings to list while a draft is pending: the latest check's on this page, else the page's from the diagnostics. None otherwise. */
+    warnings: PublishWarning[];
     /** True while Publish may go: a validation of this candidate passed on this page and still holds. */
     validated: boolean;
 }
@@ -405,6 +424,8 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
     const cleared = (ledger: Ledger): Ledger => ({ authored: ledger.authored.map((row) => ({ ...row, blocks: false })), derived: ledger.derived.map((row) => ({ ...row, blocks: false })), health: ledger.health });
     const ledger = fresh?.ledger ?? (answer?.kind === 'valid' ? cleared(view.ledger) : view.ledger);
     const blockers = fresh?.blockers ?? (answer?.kind === 'valid' ? [] : view.blockers);
+    // A warning never blocks: the latest check's, when it carries them, else what the last check of this draft found.
+    const warnings = (fresh ?? (answer?.kind === 'valid' ? answer : null))?.warnings ?? view.warnings ?? [];
     const draftGroups = { authored: 'Authored · requires judgment', derived: 'Derived · recalculated automatically' };
     const liveGroups = { authored: 'Authored', derived: 'Derived' };
     const draftLabels = { before: 'Published', after: 'This draft' };
@@ -437,6 +458,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             bar: null,
             ledger,
             blockers: [],
+            warnings: [],
             validated: false,
         };
     }
@@ -467,6 +489,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         bar,
         ledger,
         blockers: [],
+        warnings: [],
         validated: alert,
     });
 
@@ -511,6 +534,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             bar: { validate: 'hidden', publish: 'hidden', loadUpdated: true },
             ledger,
             blockers: [],
+            warnings: [],
             validated: false,
         };
     }
@@ -549,6 +573,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         bar: { validate: 'available', publish: validated ? 'available' : 'unavailable', ...(reason ? { reason } : {}), loadUpdated: false },
         ledger,
         blockers,
+        warnings,
         validated,
     };
 }

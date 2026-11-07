@@ -2,7 +2,8 @@ import 'server-only';
 import { compileCandidate, type CompileResult } from '@/lib/catalog/compile';
 import { diffCatalog, type CatalogDiff } from '@/lib/catalog/diff';
 import { previewBasePath, previewFrameHref, previewRoutes } from '@/lib/catalog/preview-reader';
-import { listActivations, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
+import { listActivations, readDiagnostics, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
+import { rulesetVersion } from '@/lib/catalog/ruleset';
 import { readReviewContext } from '@/lib/catalog/review-context';
 import { createRouteBuilder } from '@/lib/catalog/routes';
 import type { ActivePointer, Activation, Issue, RevisionFile, WorkingLayer } from '@/lib/catalog/types';
@@ -12,7 +13,7 @@ import type { ReviewContext } from '@/lib/catalog/review';
 import { readRegistry } from '@/lib/identity/registry';
 import type { Registry } from '@/lib/identity/types';
 import { dataRootStatus } from '@/lib/storage/config';
-import type { Blocker, Ledger, RevisionFacts, RollbackReadiness, ScreenView } from '@/lib/curation/publish-facts';
+import type { Blocker, Ledger, PublishWarning, RevisionFacts, RollbackReadiness, ScreenView } from '@/lib/curation/publish-facts';
 import { buildLedger, Names, panelLines, panelTarget } from '@/lib/curation/publish-view';
 import type { HistoryView } from '@/lib/curation/publish-history';
 import { loadHistoryView, type HistoryLoadOptions } from './history-load';
@@ -41,6 +42,23 @@ export interface Snapshot {
     compiled: CompileResult;
     review: ReviewContext;
     diff: CatalogDiff;
+    /** The last check of this candidate's issues, under this build's rules, or null: none ran, or the rules changed since. */
+    diagnostics: readonly Issue[] | null;
+}
+
+/**
+ * What the last check of `candidateId` found, from its diagnostics, when it ran under this build's rules: a check
+ * under other rules may say other things. Null when none ran, and when the file can't be read, which the log names:
+ * the warnings it would list never block, so the page doesn't fail over them.
+ */
+async function lastCheckOf(root: string, candidateId: string): Promise<readonly Issue[] | null> {
+    try {
+        const file = await readDiagnostics(root, candidateId);
+        return file && file.rulesetVersion === rulesetVersion() ? file.issues : null;
+    } catch (error) {
+        console.error('[curation] The Publish screen could not read the last check of the draft:', error);
+        return null;
+    }
 }
 
 /** A revision as the page names it. */
@@ -73,11 +91,12 @@ export async function readSnapshot(): Promise<Snapshot | null> {
     const compiled = await compileCandidate({ layer, registry, root, active });
     const review = await readReviewContext(root, layer, active.revisionId);
     const diff = diffCatalog({ active, candidate: compiled.content, authored: layer, registry, review });
-    return { root, pointer, layer, registry, active, activations, compiled, review, diff };
+    const diagnostics = await lastCheckOf(root, compiled.candidateId);
+    return { root, pointer, layer, registry, active, activations, compiled, review, diff, diagnostics };
 }
 
 /** The ledger and its blockers for a snapshot: predicted on a page load (`issues` null), or from an answer's diagnostics. */
-export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): { ledger: Ledger; blockers: Blocker[] } {
+export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const routes = previewRoutes(snapshot.compiled.candidateId);
     return buildLedger({
         diff: snapshot.diff,
@@ -88,6 +107,7 @@ export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): {
         review: snapshot.review,
         activations: snapshot.activations,
         issues,
+        diagnostics: snapshot.diagnostics,
         media: { draft: (url) => routes.mediaHref(url), live: (url) => url },
     });
 }
@@ -122,7 +142,7 @@ export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { 
     // The Nothing states show the live site as it is: its own series, at the top.
     const liveSeries = kind === 'ledger' ? series : active.content.series[0];
     const lines = kind === 'ledger' ? panelLines(diff, compiled.content, active.content, target.seriesId, names) : liveLines(active, names);
-    const { ledger, blockers } = kind === 'ledger' ? ledgerOf(snapshot, null) : { ledger: { authored: [], derived: [], health: [] }, blockers: [] };
+    const { ledger, blockers, warnings } = kind === 'ledger' ? ledgerOf(snapshot, null) : { ledger: { authored: [], derived: [], health: [] }, blockers: [], warnings: [] };
     return {
         draftId,
         draftNumber: revisionNumberFor(activations, draftId),
@@ -132,6 +152,7 @@ export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { 
         kind,
         ledger,
         blockers,
+        warnings,
         panel: {
             ...lines,
             draftSrc: kind === 'ledger' ? at(preview) : null,

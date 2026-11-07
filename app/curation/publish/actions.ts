@@ -79,27 +79,29 @@ async function answerFor(result: PublishResult, intent: 'validate' | 'publish', 
         case 'DRY_RUN_OK': {
             const snapshot = await snapshotFor(result);
             if (snapshot === 'moved') return { kind: 'changed', body: changedBody(pointer?.live.number) };
-            const counted = snapshot ? countLine(ledgerOf(snapshot, null).ledger, 0) : '';
+            // This check's issues, so the answer lists what it found that never blocks; its count is the ledger's, as ever.
+            const joined = snapshot ? ledgerOf(snapshot, result.issues) : null;
+            const counted = joined ? countLine(joined.ledger, 0) : '';
             const n = Number(/^(\d+)/.exec(counted)?.[1] ?? 0);
             // #117: the clause follows the rollback-ready line's gate, and names the fix in its place on evidence of a problem.
             const ready = root && pointer ? await readinessOf(root, pointer.live.revisionId, snapshot?.registry) : null;
             const stakes = pointer && ready ? rollbackStakes(pointer.live.number, ready) : '';
-            return { kind: 'valid', stakes: `Publishing makes ${n === 1 ? 'this change' : `these ${n} changes`} live on every page.${stakes}` };
+            return { kind: 'valid', stakes: `Publishing makes ${n === 1 ? 'this change' : `these ${n} changes`} live on every page.${stakes}`, warnings: joined?.warnings ?? [] };
         }
         case 'VALIDATION_FAILED': {
             // The diagnostics join onto a ledger of the candidate publish() checked, never a newer one.
             const snapshot = await snapshotFor(result);
             if (snapshot === 'moved') return { kind: 'changed', body: changedBody(pointer?.live.number) };
             if (snapshot === null) break;
-            const { ledger, blockers } = ledgerOf(snapshot, result.issues);
+            const { ledger, blockers, warnings } = ledgerOf(snapshot, result.issues);
             const k = blockers.length;
             const live = pointer?.live.number;
             const stays = live ? ` Revision ${live} stays live.` : '';
             if (intent === 'validate') {
                 const number = await draftNumberOf(root, draftId);
-                return { kind: 'blocked', lead: `${k} ${k === 1 ? 'change needs' : 'changes need'} you before revision ${number} can publish.${stays}`, blockers, ledger };
+                return { kind: 'blocked', lead: `${k} ${k === 1 ? 'change needs' : 'changes need'} you before revision ${number} can publish.${stays}`, blockers, ledger, warnings };
             }
-            return { kind: 'blocked-at-publish', lead: `${k} ${k === 1 ? 'change' : 'changes'} went stale since you validated.${stays}`, blockers, ledger };
+            return { kind: 'blocked-at-publish', lead: `${k} ${k === 1 ? 'change' : 'changes'} went stale since you validated.${stays}`, blockers, ledger, warnings };
         }
         case 'CANDIDATE_CHANGED':
             if (pointer && pointer.live.revisionId !== pageActive) {

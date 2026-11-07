@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { VARIANT_BYTES } from '@/lib/catalog/__tests__/catalogFixtures';
 import { publish, validateWorkingLayer } from '@/lib/catalog/publish';
-import { listActivations } from '@/lib/catalog/repository';
+import { listActivations, readDiagnostics, writeDiagnostics } from '@/lib/catalog/repository';
 import { createTestCatalog } from '@/lib/catalog/testing';
 import { readWorkingLayer } from '@/lib/catalog/working-layer';
 import { writeAuthoredRecord } from '@/lib/catalog/working-layer-writer';
@@ -68,6 +68,22 @@ describe('the Publish screen with warnings', () => {
             // The next load lists the same ones, from the check's diagnostics.
             const reloaded = await view();
             expect(reloaded.warnings?.map((warning) => warning.message)).toEqual(words);
+            // A check under other rules may say other things, so the page lists none of it; and one it can't read
+            // lists none either, with the page still there and the log naming it.
+            const last = await readDiagnostics(root, loaded.draftId);
+            if (!last) throw new Error('Validate wrote no diagnostics');
+            await writeDiagnostics(root, { ...last, rulesetVersion: '0'.repeat(64) });
+            expect((await view()).warnings).toEqual([]);
+            const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            try {
+                await writeDiagnostics(root, { ...last, issues: [{ code: 'x' }] as unknown as typeof last.issues });
+                expect((await view()).warnings).toEqual([]);
+                expect(logged).toHaveBeenCalledWith('[curation] The Publish screen could not read the last check of the draft:', expect.anything());
+            } finally {
+                logged.mockRestore();
+            }
+            await writeDiagnostics(root, last);
+            expect((await view()).warnings?.map((warning) => warning.message)).toEqual(words);
 
             const published = await publishAction(validated, form({ intent: 'publish', draftId: loaded.draftId, active: loaded.active.revisionId, validated: loaded.draftId }));
             expect(published.answer).toMatchObject({ kind: 'published', live: { revisionId: loaded.draftId } });
