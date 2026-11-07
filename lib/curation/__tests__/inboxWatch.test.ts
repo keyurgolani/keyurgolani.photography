@@ -33,6 +33,7 @@ function harness(answers: (InboxWatchAnswer | Error)[] = [], options: { hidden?:
     let next = 1;
     const state = { hidden: options.hidden ?? false, offline: options.offline ?? false, checks: 0, inFlight: 0, maxInFlight: 0 };
     const heard: InboxWatchAnswer[] = [];
+    const states: string[] = [];
     let release: (() => void) | null = null;
     let holdNext = false;
     const deps: InboxWatchDeps = {
@@ -59,6 +60,7 @@ function harness(answers: (InboxWatchAnswer | Error)[] = [], options: { hidden?:
         },
         hidden: () => state.hidden,
         offline: () => state.offline,
+        onState: (watchState) => states.push(watchState),
     };
     const watch = createInboxWatch(deps);
     /** Move the clock on by `ms`, running each timer that falls due, and let its check settle. */
@@ -81,6 +83,7 @@ function harness(answers: (InboxWatchAnswer | Error)[] = [], options: { hidden?:
         watch,
         state,
         heard,
+        states,
         timers,
         advance,
         hold: () => (holdNext = true),
@@ -229,6 +232,28 @@ describe('the Inbox watch', () => {
         h.watch.resume();
         await h.advance(10 * INBOX_WATCH_INTERVAL_MS);
         expect(h.state.checks).toBe(1);
+    });
+
+    it('says armed once it schedules its first check, and stopped once it stops for good: the session ending, or stop()', async () => {
+        const h = harness([{ kind: 'signed-out' }]);
+        expect(h.states).toEqual([]);
+        h.watch.start();
+        expect(h.states).toEqual(['armed']);
+        expect(h.timers).toHaveLength(1);
+        await h.advance(INBOX_WATCH_INTERVAL_MS);
+        expect(h.states).toEqual(['armed', 'stopped']);
+        const left = harness();
+        left.watch.start();
+        left.watch.stop();
+        expect(left.states).toEqual(['armed', 'stopped']);
+    });
+
+    it('stays armed when errors stop it, since the tab or the network coming back starts it again', async () => {
+        const h = harness(Array.from({ length: INBOX_WATCH_MAX_ERRORS }, () => new Error('down')));
+        h.watch.start();
+        for (const ms of [1, 2, 4, 8, 10]) await h.advance(ms * INBOX_WATCH_INTERVAL_MS);
+        expect(h.timers).toEqual([]);
+        expect(h.states).toEqual(['armed']);
     });
 
     it('stops after 120 checks, about two hours', async () => {

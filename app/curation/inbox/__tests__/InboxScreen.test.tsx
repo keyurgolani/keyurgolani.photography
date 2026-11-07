@@ -524,6 +524,19 @@ describe('the poll', () => {
         expect(screen.queryByRole('region', { name: 'Offline' })).toBeNull();
     });
 
+    it('marks the updates region data-watch="armed" once its first check is scheduled, and "stopped" once the session ends, with no change to what it says', async () => {
+        fetcher.mockImplementation(async () => ({ status: 401, ok: false, type: 'basic', json: async () => ({}) }) as Response);
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        expect(region).toHaveAttribute('data-watch', 'armed');
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(region).toHaveAttribute('data-watch', 'stopped');
+        // Invisible to everyone: no ARIA attribute beyond its name, and nothing said.
+        expect(region.getAttributeNames().filter((name) => name.startsWith('aria-'))).toEqual(['aria-label']);
+        expect(region).toHaveTextContent('');
+    });
+
     it('waits while the tab is hidden, and checks on coming back', async () => {
         const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
         try {
