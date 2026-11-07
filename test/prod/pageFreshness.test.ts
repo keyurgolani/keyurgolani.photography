@@ -24,7 +24,7 @@
  * - F4: a rollback to R1 from this process, through rollback() as the CLI's
  *   is, so the working layer rebases onto R1 too, shows on Home.
  * - F5: a restart, and Home still shows R1.
- * - H3: the Viewer's raw HTML (B8): its h1 with the sr-only position, the
+ * - H3: the Viewer's raw HTML: its h1 named with the position, the
  *   aria-hidden counter, the caption, the alt, the AVIF and WebP srcsets, and
  *   its whole head inside <head>, for both agents.
  * - S1, the Viewer half: the photo URL, an alias, two case variants, a moved
@@ -393,8 +393,10 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
             const head = headOf(page.html);
             const body = bodyOf(page.html);
             const found = viewerMarkup(page.html);
-            // ViewerChrome's h1: the series title, then the position for a screen reader only.
-            expect(found.headings, `${where}: the h1`).toEqual([{ text: `${TITLE}${position}`, spoken: [position] }]);
+            // ViewerChrome's h1: named with the position by its aria-label, and showing the series title, hidden from
+            // screen readers so it's said once.
+            expect(found.headings, `${where}: the h1`).toEqual([{ label: `${TITLE}${position}`, text: TITLE }]);
+            expect(found.hiddenText.filter((text) => text === TITLE), `${where}: the shown title, aria-hidden`).toHaveLength(1);
             // The padded counter is for the eye alone.
             expect(found.hiddenText.filter((text) => /^\d+ \/ \d+$/.test(text)), `${where}: the aria-hidden counter`).toEqual(['02 / 03']);
             expect(found.paragraphs.filter((text) => text === CAPTION), `${where}: the caption`).toHaveLength(1);

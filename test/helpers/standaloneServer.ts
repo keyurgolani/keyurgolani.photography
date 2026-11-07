@@ -318,9 +318,12 @@ function attributesOf(open: string): Record<string, string> {
 
 /** What the Viewer's page shows, read from tags only, so the Flight payload's copy of a prop never counts. */
 export interface ViewerMarkup {
-    /** Each h1's text, and the text of each `sr-only` span in it: ViewerChrome's ", photograph N of T". */
-    headings: { text: string; spoken: string[] }[];
-    /** The text of each `aria-hidden="true"` span with only text in it: the padded `NN / NN` counter. */
+    /**
+     * Each h1's aria-label, or null without one, and the text it shows. ViewerChrome's h1 is named
+     * "{series}, photograph N of T" by its aria-label, and shows the series title alone.
+     */
+    headings: { label: string | null; text: string }[];
+    /** The text of each `aria-hidden="true"` span with only text in it: the h1's shown title and the padded `NN / NN` counter. */
     hiddenText: string[];
     /** The text of each `<p>` with only text in it: the caption among them. */
     paragraphs: string[];
@@ -332,11 +335,9 @@ export interface ViewerMarkup {
 
 export function viewerMarkup(html: string): ViewerMarkup {
     const markup = withoutScripts(bodyOf(html));
-    const headings = [...markup.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi)].map(([, inside]) => ({
+    const headings = [...markup.matchAll(/(<h1\b[^>]*>)([\s\S]*?)<\/h1>/gi)].map(([, open, inside]) => ({
+        label: attributesOf(open)['aria-label'] ?? null,
         text: textOf(inside),
-        spoken: [...inside.matchAll(/(<span\b[^>]*>)([^<]*)<\/span>/gi)]
-            .filter(([, open]) => (attributesOf(open).class ?? '').split(/\s+/).includes('sr-only'))
-            .map(([, , text]) => decode(text)),
     }));
     const hiddenText = [...markup.matchAll(/(<span\b[^>]*>)([^<]*)<\/span>/gi)].filter(([, open]) => attributesOf(open)['aria-hidden'] === 'true').map(([, , text]) => decode(text));
     const paragraphs = [...markup.matchAll(/<p\b[^>]*>([^<]*)<\/p>/gi)].map(([, text]) => decode(text));
