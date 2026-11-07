@@ -610,6 +610,14 @@ describe('the forms', () => {
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
 
+    it('hold the position select disabled with no rules file, saying the photo is left unassigned', () => {
+        renderInbox(view({ selected: detail({ suggestions: { series: { value: null, confidence: 'low', producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null } }) }));
+        const position = screen.getByRole('combobox', { name: 'Proposed sequence position' });
+        expect(position).toBeDisabled();
+        expect(position).toHaveTextContent('No position: left unassigned');
+        expect(position).not.toHaveTextContent('Choose a series first');
+    });
+
     it('fill a reopened item from its photo record and series, so unchecking the flag clears it', async () => {
         const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
         const approved = [{ action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' }, { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' }];

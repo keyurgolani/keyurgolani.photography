@@ -107,11 +107,13 @@ for (const theme of ['light', 'dark'] as const) {
         await openInbox(page, `?item=${newItem(FRESH.approve)}#item`);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         const item = page.locator('#item');
-        // No rules file suggests a series for this item, so the position waits for one: its select is disabled, by
-        // design, saying "Choose a series first", and a disabled control takes no focus. It's held disabled here, and
-        // checkSurface() gets every enabled select, so any other one, or this one once it's enabled, is still checked.
+        // The fixture has no curation/rules.json, so the suggestion is to leave this item unassigned and the form starts
+        // on "Leave unassigned". With no series there's nothing to place it in: the position select is disabled, by
+        // design, saying "No position: left unassigned", and a disabled control takes no focus. It's held disabled here,
+        // and checkSurface() gets every enabled select, so any other one, or this one once it's enabled, is still checked.
+        await expect(item.getByRole('combobox', { name: 'Suggested series' })).toHaveValue('unassigned');
         await expect(item.getByRole('combobox', { name: 'Proposed sequence position' })).toBeDisabled();
-        await expect(item.getByRole('combobox', { name: 'Proposed sequence position' })).toContainText('Choose a series first');
+        await expect(item.getByRole('combobox', { name: 'Proposed sequence position' })).toContainText('No position: left unassigned');
         await checkSurface(page, {
             controls: [
                 item.getByRole('form', { name: 'Review' }).getByRole('button'),
