@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import { deferEvent } from '../lib/curation/actions';
+import { INBOX_WATCH_MIN_GAP_MS } from '../lib/curation/inbox-watch';
 import { eventIdOf, eventKey } from '../lib/curation/events';
 import { LIBRARY_EVENT_ID, recordLibraryState } from '../lib/curation/library';
 import { listEvents, readEvent } from '../lib/curation/repository';
@@ -206,13 +207,18 @@ test('polls the summary every minute: says new items once, and raises a stale al
     await expect(alert).toHaveCount(1);
 });
 
-test('shows an offline state when the network goes, and clears it once it is back', async ({ page, context }) => {
+test('shows an offline state when the network goes, and clears it once a check gets through after it is back', async ({ page, context }) => {
+    await page.clock.install();
     await openInbox(page);
     await context.setOffline(true);
     const offline = page.getByRole('region', { name: 'Offline' });
     await expect(offline).toBeVisible();
     await expect(page.getByRole('status', { name: 'Inbox updates' })).toHaveText(/^You're offline/);
     await context.setOffline(false);
+    // The browser being online doesn't say the server can be reached, so the state holds until a check gets through,
+    // and that check keeps the 15 s gap from the last one, here the page's own load (lib/curation/inbox-watch.ts).
+    await expect(offline).toBeVisible();
+    await page.clock.fastForward(INBOX_WATCH_MIN_GAP_MS);
     await expect(offline).toHaveCount(0);
     await expect(page.getByRole('status', { name: 'Inbox updates' })).toHaveText(/^Back online/);
 });
