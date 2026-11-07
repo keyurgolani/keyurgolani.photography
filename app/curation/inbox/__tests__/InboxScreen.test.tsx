@@ -481,12 +481,67 @@ describe('the poll', () => {
         // The page load was the last check, moments ago, so online checks once its 2 s are up, not after a refocus's 15 s.
         await tick(INBOX_WATCH_ONLINE_GAP_MS - 1);
         expect(fetcher).toHaveBeenCalledTimes(0);
+        // The browser being online says nothing about the server: the notice stays until a check gets through.
+        expect(screen.getByRole('region', { name: 'Offline' })).toBeInTheDocument();
         await tick(1);
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole('region', { name: 'Offline' })).toBeNull();
         expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('Back online.');
         fetcher.mockImplementation(async () => Promise.reject(new TypeError('Failed to fetch')));
         await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(screen.getByRole('region', { name: 'Offline' })).toBeInTheDocument();
+    });
+
+    it('clears the offline notice once the check kept from coming back online while hidden gets through, after the tab is back', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+        try {
+            await act(async () => {
+                window.dispatchEvent(new Event('online'));
+            });
+            await tick(5 * INBOX_WATCH_ONLINE_GAP_MS);
+            expect(fetcher).not.toHaveBeenCalled();
+            expect(screen.getByRole('region', { name: 'Offline' })).toBeInTheDocument();
+        } finally {
+            hidden.mockRestore();
+        }
+        await act(async () => {
+            document.dispatchEvent(new Event('visibilitychange'));
+        });
+        await tick(0);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole('region', { name: 'Offline' })).toBeNull();
+        expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('Back online.');
+    });
+
+    it('stays stopped when the browser comes back online after the session ended', async () => {
+        fetcher.mockImplementation(async () => ({ status: 401, ok: false, type: 'basic', json: async () => ({}) }) as Response);
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        const region = screen.getByRole('status', { name: 'Inbox updates' });
+        await tick(INBOX_WATCH_INTERVAL_MS);
+        expect(region).toHaveAttribute('data-watch', 'stopped');
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(10 * INBOX_WATCH_INTERVAL_MS);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(region).toHaveAttribute('data-watch', 'stopped');
+    });
+
+    it('keeps the offline notice when the check the browser coming back online sends fails', async () => {
+        render(<InboxWatch watcher={{ state: 'running' }} cursor={7} needsJudgment={2} item={null} />);
+        await act(async () => {
+            window.dispatchEvent(new Event('offline'));
+        });
+        fetcher.mockImplementation(async () => Promise.reject(new TypeError('Failed to fetch')));
+        await act(async () => {
+            window.dispatchEvent(new Event('online'));
+        });
+        await tick(INBOX_WATCH_ONLINE_GAP_MS);
+        expect(fetcher).toHaveBeenCalledTimes(1);
         expect(screen.getByRole('region', { name: 'Offline' })).toBeInTheDocument();
     });
 

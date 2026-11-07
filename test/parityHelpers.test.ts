@@ -276,6 +276,15 @@ describe('the matchers for the parity types and the javascript key', () => {
         expect(javascriptKeys('export type Allowance = { routes?: readonly string[]; javascript?: boolean };')).toEqual(['Allowance.javascript']);
     });
 
+    it('find a javascript key taken by destructuring, and one written as a computed name', () => {
+        expect(javascriptKeys('const { javascript } = allowance;')).toEqual(['a javascript binding']);
+        expect(javascriptKeys('allowances.filter(({ javascript: js }) => js);')).toEqual(['a javascript binding']);
+        expect(javascriptKeys("const { 'javascript': js } = allowance;")).toEqual(['a javascript binding']);
+        expect(javascriptKeys("const z = [{ ['javascript']: true }];")).toEqual(['a javascript property']);
+        expect(javascriptKeys("export interface Allowance {\n    ['javascript']?: true;\n}")).toEqual(['Allowance.javascript']);
+        expect(javascriptKeys('const { routes: javascript } = allowance;')).toEqual([]);
+    });
+
     it('find none in routes, in a context option, or in prose', () => {
         expect(javascriptKeys("const z = [{ page: 'viewer', routes: SCRIPTED_ROUTES }];\nbrowser.newContext({ javaScriptEnabled: false });\n// javascript: true")).toEqual([]);
         expect(javascriptKeys("const why = 'only with javascript: true';")).toEqual([]);
