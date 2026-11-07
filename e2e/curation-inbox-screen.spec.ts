@@ -74,6 +74,21 @@ async function openInbox(page: Page, query = '') {
     await waitForHydration(page);
 }
 
+/**
+ * The poll arms its first check in InboxWatch's effect. The inbox streams in behind loading.tsx, so it can hydrate
+ * after html[data-hydrated], which the root sets: a clock run before then fires no check. This waits for the updates
+ * region to be hydrated, then for React's passive effects, which it flushes in a posted message.
+ */
+async function waitForWatch(page: Page) {
+    const region = page.getByRole('status', { name: 'Inbox updates' });
+    await expect.poll(() => region.evaluate((el) => Object.keys(el).some((key) => key.startsWith('__reactFiber$')))).toBe(true);
+    await page.evaluate(() => new Promise((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resolve(null);
+        channel.port2.postMessage(null);
+    }));
+}
+
 const list = (page: Page) => page.locator('#inbox-list');
 const rows = (page: Page) => list(page).locator('a[data-row]');
 
@@ -178,6 +193,7 @@ test('polls the summary every minute: says new items once, and raises a stale al
     await page.clock.install();
     const open = newItem(FRESH.refused);
     await openInbox(page, `?item=${open}#item`);
+    await waitForWatch(page);
     const updates = page.getByRole('status', { name: 'Inbox updates' });
     await expect(updates).toHaveText('');
     await updates.evaluate((region) => {
@@ -220,6 +236,7 @@ test('shows an offline state when the network goes, and clears it once it is bac
 test('stops polling quietly once the session ends', async ({ page }) => {
     await page.clock.install();
     await openInbox(page);
+    await waitForWatch(page);
     const asked: string[] = [];
     page.on('request', (request) => {
         if (request.url().includes('/api/curation/inbox/summary')) asked.push(request.url());
