@@ -1,5 +1,5 @@
 /**
- * The Dark parity gate's exact shift (e2e/themes/computed.ts, Allowance.shift): data and logic only, with no
+ * The Dark parity gate's exact shift (test/helpers/parityWalk.ts, Allowance.shift): data and logic only, with no
  * Playwright import, so the unit tests under test/ can check it and the image build, which leaves e2e/ out, can
  * type-check them.
  */

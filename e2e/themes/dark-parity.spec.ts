@@ -986,8 +986,8 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
  * link's, where next's row is a plain list item. The checkbox's column is HEAD_ONLY's, and its track is as wide as what
  * it holds, so with it taken out the link sits exactly where next's does: every box and every other style is compared
  * exactly. Only the row's own `display` departs, list-item to grid, and the ::marker that only a list item has goes
- * with it (computed.ts). Every item openInboxItems() opens needs judgment, so each is a row of the list's one ul, and
- * every row has the column, an empty one for the missing source.
+ * with it (test/helpers/parityWalk.ts). Every item openInboxItems() opens needs judgment, so each is a row of the
+ * list's one ul, and every row has the column, an empty one for the missing source.
  */
 const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: OPENED_INBOX_ITEMS }, (_, index) => ({
     page: 'inbox',

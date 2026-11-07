@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { checkShift, shiftLine, type Box, type Shift } from './helpers/parityShift';
 import { compare, failures, type Walk, type Walked } from './helpers/parityWalk';
 
-// The Dark parity gate's exact shift (#171, e2e/themes/computed.ts): a sanctioned scroll moves a box by exactly its
+// The Dark parity gate's exact shift (#171, test/helpers/parityWalk.ts): a sanctioned scroll moves a box by exactly its
 // distance, with no tolerance band. A box moved by any other distance, by a fraction too, sideways, or not at all,
 // or whose size changed, is off. The gate fails a box that's off at all, and compares every style as before.
 
