@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { technicalFacts } from '../components/viewer/viewerLabels';
-import { cameraRowDeparture, type FactRow } from './helpers/viewerFacts';
+import { cameraRowDeparture, FACT_ROWS, readFactRows, type FactRow } from './helpers/viewerFacts';
 import { DEFAULT_TECHNICAL } from '../lib/catalog/testing';
 
 // Dark parity's sanctioned departure on the Viewer's details list (#175, B8). The base's "Camera make" and "Camera"
@@ -112,6 +112,47 @@ describe("the Viewer details list's departure", () => {
             ]);
             const renamed = HEAD.map(([label, value]): FactRow => [label === 'Exposure' ? 'Shutter' : label, value]);
             expect(cameraRowDeparture(BASE, renamed).failing).toEqual(['the head has 0 Exposure rows, not 1', `row 4: "Exposure: 1/250" in the base against "Shutter: 1/250 s" in the head${departure('Exposure', '1/250', '1/250 s')}`]);
+        });
+    });
+
+    // The rows as the parity spec reads them off the page, through readFactRows(), which it runs in the page: the text
+    // as read, untrimmed, since StoryViewer renders <dt>{label}</dt><dd>{value}</dd> with no whitespace. JavaScript's
+    // trim() also strips U+00A0, U+202F and U+FEFF, which would let a head's " 35 mm" or "1/250 s\u00a0" pass.
+    describe('the rows as read from the page', () => {
+        const page = (rows: [string, string | null][]) => {
+            document.body.innerHTML = `<main data-surface="viewer"><dl>${rows.map(([label, value]) => `<div><dt>${label}</dt>${value === null ? '' : `<dd>${value}</dd>`}</div>`).join('')}</dl></main>`;
+            return readFactRows(FACT_ROWS);
+        };
+        afterEach(() => {
+            document.body.innerHTML = '';
+        });
+
+        it('reads the real rows exactly, and they pass', () => {
+            expect(page(HEAD)).toEqual(HEAD);
+            expect(cameraRowDeparture(BASE, page(HEAD)).failing).toEqual([]);
+        });
+
+        it.each([
+            ['a no-break space after it', '1/250 s\u00a0'],
+            ['a narrow no-break space before it', '\u202f1/250 s'],
+            ['a zero-width no-break space after it', '1/250 s\ufeff'],
+            ['a plain space after it', '1/250 s '],
+        ])('fails a unit value with %s', (_, value) => {
+            expect(cameraRowDeparture(BASE, page(headWith('Exposure', value))).failing).toEqual([
+                `row 4: "Exposure: 1/250" in the base against "Exposure: ${value}" in the head${departure('Exposure', '1/250', '1/250 s')}`,
+            ]);
+        });
+
+        it('fails an ordinary value with a no-break space around it', () => {
+            expect(cameraRowDeparture(BASE, page(headWith('ISO', '\u00a0200'))).failing).toEqual(['row 5: "ISO: 200" in the base against "ISO: \u00a0200" in the head']);
+        });
+
+        it('fails a row with no dd, in either build, and never reads it as an empty value', () => {
+            const rows = page(HEAD.map(([label, value]): [string, string | null] => [label, label === 'ISO' ? null : value]));
+            expect(rows[4]).toBeNull();
+            expect(cameraRowDeparture(BASE, rows).failing).toContain("the head's row 5 has no dt or no dd");
+            const both = page(BASE.map(([label, value]): [string, string | null] => [label, label === 'ISO' ? null : value]));
+            expect(cameraRowDeparture(both, rows).failing).toEqual(["the base's row 6 has no dt or no dd", "the head's row 5 has no dt or no dd"]);
         });
     });
 });
