@@ -13,8 +13,10 @@ import type { InboxWatcher, ReadyInboxSummary } from './inbox-view';
  *
  * - one check at a time: the next is scheduled only after an answer, and a
  *   wake while one is in flight does nothing;
- * - nothing while the tab is hidden or the browser says it's offline, and on
- *   coming back one check, unless one ran in the last 15 s;
+ * - nothing while the tab is hidden or the browser says it's offline; when
+ *   the tab comes back, one check, unless one ran in the last 15 s; when the
+ *   browser is online again, one check at once, or 2 s after the last if one
+ *   ran that recently, so the offline state clears as soon as one gets through;
  * - errors back off, doubling up to 10 minutes, and five in a row stop it. A
  *   check that can't reach the server is the offline state; resume(), when
  *   the browser is online again, starts over;
@@ -24,6 +26,8 @@ import type { InboxWatcher, ReadyInboxSummary } from './inbox-view';
 
 export const INBOX_WATCH_INTERVAL_MS = 60_000;
 export const INBOX_WATCH_MIN_GAP_MS = 15_000;
+/** The least time between checks when the browser comes back online, so flapping on and offline is no request storm. */
+export const INBOX_WATCH_ONLINE_GAP_MS = 2_000;
 export const INBOX_WATCH_MAX_CHECKS = 120;
 export const INBOX_WATCH_MAX_ERRORS = 5;
 const MAX_BACKOFF_MS = 10 * 60_000;
@@ -55,7 +59,7 @@ export interface InboxWatch {
     stop(): void;
     /** The tab came back or took focus: check now, unless one ran moments ago or one is in flight. */
     wake(): void;
-    /** The browser is online again: forget the backoff and check, after the 15 s gap, even after errors stopped it. */
+    /** The browser is online again: forget the backoff and check at once, or 2 s after the last check, even after errors stopped it. */
     resume(): void;
 }
 
@@ -153,10 +157,11 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
             stopped = false;
             errors = 0;
             clear();
-            // A8 review S5: the same 15 s gap a refocus keeps, so flapping on and offline is no request storm.
+            // At once, so the offline state clears as soon as the server answers; 2 s apart at most, so flapping on and
+            // offline is no request storm.
             const since = deps.now() - last;
-            if (since >= INBOX_WATCH_MIN_GAP_MS) void run();
-            else schedule(INBOX_WATCH_MIN_GAP_MS - since);
+            if (since >= INBOX_WATCH_ONLINE_GAP_MS) void run();
+            else schedule(INBOX_WATCH_ONLINE_GAP_MS - since);
         },
     };
 }

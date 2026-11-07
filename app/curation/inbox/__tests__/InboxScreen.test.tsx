@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BULK_IDLE, type InboxActionState, type InboxBulkState, type InboxDetail, type InboxItem, type InboxView, type ReadyInboxSummary, type SeriesOption } from '@/lib/curation/inbox-view';
-import { INBOX_WATCH_INTERVAL_MS, INBOX_WATCH_MIN_GAP_MS, OFFLINE_TEXT } from '@/lib/curation/inbox-watch';
+import { INBOX_WATCH_INTERVAL_MS, INBOX_WATCH_ONLINE_GAP_MS, OFFLINE_TEXT } from '@/lib/curation/inbox-watch';
 
 // #14's A8 on the Inbox's pieces: the filters, paging and age labels, the bulk actions and their error summary, an
 // item's error summary, the stale alert that keeps unsaved edits, and the poll with its offline state. The server
@@ -478,10 +478,10 @@ describe('the poll', () => {
         await act(async () => {
             window.dispatchEvent(new Event('online'));
         });
-        // The page load was the last check, so online waits out the 15 s gap (S5).
-        await tick(0);
+        // The page load was the last check, moments ago, so online checks once its 2 s are up, not after a refocus's 15 s.
+        await tick(INBOX_WATCH_ONLINE_GAP_MS - 1);
         expect(fetcher).toHaveBeenCalledTimes(0);
-        await tick(INBOX_WATCH_MIN_GAP_MS);
+        await tick(1);
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole('region', { name: 'Offline' })).toBeNull();
         expect(screen.getByRole('status', { name: 'Inbox updates' })).toHaveTextContent('Back online.');
