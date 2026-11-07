@@ -16,6 +16,7 @@ import { ownerCopyOf } from './owner-copy';
 import { placementIndex } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
+import { PLACEMENT_PRODUCER, placementFor } from './suggest';
 
 /**
  * The curator's actions on an inbox event: edit, approve, defer, dismiss,
@@ -322,7 +323,7 @@ function altOf(description: CuratorDescription): AuthoredAlt {
 }
 
 /** The series and position an approval uses: the command's, then the saved edits, then the suggestion for that same series. */
-function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: string | null; placement: Placement | null; picked: boolean; description: CuratorDescription | null | undefined } {
+function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: string | null; placement: Placement | null; picked: boolean; suggested: boolean; description: CuratorDescription | null | undefined } {
     const edits = event.edits;
     let seriesId = choices.seriesId;
     let fromSuggestion = false;
@@ -336,15 +337,34 @@ function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: str
     }
     if (seriesId === null) {
         if (choices.placement !== undefined) fail('needs-choice', 'A photograph left unassigned has no position.');
-        return { seriesId: null, placement: null, picked: false, description: choices.description !== undefined ? choices.description : edits?.description };
+        return { seriesId: null, placement: null, picked: false, suggested: false, description: choices.description !== undefined ? choices.description : edits?.description };
     }
     let placement = choices.placement;
     // Edits made without picking a series apply to the suggested one.
     if (placement === undefined && edits?.placement !== undefined && (edits.seriesId ?? event.suggestions.series?.value) === seriesId) placement = edits.placement;
     // Only the command or a saved edit picks a position. A generated one is a suggestion, never an authored move.
     const picked = placement !== undefined;
-    if (placement === undefined && (fromSuggestion || event.suggestions.series?.value === seriesId)) placement = event.suggestions.placement?.value;
-    return { seriesId, placement: placement ?? 'end', picked, description: choices.description !== undefined ? choices.description : edits?.description };
+    const suggested = placement === undefined && (fromSuggestion || event.suggestions.series?.value === seriesId) && event.suggestions.placement !== null;
+    if (suggested) placement = event.suggestions.placement?.value;
+    return { seriesId, placement: placement ?? 'end', picked, suggested, description: choices.description !== undefined ? choices.description : edits?.description };
+}
+
+/**
+ * A8 review S3: the suggested position, again, against the series now. A capture-date suggestion (placement@2) is
+ * worked out again among the series' dated photographs, the photograph itself left out; any other suggestion keeps
+ * its position while its anchor is still in the series, and goes at the end once it isn't.
+ */
+function suggestedPlacementNow(event: CurationEvent, series: AuthoredSeries, registry: Registry, stored: Placement, at: string): Placement {
+    const photoId = event.photoId as string;
+    const members = series.photoIds.filter((id) => id !== photoId);
+    if (event.suggestions.placement?.producedBy === PLACEMENT_PRODUCER) {
+        const dated = members.map((id) => {
+            const photo = Object.hasOwn(registry.photos, id) ? registry.photos[id] : undefined;
+            return { photoId: id, capturedDate: photo?.revisions[photo.source.observedRevision]?.derived.capturedDate?.value ?? null };
+        });
+        return placementFor(event.derivedFacts.capturedDate ?? null, dated, series.id, at, photoId).value;
+    }
+    return typeof stored === 'object' && !members.includes(stored.after) ? 'end' : stored;
 }
 
 /** The refusal for "unassigned" while a series that might hold the photo can't be read. The page words it through lib/curation/inbox-form.ts. */
@@ -374,10 +394,19 @@ export function approveEvent(
          * lookup reads once the series drops the photo.
          */
         keepPlaced?: boolean;
+        /**
+         * A8 review S2: refuse "unassigned" for an item with a series saved on it, which the inbox's bulk Leave
+         * unassigned would otherwise drop. Checked under the lock, so a series saved after the page loaded counts.
+         */
+        keepSavedSeries?: boolean;
     },
 ): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
+        // A saved "Leave unassigned" (null) is the same choice, so only a saved series is refused.
+        if (input.keepSavedSeries && input.choices.seriesId === null && typeof event.edits?.seriesId === 'string') {
+            fail('refused', `${event.id} has the series ${event.edits.seriesId} saved on it, so leaving it unassigned would drop that choice. Approve it with that series, or change it first. Nothing was written.`);
+        }
         if (event.type !== 'new') {
             const owner = event.type === 'ambiguous' ? 'curation resolve or curation bind --to' : event.type === 'replacement' || event.type === 'missing' ? "#17's confirm and archive steps" : 'dismiss';
             fail('refused', `Only a new photograph is approved into the draft. A ${event.type} event is settled with ${owner}.`);
@@ -436,7 +465,8 @@ export function approveEvent(
                     }
                 }
                 resolved = resolveChoices(event, choices);
-                const { seriesId, placement, picked, description } = resolved;
+                const { seriesId, picked, description } = resolved;
+                let placement = resolved.placement;
                 const existing = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
                 // Check the placement before writing anything, so a refused one leaves the working layer as it was.
                 let op: SeriesOp | null = null;
@@ -454,6 +484,13 @@ export function approveEvent(
                     series = await readAuthored<AuthoredSeries>(root, 'series', seriesId);
                     if (series === null) fail('refused', `There is no series ${seriesId}. Nothing was written.`);
                     const target = series as AuthoredSeries;
+                    // A8 review S3: a suggested position was worked out when the item opened, so it's worked out again
+                    // here, against the series as the authored lock holds it: a batch then lands in date order, and an
+                    // anchor that left the series falls back to the end. A position the curator picked is theirs.
+                    if (!picked && resolved.suggested) {
+                        placement = suggestedPlacementNow(event, target, registry, placement as Placement, step.at);
+                        resolved = { ...resolved, placement };
+                    }
                     const member = target.photoIds.includes(photoId);
                     if (member && !picked) {
                         // Already placed, and nobody picked a position: it keeps its place.

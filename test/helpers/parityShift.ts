@@ -1,5 +1,5 @@
 /**
- * The Dark parity gate's exact shift (e2e/themes/computed.ts, Allowance.shift): data and logic only, with no
+ * The Dark parity gate's exact shift (test/helpers/parityWalk.ts, Allowance.shift): data and logic only, with no
  * Playwright import, so the unit tests under test/ can check it and the image build, which leaves e2e/ out, can
  * type-check them.
  */
@@ -37,8 +37,12 @@ export function checkShift(base: Box, head: Box, shift: Shift): ShiftCheck {
     return { delta: boxDelta(base, head), off: boxDelta(expected, head) };
 }
 
-/** The gate's line for a box under a shift, its two boxes, the move, the shift and how far off it is. */
+/**
+ * The gate's line for a box under a shift, its two boxes, the move, the shift and how far off it is. An off too small
+ * to show in three decimals is given unrounded, since any off fails the gate and the line must say it isn't 0.
+ */
 export function shiftLine(path: string, base: Box, head: Box, shift: Shift, { delta, off }: ShiftCheck): string {
     const box = (b: Box) => b.map((v) => +v.toFixed(3)).join(' ');
-    return `${path}: ${box(base)} against ${box(head)} (${+delta.toFixed(3)} px, the sanctioned shift ${shift[0]} ${shift[1]}, off by ${+off.toFixed(3)} px)`;
+    const by = off > 0 && +off.toFixed(3) === 0 ? off : +off.toFixed(3);
+    return `${path}: ${box(base)} against ${box(head)} (${+delta.toFixed(3)} px, the sanctioned shift ${shift[0]} ${shift[1]}, off by ${by} px)`;
 }

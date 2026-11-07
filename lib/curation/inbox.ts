@@ -23,6 +23,7 @@ import {
     type HolderRef,
     type InboxDetail,
     type InboxItem,
+    type InboxSummary,
     type InboxView,
     type InboxWatcher,
     type BindWaiting,
@@ -31,6 +32,9 @@ import {
     type ResolvedCause,
     type SeriesOption,
 } from './inbox-view';
+import { cursorIssued, readArrivals } from './arrivals';
+import { ANY_QUERY, matchesQuery, type InboxQuery } from './inbox-list';
+import { libraryCauseText } from './library';
 import { readDraftPlan } from './pins';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
@@ -84,6 +88,9 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         waiting,
         placedBy: placed,
         unplacedSeries: unplaced,
+        observedAt: event.observedAt,
+        // A saved series, not a saved "Leave unassigned", which Leave unassigned keeps.
+        seriesChosen: typeof event.edits?.seriesId === 'string',
     };
 }
 
@@ -195,6 +202,11 @@ function factsOf(event: CurationEvent): InboxDetail['facts'] {
     if (facts.sourceFormat) rows.push({ label: 'Format', value: facts.sourceFormat });
     if (facts.folder) rows.push({ label: 'Folder', value: printable(facts.folder) });
     if (facts.duplicateOf) rows.push({ label: 'Same bytes as', value: facts.duplicateOf });
+    // A6's library item (#14, A8): what the watcher found, in words that name no path.
+    if (event.type === 'library-unavailable') {
+        const cause = libraryCauseText(facts.library);
+        rows.push({ label: 'Cause', value: `${cause[0].toUpperCase()}${cause.slice(1)}` });
+    }
     return rows;
 }
 
@@ -389,7 +401,6 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
     return {
         ...item,
         assetRevision: event.assetRevision,
-        observedAt: event.observedAt,
         lastObservedAt: event.lastObservedAt,
         capturedDate: event.derivedFacts.capturedDate ?? null,
         fromPath: event.derivedFacts.fromPath ? printable(event.derivedFacts.fromPath) : null,
@@ -449,19 +460,12 @@ async function watcherOf(root: string): Promise<InboxWatcher> {
 }
 
 /**
- * The inbox as the page shows it, with `selectedId`'s event in full. With no
- * selection, the first item that needs judgment is selected, and none when
- * nothing does, so the page shows its empty state (as it does once the last
- * decision opens no next item). A data root that isn't ready is
- * `not-ready`, and nothing else is read.
+ * Every event as a list row, in the list's order, with the counts the summary line and `curation list` share. The
+ * page and the summary route (#14, A8) both read the inbox through this, so they count alike.
  */
-export async function loadInbox(selectedId: string | null): Promise<InboxView> {
-    const status = dataRootStatus();
-    if (status.state !== 'ready' || status.root === null) {
-        return { state: 'not-ready', message: `The data root is ${status.state}, so the inbox can't be read. Nothing was written.` };
-    }
-    const root = status.root;
-    const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
+async function readItems(root: string) {
+    // The sequence first: an item that arrives between the two reads is counted on the next check, never skipped.
+    const arrivals = await readArrivals(root);
     const { events, problems } = await listEvents(root);
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
@@ -470,22 +474,54 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
     const items = events
         .map((event) => itemOf(event, registry, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null))
         .sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]);
+    const counts = {
+        needsJudgment: items.filter((item) => item.group === 'judgment').length,
+        waiting: items.filter((item) => item.group === 'waiting').length,
+        placed: placements.placed.size,
+        unplaced: placements.unplaced.size,
+    };
+    return { events, problems, registry, placements, items, counts, arrivals };
+}
+
+export interface LoadInboxOptions {
+    /** The list's filters (#14, A8): with no item in the URL, the first item they keep that needs judgment opens. */
+    query?: Pick<InboxQuery, 'status' | 'type'> & Partial<Pick<InboxQuery, 'page'>>;
+    /** When the inbox is read, for the age labels. */
+    now?: () => number;
+}
+
+/**
+ * The inbox as the page shows it, with `selectedId`'s event in full. With no
+ * selection, the first item that needs judgment, and that the list's filters
+ * keep, is selected, and none when nothing does, so the page shows its empty
+ * state (as it does once the last decision opens no next item). A data root
+ * that isn't ready is `not-ready`, and nothing else is read.
+ */
+export async function loadInbox(selectedId: string | null, options: LoadInboxOptions = {}): Promise<InboxView> {
+    const status = dataRootStatus();
+    if (status.state !== 'ready' || status.root === null) {
+        return { state: 'not-ready', message: `The data root is ${status.state}, so the inbox can't be read. Nothing was written.` };
+    }
+    const root = status.root;
+    const readAt = new Date((options.now ?? Date.now)()).toISOString();
+    const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
+    const { events, problems, registry, placements, items, counts, arrivals } = await readItems(root);
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const { series, problem } = await seriesOptions(root);
 
     const wanted = selectedId !== null && EVENT_ID_RE.test(selectedId) ? selectedId : null;
-    const fallback = items.find((item) => item.group === 'judgment') ?? null;
+    const query = options.query ?? ANY_QUERY;
+    const fallback = items.find((item) => item.group === 'judgment' && matchesQuery(item, query)) ?? null;
     const chosen = selectedId === null ? fallback : wanted === null ? null : (items.find((item) => item.id === wanted) ?? null);
     const event = chosen ? events.find((entry) => entry.id === chosen.id) ?? null : null;
 
     return {
         state: 'ready',
         watcher: await watcherOf(root),
+        readAt,
+        cursor: arrivals.cursor,
         activeRevisionId: active,
-        needsJudgment: items.filter((item) => item.group === 'judgment').length,
-        waiting: items.filter((item) => item.group === 'waiting').length,
-        placed: placements.placed.size,
-        unplaced: placements.unplaced.size,
+        ...counts,
         placementUnknown: placements.unknown !== null,
         items,
         problems: problems.map((entry) => ({ id: entry.id, message: scrubbed(printable(`${entry.reason}: ${entry.message}`)) })),
@@ -493,5 +529,35 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
         seriesProblem: problem,
         selected: event && chosen ? await detailOf(root, event, chosen, registry, scrubbed, series) : null,
         missingSelection: selectedId !== null && chosen === null ? (wanted ?? 'that item') : null,
+    };
+}
+
+/**
+ * #14 (A8): the summary the Inbox's poll reads through /api/curation/inbox/summary, counted as loadInbox() counts:
+ * the counts, the watcher, how many items there are and how many can't be read, and for `itemId`, the item the page
+ * has open, its version and status, so the page can tell it changed. It names no path, file or photo, and writes
+ * nothing. A data root that isn't ready is `not-ready`, with nothing else read.
+ */
+export async function loadInboxSummary(itemId: string | null, options: Pick<LoadInboxOptions, 'now'> & { since?: number | null } = {}): Promise<InboxSummary> {
+    const status = dataRootStatus();
+    if (status.state !== 'ready' || status.root === null) return { state: 'not-ready' };
+    const root = status.root;
+    const readAt = new Date((options.now ?? Date.now)()).toISOString();
+    const { events, problems, counts, items, arrivals } = await readItems(root);
+    const since = options.since ?? null;
+    // A8 review, 4a: only a cursor this server issued, so a forged or future one is refused, not read as zero arrivals.
+    if (since !== null && !cursorIssued(since, arrivals)) return { state: 'bad-cursor' };
+    const arrived = since === null ? null : items.filter((item) => item.group === 'judgment' && (arrivals.seqOf.get(item.id) ?? 0) > since).length;
+    const open = itemId !== null && EVENT_ID_RE.test(itemId) ? events.find((event) => event.id === itemId) : undefined;
+    return {
+        state: 'ready',
+        readAt,
+        cursor: arrivals.cursor,
+        arrived,
+        ...counts,
+        total: events.length,
+        unreadable: problems.length,
+        watcher: await watcherOf(root),
+        item: open ? { id: open.id, version: open.version, status: open.status } : null,
     };
 }

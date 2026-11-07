@@ -114,7 +114,8 @@ describe('the curation sink', () => {
         const [event] = (await listEvents(f.root)).events;
         expect(event.suggestions.series).toMatchObject({ value: DRAFT, confidence: 'high', producedAt: new Date(NOW).toISOString(), producedBy: expect.stringMatching(/^rules@[0-9a-f]{12}$/) });
         expect(event.suggestions.series?.evidence.join(' ')).toContain('trips');
-        expect(event.suggestions.placement).toMatchObject({ value: 'end', confidence: 'low', producedBy: 'placement@1' });
+        // #14 (A8): the fixture's series photographs are all captured before this one, so it goes at the end, by date.
+        expect(event.suggestions.placement).toMatchObject({ value: 'end', confidence: 'medium', producedBy: 'placement@2' });
         expect(event).toMatchObject({ edits: null, decisions: [], reviewedAt: null, reviewedBy: null });
         expect(Object.keys(event.suggestions).sort()).toEqual(['placement', 'series']);
     });

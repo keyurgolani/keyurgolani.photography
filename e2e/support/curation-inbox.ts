@@ -100,7 +100,8 @@ export async function createInboxFixture(): Promise<InboxFixture> {
     };
 }
 
-function fact(fixture: InboxFixture, type: IdentityFactType, photoId: string | null, extra: Partial<IdentityFact> = {}): IdentityFact {
+/** A fact as #10's pass would commit it for `photoId`, or for an unbound file. A8's spec opens its own items with it. */
+export function fact(fixture: InboxFixture, type: IdentityFactType, photoId: string | null, extra: Partial<IdentityFact> = {}): IdentityFact {
     const assetRevision = extra.assetRevision ?? (photoId ? fixture.revisionOf(photoId) : `sha256-${'e'.repeat(64)}`);
     const sourcePath = extra.path ?? (photoId ? fixture.catalog.registry.photos[photoId].source.path : FAILED_SOURCE);
     const folder = path.posix.dirname(sourcePath);
@@ -117,19 +118,25 @@ function fact(fixture: InboxFixture, type: IdentityFactType, photoId: string | n
     };
 }
 
+/** What openInboxItems() opens, one item each: the new photographs, a missing published one, and a file the watcher can't read. */
+const OPENED: readonly (readonly [IdentityFactType, string | null, Partial<IdentityFact>])[] = [
+    ['new', FRESH.approve, {}],
+    ['new', FRESH.stale, { observedAt: '2026-02-01T00:01:00.000Z' }],
+    ['new', FRESH.decorative, { observedAt: '2026-02-01T00:01:10.000Z' }],
+    ['new', FRESH.refused, { observedAt: '2026-02-01T00:01:20.000Z' }],
+    ['new', FRESH.unassigned, { observedAt: '2026-02-01T00:01:30.000Z' }],
+    ['new', FRESH.reopen, { observedAt: '2026-02-01T00:01:40.000Z' }],
+    ['missing', PUBLISHED_IDS[1], { observedAt: '2026-02-01T00:02:00.000Z' }],
+    ['processing-failed', null, { reason: 'unsupported-format', observedAt: '2026-02-01T00:03:00.000Z' }],
+];
+
+/** How many items openInboxItems() opens, each needing judgment, so Dark parity can name every row (A8's INBOX_PICK_ROWS). */
+export const OPENED_INBOX_ITEMS = OPENED.length;
+
 /** Open the spec's inbox items, as the watcher's next pass would: the new photographs, a missing published one, and a file the watcher can't read. */
 export async function openInboxItems(fixture: InboxFixture): Promise<void> {
     const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
-    await createCurationSink({ root: fixture.root, logger: quiet })([
-        fact(fixture, 'new', FRESH.approve),
-        fact(fixture, 'new', FRESH.stale, { observedAt: '2026-02-01T00:01:00.000Z' }),
-        fact(fixture, 'new', FRESH.decorative, { observedAt: '2026-02-01T00:01:10.000Z' }),
-        fact(fixture, 'new', FRESH.refused, { observedAt: '2026-02-01T00:01:20.000Z' }),
-        fact(fixture, 'new', FRESH.unassigned, { observedAt: '2026-02-01T00:01:30.000Z' }),
-        fact(fixture, 'new', FRESH.reopen, { observedAt: '2026-02-01T00:01:40.000Z' }),
-        fact(fixture, 'missing', PUBLISHED_IDS[1], { observedAt: '2026-02-01T00:02:00.000Z' }),
-        fact(fixture, 'processing-failed', null, { reason: 'unsupported-format', observedAt: '2026-02-01T00:03:00.000Z' }),
-    ]);
+    await createCurationSink({ root: fixture.root, logger: quiet })(OPENED.map(([type, photoId, extra]) => fact(fixture, type, photoId, extra)));
 }
 
 /**

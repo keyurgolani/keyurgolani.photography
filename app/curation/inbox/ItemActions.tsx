@@ -4,6 +4,7 @@ import { startTransition, useActionState, useEffect, useRef, useState, type Form
 import { Check, Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
+import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
 import { itemUrl, moveOn } from './journey';
 import {
     ARCHIVE_TAKEDOWN,
@@ -17,6 +18,7 @@ import {
     descriptionHint,
     formStart,
     IDLE,
+    itemName,
     LIBRARY_PATH_HINT,
     nextItemId,
     parsePlacementValue,
@@ -32,6 +34,7 @@ import {
     type InboxDetail,
     type SeriesOption,
 } from '@/lib/curation/inbox-view';
+import { ITEM_CHANGED_EVENT } from '@/lib/curation/inbox-watch';
 
 const ACTIONS: Record<InboxActionKind, (previous: InboxActionState, form: FormData) => Promise<InboxActionState>> = {
     approve: approveItem,
@@ -97,18 +100,75 @@ function reloadItem(event: MouseEvent<HTMLAnchorElement>) {
     window.location.reload();
 }
 
+type Answered = Exclude<InboxActionState, { status: 'idle' }>;
+
+/** #14 (A8): each field an answer can be about, by the ID of the control to focus and the words that name it. */
+const FIELDS: Record<NonNullable<Answered['field']>, { target: (action: InboxActionKind) => string; label: (action: InboxActionKind) => string }> = {
+    description: { target: () => 'item-description', label: () => 'Draft description' },
+    reason: { target: (action) => (action === 'archive' ? 'archive-reason' : 'dismiss-reason'), label: (action) => (action === 'archive' ? 'Reason for archiving' : 'Reason') },
+    path: { target: () => 'bind-path', label: () => 'Library path' },
+    bindTo: { target: () => 'bind-to-first', label: () => 'File to bind' },
+};
+
+const failedSubmit = (state: InboxActionState): Answered | null => (state.status === 'refused' || state.status === 'invalid' || state.status === 'failed' ? state : null);
+
+/**
+ * #14 (A8): whether a failed answer shows by its own field too, which then takes focus and reads it out. Then the
+ * summary only links the field, and stays out of the live region, so it's said once. Every field shows its refusal
+ * but Dismiss's reason, and the files to bind when none is listed.
+ */
+function shownByField(state: Answered, detail: InboxDetail): boolean {
+    if (state.field === undefined) return false;
+    if (state.field === 'reason') return state.action === 'archive';
+    if (state.field === 'bindTo') return detail.linkedFiles.length > 0;
+    return true;
+}
+
+/** The links a failed answer's summary holds: the item itself, and the field the answer is about, when it's about one. */
+function summaryEntries(state: Answered, detail: InboxDetail): SummaryEntry[] {
+    const entries: SummaryEntry[] = [{ text: `Item: ${itemName(detail)}`, href: '#item-heading', target: 'item-heading' }];
+    if (state.field) {
+        const field = FIELDS[state.field];
+        entries.push({ text: field.label(state.action), href: `#${field.target(state.action)}`, target: field.target(state.action) });
+    }
+    return entries;
+}
+
+/** #14 (A8): what the stale alert adds when the item has a form the curator may have typed in, which nothing resets. */
+const KEPT_EDITS = ' Your edits are still in the form, so copy anything you want to keep before you refresh.';
+
+/** #14 (A8): what the stale alert says when the poll, not an action, sees the item move. */
+export const POLLED_STALE = 'This item changed since the page loaded, in another tab or from the command line, so an action on it now would write nothing.';
+
+/**
+ * #14 (A8): an item that changed since the page loaded, from an action's stale answer or the poll. `role="alert"`, so
+ * it's said at once and once, outside the polite region. It leaves the form as it is, so what was typed stays there.
+ */
+function StaleAlert({ message, detail }: { message: string; detail: InboxDetail }) {
+    const editable = detail.type === 'new' && detail.can.edit;
+    return (
+        <div className={styles.notice} role="alert" data-tone="change" data-state="stale">
+            <p>
+                {message}
+                {editable ? KEPT_EDITS : ''}
+            </p>
+            <a className={styles.linkButton} href={`/curation/inbox?item=${detail.id}#item`} onClick={reloadItem}>
+                Refresh and review again
+            </a>
+        </div>
+    );
+}
+
 function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetail }) {
     if (state.status === 'idle') return null;
+    // #14 (A8): a failed submit is one error summary, with its message as the heading and a link to the item and field.
+    const failed = failedSubmit(state);
+    if (failed) return <ErrorSummary id={`answer-${failed.action}`} title={failed.message} entries={summaryEntries(failed, detail)} state={failed.status} />;
     // #118: a bind that went through only waits for the watcher, so it takes the waiting tone, not the done one.
     const tone = state.status === 'done' && state.action === 'bind' ? 'change' : TONE[state.status];
     return (
         <div className={styles.notice} data-tone={tone} data-state={state.status}>
             <p>{state.message}</p>
-            {state.status === 'stale' ? (
-                <a className={styles.linkButton} href={`/curation/inbox?item=${detail.id}#item`} onClick={reloadItem}>
-                    Refresh and review again
-                </a>
-            ) : null}
         </div>
     );
 }
@@ -121,7 +181,8 @@ type AnswerSlot = 'description' | 'dismiss' | 'bind' | 'archive' | 'actions';
 
 function slotOf(state: InboxActionState, can: InboxDetail['can']): AnswerSlot | null {
     if (state.status === 'idle') return null;
-    if (state.field === 'description') return 'description';
+    // #14 (A8): a refused description shows by the field, and its error summary under the buttons that sent it.
+    if (state.field === 'description') return 'actions';
     // A dismissal that went through leaves no Dismiss to show it in, so its answer shows under the buttons, by Reopen.
     // So does a bind or an archive once the refresh after it takes its form away (#118).
     if (state.action === 'dismiss' && can.dismiss) return 'dismiss';
@@ -138,18 +199,27 @@ function slotOf(state: InboxActionState, can: InboxDetail['can']): AnswerSlot | 
  * gone after the refresh, so focus never drops to the page's body.
  */
 function AnswerRegion({ show, state, detail, regionRef, announce }: { show: boolean; state: InboxActionState; detail: InboxDetail; regionRef?: RefObject<HTMLDivElement | null>; announce?: { text: string; serial: number } | null }) {
+    // #14 (A8): a refusal its field shows and reads out on focus gets a summary outside this region, so it's said once;
+    // a stale answer is an alert of its own beside it.
+    const failed = show ? failedSubmit(state) : null;
+    const byField = failed !== null && shownByField(failed, detail) ? failed : null;
+    const stale = show && state.status === 'stale' ? state : null;
     return (
-        <div role="status" aria-live="polite" className={styles.answer} ref={regionRef} tabIndex={regionRef ? -1 : undefined}>
-            {/* #118: a refusal the page makes itself, before any post, said here too, since the field it's by may already
-                hold focus. A new node each time, so the same words are read again. The field shows it on screen. */}
-            {announce ? (
-                <p key={announce.serial} className={styles.visuallyHidden}>
-                    {announce.text}
-                </p>
-            ) : show ? (
-                <Notice state={state} detail={detail} />
-            ) : null}
-        </div>
+        <>
+            <div role="status" aria-live="polite" className={styles.answer} ref={regionRef} tabIndex={regionRef ? -1 : undefined}>
+                {/* #118: a refusal the page makes itself, before any post, said here too, since the field it's by may already
+                    hold focus. A new node each time, so the same words are read again. The field shows it on screen. */}
+                {announce ? (
+                    <p key={announce.serial} className={styles.visuallyHidden}>
+                        {announce.text}
+                    </p>
+                ) : show && byField === null && stale === null ? (
+                    <Notice state={state} detail={detail} />
+                ) : null}
+            </div>
+            {byField ? <ErrorSummary id={`answer-${byField.action}-field`} title="There is a problem with this item" entries={summaryEntries(byField, detail)} state={byField.status} /> : null}
+            {stale ? <StaleAlert key={stale.serial} message={stale.message} detail={detail} /> : null}
+        </>
     );
 }
 
@@ -197,7 +267,7 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
                         <legend>File to bind</legend>
                         {linked.map((file, index) => (
                             <label key={file.id} className={styles.slot}>
-                                <input ref={index === 0 ? firstFileRef : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} />
+                                <input ref={index === 0 ? firstFileRef : undefined} id={index === 0 ? 'bind-to-first' : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} />
                                 {linked.length === 1 ? `${file.path}, the new file at its last path` : file.path}
                             </label>
                         ))}
@@ -218,6 +288,7 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
                     Library path
                     <input
                         ref={pathRef}
+                        id="bind-path"
                         className={styles.control}
                         name="path"
                         value={path}
@@ -248,8 +319,8 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
                     </button>
                 </div>
             </form>
-            {/* A refused path or file shows by its field; every other answer to Bind shows here, while Bind is still offered. */}
-            <AnswerRegion show={slot === 'bind' && pathError === null && filesError === null} state={state} detail={detail} />
+            {/* A refused path or file shows by its field, with its summary here (#14, A8); every other answer to Bind shows here too, while Bind is still offered. */}
+            <AnswerRegion show={slot === 'bind'} state={state} detail={detail} />
         </details>
     );
 }
@@ -311,6 +382,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
                     Reason for archiving
                     <input
                         ref={reasonRef}
+                        id="archive-reason"
                         className={styles.control}
                         name="reason"
                         value={reason}
@@ -364,7 +436,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
                 </div>
             </form>
             {/* A refused reason shows by its field; every other answer to Archive shows here, while Archive is still offered. */}
-            <AnswerRegion show={slot === 'archive' && refused === null} state={state} detail={detail} announce={missingReason ? { text: 'Archiving needs a reason.', serial: asked } : null} />
+            <AnswerRegion show={slot === 'archive'} state={state} detail={detail} announce={missingReason ? { text: 'Archiving needs a reason.', serial: asked } : null} />
         </details>
     );
 }
@@ -476,6 +548,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
                     break, as the server stores it, so Enter adds none and a pasted run of them, with the spaces around it, becomes one space. */}
                 <textarea
                     ref={descriptionRef}
+                    id="item-description"
                     rows={3}
                     className={`${styles.control} ${styles.description}`}
                     name="description"
@@ -570,7 +643,11 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
 
 /** 14-1's actions on the selected item, each a form the page's server actions take. */
 export default function ItemActions({ detail, order, open, activeRevisionId, series, seriesProblem, note }: ItemActionsProps) {
-    const [state, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    const [answered, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    // A8 review S4: the version the last press was sent for. A stale answer stands only while the page still shows
+    // that version: once a refresh shows a newer one, it's about a page that's gone.
+    const [sentFor, setSentFor] = useState<number | null>(null);
+    const state = answered.status === 'stale' && sentFor !== detail.version ? IDLE : answered;
     // The list order as the page first showed it, so the next item is the one after this in the list the curator saw.
     const [seen] = useState(order);
     // The version an approval or Decide later was sent for. Once the page shows a newer one, the refresh after it has landed, and `open` is current.
@@ -589,6 +666,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         if (submitter instanceof HTMLButtonElement && submitter.name) form.set(submitter.name, submitter.value);
         const intent = form.get('intent');
         sentVersion.current = intent === 'approve' || intent === 'defer' ? detail.version : null;
+        setSentFor(detail.version);
         // On the plain inbox URL a wide screen shows the first item that needs judgment, and the refresh after an action
         // would show the next one in its place, with no answer. Naming this item in the URL before the action is sent
         // keeps it on the page, so its answer shows and moving on runs. The data must not be Next's own history state, or
@@ -619,6 +697,18 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
         const fromName = fileParts(detail.sourcePath).name;
         moveOn({ to: nextItemId(seen, detail.id, open), from: detail.id, fromName, message: arrivalMessage(state.action, fromName, state.message) });
     }, [state, detail.id, detail.version, detail.sourcePath, seen, open]);
+    // #14 (A8): the poll saw this item change since the page loaded. Its alert says so, and the form keeps what was typed.
+    // A8 review S4: it records the version the poll compared against, and shows only while the page still shows that
+    // one, so a poll in flight during the curator's own Save, which compared against the version before it, says nothing.
+    const [polledFor, setPolledFor] = useState<number | null>(null);
+    useEffect(() => {
+        const heard = (event: Event) => {
+            const said = (event as CustomEvent<{ id?: unknown; version?: unknown }>).detail;
+            if (said?.id === detail.id && typeof said.version === 'number') setPolledFor(said.version);
+        };
+        window.addEventListener(ITEM_CHANGED_EVENT, heard);
+        return () => window.removeEventListener(ITEM_CHANGED_EVENT, heard);
+    }, [detail.id]);
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
     // A new photograph's approve is unavailable only while a pending bind merges it (#17); its hint says why. A
@@ -714,8 +804,10 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                 </form>
             ) : null}
 
-            {/* Every answer but a dismissal, a bind, an archive or a refused description lands here, right under the buttons that produced it. */}
+            {/* Every answer but a dismissal, a bind or an archive lands here, right under the buttons that produced it. */}
             <AnswerRegion show={slot === 'actions'} state={state} detail={detail} regionRef={answerRef} />
+            {/* #14 (A8): the poll's word that the item moved, unless an action already said so. */}
+            {polledFor === detail.version && state.status !== 'stale' ? <StaleAlert message={POLLED_STALE} detail={detail} /> : null}
 
             {/* Keyed by the version the page showed, as the suggestion is, so a form left open across a refresh never reads as another state's. */}
             {can.bind ? <BindForm key={`bind-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} slot={slot} submit={submit} /> : null}
@@ -728,7 +820,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                         <label className={styles.label}>
                             Reason
-                            <input className={styles.control} name="reason" required maxLength={500} autoComplete="off" />
+                            <input className={styles.control} id="dismiss-reason" name="reason" required maxLength={500} autoComplete="off" />
                         </label>
                         <div className={styles.actions}>
                             <button type="submit" name="intent" value="dismiss" className={styles.button} {...offWhile(pending)}>

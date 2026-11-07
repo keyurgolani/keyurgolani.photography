@@ -48,6 +48,8 @@ vi.mock('../actions', () => {
         confirmItem: make('confirm'),
         bindItem: make('bind'),
         archiveItem: make('archive'),
+        // #14's A8: the list's bulk form. InboxScreen.test.tsx checks what it sends.
+        bulkItems: async () => ({ status: 'idle' }),
     };
 });
 
@@ -84,7 +86,7 @@ const SERIES: SeriesOption[] = [
 ];
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
+    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -125,7 +127,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
 }
 
 function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): Extract<InboxView, { state: 'ready' }> {
-    return { state: 'ready', watcher: { state: 'running' }, activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, readAt: '2026-02-01T00:00:00.000Z', cursor: 0, activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const tree = (v: ReturnType<typeof view>, listView = false) => (
@@ -470,7 +472,8 @@ describe('the detail', () => {
         const { unmount } = renderInbox(view({ selected: detail({ type: 'ambiguous', can: { ...none, dismiss: true }, primaryUnavailable: null }) }));
         expect(screen.getByRole('heading', { name: 'Identity question' })).toBeInTheDocument();
         const question = screen.getByRole('heading', { name: 'Identity question' }).closest('section') as HTMLElement;
-        expect(question).toHaveTextContent(/photos identity bind or photos identity new records the decision, and the watcher's next pass applies it and closes this item\./);
+        // A5's commands for an ambiguous item (#14, A8).
+        expect(question).toHaveTextContent(/curation bind --to or curation resolve --as new records the decision, and the watcher's next pass applies it and closes this item\./);
         expect(question).toHaveTextContent(/It stays open while the same bytes are still in doubt at another path\./);
         unmount();
         renderInbox(view({ selected: detail({ type: 'ambiguous', status: 'resolved', group: 'settled', resolvedBy: { kind: 'identified' }, can: none, primaryUnavailable: null }) }));
@@ -607,6 +610,14 @@ describe('the forms', () => {
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
 
+    it('hold the position select disabled with no rules file, saying the photo is left unassigned', () => {
+        renderInbox(view({ selected: detail({ suggestions: { series: { value: null, confidence: 'low', producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null } }) }));
+        const position = screen.getByRole('combobox', { name: 'Proposed sequence position' });
+        expect(position).toBeDisabled();
+        expect(position).toHaveTextContent('No position: left unassigned');
+        expect(position).not.toHaveTextContent('Choose a series first');
+    });
+
     it('fill a reopened item from its photo record and series, so unchecking the flag clears it', async () => {
         const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
         const approved = [{ action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' }, { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' }];
@@ -684,7 +695,8 @@ describe('the forms', () => {
     it('post every form, so a click before hydration never puts the typed text in a URL', () => {
         renderInbox();
         for (const form of document.querySelectorAll('form')) {
-            if (form.querySelector('[aria-label="Refresh inbox"]')) continue;
+            // Refresh and A8's filters are plain GETs of the page, which carry nothing typed.
+            if (form.querySelector('[aria-label="Refresh inbox"]') || form.getAttribute('role') === 'search') continue;
             expect(form.getAttribute('method')).toBe('post');
         }
     });
@@ -1224,7 +1236,10 @@ describe('moving on after a decision', () => {
         carry(null, { from: EVT(1), fromName: 'harbor-1.jpg', message: 'Left harbor-1.jpg for later. Nothing in the draft changed.' });
         renderInbox(view({ items: [item({ status: 'deferred', group: 'deferred' })], needsJudgment: 0, selected: null }), true);
         // Said once: the line that takes focus already says nothing requires judgment.
-        expect(screen.getByRole('status')).toHaveTextContent(/^Left harbor-1\.jpg for later\. Nothing in the draft changed\.Open harbor-1\.jpg again$/);
+        // A8's bulk form has its own named region, empty until a bulk action answers.
+        expect(screen.getAllByRole('status').filter((region) => !region.hasAttribute('aria-label'))).toHaveLength(1);
+        expect(screen.getAllByRole('status').find((region) => !region.hasAttribute('aria-label'))).toHaveTextContent(/^Left harbor-1\.jpg for later\. Nothing in the draft changed\.Open harbor-1\.jpg again$/);
+        expect(screen.getByRole('status', { name: 'Bulk answer' })).toBeEmptyDOMElement();
         expect(screen.getByRole('link', { name: 'Open harbor-1.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
         expect(screen.getByText('Nothing requires judgment right now.')).toHaveFocus();
         // The wide screen's detail side says it quietly too, rather than opening an item nobody needs to decide.

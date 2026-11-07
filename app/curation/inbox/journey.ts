@@ -81,8 +81,21 @@ export function listPlace(): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : null;
 }
 
-/** The URL that opens an item, the same one every row links to. */
-export const itemUrl = (id: string) => `/curation/inbox?item=${id}#item`;
+/** The list's filters and page in this tab's URL (#14, A8), so moving on keeps the list as the curator left it. */
+function listQuery(): string {
+    if (typeof window === 'undefined') return '';
+    const from = new URLSearchParams(window.location.search);
+    const kept = new URLSearchParams();
+    for (const [name, pattern] of [['status', /^[a-z-]{1,40}$/], ['type', /^[a-z-]{1,40}$/], ['page', /^[1-9]\d{0,3}$/]] as const) {
+        const value = from.get(name);
+        if (value !== null && pattern.test(value)) kept.set(name, value);
+    }
+    const text = kept.toString();
+    return text ? `${text}&` : '';
+}
+
+/** The URL that opens an item, the same one every row links to, with the list's filters kept. */
+export const itemUrl = (id: string) => `/curation/inbox?${listQuery()}item=${id}#item`;
 
 /**
  * Open the item an approval or Decide later leads to, or the empty inbox,
@@ -96,7 +109,7 @@ export function moveOn(arrival: Omit<Arrival, 'at'>): void {
         const row = rememberedRow();
         rememberRow(arrival.to, row?.scrollY ?? 0);
     }
-    navigation.replace(arrival.to === null ? '/curation/inbox' : itemUrl(arrival.to));
+    navigation.replace(arrival.to === null ? `/curation/inbox${listQuery() ? `?${listQuery().slice(0, -1)}` : ''}` : itemUrl(arrival.to));
 }
 
 /** The arrival meant for this page (`to`, the item it shows, or null for none), once: reading it clears it. */

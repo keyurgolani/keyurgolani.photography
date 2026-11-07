@@ -216,6 +216,15 @@ export interface InboxItem {
     placedBy: string | null;
     /** The series its last approval named, for an approval whose photo nothing holds now, or null. */
     unplacedSeries: string | null;
+    /** When the watcher first saw what the item reports, for its age label (#14, A8). */
+    observedAt: string;
+    /** A series is saved on the item (`edits.seriesId`, not null), so Leave unassigned would drop it (A8 review S2). */
+    seriesChosen: boolean;
+}
+
+/** What names an item's file in the list and its heading. A6's library item has no file: it's the library (#14, A8). */
+export function itemName(item: Pick<InboxItem, 'type' | 'sourcePath'>): string {
+    return item.type === 'library-unavailable' ? 'The photo library' : fileParts(item.sourcePath).name;
 }
 
 /** One thing that holds a photograph: the active revision, or a working-layer series, by ID. */
@@ -235,7 +244,6 @@ export interface SeriesOption {
 
 export interface InboxDetail extends InboxItem {
     assetRevision: string | null;
-    observedAt: string;
     lastObservedAt: string;
     /** The capture date the file holds, or null when it holds none or nothing was read. */
     capturedDate: string | null;
@@ -474,6 +482,10 @@ export type InboxView =
     | {
           state: 'ready';
           watcher: InboxWatcher;
+          /** When the server read the inbox, which the list's age labels count from, so the server and the browser agree (#14, A8). */
+          readAt: string;
+          /** The arrival sequence as the page read it, which the poll sends back as `since` (A8 review, 4a). */
+          cursor: number;
           /** The active revision every action is checked against. Null before the first publish. */
           activeRevisionId: string | null;
           needsJudgment: number;
@@ -928,3 +940,64 @@ export type InboxActionState =
       };
 
 export const IDLE: InboxActionState = { status: 'idle' };
+
+/**
+ * #14 (A8): what /api/curation/inbox/summary answers, which the Inbox's poll reads. Only what the page already shows:
+ * the counts, the watcher, and for the open item its ID, version and status, which its forms carry. Never a path.
+ */
+export interface ReadyInboxSummary {
+    state: 'ready';
+    readAt: string;
+    /** The newest arrival sequence the server issued (lib/curation/arrivals.ts). The poll sends it back as `since`. */
+    cursor: number;
+    /** How many items that need judgment now arrived after `since`, or null when no `since` was asked. */
+    arrived: number | null;
+    needsJudgment: number;
+    waiting: number;
+    placed: number;
+    unplaced: number;
+    /** Every item the inbox holds, settled ones too. */
+    total: number;
+    /** Item folders that can't be read. */
+    unreadable: number;
+    watcher: InboxWatcher;
+    item: { id: string; version: number; status: CurationEventStatus } | null;
+}
+
+/** `bad-cursor`: a `since` the server didn't issue, which the route answers with a 400. */
+export type InboxSummary = ReadyInboxSummary | { state: 'not-ready' } | { state: 'bad-cursor' };
+
+/** #14 (A8): the two bulk actions. `defer` is Decide later (the mockup's "Leave in draft"), `unassigned` approves with no series. */
+export type BulkKind = 'defer' | 'unassigned';
+
+/** One item's answer inside a bulk action, in the page's words. */
+export interface BulkResult {
+    eventId: string;
+    status: Exclude<InboxActionState, { status: 'idle' }>['status'];
+    message: string;
+    /** It went through with an answer of its own, such as an approval that says publishing waits (A8 review S1). */
+    note?: boolean;
+}
+
+/**
+ * #14 (A8): what a bulk action answered. `done`: every item went through. `partial`: some did. `refused`: none did,
+ * each with its own answer. `invalid`: the form itself was refused, and nothing ran (`field` is the checkboxes).
+ */
+export type InboxBulkState =
+    | { status: 'idle' }
+    | {
+          status: 'done' | 'partial' | 'refused' | 'invalid';
+          kind: BulkKind;
+          message: string;
+          results: BulkResult[];
+          field?: 'items';
+          serial: number;
+      };
+
+export const BULK_IDLE: InboxBulkState = { status: 'idle' };
+
+/**
+ * The bulk form's ID. The rows stay in the list's own lists, as before A8, so each row's checkbox names the form it
+ * belongs to with this, by its `form` attribute (A8's CI: Dark parity compares the list against next by position).
+ */
+export const BULK_FORM_ID = 'inbox-bulk';
