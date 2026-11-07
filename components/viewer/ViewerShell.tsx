@@ -125,8 +125,9 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  * and doesn't move, and each move is announced in a polite live region
  * that's empty at mount (#178): 250 ms after its photograph arrives, so rapid
  * presses give one message, with the position, the title and the
- * description. An end is announced at once, and a repeat of the same
- * message clears the region first, so every press at an end is heard (bug 3).
+ * description. An end is announced at once, alone, and drops a move's
+ * message still settling; a repeat of the same message clears the region
+ * first, so every press at an end is heard (bug 3).
  * Keys ignore auto-repeat, composition and a key already taken; Escape while
  * zoomed only resets the zoom, and focus that was in the zoomed region goes
  * to Zoom. Offline, a move says so by the controls and doesn't navigate. One
@@ -206,12 +207,9 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setChrome((current) => (sameChrome(current, state) ? current : state));
     }, []);
 
-    /** A settled message still waiting to land, so an end pressed before it lands says both (#178 review). */
-    const waiting = useRef<string | null>(null);
     const clearAnnouncement = useCallback(() => {
         if (announceTimer.current !== null) clearTimeout(announceTimer.current);
         announceTimer.current = null;
-        waiting.current = null;
     }, []);
     /** The region's text, now: a new message at once, a repeat cleared first and set REPEAT_GAP_MS later (bug 3). */
     const land = useCallback((text: string) => {
@@ -234,10 +232,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         (text: string, { settle = false }: { settle?: boolean } = {}) => {
             clearAnnouncement();
             if (!settle) return land(text);
-            waiting.current = text;
             announceTimer.current = setTimeout(() => {
                 announceTimer.current = null;
-                waiting.current = null;
                 land(text);
             }, ANNOUNCE_SETTLE_MS);
         },
@@ -268,9 +264,9 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             }
             const href = direction === 'previous' ? chrome.previousHref : chrome.nextHref;
             if (href === null) {
-                // The move that got here may not have been announced yet: say it first, then the end, as one message.
-                const end = boundaryText(direction, chrome.seriesTitle);
-                announce(waiting.current === null ? end : `${waiting.current} ${end}`);
+                // The end alone, at once (#178). A move's message still settling is dropped: the end says where the
+                // visitor is, and the photograph they're on is never said again after it.
+                announce(boundaryText(direction, chrome.seriesTitle));
                 return;
             }
             // Offline, the next page can't come (#178): say so by the controls and in the region, and stay.
