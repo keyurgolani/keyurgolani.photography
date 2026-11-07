@@ -185,7 +185,8 @@
 
 /* The serif and its weight come from the global heading rule. */
 /* One line, between Close and Zoom, so the header keeps its height and the stage under it never moves. A title too long
-   for it ends in an ellipsis on screen only: the heading's text is whole, for screen readers and find in page. */
+   for it ends in an ellipsis on screen only: the title is whole in the page, for find in page, and the heading's
+   aria-label says it whole, with the place, for screen readers. */
 .series {
   flex: 0 1 auto;
   min-width: 0;
@@ -421,10 +422,55 @@
 }
 
 .missingLabel {
+  margin: 0;
   color: var(--cc-label);
   font-size: var(--gah-type-label);
   letter-spacing: var(--gah-label-tracking);
   text-transform: uppercase;
+}
+
+/* A file that failed (#7): what happened, the alt, and Retry, stacked at the box's foot. The box keeps the
+   photograph's shape, so a long alt or enlarged text scrolls inside it instead of moving Previous, Next, or the
+   reading area; Retry inside it keeps that scroll reachable by keyboard. The diagonal stays behind the words on a
+   solid ground, so the alt reads at its contrast. */
+.failed {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.failed > * {
+  max-width: min(100%, 65ch);
+}
+
+/* The sentence says what happened, so it reads as written, in sentence case, not in the missing-image label's capitals. */
+.failedLabel {
+  margin: 0;
+  color: var(--cc-ink);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.failedLabel,
+.failedAlt {
+  padding: 0.125rem 0.25rem;
+  background: var(--cc-chrome);
+}
+
+.failedAlt {
+  margin: 0;
+  color: var(--cc-ink-soft);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.failed > .control {
+  flex: none;
+  background: var(--cc-chrome);
 }
 
 .viewport[data-zoomed] .frame {

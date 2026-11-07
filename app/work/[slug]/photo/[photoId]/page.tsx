@@ -34,7 +34,8 @@ const viewerFor = cache((slug: string, photoId: string) => viewerPhotoFrom(getAc
  * page. URLs are paths Next resolves against the root layout's
  * getMetadataBase(). Without a valid SITE_URL that base is localhost, so the
  * canonical link, og:url, and the share image are left out instead. A photo
- * with no usable set has no share image either, as on #5's series page.
+ * with no usable set has no share image either, as on #5's series page. The
+ * `catalog-revision` meta tag names the revision, as the series page's does.
  */
 export async function generateMetadata({ params }: ViewerRouteProps): Promise<Metadata> {
     const { slug, photoId } = await params;
@@ -50,6 +51,8 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
         title: viewerTitle(photo.title, series.title, position, total),
         ...(description !== null && { description }),
         ...(hasOrigin && { alternates: { canonical } }),
+        // The revision this photograph came from: <meta name="catalog-revision">, neither seen nor heard, for #12's freshness checks.
+        other: { 'catalog-revision': result.viewer.catalogRevision },
         // Next replaces openGraph whole, so the site's fields go first.
         openGraph: {
             ...siteOpenGraph,

@@ -119,6 +119,8 @@ export const FOLD_PAINT = {
         'padding-top': '0px', 'padding-right': '0px', 'padding-bottom': '0px', 'padding-left': '0px',
     },
     pseudo: {
+        // No text: a rendered ::before or ::after of a folded element is an empty box at most, as Work's title link's ::after is.
+        content: '""',
         'background-color': 'rgba(0, 0, 0, 0)',
         'background-image': 'none',
         'border-top-width': '0px', 'border-right-width': '0px', 'border-bottom-width': '0px', 'border-left-width': '0px',
@@ -175,11 +177,14 @@ export function walk(page: EvaluatingPage, selectors: string[] = [], leaveOut: s
         const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'NOSCRIPT', 'TEMPLATE', 'META']);
         const isToggle = (el: Element) => el.tagName === 'BUTTON' && /^Switch to/.test((el.textContent ?? '').trim());
         // Today's toggle comes with a hidden description beside it; the control with its popover.
-        const isPart = (el: Element) =>
-            el.matches('[data-theme-control], .theme-menu-popover') || isToggle(el) || (el.matches('span[hidden]') && [...(el.parentElement?.children ?? [])].some(isToggle)) || added.some((selector) => el.matches(selector));
+        const isControl = (el: Element) =>
+            el.matches('[data-theme-control], .theme-menu-popover') || isToggle(el) || (el.matches('span[hidden]') && [...(el.parentElement?.children ?? [])].some(isToggle));
+        const isPart = (el: Element) => isControl(el) || added.some((selector) => el.matches(selector));
         // The control's slot: an element holding the control and nothing else (SiteNav's end), which collapses with it
-        // where it's hidden (no JavaScript). In the curator's header, which holds more, only the control goes.
-        const isSlot = (el: Element) => el.children.length > 0 && [...el.children].every(isPart);
+        // where it's hidden (no JavaScript). In the curator's header, which holds more, only the control goes. An element
+        // whose only elements are ones the head adds (HEAD_ONLY), beside text of its own, holds no control, so it's no
+        // slot, and its box is compared.
+        const isSlot = (el: Element) => el.children.length > 0 && [...el.children].every(isPart) && [...el.children].some(isControl);
         const read = (style: CSSStyleDeclaration) => properties.map((name) => `${name}: ${style.getPropertyValue(name)}`);
         // Every custom property any stylesheet declares, and any the computed style lists, read resolved.
         const names = new Set<string>();

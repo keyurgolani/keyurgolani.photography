@@ -21,8 +21,15 @@ const SYMBOLS = ['compare', 'walk', 'failures', 'FOLD_PAINT', 'PROPERTIES', 'GEO
 const TYPES = ['Allowance', 'Walk', 'Walked', 'Comparison', 'WalkOptions', 'FoldedFocus', 'EvaluatingPage'] as const;
 /** The shift's helpers, which parityWalk.ts's compare() imports from parityShift.ts. */
 const SHIFT_SYMBOLS = ['checkShift', 'shiftLine', 'boxDelta'] as const;
+/** The Viewer details list's check (#175), which the gate imports from viewerFacts.ts and the unit tests pin there. */
+const FACTS_HOME = 'test/helpers/viewerFacts.ts';
+const FACTS_SYMBOLS = ['FactRow', 'CAMERA_MAKE', 'FACT_ROWS', 'UNIT_ROWS', 'readFactRows', 'cameraRowDeparture'] as const;
 /** Each guarded name and the one file that defines it. */
-const HOMES: Record<string, string> = Object.fromEntries([...[...SYMBOLS, ...TYPES].map((name) => [name, HOME]), ...SHIFT_SYMBOLS.map((name) => [name, SHIFT_HOME])]);
+const HOMES: Record<string, string> = Object.fromEntries([
+    ...[...SYMBOLS, ...TYPES].map((name) => [name, HOME]),
+    ...SHIFT_SYMBOLS.map((name) => [name, SHIFT_HOME]),
+    ...FACTS_SYMBOLS.map((name) => [name, FACTS_HOME]),
+]);
 /** The gate's helpers and the parity types, which the gate takes from ./computed alone. */
 const GATE_NAMES = [...SYMBOLS, ...TYPES];
 
@@ -301,7 +308,7 @@ describe("the Dark parity gate's helpers", () => {
     const gate = all.find((source) => source.file === GATE);
 
     it('scans the parity files', () => {
-        expect(all.map((source) => source.file)).toEqual(expect.arrayContaining([HOME, SHIFT_HOME, COMPUTED, GATE]));
+        expect(all.map((source) => source.file)).toEqual(expect.arrayContaining([HOME, SHIFT_HOME, FACTS_HOME, COMPUTED, GATE]));
     });
 
     it.each(Object.entries(HOMES))('define %s once, in %s', (name, home) => {
@@ -324,7 +331,12 @@ describe("the Dark parity gate's helpers", () => {
         expect(gate?.text).toMatch(/from '\.\/computed'/);
     });
 
-    it.each(SYMBOLS)('leave %s undeclared in the gate, at any depth, so nothing there shadows the import', (name) => {
+    it('reach the gate\'s details-list helpers from test/helpers/viewerFacts.ts alone', () => {
+        expect(takenElsewhere(gate?.text ?? '', FACTS_SYMBOLS, '../../test/helpers/viewerFacts', GATE)).toEqual([]);
+        expect(gate?.text).toMatch(/from '\.\.\/\.\.\/test\/helpers\/viewerFacts'/);
+    });
+
+    it.each([...SYMBOLS, ...FACTS_SYMBOLS])('leave %s undeclared in the gate, at any depth, so nothing there shadows the import', (name) => {
         expect(declarations(gate?.text ?? '', name, GATE)).toBe(0);
     });
 

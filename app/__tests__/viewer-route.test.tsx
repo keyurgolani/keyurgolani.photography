@@ -152,9 +152,12 @@ describe('the Viewer route', () => {
         const page = html(await answer('route-a', P[0]));
         expect(page.match(/data-surface="viewer"/g)).toHaveLength(1);
         expect(page).not.toContain('aria-label="Primary"');
-        expect(page).toMatch(/<h1[^>]*>Route A<\/h1>/);
-        expect(page).toContain('01 / 03');
-        expect(page).toContain('Photograph 1 of 3');
+        // "{series title}, photograph 1 of 3" (#7), with the padded numbers for the eye only.
+        expect(page).toMatch(/<h1[^>]*aria-label="Route A, photograph 1 of 3"[^>]*><span aria-hidden="true">Route A<\/span><\/h1>/);
+        expect(page).toMatch(/<span aria-hidden="true">01 \/ 03<\/span>/);
+        // With a caption the reading area shows only the caption, and the image's alt says the description.
+        expect(page).toMatch(/<img[^>]*alt="Route description one\."/);
+        expect(page).not.toMatch(/>Route description one\.</);
         expect(page).toMatch(/<h2[^>]*>Route title one<\/h2>/);
         expect(page).toContain('Route caption one.');
         expect(page).toContain('Route description one.');
@@ -234,6 +237,8 @@ describe('the Viewer route', () => {
             title: 'Route A, photograph 2 of 3',
             description: 'Route caption two.',
             alternates: { canonical: `/work/route-a/photo/${P[1]}` },
+            // The revision the page came from, for #12's freshness checks.
+            other: { 'catalog-revision': catalog.revisionId },
             openGraph: { siteName: 'Keyur Golani Photography', type: 'website', url: `/work/route-a/photo/${P[1]}` },
         });
     });
@@ -314,6 +319,8 @@ describe('the Viewer\'s share metadata', () => {
             title: 'Route title one, Route A',
             description: 'Route caption one.',
             alternates: { canonical: `/work/route-a/photo/${P[0]}` },
+            // The revision the page came from, for #12's freshness checks.
+            other: { 'catalog-revision': catalog.revisionId },
             openGraph: {
                 siteName: 'Keyur Golani Photography',
                 type: 'website',
@@ -341,6 +348,8 @@ describe('the Viewer\'s share metadata', () => {
             expect(metadata, String(value)).toEqual({
                 title: 'Route title one, Route A',
                 description: 'Route caption one.',
+                // The revision the page came from, for #12's freshness checks.
+                other: { 'catalog-revision': catalog.revisionId },
                 openGraph: { siteName: 'Keyur Golani Photography', type: 'website' },
             });
         }

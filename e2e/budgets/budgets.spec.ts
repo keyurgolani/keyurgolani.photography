@@ -17,7 +17,7 @@ import { browserChecks, declaredMediaBytes, eagerMedia, openingPhotoId, type Bro
 // small decodable image of the format asked for, and each image counts at
 // the bytes the fixture declares for its rung and format
 // (declaredMediaBytes()), as image-sizes.spec.ts counts them. Images decode,
-// so this is a normal first load: no failure path, no WebP retry (B8). In
+// so this is a normal first load: no failure path, no WebP retry. In
 // report mode, on a copy of a real library, nothing is stubbed, images count
 // at what the server sent, and nothing fails on a budget.
 

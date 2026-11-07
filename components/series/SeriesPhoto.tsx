@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection pulls node:crypto in through lib/media/url.ts, which must stay out of the client bundle.
 import type { SeriesImage } from '@/lib/catalog/projections/series';
@@ -33,18 +33,12 @@ export interface SeriesPhotoProps {
  * One series photograph in a reserved box on the dark ground. When the set
  * can't be shown, or the image fails to load, the box holds a plain text
  * fallback instead of a broken image, and whatever surrounds it (position,
- * text, Viewer link) stays put. An image that fails before hydration never
- * fires onError, so the mount check looks too. An empty currentSrc is a lazy
- * image that hasn't started, which isn't a failure.
+ * text, Viewer link) stays put. ResponsivePhoto reports the failure, once a
+ * failed AVIF file's WebP retry fails too, and catches one that failed before
+ * hydration.
  */
 export default function SeriesPhoto({ image, alt, sizes, priority = false, focalPoint, crop = 'cover', fallbackLabel, frameClassName, intrinsic = false }: SeriesPhotoProps) {
-    const element = useRef<HTMLImageElement>(null);
     const [failed, setFailed] = useState(false);
-
-    useEffect(() => {
-        const img = element.current;
-        if (img && img.complete && img.naturalWidth === 0 && img.currentSrc !== '') setFailed(true);
-    }, []);
 
     if (image === null || failed) {
         return (
@@ -65,7 +59,6 @@ export default function SeriesPhoto({ image, alt, sizes, priority = false, focal
     return (
         <span className={frameClassName} style={style} data-photo={crop}>
             <ResponsivePhoto
-                ref={element}
                 asset={image}
                 alt={alt}
                 sizes={sizes}
