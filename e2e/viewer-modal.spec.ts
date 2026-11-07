@@ -54,8 +54,9 @@ test.describe('a directly loaded Viewer is a page', () => {
         await expect(viewer(page)).toHaveAttribute('data-viewer-mode', 'page');
         await expect(page.locator('dialog, [role="dialog"], [aria-modal]')).toHaveCount(0);
         await expect(page.locator('[inert]')).toHaveCount(0);
-        // One h1: "{series}, photograph N of T" (#7).
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText([/^Fixture harbor, photograph \d of 3$/]);
+        // One h1, named "{series}, photograph N of T" (#7).
+        await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveAccessibleName(/^Fixture harbor, photograph \d of 3$/);
         await expect(viewer(page).getByRole('link', { name: 'Close' })).toBeVisible();
         await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', `/work/harbor?photo=${P[1]}`);
         // A page moves no focus on load.

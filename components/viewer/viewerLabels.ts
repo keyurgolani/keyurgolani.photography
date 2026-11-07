@@ -82,9 +82,12 @@ export function positionLabel(position: number, total: number): string {
     return paddedPosition(position, total);
 }
 
-/** The heading's part after the series title, for screen readers only: the heading reads "{series}, photograph N of T". */
-export function headingPosition(position: number, total: number): string {
-    return `photograph ${position} of ${total}`;
+/**
+ * The heading's name, its aria-label (#7): "{series}, photograph N of T", from the same title the heading shows. A
+ * photograph named by its place has the bare title, since its image already says "Photograph N of T".
+ */
+export function headingLabel(seriesTitle: string, position: number, total: number, namedByPlace: boolean): string {
+    return namedByPlace ? seriesTitle : `${seriesTitle}, photograph ${position} of ${total}`;
 }
 
 /** The same position for a screen reader, which would read the padded form as digits and a slash. */

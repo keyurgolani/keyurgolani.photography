@@ -860,9 +860,6 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
     { selector: '[data-home-carousel] > p[aria-live]', why: "#4: Home's carousel's visually hidden live region" },
     // After Enter the series, its last child, so nothing before it in the story changes its path.
     { selector: '[data-chrome-region="story"] > div > a[href="/work"]:last-child', why: "#4 (B7): Home's All bodies of work link after Enter the series" },
-    // Screen-reader only: static in the heading's line, 1 px wide with a -1 px margin and clipped (sr-only's overflow and
-    // clip, and the heading's own overflow), so it takes no room, and the head hides it besides.
-    { selector: '[data-surface="viewer"] header h1 > span.sr-only', why: '#175 (B8): the Viewer heading says "{series}, photograph N of T"' },
 ];
 
 /**
@@ -895,6 +892,15 @@ const FOLDED: { url: string; selector: string; why: string; focus?: { page: stri
             why: "#171 (B3): a focused Work entry's ring, inset on its title link's ::after",
         },
     },
+    // The Viewer heading's title (#175, B8), on each Viewer url: the h1 is named "{series}, photograph N of T" by its
+    // aria-label, and the title it shows is a span hidden from screen readers, the h1's one child, where the base had
+    // the title as the h1's own text. Folded, so it must paint as its h1 does. The modal pairs open from the series
+    // page, so that url carries it too; nothing matches there until the Viewer opens.
+    ...[`${series}/photo/${HOME_OPENING}`, `${series}/photo/${HOME_PHOTO_IDS[1]}`, series].map((url) => ({
+        url,
+        selector: '[data-surface="viewer"] header h1 > span[aria-hidden="true"]:only-child',
+        why: "#175 (B8): the Viewer heading's shown title, hidden from screen readers under its aria-label",
+    })),
 ];
 const retagFor = (pair: Pair) => RETAGGED.filter((entry) => entry.url === pair.url).map(({ selector, as }) => ({ selector, as }));
 const foldFor = (pair: Pair) =>

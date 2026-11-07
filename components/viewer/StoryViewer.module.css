@@ -185,7 +185,8 @@
 
 /* The serif and its weight come from the global heading rule. */
 /* One line, between Close and Zoom, so the header keeps its height and the stage under it never moves. A title too long
-   for it ends in an ellipsis on screen only: the heading's text is whole, for screen readers and find in page. */
+   for it ends in an ellipsis on screen only: the title is whole in the page, for find in page, and the heading's
+   aria-label says it whole, with the place, for screen readers. */
 .series {
   flex: 0 1 auto;
   min-width: 0;
@@ -196,19 +197,6 @@
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The heading's spoken position (#7), read after the series title. sr-only takes it out of flow at its static place,
-   past the title's ellipsis on a long one, where it would widen the page. Here it stays inline in the title's line, so
-   the name runs on from the title with no space before the comma (a part that isn't inline gets one on each side), and
-   at no font size its text takes no room: the heading's width and ellipsis are the title's alone. */
-.series > .spokenPosition {
-  position: static;
-  display: inline;
-  margin: 0;
-  font-size: 0;
-  letter-spacing: 0;
-  word-spacing: 0;
 }
 
 .position {

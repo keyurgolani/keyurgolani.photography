@@ -164,8 +164,8 @@ export function walk(page: Page, selectors: string[] = [], leaveOut: string[] = 
         const isPart = (el: Element) => isControl(el) || added.some((selector) => el.matches(selector));
         // The control's slot: an element holding the control and nothing else (SiteNav's end), which collapses with it
         // where it's hidden (no JavaScript). In the curator's header, which holds more, only the control goes. An element
-        // whose only elements are ones the head adds (the Viewer heading's spoken part, beside the title's text) holds no
-        // control, so it's no slot, and its box is compared.
+        // whose only elements are ones the head adds (HEAD_ONLY), beside text of its own, holds no control, so it's no
+        // slot, and its box is compared.
         const isSlot = (el: Element) => el.children.length > 0 && [...el.children].every(isPart) && [...el.children].some(isControl);
         const read = (style: CSSStyleDeclaration) => properties.map((name) => `${name}: ${style.getPropertyValue(name)}`);
         // Every custom property any stylesheet declares, and any the computed style lists, read resolved.

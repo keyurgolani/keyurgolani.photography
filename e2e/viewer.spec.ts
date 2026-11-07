@@ -32,13 +32,13 @@ const next = (page: Page) => page.getByRole('main').getByRole('button', { name: 
 const technical = (page: Page) => page.getByRole('main').getByRole('button', { name: /^(Show|Hide) technical details$/ });
 const photograph = (page: Page) => page.getByRole('main').locator('picture img');
 
-/** The header's heading as a screen reader hears it (#7): "{series title}, photograph N of T". */
+/** The header's heading as a screen reader hears it (#7), its aria-label: "{series title}, photograph N of T". */
 const seriesHeading = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, photograph \\d+ of \\d+$`);
 
 async function openViewer(page: Page, photoId: string): Promise<void> {
     await page.goto(`${origin()}${href(photoId)}`);
     await waitForHydration(page);
-    await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(seriesHeading('Fixture harbor'));
+    await expect(header(page).getByRole('heading', { level: 1 })).toHaveAccessibleName(seriesHeading('Fixture harbor'));
 }
 
 /**
@@ -75,7 +75,7 @@ test('a direct load renders the whole Viewer: series, position, photograph, auth
     const response = await request.get(`${origin()}${href(P[0])}`, { maxRedirects: 0 });
     expect(response.status()).toBe(200);
     const html = await response.text();
-    expect(html).toMatch(/<h1[^>]*>Fixture harbor<span class="sr-only[^"]*">, photograph 1 of 3<\/span><\/h1>/);
+    expect(html).toMatch(/<h1[^>]*aria-label="Fixture harbor, photograph 1 of 3"[^>]*><span aria-hidden="true">Fixture harbor<\/span><\/h1>/);
     expect(html).toContain('01 / 03');
     expect(html).toContain('Fixture authored caption.');
 
@@ -305,7 +305,7 @@ test('on a wide screen, the first screen ends on whole elements for every mix of
             const at = `${size.width} by ${size.height}, ${mix.name}`;
             await page.goto(`${origin()}${href(mix.photoId, mix.slug)}`);
             await waitForHydration(page);
-            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(seriesHeading(mix.series));
+            await expect(header(page).getByRole('heading', { level: 1 })).toHaveAccessibleName(seriesHeading(mix.series));
             const line = await titleLine(page);
             const pieces = await foldPieces(page);
             // The facts-only photograph's reading area is its toggle alone.

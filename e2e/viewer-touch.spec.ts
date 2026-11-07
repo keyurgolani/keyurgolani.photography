@@ -38,7 +38,7 @@ function runsOn(testInfo: TestInfo, ...projects: string[]): void {
 async function openPage(page: Page, photoId: string): Promise<void> {
     await page.goto(`${origin()}${href(photoId)}`);
     await waitForHydration(page);
-    await expect(header(page).getByRole('heading', { level: 1 })).toHaveText(/^Fixture harbor, photograph \d of 3$/);
+    await expect(header(page).getByRole('heading', { level: 1 })).toHaveAccessibleName(/^Fixture harbor, photograph \d of 3$/);
 }
 
 /**
@@ -691,8 +691,8 @@ test.describe('the fixed stage (9a)', () => {
             await page.goto(`${origin()}${href(SHAPES[0], 'shapes')}`);
             await waitForHydration(page);
             const title = header(page).getByRole('heading', { level: 1 });
-            // Whole for screen readers, with the place after it (#7).
-            await expect(title).toHaveText(`${SHAPES_TITLE}, photograph 1 of 3`);
+            // Whole in the page, and for screen readers with the place after it (#7), from the heading's aria-label.
+            await expect(title).toHaveText(SHAPES_TITLE);
             await expect(title).toHaveAccessibleName(`${SHAPES_TITLE}, photograph 1 of 3`);
             const line = await title.evaluate((element) => ({
                 height: element.getBoundingClientRect().height,
@@ -828,7 +828,7 @@ test.describe('double-tap', () => {
         ] as const) {
             await page.goto(`${origin()}${href(P[3], 'ridge')}`);
             await waitForHydration(page);
-            await expect(header(page).getByRole('heading', { level: 1 })).toHaveText('Fixture ridge, photograph 1 of 1');
+            await expect(header(page).getByRole('heading', { level: 1 })).toHaveAccessibleName('Fixture ridge, photograph 1 of 1');
             await settled(page);
             const frame = stage(page).locator('figure');
             const fitted = await frame.boundingBox();
