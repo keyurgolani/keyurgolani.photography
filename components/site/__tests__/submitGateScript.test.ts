@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { SUBMIT_GATE_ATTRIBUTE, SUBMIT_GATE_SCRIPT } from '../submitGateScript';
+import { SUBMIT_GATE_ATTRIBUTE, SUBMIT_GATE_SCRIPT, SUBMIT_GATE_STATUS_TEXT } from '../submitGateScript';
 
 const root = document.documentElement;
 let windowKeys: string[] = [];
@@ -92,6 +92,84 @@ describe('SUBMIT_GATE_SCRIPT, while an opted-in form waits for its page to hydra
         expect(cancelled(el('text'), beforeinput())).toBe(false);
         expect(cancelled(el('select'), keydown('ArrowDown'))).toBe(false);
         expect(cancelled(el('select'), mousedown())).toBe(false);
+    });
+});
+
+describe('SUBMIT_GATE_SCRIPT, when the shell has hydrated but the form has not', () => {
+    it('still drops every path: html[data-hydrated] is the shell, never the form', () => {
+        root.setAttribute('data-hydrated', 'true');
+        try {
+            const { form, reached, el } = build('waiting');
+            el<HTMLButtonElement>('send').click();
+            form.requestSubmit();
+            expect(cancelled(form, new SubmitEvent('submit', { bubbles: true, cancelable: true }))).toBe(true);
+            expect(reached).not.toHaveBeenCalled();
+            for (const id of ['box', 'radio', 'row']) {
+                el<HTMLInputElement>(id).click();
+                expect(el<HTMLInputElement>(id).checked, id).toBe(false);
+            }
+            expect(cancelled(el('text'), beforeinput())).toBe(true);
+            expect(cancelled(el('select'), keydown('ArrowDown'))).toBe(true);
+            expect(cancelled(el('select'), mousedown())).toBe(true);
+        } finally {
+            root.removeAttribute('data-hydrated');
+        }
+    });
+});
+
+/** The status the script shows when it drops something, if any. */
+const status = () => document.querySelector<HTMLElement>('[data-submit-gate-status]');
+const settle = (ms = 150) => new Promise((done) => setTimeout(done, ms));
+
+describe('SUBMIT_GATE_SCRIPT, the word after a drop', () => {
+    it('shows and announces that the page is still loading when it drops a press, and marks the form', async () => {
+        const { form, el } = build('waiting');
+        el<HTMLButtonElement>('send').click();
+        const shown = status();
+        expect(shown, 'a status, there before its words so they are read out').not.toBeNull();
+        expect(shown).toHaveAttribute('role', 'status');
+        expect(shown?.parentElement).toBe(document.body);
+        await settle();
+        expect(shown).toHaveTextContent(SUBMIT_GATE_STATUS_TEXT);
+        expect(SUBMIT_GATE_STATUS_TEXT).toBe('Still loading. Try again in a moment.');
+        expect(form).toHaveAttribute('data-submit-dropped', 'true');
+        // One status, however many presses.
+        form.requestSubmit();
+        await settle();
+        expect(document.querySelectorAll('[data-submit-gate-status]')).toHaveLength(1);
+    });
+
+    it('says it for dropped typing too, and shows nothing while nothing is dropped', async () => {
+        const { form, el } = build('waiting');
+        await settle();
+        expect(status(), 'nothing pressed').toBeNull();
+        el('text').dispatchEvent(beforeinput());
+        await settle();
+        expect(status()).toHaveTextContent(SUBMIT_GATE_STATUS_TEXT);
+        expect(form).toHaveAttribute('data-submit-dropped', 'true');
+    });
+
+    it('shows nothing for a form without the attribute, or one that is ready', async () => {
+        for (const gate of [null, 'ready'] as const) {
+            const { form, el } = build(gate);
+            el<HTMLButtonElement>('send').click();
+            el<HTMLInputElement>('box').click();
+            await settle();
+            expect(status(), String(gate)).toBeNull();
+            expect(form).not.toHaveAttribute('data-submit-dropped');
+            document.body.innerHTML = '';
+        }
+    });
+
+    it('takes the status and the mark away once the form it dropped for is ready', async () => {
+        const { form, el } = build('waiting');
+        el<HTMLButtonElement>('send').click();
+        await settle();
+        expect(status()).not.toBeNull();
+        form.setAttribute(SUBMIT_GATE_ATTRIBUTE, 'ready');
+        await settle();
+        expect(status()).toBeNull();
+        expect(form).not.toHaveAttribute('data-submit-dropped');
     });
 });
 
