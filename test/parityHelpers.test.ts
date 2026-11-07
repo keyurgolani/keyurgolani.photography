@@ -50,8 +50,9 @@ function nodes(node: ts.Node): ts.Node[] {
 
 /**
  * Top-level definitions of `name` in `source`, exported or not, however indented: a function (a generator, a default
- * export; its overloads are one), each name a const, let or var binds (destructured, or one of several), a class or
- * an enum. A declaration inside a function or a block isn't top level, and a string that reads like one isn't code.
+ * export; its overloads are one), each name a const, let or var binds (destructured, or one of several), a class, an
+ * enum, an interface or a type alias. A declaration inside a function or a block isn't top level, and a string that
+ * reads like one isn't code.
  */
 function definitions(source: string, name: string, file?: string): number {
     let count = 0;
@@ -63,7 +64,10 @@ function definitions(source: string, name: string, file?: string): number {
             if (statement.body) bodies += 1;
         } else if (ts.isVariableStatement(statement)) {
             count += statement.declarationList.declarations.flatMap((declaration) => boundNames(declaration.name)).filter((bound) => bound === name).length;
-        } else if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name?.text === name) {
+        } else if (
+            (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) &&
+            statement.name?.text === name
+        ) {
             count += 1;
         }
     }
