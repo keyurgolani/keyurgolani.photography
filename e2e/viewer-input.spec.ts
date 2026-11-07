@@ -2,6 +2,7 @@ import type { Page, TestInfo } from '@playwright/test';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 import { HARBOR, SHAPES, href, useViewerCatalog } from './support/viewerCatalog';
+import { EDGE_EXCLUSION } from '../components/viewer/swipe';
 
 // #178, #174: the Viewer's input, on #7's published fixture. A mouse drag never swipes (bug 4), held keys move
 // once, Escape while zoomed only resets the zoom, a move is busy until it lands, an offline move stays and says so,
@@ -58,6 +59,37 @@ function rscRequests(page: Page, photoIds: readonly string[]): () => string[] {
     return () => seen;
 }
 
+/**
+ * A point on the stage itself beside the photograph, read from the layout as it is: inside the stage's box, outside the
+ * photograph's, where the stage is the element hit (not the track that holds the photograph, nor a control), and far
+ * enough from the window's sides for a touch swipe to start there. Tried beside the photograph at its middle first,
+ * then in the stage's padding above and below it. `dx` drags toward the middle of the window. Null when there's none.
+ */
+async function bareStagePoint(page: Page): Promise<{ x: number; y: number; dx: number } | null> {
+    return stage(page).evaluate((element, { edge, reach }) => {
+        const box = element.getBoundingClientRect();
+        const photo = element.querySelector('[data-viewer-current]')?.getBoundingClientRect();
+        if (!photo) return null;
+        const style = getComputedStyle(element);
+        const top = parseFloat(style.paddingTop);
+        const bottom = parseFloat(style.paddingBottom);
+        const left = Math.max(box.left, edge);
+        const right = Math.min(box.right, innerWidth - edge);
+        const rows = [photo.top + photo.height / 2, box.top + top / 2, box.bottom - bottom / 2];
+        const columns = [(left + photo.left) / 2, (photo.right + right) / 2, photo.left + photo.width / 2];
+        for (const y of rows) {
+            for (const x of columns) {
+                const inStage = x > box.left && x < box.right && y > box.top && y < box.bottom;
+                const onPhoto = x >= photo.left && x <= photo.right && y >= photo.top && y <= photo.bottom;
+                const dx = x < innerWidth / 2 ? reach : -reach;
+                const roomy = x >= edge && x <= innerWidth - edge && x + dx >= 0 && x + dx <= innerWidth;
+                if (inStage && !onPhoto && roomy && document.elementFromPoint(x, y) === element) return { x, y, dx };
+            }
+        }
+        return null;
+    }, { edge: EDGE_EXCLUSION, reach: 150 });
+}
+
 /** Nothing moved for a beat: a negative check has to give the move time to have started. */
 async function holdsStill(page: Page, photoId: string, counter: string, slug = 'harbor'): Promise<void> {
     await page.waitForTimeout(600);
@@ -72,15 +104,14 @@ test.describe('a mouse drag never swipes (bug 4)', () => {
         await page.setViewportSize({ width: 1280, height: 800 });
         await openPage(page, SHAPES[1], 'shapes');
         // Off the <img>: the image is draggable, so a drag from it could become the browser's own image drag and pass
-        // before the fix. Halfway between the stage's left edge and the photograph, where the stage itself is hit.
-        const stageBox = await stage(page).boundingBox();
-        const current = await viewer(page).locator('[data-viewer-current]').boundingBox();
-        if (!stageBox || !current) throw new Error('The stage and the photograph have boxes');
-        const at = { x: (stageBox.x + current.x) / 2, y: current.y + current.height / 2 };
-        expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.hasAttribute('data-viewer-stage') ?? false, at)).toBe(true);
+        // before the fix. On the stage itself, where a touch would swipe. The track that holds the photograph spans
+        // the stage's width, so beside the photograph at its middle is the track; the stage's own padding is bare.
+        const at = await bareStagePoint(page);
+        expect(at, 'no bare stage point beside the photograph').not.toBeNull();
+        if (at === null) return;
         await page.mouse.move(at.x, at.y);
         await page.mouse.down();
-        await page.mouse.move(at.x - 150, at.y, { steps: 8 });
+        await page.mouse.move(at.x + at.dx, at.y, { steps: 8 });
         await page.mouse.up();
         await holdsStill(page, SHAPES[1], '02 / 03', 'shapes');
         await expect(viewer(page)).toHaveAttribute('data-gesture', 'idle');
