@@ -1,4 +1,5 @@
 import { act, fireEvent, render } from '@testing-library/react';
+import { useEffect } from 'react';
 import { hydrateRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -579,6 +580,58 @@ describe('?photo= (#5, #6 deep entry, B5)', () => {
                 appendLate();
                 answer(view, `?photo=${A}`, { focusPhotoId: A });
                 expect(document.activeElement).toBe(document.body);
+            });
+
+            it('puts kgSeriesPages back before #6\'s passive effect reads it, though #6 sits earlier in the tree', () => {
+                // Stands in for SeriesSequence: keyed by the server's page, so it mounts afresh with the answer, and reads the extent in a passive effect.
+                const seen: unknown[] = [];
+                function Sequence() {
+                    useEffect(() => {
+                        seen.push((window.history.state as Record<string, unknown> | null)?.[SERIES_PAGES_KEY]);
+                    }, []);
+                    return null;
+                }
+                const page = (props: Partial<typeof PROPS>) => {
+                    const all = { ...PROPS, ...props };
+                    return (
+                        <>
+                            <Sequence key={all.firstPosition} />
+                            <SeriesReturn {...all} />
+                        </>
+                    );
+                };
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const host = document.createElement('div');
+                document.body.append(host);
+                const view = render(page({}), { container: host });
+                appendLate();
+                seen.length = 0;
+                window.history.replaceState({ ...NEXT_KEYS }, '', `/work/harbor?photo=${LATE}`);
+                view.rerender(page({ focusPhotoId: LATE, firstPosition: 3 }));
+                expect(seen).toEqual([OLD_PAGES]);
+            });
+
+            it('leaves focus where the visitor moved it during the round trip, and still uses the record up', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const view = mount();
+                appendLate();
+                byId('all-work').focus();
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                expect(document.activeElement).toBe(byId('all-work'));
+                expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+                expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: OLD_PAGES, [ARRIVAL_KEY]: LATE });
+            });
+
+            it('lands nothing on another series\' page, and lands on its own when that answer comes', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const view = mount();
+                const late = appendLate();
+                window.history.replaceState({ ...NEXT_KEYS }, '', `/work/ridge?photo=${LATE}`);
+                view.rerender(<SeriesReturn {...PROPS} path="/work/ridge" slug="ridge" />);
+                expect(document.activeElement).toBe(document.body);
+                expect(window.history.state).toEqual(NEXT_KEYS);
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                expect(document.activeElement).toBe(late);
             });
         });
 
