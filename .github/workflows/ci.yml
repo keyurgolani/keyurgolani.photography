@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   verify:
+    if: false
     name: Lint, unit tests, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -97,12 +98,24 @@ jobs:
           done
           exit 1
 
-      - run: npm run test:e2e
+      # A one-off CI probe, never merged: the Inbox row checkbox in WebKit, on Linux, in place of the suite.
+      - name: Probe the Inbox row checkbox in WebKit
+        timeout-minutes: 15
+        run: sh e2e/probes/inbox-checkbox-webkit.sh "$RUNNER_TEMP/v2-f4-webkit"
+
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: v2-f4-webkit-probe
+          path: ${{ runner.temp }}/v2-f4-webkit/
+          if-no-files-found: error
+          retention-days: 14
 
       # #6's budgets on the build test:e2e just made: a generated library on 127.0.0.1:3200, Chromium only, no
       # network. A budget over its number in lib/perf/budgets.ts fails the job, and so the pull request. Its own
       # ceiling, so a hang fails this step and the uploads below still run.
       - name: Check #6's budgets
+        if: false
         timeout-minutes: 12
         run: npm run test:budgets
 
@@ -128,6 +141,7 @@ jobs:
           retention-days: 7
 
   themes:
+    if: false
     # The parity gate (e2e/themes/dark-parity.spec.ts) compares Dark, today's look, against v1.2.0. The job keeps its
     # older name, since required-check settings key on it.
     name: Themes, CSS budget and Black parity
@@ -194,6 +208,7 @@ jobs:
           retention-days: 7
 
   image:
+    if: false
     name: Image smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -254,6 +269,7 @@ jobs:
   # .github/audit-allowlist.json lists it. npm audit reads only the lockfile,
   # so the job skips npm ci.
   audit:
+    if: false
     name: Production audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -272,7 +288,7 @@ jobs:
   # the same PR. A new job joins `needs` here and is checked automatically.
   result:
     name: CI result
-    if: always()
+    if: false
     needs: [verify, e2e, themes, image, audit]
     runs-on: ubuntu-latest
     timeout-minutes: 2
