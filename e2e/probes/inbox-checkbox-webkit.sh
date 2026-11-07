@@ -3,8 +3,8 @@
 # with e2e/probes/inbox-checkbox-webkit.ts, writing <out-dir>/v2-f4-webkit.json and its PNGs.
 #
 #   sh e2e/probes/inbox-checkbox-webkit.sh <out-dir>         build, then measure
-#   sh e2e/probes/inbox-checkbox-webkit.sh <out-dir> --dry   on a build already made: the fixture, the server and one
-#                                                            request, then stop before the measure
+#   sh e2e/probes/inbox-checkbox-webkit.sh <out-dir> --dry   on a build already made: the same measure in Chromium
+#                                                            only, both ways in, with no WebKit launch
 #
 # Every temp dir goes under a fresh TMPDIR in $RUNNER_TEMP, or the system's temp elsewhere, never inside the checkout:
 # the stand-in portrait is written only under os.tmpdir(), and a test catalog only outside the repository. The server
@@ -17,6 +17,8 @@ if [ "$#" -lt 1 ] || [ -z "$1" ]; then
 fi
 OUT=$1
 MODE=${2:-}
+# The output folder before anything else, so a failed run still uploads what it wrote.
+mkdir -p "$OUT"
 
 cd "$(dirname "$0")/../.."
 CHECKOUT=$(pwd -P)
@@ -28,7 +30,6 @@ case "$(cd "$TMPDIR" && pwd -P)/" in
 esac
 SITE_CONFIG=$(mktemp -d "$TMPDIR/site-config.XXXXXX")
 EMPTY_LIBRARY=$(mktemp -d "$TMPDIR/empty-library.XXXXXX")
-mkdir -p "$OUT"
 export ALLOW_PROVISIONAL_COPY=1
 export E2E_SITE_CONFIG_DIR="$SITE_CONFIG"
 unset GIT_EDITOR || true
@@ -39,7 +40,7 @@ ls -l "$SITE_CONFIG/about"
 
 if [ "$MODE" = "--dry" ]; then
   [ -f .next/BUILD_ID ] || { echo "--dry needs a build already made in $CHECKOUT" >&2; exit 1; }
-  echo "dry run: using the build already in $CHECKOUT/.next"
+  echo "dry run: using the build already in $CHECKOUT/.next, Chromium only"
   PROBE_DRY=1 npx tsx e2e/probes/inbox-checkbox-webkit.ts "$OUT/v2-f4-webkit.json"
   exit 0
 fi
