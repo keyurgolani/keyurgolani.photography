@@ -745,7 +745,7 @@ describe('a photograph unpublished or moved mid-visit (#178)', () => {
     });
 });
 
-describe('a renamed series, a waiting move message at the end, Escape and Zoom focus, one check at a time, ViewerUnavailable\'s refresh, a neighbour prefetched again (#178)', () => {
+describe('a renamed series, the end said alone before a move\'s message settles, Escape and Zoom focus, one check at a time, ViewerUnavailable\'s refresh, a neighbour prefetched again (#178)', () => {
     beforeEach(() => {
         vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => 'visible');
     });
@@ -768,16 +768,22 @@ describe('a renamed series, a waiting move message at the end, Escape and Zoom f
         expect(replaced).not.toHaveBeenCalled();
     });
 
-    it('lands a move\'s waiting announcement with the end message when Next is pressed at the end before it settles', () => {
+    it.each([
+        ['page', 'ArrowRight', 3, 'Last photograph in Fixture series.'],
+        ['modal', 'ArrowRight', 3, 'Last photograph in Fixture series.'],
+        ['page', 'ArrowLeft', 1, 'First photograph in Fixture series.'],
+        ['modal', 'ArrowLeft', 1, 'First photograph in Fixture series.'],
+    ] as const)('in the %s, %s at the end before the move\'s message settles says the end alone, and the photograph is never announced after it', (mode, key, to, end) => {
         vi.useFakeTimers();
-        const { move } = renderShell('page', 2);
+        const { move } = renderShell(mode, 2);
         const ears = listen(announcer());
-        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
-        move(3);
+        fireEvent.keyDown(document.body, { key });
+        move(to);
         advance(100);
-        fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+        fireEvent.keyDown(document.body, { key });
         advance(1000);
-        expect(ears.heard()).toEqual(['Photograph 3 of 3. Fixture title 3. A described photograph, number 3. Last photograph in Fixture series.']);
+        expect(ears.heard()).toEqual([end]);
+        expect(announcer()).toHaveTextContent(end);
         ears.stop();
     });
 

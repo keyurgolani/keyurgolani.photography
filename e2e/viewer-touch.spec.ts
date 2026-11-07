@@ -983,6 +983,43 @@ test.describe('arrows under the open modal', () => {
         expect(await announcer(page).evaluate((region) => region === (window as unknown as { kgRegion: Element }).kgRegion)).toBe(true);
         await expectStill(page, P[2], 3);
     });
+
+    test('a press at the first photograph right after a move lands there says the end alone, and never the photograph again (#178)', async ({ page }, testInfo) => {
+        await openFromSeries(page, P[1], testInfo, 'keyboard');
+        // Every text the region takes, and the end press as soon as the move's photograph has arrived and its effects
+        // have run (two frames), well inside the move message's 250 ms settle.
+        await announcer(page).evaluate((region) => {
+            const heard: string[] = [];
+            (window as unknown as { kgHeard: string[] }).kgHeard = heard;
+            new MutationObserver(() => {
+                if (region.textContent) heard.push(region.textContent);
+            }).observe(region, { childList: true, characterData: true, subtree: true });
+        });
+        await page.keyboard.press('ArrowLeft');
+        await header(page).evaluate(
+            (element) =>
+                new Promise<void>((resolve) => {
+                    const arrived = () => (element.textContent ?? '').includes('01 / 03');
+                    const done = () => requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+                    if (arrived()) return done();
+                    const observer = new MutationObserver(() => {
+                        if (!arrived()) return;
+                        observer.disconnect();
+                        done();
+                    });
+                    observer.observe(element, { childList: true, characterData: true, subtree: true });
+                }),
+        );
+        await page.keyboard.press('ArrowLeft');
+        await expect(announcer(page)).toHaveText('First photograph in Fixture harbor.');
+        // Past the settle: the move's message never lands after the end, and was never joined to it.
+        await page.waitForTimeout(600);
+        await expect(announcer(page)).toHaveText('First photograph in Fixture harbor.');
+        const heard = await page.evaluate(() => (window as unknown as { kgHeard: string[] }).kgHeard);
+        expect(heard.filter((text) => text.includes('First photograph') && text !== 'First photograph in Fixture harbor.')).toEqual([]);
+        expect(heard.slice(heard.indexOf('First photograph in Fixture harbor.'))).toEqual(['First photograph in Fixture harbor.']);
+        await expectStill(page, P[0], 1);
+    });
 });
 
 test.describe('presentation', () => {
