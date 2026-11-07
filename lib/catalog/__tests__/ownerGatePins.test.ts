@@ -175,7 +175,9 @@ describe.runIf(posix)('the owner gate, every writer (#15)', { timeout: 120_000 }
             expect(result.stderr).toContain(`runs as uid ${other(w)}, but uid ${w.owner} owns the data root`);
             // How to run it as the owner, with the compose line.
             expect(result.stderr).toContain(`user: "${w.owner}:${fs.statSync(w.built.root).gid}"`);
-            expect(result.stderr).toMatch(/docker compose -f docker-compose\.prod\.yml run --rm --no-deps image-watcher node dist\/scripts\/photos\.mjs \S+/);
+            // -T only for legacy-derivatives, whose --stdout manifest a terminal's line endings would change.
+            const tty = writer.name.startsWith('legacy-derivatives') ? '-T ' : '';
+            expect(result.stderr).toMatch(new RegExp(`docker compose -f docker-compose\\.prod\\.yml run --rm --no-deps ${tty}image-watcher node dist/scripts/photos\\.mjs \\S+`));
             expect(result.code).toBe(1);
             check();
         });

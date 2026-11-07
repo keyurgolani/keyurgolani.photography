@@ -56,7 +56,7 @@ export const BREAKS: Record<WriterKind, string> = {
     curation: "An Inbox item or decision this uid writes is one the watcher, the curator and every command of the owner's can't read, so the Inbox would stop until the file is fixed by hand.",
     watcher: "Sets, registry versions, Inbox items and the heartbeat this uid writes are ones web and every command of the owner's can't read: /media would 404 the new sets, and the healthcheck would fail.",
     credential: "A secret file this uid writes inside the data root is one the owner can't read, replace or clear, and one written at a lock file's name in locks/ would stop every command of the owner's that takes that lock. Write it outside the data root, where docs/curator.md puts the curator's secrets.",
-    'legacy-manifest': "A status/ this uid makes, when there is none yet, is one the watcher and photos verify can't write in, so the heartbeat would stop and the healthcheck fail, and a status/legacy-derivatives.json it writes is one the owner can't replace, until it's fixed by hand.",
+    'legacy-manifest': "A status/ this uid makes, when there is none yet, is one the watcher and photos verify can't write in, so the heartbeat would stop and the healthcheck fail, and if this uid made status/, the owner can't replace what it writes there until status/ is fixed by hand.",
     curator: "Inbox items, decisions, working-layer records and lock files this uid writes are ones the watcher and every command of the owner's can't read, so the Inbox and the draft would stop until the files are fixed by hand.",
     'locking-read': "It takes a lock to read, which writes a lock file in locks/, and one this uid leaves behind if it's killed, or a locks/ it makes, would stop every command of the owner's until it's removed by hand.",
 };
@@ -84,6 +84,10 @@ export function ownerRefusal(root: string, name: string, kind: WriterKind): stri
         ? `Run it as uid ${owner}, as docker-compose.prod.yml's image-watcher does with ${user}.`
         : kind === 'curator'
             ? `Start it as uid ${owner}, as docker-compose.prod.yml's curator does with ${user}.`
-            : `Run it as uid ${owner}, as docker-compose.prod.yml runs every container with ${user}, and its run --rm commands with them: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs ${name.replace(/^photos /, '')} …`;
+            // README's form: -T keeps Compose from adding a terminal's line endings to the manifest --stdout saves. Only here,
+            // since -T would break the prompt of a command that asks.
+            : kind === 'legacy-manifest'
+              ? `Run it as uid ${owner}, as docker-compose.prod.yml runs every container with ${user}, and its run --rm commands with them: docker compose -f docker-compose.prod.yml run --rm --no-deps -T image-watcher node dist/scripts/photos.mjs legacy-derivatives --stdout > ~/legacy-derivatives.json`
+              : `Run it as uid ${owner}, as docker-compose.prod.yml runs every container with ${user}, and its run --rm commands with them: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs ${name.replace(/^photos /, '')} …`;
     return `${name} runs as uid ${uid}, but uid ${owner} owns the data root, and web runs as that owner. ${BREAKS[kind]} It took no lock. Nothing was written. ${how}`;
 }
