@@ -1,6 +1,7 @@
 // @vitest-environment node
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT } from './helpers/runTsx';
 
@@ -18,43 +19,120 @@ const SYMBOLS = ['compare', 'walk', 'failures', 'FOLD_PAINT', 'PROPERTIES', 'GEO
 /** The gate's helpers and the parity types, which the gate takes from ./computed alone. */
 const GATE_NAMES = [...SYMBOLS, 'Walk', 'Walked', 'Comparison', 'Allowance', 'WalkOptions', 'FoldedFocus', 'EvaluatingPage'];
 
-/** Top-level definitions of `name` in `source`, exported or not: a local one inside a function is indented. */
-function definitions(source: string, name: string, file?: string): number {
-    void file;
-    const pattern = new RegExp(`^(?:export\\s+)?(?:declare\\s+)?(?:async\\s+)?(?:function\\*?|const|let|var|class)\\s+${name}\\b`, 'gm');
-    return source.match(pattern)?.length ?? 0;
+const parse = (source: string, file = 'fixture.ts') => {
+    const kind = /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JS : file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, kind);
+};
+
+/** The names a binding binds: a name, or each name a destructuring pattern holds, nested too. */
+function boundNames(name: ts.BindingName): string[] {
+    if (ts.isIdentifier(name)) return [name.text];
+    return name.elements.flatMap((element) => (ts.isOmittedExpression(element) ? [] : boundNames(element.name)));
 }
 
-/** Named exports of `name` in `source`, as `export { … }` with or without `from`, by the name they export. */
-function namedExports(source: string, name: string, file?: string): number {
-    void file;
+/** Every node under `node`, depth first. */
+function nodes(node: ts.Node): ts.Node[] {
+    const found: ts.Node[] = [];
+    const visit = (child: ts.Node) => {
+        found.push(child);
+        ts.forEachChild(child, visit);
+    };
+    ts.forEachChild(node, visit);
+    return found;
+}
+
+/**
+ * Top-level definitions of `name` in `source`, exported or not, however indented: a function (a generator, a default
+ * export; its overloads are one), each name a const, let or var binds (destructured, or one of several), a class or
+ * an enum. A declaration inside a function or a block isn't top level, and a string that reads like one isn't code.
+ */
+function definitions(source: string, name: string, file?: string): number {
     let count = 0;
-    for (const [, list] of source.matchAll(/^\s*export\s+(?:type\s+)?\{([^}]*)\}/gm)) {
-        for (const item of list.split(',')) {
-            const exported = item.trim().replace(/^type\s+/, '').split(/\s+as\s+/).at(-1)?.trim();
-            if (exported === name) count += 1;
+    let functions = 0;
+    let bodies = 0;
+    for (const statement of parse(source, file).statements) {
+        if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) {
+            functions += 1;
+            if (statement.body) bodies += 1;
+        } else if (ts.isVariableStatement(statement)) {
+            count += statement.declarationList.declarations.flatMap((declaration) => boundNames(declaration.name)).filter((bound) => bound === name).length;
+        } else if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name?.text === name) {
+            count += 1;
         }
+    }
+    return count + (bodies > 0 ? bodies : functions > 0 ? 1 : 0);
+}
+
+/** Named exports of `name` in `source`: in an export list, by the name it exports, with or without `from`, and as `export * as`. */
+function namedExports(source: string, name: string, file?: string): number {
+    let count = 0;
+    for (const statement of parse(source, file).statements) {
+        if (!ts.isExportDeclaration(statement) || !statement.exportClause) continue;
+        if (ts.isNamespaceExport(statement.exportClause)) count += statement.exportClause.name.text === name ? 1 : 0;
+        else count += statement.exportClause.elements.filter((element) => element.name.text === name).length;
     }
     return count;
 }
 
-/** Where `source` takes any of `names` from, other than `allowed`, by its static import lists. */
+/**
+ * Where `source` takes any of `names` from, other than `allowed` under its own name: a static import (aliased either
+ * way), a member of a namespace or default import, or what a dynamic import() or require() is destructured into.
+ */
 function takenElsewhere(source: string, names: readonly string[], allowed: string, file?: string): string[] {
-    void file;
+    const watched = new Set(names);
     const offenders: string[] = [];
-    for (const [, list, from] of source.matchAll(/^import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+'([^']+)'/gm)) {
-        for (const item of list.split(',')) {
-            const local = item.trim().replace(/^type\s+/, '').split(/\s+as\s+/).at(-1)?.trim() ?? '';
-            if (names.includes(local) && from !== allowed) offenders.push(`${local} from ${from}`);
+    const sourceFile = parse(source, file);
+    const modules = new Map<string, string>();
+    for (const statement of sourceFile.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || !statement.importClause) continue;
+        const from = statement.moduleSpecifier.text;
+        const clause = statement.importClause;
+        if (clause.name) modules.set(clause.name.text, from);
+        const bindings = clause.namedBindings;
+        if (bindings && ts.isNamespaceImport(bindings)) modules.set(bindings.name.text, from);
+        if (bindings && ts.isNamedImports(bindings)) {
+            for (const element of bindings.elements) {
+                const imported = (element.propertyName ?? element.name).text;
+                const local = element.name.text;
+                for (const name of new Set([imported, local])) {
+                    if (watched.has(name) && (from !== allowed || imported !== local)) offenders.push(`${name} from ${from}`);
+                }
+            }
+        }
+    }
+    for (const node of nodes(sourceFile)) {
+        if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && watched.has(node.name.text)) {
+            const from = modules.get(node.expression.text);
+            if (from !== undefined && from !== allowed) offenders.push(`${node.name.text} from ${from}`);
+        }
+        if (!ts.isCallExpression(node) || node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0])) continue;
+        const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require');
+        if (!dynamic) continue;
+        const from = node.arguments[0].text;
+        let holder: ts.Node = node.parent;
+        while (ts.isAwaitExpression(holder) || ts.isParenthesizedExpression(holder)) holder = holder.parent;
+        if (ts.isPropertyAccessExpression(holder) && watched.has(holder.name.text) && from !== allowed) offenders.push(`${holder.name.text} from ${from}`);
+        if (ts.isVariableDeclaration(holder) && !ts.isIdentifier(holder.name) && from !== allowed) {
+            offenders.push(...boundNames(holder.name).filter((name) => watched.has(name)).map((name) => `${name} from ${from}`));
         }
     }
     return offenders;
 }
 
-/** Declarations of `name` anywhere in `source`. */
+/** Declarations of `name` anywhere in `source`, at any depth: a binding, a parameter, a function, a class, a type. */
 function declarations(source: string, name: string, file?: string): number {
-    void file;
-    return source.match(new RegExp(`\\b(?:const|let|var|function)\\s+${name}\\b`, 'g'))?.length ?? 0;
+    let count = 0;
+    for (const node of nodes(parse(source, file))) {
+        if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) {
+            if (ts.isIdentifier(node.name) && node.name.text === name) count += 1;
+        } else if (
+            (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node)) &&
+            node.name?.text === name
+        ) {
+            count += 1;
+        }
+    }
+    return count;
 }
 
 /** `source` without its comments and blank lines. */
