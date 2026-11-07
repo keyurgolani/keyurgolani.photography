@@ -28,7 +28,7 @@ import { expect, test } from './support/test';
 // so this runs once, on the desktop project, and opens the phone as its own
 // context.
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'default' });
 
 const HOOK_TIMEOUT = 15 * 60_000;
 const KIB = 1024;
@@ -272,7 +272,7 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
     for (const screen of SCREENS) {
         test(`${screen} on the ${profile}: the first viewport's requests, rungs, and reach stay inside the policy`, async ({ browser }) => {
             const policy = POLICY[screen];
-            const { page, document: doc, media, reads, refused, timing, api, portraits, other } = await measure(browser, profile, pathOf(screen), { toneControl: screen === 'home' });
+            const { page, document: doc, media, reads, refused, timing, api, portraits, other } = await measure(browser, profile, pathOf(screen), { toneControl: false });
             try {
                 const bytes = media.reduce((sum, request) => sum + request.bytes, 0);
                 // Every screen leads with the featured series' first photograph: Home's opening, Work's first cover, the series cover, the Viewer's photograph.

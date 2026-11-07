@@ -282,7 +282,7 @@ export const canvasSampler: ToneSampler = async (image, source) => {
     // Any other same-origin file, as a curator's preview's media, served `private, no-store` under its own path, is
     // fetched again. Keyed on the file, not the page: shipped visitor code never names the preview's routes (#16).
     const cache = new URL(url, document.baseURI).pathname.startsWith('/media/') ? 'only-if-cached' : 'force-cache';
-    const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
+    const response = await fetch(`${url}?tone`, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
     if (!response.ok) return null;
     bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
   } catch {
