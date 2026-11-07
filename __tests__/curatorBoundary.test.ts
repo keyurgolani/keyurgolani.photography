@@ -10,6 +10,7 @@ import { makeCuratorSecrets, type TestCuratorSecrets } from '../test/helpers/cur
 import { resetLoginForTests } from '../lib/curation/auth/login';
 import { CURATOR_FRAME_POLICY, CURATOR_RESPONSE_HEADERS } from '../lib/curation/auth/policy';
 import { deleteSession, resetSessionsForTests, SESSION_COOKIE, signSessionId, createSession } from '../lib/curation/auth/sessions';
+import { SUBMIT_GATE_SCRIPT } from '../components/site/submitGateScript';
 import { THEME_INIT_SCRIPT } from '../components/site/themeScript';
 import { UNAVAILABLE_CSP, UNAVAILABLE_HTML } from '../lib/curation/auth/unavailable';
 import { config, proxy } from '../proxy';
@@ -408,6 +409,20 @@ describe("next.config.mjs's curator headers", () => {
     it("allows the theme script by its hash in any policy that sends script-src", async () => {
         const { createHash } = await import('node:crypto');
         const hash = `'sha256-${createHash('sha256').update(THEME_INIT_SCRIPT).digest('base64')}'`;
+        const entries = await nextConfig.headers!();
+        const policies = [
+            ...entries.flatMap((entry) => entry.headers.filter((header) => header.key.toLowerCase() === 'content-security-policy').map((header) => header.value)),
+            ...Object.entries(CURATOR_RESPONSE_HEADERS).filter(([key]) => key.toLowerCase() === 'content-security-policy').map(([, value]) => value),
+        ];
+        expect(policies.length).toBeGreaterThan(0);
+        for (const policy of policies) if (/(^|;)\s*script-src\b/.test(policy)) expect(policy).toContain(hash);
+    });
+
+    // The submit gate runs beside the theme script in every page's <head>, unhashed today for the same reason. The day a
+    // policy sends script-src it needs this script's hash too, or the Inbox's early presses post again.
+    it('allows the submit gate script by its hash in any policy that sends script-src, as the theme script', async () => {
+        const { createHash } = await import('node:crypto');
+        const hash = `'sha256-${createHash('sha256').update(SUBMIT_GATE_SCRIPT).digest('base64')}'`;
         const entries = await nextConfig.headers!();
         const policies = [
             ...entries.flatMap((entry) => entry.headers.filter((header) => header.key.toLowerCase() === 'content-security-policy').map((header) => header.value)),

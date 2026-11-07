@@ -30,7 +30,11 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
     const [offline, setOffline] = useState(false);
     const [watchState, setWatchState] = useState<InboxWatchState | null>(null);
-    const [line, setLine] = useState<{ text: string; refresh: boolean; serial: number } | null>(null);
+    // The new-items line, with its Refresh link, stays until the page refreshes or more items arrive; everything else an
+    // answer says is the other line, beside it, so the prompt to refresh is never lost. Each is a node of its own, read
+    // once when it lands.
+    const [arrival, setArrival] = useState<{ text: string; serial: number } | null>(null);
+    const [line, setLine] = useState<{ text: string; serial: number } | null>(null);
     const page = useRef<InboxPageFacts>({ needsJudgment, watcher, item });
     // Arrivals count from the page's own cursor, until the server refuses it and answers its own.
     const since = useRef(cursor);
@@ -57,10 +61,12 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                 setOffline(false);
                 if (answer.rebased) since.current = answer.summary.cursor;
             } else if (news.offline) setOffline(true);
-            if (news.line) {
-                serial += 1;
-                setLine({ text: news.line, refresh: news.refresh, serial });
-            }
+            if (news.arrival || news.line) serial += 1;
+            // New arrivals replace the new-items line. The other line holds the rest of this answer: it replaces what
+            // stood there, and new arrivals with nothing else to say clear it, so nothing from an older answer lingers.
+            if (news.arrival) setArrival({ text: news.arrival, serial });
+            if (news.line) setLine({ text: news.line, serial });
+            else if (news.arrival) setLine(null);
             // With the version the page showed, so the item raises its alert only while it still shows that one.
             if (news.itemChanged && page.current.item) window.dispatchEvent(new CustomEvent(ITEM_CHANGED_EVENT, { detail: { id: page.current.item.id, version: news.changedFrom } }));
         };
@@ -107,17 +113,18 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                     <p>{OFFLINE_TEXT}</p>
                 </section>
             ) : null}
-            {/* The one live region for the poll, there from the start, so what's put in it is read out once. data-watch says
-                where the watch is (InboxWatchState), for nothing but tests that run the page's clock. */}
-            <div role="status" aria-label="Inbox updates" data-watch={watchState ?? undefined} className={line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
-                {line ? (
-                    <p key={line.serial}>
-                        {line.text}{' '}
-                        {line.refresh ? (
-                            <a href={`${window.location.pathname}${window.location.search}`} className={styles.updatesLink}>
-                                Refresh the inbox
-                            </a>
-                        ) : null}
+            {/* The one live region for the poll, there from the start, so what's put in it is read out once. A status is
+                atomic by default, so it says it isn't: a change to one line reads that line, never the whole region again.
+                data-watch says where the watch is (InboxWatchState), for nothing but tests that run the page's clock. */}
+            <div role="status" aria-atomic="false" aria-label="Inbox updates" data-watch={watchState ?? undefined} className={arrival || line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
+                {/* The other line first, so "Back online." is read before the new items that came with it. */}
+                {line ? <p key={`line-${line.serial}`}>{line.text}</p> : null}
+                {arrival ? (
+                    <p key={`arrival-${arrival.serial}`}>
+                        {arrival.text}{' '}
+                        <a href={`${window.location.pathname}${window.location.search}`} className={styles.updatesLink}>
+                            Refresh the inbox
+                        </a>
                     </p>
                 ) : null}
             </div>

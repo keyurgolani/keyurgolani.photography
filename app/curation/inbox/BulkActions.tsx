@@ -4,6 +4,7 @@ import { startTransition, useActionState, type FormEvent } from 'react';
 import styles from '../curator.module.css';
 import { bulkItems } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
+import { submitGate, submitOff, useHydrated } from './useHydrated';
 import { BULK_FORM_ID, BULK_IDLE, DEFER_LABEL } from '@/lib/curation/inbox-view';
 
 export interface BulkRow {
@@ -31,13 +32,15 @@ const UNASSIGNED_HINT = 'Leave selected unassigned approves each selected new ph
  * belongs to this form by its `form` attribute (BULK_FORM_ID). Its value is the row's item and the version the page
  * showed, so the server checks every item against what the curator saw, as one action does. What went through is said once in the polite region. What was
  * left alone, or a selection the server refused, is an error summary that takes focus and links each record, or the
- * checkboxes. The answers stay until the next press.
+ * checkboxes. The answers stay until the next press. The form has no plain-post route, so it waits at the submit gate
+ * until it has mounted (useHydrated.ts): with scripts running, a press before that does nothing, never a plain POST.
  */
 export default function BulkActions({ base, rows, canDefer, canUnassign, firstPick }: BulkActionsProps) {
     const [state, dispatch, pending] = useActionState(bulkItems, BULK_IDLE);
+    const ready = useHydrated();
     const submit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        // As ItemActions: aria-disabled, never `disabled`, so a focused button keeps focus while the action is out.
+        // As ItemActions: while the action is out, aria-disabled, never `disabled`, so a focused button keeps focus.
         if (pending) return;
         const submitter = (event.nativeEvent as SubmitEvent).submitter;
         // A8 review N5: only a bulk button sends this form. Enter in a checkbox submits it with no submitter, or the first
@@ -48,7 +51,7 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
         form.set(submitter.name, submitter.value);
         startTransition(() => dispatch(form));
     };
-    const off = { 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined };
+    const off = submitOff(pending);
     const answered = state.status === 'idle' ? null : state;
     const left = answered?.results.filter((result) => result.status !== 'done') ?? [];
     const leftTitle = left.length === 1 ? '1 item was left as it is' : `${left.length} items were left as they are`;
@@ -56,7 +59,7 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
     // A8 review S1: items that went through with an answer of their own, said with the headline, once.
     const noted = answered?.results.filter((result) => result.status === 'done' && result.note) ?? [];
     return (
-        <form method="post" onSubmit={submit} aria-label="Bulk actions" id={BULK_FORM_ID} className={styles.bulk}>
+        <form method="post" onSubmit={submit} aria-label="Bulk actions" id={BULK_FORM_ID} className={styles.bulk} {...submitGate(ready)}>
             <input type="hidden" name="base" value={base ?? 'none'} />
             <div className={styles.bulkBar}>
                 {canDefer ? (

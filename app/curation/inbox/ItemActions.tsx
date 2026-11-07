@@ -3,6 +3,7 @@
 import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { Check, Save } from 'lucide-react';
 import styles from '../curator.module.css';
+import { submitGate, submitOff, useHydrated } from './useHydrated';
 import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
 import { itemUrl, moveOn } from './journey';
@@ -224,13 +225,13 @@ function AnswerRegion({ show, state, detail, regionRef, announce }: { show: bool
 }
 
 /** What every submit button says while an action is out: unavailable, but focusable still (#1's focus contract). */
-const offWhile = (pending: boolean) => ({ 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined });
-
 interface ResolveProps {
     detail: InboxDetail;
     activeRevisionId: string | null;
     state: InboxActionState;
     pending: boolean;
+    /** The form has mounted, so it's ready at the submit gate (useHydrated). */
+    ready: boolean;
     slot: AnswerSlot | null;
     submit: (event: FormEvent<HTMLFormElement>) => void;
 }
@@ -241,7 +242,7 @@ interface ResolveProps {
  * path can be typed, which the server checks is inside the library. The watcher applies the bind on its next pass,
  * so the item stays open until then, and the answer says it waits.
  */
-function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: ResolveProps) {
+function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submit }: ResolveProps) {
     const linked = detail.linkedFiles;
     // A linked file goes by its item's ID, never its path, which the page shows escaped: the server reads the path again.
     const [choice, setChoice] = useState<string | null>(linked.length === 1 ? linked[0].id : linked.length === 0 ? 'typed' : null);
@@ -260,7 +261,7 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
     return (
         <details className={styles.more}>
             <summary>Bind to the file that replaces it</summary>
-            <form method="post" onSubmit={submit} aria-label="Bind">
+            <form method="post" onSubmit={submit} aria-label="Bind" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {linked.length > 0 ? (
                     <fieldset className={styles.sequence} aria-describedby={filesError ? 'bind-to-error' : undefined}>
@@ -314,7 +315,7 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
                 </p>
                 <p className={styles.hint}>The watcher applies a bind on its next pass, so this item stays open until then. Nothing a visitor sees changes.</p>
                 <div className={styles.actions}>
-                    <button type="submit" name="intent" value="bind" className={styles.button} {...offWhile(pending)}>
+                    <button type="submit" name="intent" value="bind" className={styles.button} {...submitOff(pending)}>
                         Bind
                     </button>
                 </div>
@@ -330,7 +331,7 @@ function BindForm({ detail, activeRevisionId, state, pending, slot, submit }: Re
  * and archives it, which the next publish makes public. That is a takedown, so it needs a reason and a second,
  * explicit step that names the file, and only that step's button sends the form.
  */
-function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }: ResolveProps) {
+function ArchiveForm({ detail, activeRevisionId, state, pending, ready, slot, submit }: ResolveProps) {
     const [reason, setReason] = useState('');
     const [confirming, setConfirming] = useState(false);
     const [missingReason, setMissingReason] = useState(false);
@@ -373,7 +374,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
     return (
         <details className={styles.more}>
             <summary>Archive and take it down</summary>
-            <form method="post" onSubmit={submit} aria-label="Archive">
+            <form method="post" onSubmit={submit} aria-label="Archive" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 <p className={styles.hint} id="archive-takedown">
                     {ARCHIVE_TAKEDOWN}
@@ -386,6 +387,8 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
                         className={styles.control}
                         name="reason"
                         value={reason}
+                        // Until its second step this form has no submit button, so Enter here would send it the plain way
+                        // before the form has mounted: the submit gate drops that, and the typing too.
                         required
                         maxLength={500}
                         autoComplete="off"
@@ -427,7 +430,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, slot, submit }:
                                 <button type="button" className={styles.button} onClick={cancel}>
                                     Cancel
                                 </button>
-                                <button type="submit" name="intent" value="archive" className={styles.button} {...offWhile(pending)}>
+                                <button type="submit" name="intent" value="archive" className={styles.button} {...submitOff(pending)}>
                                     Yes, archive it
                                 </button>
                             </div>
@@ -644,6 +647,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
 /** 14-1's actions on the selected item, each a form the page's server actions take. */
 export default function ItemActions({ detail, order, open, activeRevisionId, series, seriesProblem, note }: ItemActionsProps) {
     const [answered, dispatch, pending] = useActionState(dispatchByIntent, IDLE);
+    const ready = useHydrated();
     // A8 review S4: the version the last press was sent for. A stale answer stands only while the page still shows
     // that version: once a refresh shows a newer one, it's about a page that's gone.
     const [sentFor, setSentFor] = useState<number | null>(null);
@@ -729,7 +733,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     }, [state, slot, detail]);
     return (
         <>
-            <form method="post" onSubmit={submit} aria-label="Review">
+            <form method="post" onSubmit={submit} aria-label="Review" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {/* The form version the page showed, so a form left open across a refresh never reads as another item's. */}
                 {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} answer={state} /> : null}
@@ -748,7 +752,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                             </span>
                         ) : null}
                         {detail.type === 'new' && can.edit ? (
-                            <button type="submit" name="intent" value="edit" className={styles.button} {...offWhile(pending)}>
+                            <button type="submit" name="intent" value="edit" className={styles.button} {...submitOff(pending)}>
                                 Save edits
                             </button>
                         ) : null}
@@ -759,19 +763,19 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         ) : can.defer ? (
                             // On a replacement the hint says what Decide later does to the draft, and on a missing source what it keeps
                             // (#118), so it describes the button.
-                            <button type="submit" name="intent" value="defer" className={styles.button} {...offWhile(pending)} aria-describedby={(detail.type === 'replacement' || detail.type === 'missing') && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
+                            <button type="submit" name="intent" value="defer" className={styles.button} {...submitOff(pending)} aria-describedby={(detail.type === 'replacement' || detail.type === 'missing') && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
                                 {DEFER_LABEL}
                             </button>
                         ) : null}
                         {primary && detail.type === 'new' && can.approve ? (
-                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} {...offWhile(pending)}>
+                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} {...submitOff(pending)}>
                                 <Save size={16} aria-hidden="true" />
                                 {primary}
                             </button>
                         ) : null}
                         {/* #118: Confirm takes the primary place, as Approve does. It writes the draft only; a publish makes it public. */}
                         {primary && detail.type === 'replacement' && can.confirm ? (
-                            <button type="submit" name="intent" value="confirm" className={`${styles.button} ${styles.primary}`} {...offWhile(pending)}>
+                            <button type="submit" name="intent" value="confirm" className={`${styles.button} ${styles.primary}`} {...submitOff(pending)}>
                                 <Check size={16} aria-hidden="true" />
                                 {primary}
                             </button>
@@ -787,18 +791,18 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             </form>
 
             {can.retry ? (
-                <form method="post" onSubmit={submit} className={styles.actions}>
+                <form method="post" onSubmit={submit} className={styles.actions} {...submitGate(ready)}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="retry" className={styles.button} {...offWhile(pending)}>
+                    <button type="submit" name="intent" value="retry" className={styles.button} {...submitOff(pending)}>
                         Retry processing
                     </button>
                 </form>
             ) : null}
 
             {can.reopen ? (
-                <form method="post" onSubmit={submit} className={styles.actions}>
+                <form method="post" onSubmit={submit} className={styles.actions} {...submitGate(ready)}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="reopen" className={styles.button} {...offWhile(pending)}>
+                    <button type="submit" name="intent" value="reopen" className={styles.button} {...submitOff(pending)}>
                         Reopen
                     </button>
                 </form>
@@ -810,20 +814,20 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {polledFor === detail.version && state.status !== 'stale' ? <StaleAlert message={POLLED_STALE} detail={detail} /> : null}
 
             {/* Keyed by the version the page showed, as the suggestion is, so a form left open across a refresh never reads as another state's. */}
-            {can.bind ? <BindForm key={`bind-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} slot={slot} submit={submit} /> : null}
-            {can.archive ? <ArchiveForm key={`archive-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} slot={slot} submit={submit} /> : null}
+            {can.bind ? <BindForm key={`bind-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} ready={ready} slot={slot} submit={submit} /> : null}
+            {can.archive ? <ArchiveForm key={`archive-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} ready={ready} slot={slot} submit={submit} /> : null}
 
             {can.dismiss ? (
                 <details className={styles.more}>
                     <summary>Dismiss with a reason</summary>
-                    <form method="post" onSubmit={submit}>
+                    <form method="post" onSubmit={submit} {...submitGate(ready)}>
                         <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                         <label className={styles.label}>
                             Reason
                             <input className={styles.control} id="dismiss-reason" name="reason" required maxLength={500} autoComplete="off" />
                         </label>
                         <div className={styles.actions}>
-                            <button type="submit" name="intent" value="dismiss" className={styles.button} {...offWhile(pending)}>
+                            <button type="submit" name="intent" value="dismiss" className={styles.button} {...submitOff(pending)}>
                                 Dismiss
                             </button>
                         </div>
