@@ -1,6 +1,8 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { WorkCatalog, WorkSeriesSummary } from '@/lib/catalog/projections/work';
+import { renderInAppRouter } from '@/test/helpers/appRouter';
 import SeriesCatalog from '../SeriesCatalog';
 
 // B3's body, item 93, in B10: keyboard focus scrolls the title link into view, not its entry, so Shift+Tab back up
@@ -16,7 +18,8 @@ import SeriesCatalog from '../SeriesCatalog';
 
 const router = vi.hoisted(() => ({ prefetch: vi.fn(), push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), refresh: vi.fn() }));
 
-vi.mock('next/navigation', () => ({ useRouter: () => router }));
+// Work's entry links read the router from the app router's context, as Link does, so each render mounts this one.
+const render = (ui: ReactElement) => renderInAppRouter(router, ui);
 
 function series(n: number): WorkSeriesSummary {
     return {

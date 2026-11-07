@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { FocusEvent, ReactNode } from 'react';
+import { fireEvent, screen } from '@testing-library/react';
+import type { FocusEvent, ReactElement, ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderInAppRouter, withAppRouter } from '@/test/helpers/appRouter';
 import IntentPrefetchLink from '../IntentPrefetchLink';
 
 // #6 item 9 (B10): a link that prefetches its page only on a visitor's intent, a pointer coming onto it, focus, or a
@@ -9,7 +10,9 @@ import IntentPrefetchLink from '../IntentPrefetchLink';
 
 const router = vi.hoisted(() => ({ prefetch: vi.fn(), push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), refresh: vi.fn() }));
 
-vi.mock('next/navigation', () => ({ useRouter: () => router }));
+// Work's entry links read the router from the app router's context, as Link does, so each render mounts this one.
+const render = (ui: ReactElement) => renderInAppRouter(router, ui);
+const InAppRouter = withAppRouter(router);
 
 // The props Link gets, as attributes, so a test can see Link's own prefetch is off.
 vi.mock('next/link', () => ({
@@ -42,7 +45,11 @@ describe('IntentPrefetchLink', () => {
     });
 
     it('prefetches nothing when it renders, on the server or in the browser', () => {
-        renderToString(<IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>);
+        renderToString(
+            <InAppRouter>
+                <IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>
+            </InAppRouter>,
+        );
         render(<IntentPrefetchLink href={HREF}>Fixture harbor</IntentPrefetchLink>);
         expect(router.prefetch).not.toHaveBeenCalled();
     });

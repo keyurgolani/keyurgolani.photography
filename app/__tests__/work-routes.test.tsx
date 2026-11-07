@@ -13,8 +13,6 @@ const state = vi.hoisted(() => ({ catalog: null as unknown, origin: null as URL 
 
 vi.mock('next/navigation', () => ({
     usePathname: () => '/work',
-    // Work's entry links prefetch through the router on intent (B10).
-    useRouter: () => ({ prefetch: () => undefined }),
 }));
 
 vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
