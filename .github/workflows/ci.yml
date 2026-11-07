@@ -123,12 +123,13 @@ jobs:
       # #6's budgets on the build test:e2e just made: a generated library on 127.0.0.1:3200, Chromium only, no
       # network. A budget over its number in lib/perf/budgets.ts fails the job, and so the pull request. Its own
       # ceiling, so a hang fails this step and the uploads below still run.
-      - name: Check #6's budgets
+      # Quoted: unquoted, YAML reads " #" as a comment's start and the step's name as "Check".
+      - name: "Check #6's budgets"
         timeout-minutes: 12
         run: npm run test:budgets
 
       - if: always()
-        name: Summarize #6's budgets
+        name: "Summarize #6's budgets"
         run: cat .perf/report.md >> "$GITHUB_STEP_SUMMARY" || true
 
       - if: always()
@@ -139,7 +140,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - if: failure()
+      # A test that fails and then passes its retry leaves the job green, so the report below wouldn't upload, and
+      # the failed try's trace would go with the runner. The json reporter's stats say whether any test was flaky.
+      - if: always()
+        id: e2e-results
+        name: Read the browser tests' results
+        run: |
+          flaky=$(node -e "const { stats } = require('./test-results/results.json'); process.stdout.write(stats.flaky > 0 ? 'true' : 'false')" 2>/dev/null || echo false)
+          echo "flaky=$flaky" >> "$GITHUB_OUTPUT"
+          if [ "$flaky" = true ]; then echo "Flaky browser tests: the playwright-report artifact has the failed tries and their traces." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - if: failure() || steps.e2e-results.outputs.flaky == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report

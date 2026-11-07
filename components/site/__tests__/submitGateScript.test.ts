@@ -173,6 +173,39 @@ describe('SUBMIT_GATE_SCRIPT, the word after a drop', () => {
     });
 });
 
+describe('SUBMIT_GATE_SCRIPT, when the form turns ready', () => {
+    it('never sends a submit it dropped before: not a press, not Enter, not requestSubmit', async () => {
+        const { form, reached, el } = build('waiting');
+        const send = el<HTMLButtonElement>('send');
+        // Every submit event the form gets from here on, seen first at window, ahead of the gate, and any native submit().
+        let submits = 0;
+        const count = () => (submits += 1);
+        window.addEventListener('submit', count, true);
+        const native = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => undefined);
+        try {
+            send.click();
+            // Enter in a field is the browser's implicit submission, a submit event at the form with the default
+            // button as its submitter, which jsdom doesn't make from a key press.
+            form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: send }));
+            form.requestSubmit();
+            form.requestSubmit(send);
+            expect(reached, 'dropped while waiting').not.toHaveBeenCalled();
+            submits = 0;
+            form.setAttribute(SUBMIT_GATE_ATTRIBUTE, 'ready');
+            // The marks go on a MutationObserver's microtask and the words on a timer: flush both, twice over.
+            await settle();
+            await new Promise<void>((done) => queueMicrotask(done));
+            await settle();
+            expect(submits, 'submit events after the form turned ready').toBe(0);
+            expect(reached, "the form's handler after it turned ready").not.toHaveBeenCalled();
+            expect(native, 'a native submit after it turned ready').not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener('submit', count, true);
+            native.mockRestore();
+        }
+    });
+});
+
 describe('SUBMIT_GATE_SCRIPT, the scope guard', () => {
     it('never touches a form without the attribute, as sign-in, Apply filters or Refresh', () => {
         const { form, reached, arrivedCancelled, el } = build(null);
