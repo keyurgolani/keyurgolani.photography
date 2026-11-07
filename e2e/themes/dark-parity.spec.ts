@@ -1042,24 +1042,28 @@ const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: OPENED_INBOX_ITEMS }, 
  * builds' prints overflow at the gate's three sizes, so the stage, the moves and the reading area must still match.
  */
 const VIEWER_ZOOM: Allowance[] = [
-    ...['figure', 'figure > picture', 'figure img'].map((part) => ({
-        page: 'viewer-zoomed',
-        selector: `[data-surface="viewer"] [data-zoomed] ${part}`,
-        maxDelta: 2400,
-        why: '#175 (B8): Zoom is clamp(fitted, 2 * fitted, the largest file)',
-    })),
-    // The zoomed print's two <source>s, AVIF and WebP, on desktop and tablet with JavaScript, where Zoom applies (the
-    // coordinator's ruling, B8's CI): they paint nothing, and their boxes follow the img's, which the entries above
-    // allow. One entry each, since a selector resolves to one path.
-    ...[1440, 1024].flatMap((width) =>
-        [1, 2].map((n) => ({
+    ...['figure', 'figure > picture', 'figure img'].map(
+        (part): Allowance => ({
             page: 'viewer-zoomed',
-            width,
-            javascript: true as const,
-            selector: `[data-surface="viewer"] [data-zoomed] figure > picture > source:nth-of-type(${n})`,
+            selector: `[data-surface="viewer"] [data-zoomed] ${part}`,
             maxDelta: 2400,
-            why: "#175 (B8): Zoom's sources follow the zoomed img",
-        })),
+            why: '#175 (B8): Zoom is clamp(fitted, 2 * fitted, the largest file)',
+        }),
+    ),
+    // The zoomed print's two <source>s, AVIF and WebP, on desktop and tablet on the routes with JavaScript, where Zoom
+    // applies (the coordinator's ruling, B8's CI): they paint nothing, and their boxes follow the img's, which the
+    // entries above allow. One entry each, since a selector resolves to one path.
+    ...[1440, 1024].flatMap((width) =>
+        [1, 2].map(
+            (n): Allowance => ({
+                page: 'viewer-zoomed',
+                width,
+                routes: SCRIPTED_ROUTES,
+                selector: `[data-surface="viewer"] [data-zoomed] figure > picture > source:nth-of-type(${n})`,
+                maxDelta: 2400,
+                why: "#175 (B8): Zoom's sources follow the zoomed img",
+            }),
+        ),
     ),
 ];
 
