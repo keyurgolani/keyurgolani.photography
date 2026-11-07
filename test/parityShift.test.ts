@@ -54,6 +54,13 @@ describe("the parity gate's exact shift", () => {
             expect(checkShift([0, 300, 10, 0], [0, 140, 10, 0], SHIFT)).toEqual({ delta: 160, off: 0 });
             expect(checkShift([0, 300, 0, 10], [0, 300, 0, 10], SHIFT).off).toBe(160);
         });
+
+        it('is off as a size change when it has area in one build and none in the other, even at the exact shift', () => {
+            // Area in the base, none in the head, where the shift puts it: off by the size it lost.
+            expect(checkShift([0, 300, 10, 12], [0, 140, 0, 0], SHIFT).off).toBe(12);
+            // None in the base, area in the head, where the shift puts it: off by the size it gained.
+            expect(checkShift(NONE, [0, -160, 8, 3], SHIFT).off).toBe(8);
+        });
     });
 
     it('names the box, its move, the shift and how far off it is', () => {
