@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { hydrateRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BULK_IDLE, type InboxActionState, type InboxBulkState, type InboxDetail, type InboxItem, type InboxView, type ReadyInboxSummary, type SeriesOption } from '@/lib/curation/inbox-view';
@@ -337,6 +338,78 @@ describe('the bulk answers (A8 review)', () => {
             fireEvent.submit(document.getElementById('inbox-bulk') as HTMLFormElement);
         });
         expect(sent.forms).toEqual([]);
+    });
+});
+
+describe('a change by script before the page is ready', () => {
+    // The head's script holds typing, ticks and select keys until a form is ready, but a script can still set a value
+    // (selectOption, el.value =). Hydration and the re-render once each form is ready write React's state back to
+    // every controlled field, so what the screen shows is what the form sends: the server's state, not the script's.
+    const fields = (form: HTMLFormElement) => [...new FormData(form).entries()].map(([name, value]) => [name, String(value)]).sort();
+    async function hydrateAfter(d: InboxDetail, change: (holder: HTMLElement) => void) {
+        const tree = <InboxDetailView view={view({ selected: d })} />;
+        const pristine = document.createElement('div');
+        pristine.innerHTML = renderToString(tree);
+        const holder = document.createElement('div');
+        document.body.append(holder);
+        holder.innerHTML = renderToString(tree);
+        change(holder);
+        const errors: unknown[] = [];
+        let root: Root | undefined;
+        await act(async () => {
+            root = hydrateRoot(holder, tree, { onRecoverableError: (error) => errors.push(error) });
+        });
+        return {
+            pristine,
+            holder,
+            errors,
+            unmount: async () => {
+                await act(async () => root?.unmount());
+                holder.remove();
+            },
+        };
+    }
+    const review = (root: ParentNode) => root.querySelector('form[aria-label="Review"]') as HTMLFormElement;
+
+    it("shows and sends the server's state once ready, after a script set the series, the description and Decorative", async () => {
+        const { pristine, holder, errors, unmount } = await hydrateAfter(detail(), (root) => {
+            const form = review(root);
+            const select = form.querySelector('select') as HTMLSelectElement;
+            select.value = [...select.options].find((option) => option.value !== select.value)!.value;
+            (form.querySelector('textarea') as HTMLTextAreaElement).value = 'Set by a script before the page was ready.';
+            const decorative = within(form).getByRole('checkbox', { name: /Decorative/ }) as HTMLInputElement;
+            decorative.checked = !decorative.checked;
+        });
+        try {
+            expect(errors).toEqual([]);
+            const shown = review(holder);
+            const was = review(pristine);
+            expect((shown.querySelector('select') as HTMLSelectElement).value).toBe((was.querySelector('select') as HTMLSelectElement).value);
+            expect((shown.querySelector('textarea') as HTMLTextAreaElement).value).toBe((was.querySelector('textarea') as HTMLTextAreaElement).value);
+            expect((within(shown).getByRole('checkbox', { name: /Decorative/ }) as HTMLInputElement).checked).toBe((within(was).getByRole('checkbox', { name: /Decorative/ }) as HTMLInputElement).checked);
+            expect(fields(shown)).toEqual(fields(was));
+            await press(within(shown).getByRole('button', { name: 'Save edits' }));
+            expect(sent.forms).toHaveLength(1);
+            expect(sent.forms[0].fields.filter(([name]) => name !== 'intent').sort()).toEqual(fields(was));
+        } finally {
+            await unmount();
+        }
+    });
+
+    it('keeps a saved description when a script edits it before the page is ready', async () => {
+        const saved = 'A harbour wall at low tide.';
+        const { holder, errors, unmount } = await hydrateAfter(detail({ edits: { description: { kind: 'described', text: saved } } as InboxDetail['edits'] }), (root) => {
+            const area = review(root).querySelector('textarea') as HTMLTextAreaElement;
+            expect(area.value).toBe(saved);
+            area.value = 'Overwritten before the page was ready.';
+        });
+        try {
+            expect(errors).toEqual([]);
+            expect((review(holder).querySelector('textarea') as HTMLTextAreaElement).value).toBe(saved);
+            expect(fields(review(holder))).toContainEqual(['description', saved]);
+        } finally {
+            await unmount();
+        }
     });
 });
 
