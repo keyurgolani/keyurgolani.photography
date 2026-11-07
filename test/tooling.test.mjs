@@ -217,3 +217,42 @@ describe("the smokes' temp roots", () => {
     }
   });
 });
+
+describe("Perf A/B's wiring", () => {
+  /** perf-ab.yml's steps, each as its step-level keys (`name`, `uses`, `with`, `env`, `run`, ...) and their text. */
+  async function perfAbSteps() {
+    const text = await fs.readFile(path.join(REPO_ROOT, '.github', 'workflows', 'perf-ab.yml'), 'utf8');
+    const steps = text.slice(text.indexOf('\n    steps:\n')).split(/\n(?= {6}- )/).slice(1);
+    return steps.map((step) => {
+      const keys = {};
+      let key = '';
+      for (const line of step.split('\n')) {
+        const match = /^ {6}(?:- | {2})([a-z-]+):(.*)$/.exec(line);
+        if (match) [key, keys[match[1]]] = [match[1], match[2]];
+        else if (key) keys[key] += `\n${line}`;
+      }
+      return { name: (keys.name ?? keys.uses ?? '').trim(), keys };
+    });
+  }
+
+  it('checks out the base and the head at the SHAs the resolver gives, from a tool clone with every commit', async () => {
+    const steps = await perfAbSteps();
+    const named = (name) => steps.find((step) => step.name === name);
+    expect(named('Check out the tool')?.keys.with).toMatch(/\n {10}fetch-depth: 0\n/);
+    for (const which of ['base', 'head']) {
+      const resolve = named(`Resolve the ${which}`);
+      expect(resolve?.keys.id?.trim(), which).toBe(which);
+      expect(resolve?.keys.run, which).toContain('bash tool/ci/perf/resolve-ref.sh tool/.git');
+      expect(named(`Check out the ${which}`)?.keys.with, which).toMatch(new RegExp(`\\n {10}ref: \\$\\{\\{ steps\\.${which}\\.outputs\\.sha \\}\\}\\n`));
+      // Resolved before it's checked out.
+      expect(steps.indexOf(resolve), which).toBeLessThan(steps.indexOf(named(`Check out the ${which}`)));
+    }
+  });
+
+  it('passes its inputs to the scripts only through env, never as ${{ inputs.* }} in a run or a with', async () => {
+    const steps = await perfAbSteps();
+    const uses = steps.flatMap(({ name, keys }) => Object.entries(keys).filter(([, text]) => /\binputs\./.test(text)).map(([key]) => `${name}: ${key}`));
+    expect(uses.length).toBeGreaterThan(0);
+    expect(uses.filter((use) => !use.endsWith(': env'))).toEqual([]);
+  });
+});
