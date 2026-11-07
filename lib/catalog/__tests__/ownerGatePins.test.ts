@@ -181,6 +181,24 @@ describe.runIf(posix)('the owner gate, every writer (#15)', { timeout: 120_000 }
         });
     }
 
+    it('photos legacy-derivatives as another uid names the README\'s -T form and what a status/ it made breaks; other refusals have no -T', async () => {
+        const w = await world();
+        const owner = `${w.owner}:${fs.statSync(w.built.root).gid}`;
+        // The README's exact form: -T keeps Compose from adding a terminal's line endings to the saved manifest.
+        const route = `Run it as uid ${w.owner}, as docker-compose.prod.yml runs every container with user: "${owner}", and its run --rm commands with them: docker compose -f docker-compose.prod.yml run --rm --no-deps -T image-watcher node dist/scripts/photos.mjs legacy-derivatives --stdout > ~/legacy-derivatives.json`;
+        const clause = 'and if this uid made status/, the owner can\'t replace what it writes there until status/ is fixed by hand.';
+        for (const argv of [['legacy-derivatives'], ['legacy-derivatives', '--stdout']]) {
+            const result = await run(w, 'scripts/photos.ts', argv, other(w));
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain(clause);
+            expect(result.stderr.trimEnd().endsWith(route)).toBe(true);
+        }
+        // -T would break an interactive prompt, so every other refusal keeps the shared form without it.
+        const verify = await run(w, 'scripts/photos.ts', ['verify'], other(w));
+        expect(verify.stderr).toMatch(/docker compose -f docker-compose\.prod\.yml run --rm --no-deps image-watcher node dist\/scripts\/photos\.mjs verify …$/m);
+        expect(verify.stderr).not.toContain(' -T ');
+    });
+
     it('the watcher, --once, as another uid: exit 1, WRONG_OWNER, nothing written, locks/ untouched', async () => {
         const w = await world();
         const check = untouched(w.built.root);
