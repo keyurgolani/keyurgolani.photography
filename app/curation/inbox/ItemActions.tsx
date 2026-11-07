@@ -3,7 +3,7 @@
 import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { Check, Save } from 'lucide-react';
 import styles from '../curator.module.css';
-import { submitOff, useHydrated } from './useHydrated';
+import { submitGate, submitOff, useHydrated } from './useHydrated';
 import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
 import { itemUrl, moveOn } from './journey';
@@ -230,7 +230,7 @@ interface ResolveProps {
     activeRevisionId: string | null;
     state: InboxActionState;
     pending: boolean;
-    /** The page has hydrated, so its submit buttons can send (useHydrated). */
+    /** The form has mounted, so it's ready at the submit gate (useHydrated). */
     ready: boolean;
     slot: AnswerSlot | null;
     submit: (event: FormEvent<HTMLFormElement>) => void;
@@ -261,7 +261,7 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
     return (
         <details className={styles.more}>
             <summary>Bind to the file that replaces it</summary>
-            <form method="post" onSubmit={submit} aria-label="Bind">
+            <form method="post" onSubmit={submit} aria-label="Bind" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {linked.length > 0 ? (
                     <fieldset className={styles.sequence} aria-describedby={filesError ? 'bind-to-error' : undefined}>
@@ -315,7 +315,7 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
                 </p>
                 <p className={styles.hint}>The watcher applies a bind on its next pass, so this item stays open until then. Nothing a visitor sees changes.</p>
                 <div className={styles.actions}>
-                    <button type="submit" name="intent" value="bind" className={styles.button} {...submitOff(ready, pending)}>
+                    <button type="submit" name="intent" value="bind" className={styles.button} {...submitOff(pending)}>
                         Bind
                     </button>
                 </div>
@@ -374,7 +374,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, ready, slot, su
     return (
         <details className={styles.more}>
             <summary>Archive and take it down</summary>
-            <form method="post" onSubmit={submit} aria-label="Archive">
+            <form method="post" onSubmit={submit} aria-label="Archive" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 <p className={styles.hint} id="archive-takedown">
                     {ARCHIVE_TAKEDOWN}
@@ -388,8 +388,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, ready, slot, su
                         name="reason"
                         value={reason}
                         // Until its second step this form has no submit button, so Enter here would send it the plain way
-                        // before the page hydrates, when the handler below isn't there to stop it.
-                        disabled={!ready}
+                        // before the form has mounted: the submit gate drops that, and the typing too.
                         required
                         maxLength={500}
                         autoComplete="off"
@@ -431,7 +430,7 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, ready, slot, su
                                 <button type="button" className={styles.button} onClick={cancel}>
                                     Cancel
                                 </button>
-                                <button type="submit" name="intent" value="archive" className={styles.button} {...submitOff(ready, pending)}>
+                                <button type="submit" name="intent" value="archive" className={styles.button} {...submitOff(pending)}>
                                     Yes, archive it
                                 </button>
                             </div>
@@ -734,7 +733,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     }, [state, slot, detail]);
     return (
         <>
-            <form method="post" onSubmit={submit} aria-label="Review">
+            <form method="post" onSubmit={submit} aria-label="Review" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {/* The form version the page showed, so a form left open across a refresh never reads as another item's. */}
                 {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} answer={state} /> : null}
@@ -753,7 +752,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                             </span>
                         ) : null}
                         {detail.type === 'new' && can.edit ? (
-                            <button type="submit" name="intent" value="edit" className={styles.button} {...submitOff(ready, pending)}>
+                            <button type="submit" name="intent" value="edit" className={styles.button} {...submitOff(pending)}>
                                 Save edits
                             </button>
                         ) : null}
@@ -764,19 +763,19 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                         ) : can.defer ? (
                             // On a replacement the hint says what Decide later does to the draft, and on a missing source what it keeps
                             // (#118), so it describes the button.
-                            <button type="submit" name="intent" value="defer" className={styles.button} {...submitOff(ready, pending)} aria-describedby={(detail.type === 'replacement' || detail.type === 'missing') && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
+                            <button type="submit" name="intent" value="defer" className={styles.button} {...submitOff(pending)} aria-describedby={(detail.type === 'replacement' || detail.type === 'missing') && detail.primaryUnavailable ? 'primary-unavailable' : undefined}>
                                 {DEFER_LABEL}
                             </button>
                         ) : null}
                         {primary && detail.type === 'new' && can.approve ? (
-                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} {...submitOff(ready, pending)}>
+                            <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} {...submitOff(pending)}>
                                 <Save size={16} aria-hidden="true" />
                                 {primary}
                             </button>
                         ) : null}
                         {/* #118: Confirm takes the primary place, as Approve does. It writes the draft only; a publish makes it public. */}
                         {primary && detail.type === 'replacement' && can.confirm ? (
-                            <button type="submit" name="intent" value="confirm" className={`${styles.button} ${styles.primary}`} {...submitOff(ready, pending)}>
+                            <button type="submit" name="intent" value="confirm" className={`${styles.button} ${styles.primary}`} {...submitOff(pending)}>
                                 <Check size={16} aria-hidden="true" />
                                 {primary}
                             </button>
@@ -792,18 +791,18 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             </form>
 
             {can.retry ? (
-                <form method="post" onSubmit={submit} className={styles.actions}>
+                <form method="post" onSubmit={submit} className={styles.actions} {...submitGate(ready)}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="retry" className={styles.button} {...submitOff(ready, pending)}>
+                    <button type="submit" name="intent" value="retry" className={styles.button} {...submitOff(pending)}>
                         Retry processing
                     </button>
                 </form>
             ) : null}
 
             {can.reopen ? (
-                <form method="post" onSubmit={submit} className={styles.actions}>
+                <form method="post" onSubmit={submit} className={styles.actions} {...submitGate(ready)}>
                     <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                    <button type="submit" name="intent" value="reopen" className={styles.button} {...submitOff(ready, pending)}>
+                    <button type="submit" name="intent" value="reopen" className={styles.button} {...submitOff(pending)}>
                         Reopen
                     </button>
                 </form>
@@ -821,14 +820,14 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             {can.dismiss ? (
                 <details className={styles.more}>
                     <summary>Dismiss with a reason</summary>
-                    <form method="post" onSubmit={submit}>
+                    <form method="post" onSubmit={submit} {...submitGate(ready)}>
                         <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                         <label className={styles.label}>
                             Reason
                             <input className={styles.control} id="dismiss-reason" name="reason" required maxLength={500} autoComplete="off" />
                         </label>
                         <div className={styles.actions}>
-                            <button type="submit" name="intent" value="dismiss" className={styles.button} {...submitOff(ready, pending)}>
+                            <button type="submit" name="intent" value="dismiss" className={styles.button} {...submitOff(pending)}>
                                 Dismiss
                             </button>
                         </div>
