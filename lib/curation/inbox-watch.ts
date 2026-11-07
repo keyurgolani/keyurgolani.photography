@@ -52,7 +52,16 @@ export interface InboxWatchDeps {
     hidden: () => boolean;
     /** True while the browser says it has no network. */
     offline?: () => boolean;
+    /** Told "armed" once start() schedules the first check, and "stopped" once the watch stops for good. */
+    onState?: (state: InboxWatchState) => void;
 }
+
+/**
+ * Where the watch is, for the page to mark the updates region with (data-watch): armed once its first check is
+ * scheduled, stopped once it stops for good, the session ending, the cap or stop(). A stop for errors stays armed,
+ * since a refocus or the network coming back starts it again.
+ */
+export type InboxWatchState = 'armed' | 'stopped';
 
 export interface InboxWatch {
     start(): void;
@@ -85,8 +94,11 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
     };
     const end = (forGood: boolean) => {
         stopped = true;
-        ended ||= forGood;
         clear();
+        if (forGood && !ended) {
+            ended = true;
+            deps.onState?.('stopped');
+        }
     };
 
     async function run(): Promise<void> {
@@ -129,6 +141,7 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
             // The page's own load counts as a check, so a focus straight after it sends nothing.
             last = deps.now();
             schedule(INBOX_WATCH_INTERVAL_MS);
+            deps.onState?.('armed');
         },
         stop: () => end(true),
         wake() {

@@ -5,7 +5,7 @@ import { WifiOff } from 'lucide-react';
 import styles from '../curator.module.css';
 import WatcherNotice from './WatcherNotice';
 import type { InboxWatcher } from '@/lib/curation/inbox-view';
-import { createInboxWatch, fetchInboxSummary, inboxNews, ITEM_CHANGED_EVENT, OFFLINE_TEXT, type InboxPageFacts, type InboxWatchAnswer } from '@/lib/curation/inbox-watch';
+import { createInboxWatch, fetchInboxSummary, inboxNews, ITEM_CHANGED_EVENT, OFFLINE_TEXT, type InboxPageFacts, type InboxWatchAnswer, type InboxWatchState } from '@/lib/curation/inbox-watch';
 
 interface InboxWatchProps {
     /** The watcher as the page loaded it. */
@@ -29,6 +29,7 @@ interface InboxWatchProps {
 export default function InboxWatch({ watcher, needsJudgment, cursor, item }: InboxWatchProps) {
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
     const [offline, setOffline] = useState(false);
+    const [watchState, setWatchState] = useState<InboxWatchState | null>(null);
     const [line, setLine] = useState<{ text: string; refresh: boolean; serial: number } | null>(null);
     const page = useRef<InboxPageFacts>({ needsJudgment, watcher, item });
     // Arrivals count from the page's own cursor, until the server refuses it and answers its own (4a).
@@ -71,6 +72,7 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
             clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
             hidden: () => document.hidden,
             offline: () => browserOffline,
+            onState: setWatchState,
         });
         const wake = () => watch.wake();
         const goOffline = () => {
@@ -105,8 +107,9 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                     <p>{OFFLINE_TEXT}</p>
                 </section>
             ) : null}
-            {/* The one live region for the poll, there from the start, so what's put in it is read out once. */}
-            <div role="status" aria-label="Inbox updates" className={line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
+            {/* The one live region for the poll, there from the start, so what's put in it is read out once. data-watch says
+                where the watch is (InboxWatchState), for nothing but tests that run the page's clock. */}
+            <div role="status" aria-label="Inbox updates" data-watch={watchState ?? undefined} className={line ? `${styles.notice} ${styles.watcherNotice} ${styles.updates}` : styles.updatesEmpty}>
                 {line ? (
                     <p key={line.serial}>
                         {line.text}{' '}
