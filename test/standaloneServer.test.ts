@@ -87,7 +87,7 @@ const VIEWER = [
     '</head><body class="font-sans">',
     '<main data-surface="viewer" data-viewer-mode="page" class="StoryViewer_viewer">',
     '<header class="ViewerChrome_header"><a class="ViewerChrome_control" href="/work/harbor?photo=ph_x"><svg aria-hidden="true" width="18"></svg>Close</a>',
-    '<div class="ViewerChrome_heading"><h1 class="ViewerChrome_series">Harbor<span class="sr-only ViewerChrome_spokenPosition">, photograph 2 of 3</span></h1>',
+    '<div class="ViewerChrome_heading"><h1 class="ViewerChrome_series" aria-label="Harbor, photograph 2 of 3"><span aria-hidden="true">Harbor</span></h1>',
     '<p class="ViewerChrome_position"><span aria-hidden="true">02 / 03</span></p></div>',
     '<button type="button" class="ViewerChrome_control ViewerChrome_zoom" aria-pressed="false"><svg aria-hidden="true"></svg>Zoom</button></header>',
     '<div class="StoryViewer_viewport" data-viewer-stage=""><div class="StoryViewer_track" data-viewer-track=""><picture>',
@@ -101,10 +101,10 @@ const VIEWER = [
 ].join('');
 
 describe("the Viewer's markup", () => {
-    it('reads the h1 with its sr-only position, the aria-hidden counter, the caption, the alt, and both sources, from tags only', () => {
+    it("reads the h1's name and shown title, the aria-hidden title and counter, the caption, the alt, and both sources, from tags only", () => {
         const found = viewerMarkup(VIEWER);
-        expect(found.headings).toEqual([{ text: 'Harbor, photograph 2 of 3', spoken: [', photograph 2 of 3'] }]);
-        expect(found.hiddenText).toEqual(['02 / 03']);
+        expect(found.headings).toEqual([{ label: 'Harbor, photograph 2 of 3', text: 'Harbor' }]);
+        expect(found.hiddenText).toEqual(['Harbor', '02 / 03']);
         expect(found.paragraphs).toEqual(['Morning & the wall.']);
         expect(found.alts).toEqual(['Boats & a wall.']);
         expect(found.sources.map((source) => source.type)).toEqual(['image/avif', 'image/webp']);
@@ -114,10 +114,10 @@ describe("the Viewer's markup", () => {
         ]);
     });
 
-    it('counts a heading with no spoken position, and a page with no photograph, as they are', () => {
-        const placeOnly = VIEWER.replace('<span class="sr-only ViewerChrome_spokenPosition">, photograph 2 of 3</span>', '').replace(/<picture>[\s\S]*<\/picture>/, '');
+    it('counts a heading named by its place, with the bare title, and a page with no photograph, as they are', () => {
+        const placeOnly = VIEWER.replace('aria-label="Harbor, photograph 2 of 3"', 'aria-label="Harbor"').replace(/<picture>[\s\S]*<\/picture>/, '');
         const found = viewerMarkup(placeOnly);
-        expect(found.headings).toEqual([{ text: 'Harbor', spoken: [] }]);
+        expect(found.headings).toEqual([{ label: 'Harbor', text: 'Harbor' }]);
         expect(found.alts).toEqual([]);
         expect(found.sources).toEqual([]);
     });
@@ -130,9 +130,9 @@ describe("the Viewer's markup", () => {
         expect(srcsetCandidates('')).toEqual([]);
     });
 
-    it('hears only the sr-only span as spoken, so a position shown on screen never counts as the spoken one', () => {
-        const shown = VIEWER.replace('<span class="sr-only ViewerChrome_spokenPosition">', '<span class="ViewerChrome_spokenPosition">');
-        expect(viewerMarkup(shown).headings).toEqual([{ text: 'Harbor, photograph 2 of 3', spoken: [] }]);
+    it("takes the heading's name from its aria-label only, so a position shown on screen never counts as the spoken one", () => {
+        const shown = VIEWER.replace('<h1 class="ViewerChrome_series" aria-label="Harbor, photograph 2 of 3"><span aria-hidden="true">Harbor</span></h1>', '<h1 class="ViewerChrome_series">Harbor, photograph 2 of 3</h1>');
+        expect(viewerMarkup(shown).headings).toEqual([{ label: null, text: 'Harbor, photograph 2 of 3' }]);
     });
 
     it("reads a density candidate's width as NaN, so a srcset in x descriptors fails the width check", () => {
