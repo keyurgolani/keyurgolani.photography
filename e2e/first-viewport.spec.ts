@@ -403,8 +403,9 @@ test('home on the phone with the cache off: the copy tone reads nothing from the
     });
     try {
         report['home/phone, cache off'] = { reads, refused, timing };
-        expect(refused.length, 'the sampler ran: its cache-only read was refused').toBeGreaterThan(0);
+        // A sampler that drops its cache option or uses force-cache downloads the slide here: caught first, as itself.
         expect(reads, 'no /media fetch() finished with a response').toEqual([]);
+        expect(refused.length, 'the sampler ran: its cache-only read was refused').toBeGreaterThan(0);
     } finally {
         await page.context().close();
     }
