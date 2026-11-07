@@ -1,7 +1,7 @@
 /** One row of the Viewer's details list: its dt's text and its dd's. */
 export type FactRow = [label: string, value: string];
 
-/** The base's row that the head merges into Camera (#175, B8): "Camera make" and "Camera" are one Camera row. */
+/** The base's row that the head merges into Camera (#175): "Camera make" and "Camera" are one Camera row. */
 export const CAMERA_MAKE = 'Camera make';
 
 /** The Viewer's details list rows on the page, read the same way in both builds. */
@@ -25,7 +25,7 @@ export function readFactRows(selector: string): (FactRow | null)[] {
 }
 
 /**
- * The rows whose value gains #175's unit (B8), by label: the base's text, then the head's, for the parity fixture's
+ * The rows whose value gains #175's unit, by label: the base's text, then the head's, for the parity fixture's
  * camera facts. Exact strings, with U+0020 spaces, compared with === only. A no-break or narrow space would be a new
  * departure, written with \u escapes.
  */
@@ -36,7 +36,7 @@ export const UNIT_ROWS: Readonly<Record<string, readonly [base: string, head: st
 });
 
 /**
- * Dark parity's sanctioned departure on the Viewer's details list (#175, B8). The head has one row fewer, since the
+ * Dark parity's sanctioned departure on the Viewer's details list (#175). The head has one row fewer, since the
  * base's Camera make row merged into Camera, and three values gain their units. The walk leaves out the base's first
  * row, so the rest keep their paths; this checks:
  * - that row is the base's one Camera make row, and the head has none;

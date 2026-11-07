@@ -3,7 +3,7 @@ import { FOLD_PAINT, walk, type EvaluatingPage } from './helpers/parityWalk';
 
 // A folded element (test/helpers/parityWalk.ts's WalkOptions.fold) is left out of the parity walk, so it may paint nothing its parent
 // doesn't. Its ::before and ::after, where they render, may carry no text either: their `content` is pinned to the empty
-// string, which Work's stretched title link's ::after has (B8's review of the Viewer heading's fold).
+// string, which Work's stretched title link's ::after has.
 
 const page: EvaluatingPage = { evaluate: async (fn, arg) => fn(arg) };
 

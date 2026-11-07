@@ -51,7 +51,7 @@ export async function generateMetadata({ params }: ViewerRouteProps): Promise<Me
         title: viewerTitle(photo.title, series.title, position, total),
         ...(description !== null && { description }),
         ...(hasOrigin && { alternates: { canonical } }),
-        // The revision this photograph came from: <meta name="catalog-revision">, neither seen nor heard, for #12's freshness checks (B12).
+        // The revision this photograph came from: <meta name="catalog-revision">, neither seen nor heard, for #12's freshness checks.
         other: { 'catalog-revision': result.viewer.catalogRevision },
         // Next replaces openGraph whole, so the site's fields go first.
         openGraph: {

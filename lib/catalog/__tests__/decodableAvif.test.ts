@@ -9,7 +9,7 @@ import { VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { BUDGET_VARIANT_BYTES } from '@/lib/perf/fixture';
 import { createTestCatalog } from '../testing';
 
-// The budget library's AVIF files decode (B8's CI): first-viewport.spec.ts counts the first load's requests on the
+// The budget library's AVIF files decode: first-viewport.spec.ts counts the first load's requests on the
 // success path, where a file that can't decode would take the WebP retry and fetch a second format. Each AVIF file is a
 // real AVIF at its variant's size, then a free box that fills it to the declared bytes, which stays sparse. WebP stays
 // zeros: the success path never asks for it. The folder is left under the temp folder for the lead, never removed.

@@ -21,7 +21,7 @@ const SYMBOLS = ['compare', 'walk', 'failures', 'FOLD_PAINT', 'PROPERTIES', 'GEO
 const TYPES = ['Allowance', 'Walk', 'Walked', 'Comparison', 'WalkOptions', 'FoldedFocus', 'EvaluatingPage'] as const;
 /** The shift's helpers, which parityWalk.ts's compare() imports from parityShift.ts. */
 const SHIFT_SYMBOLS = ['checkShift', 'shiftLine', 'boxDelta'] as const;
-/** The Viewer details list's check (#175, B8), which the gate imports from viewerFacts.ts and the unit tests pin there. */
+/** The Viewer details list's check (#175), which the gate imports from viewerFacts.ts and the unit tests pin there. */
 const FACTS_HOME = 'test/helpers/viewerFacts.ts';
 const FACTS_SYMBOLS = ['FactRow', 'CAMERA_MAKE', 'FACT_ROWS', 'UNIT_ROWS', 'readFactRows', 'cameraRowDeparture'] as const;
 /** Each guarded name and the one file that defines it. */

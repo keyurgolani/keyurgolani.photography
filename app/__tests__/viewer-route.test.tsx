@@ -237,7 +237,7 @@ describe('the Viewer route', () => {
             title: 'Route A, photograph 2 of 3',
             description: 'Route caption two.',
             alternates: { canonical: `/work/route-a/photo/${P[1]}` },
-            // The revision the page came from, for #12's freshness checks (B8).
+            // The revision the page came from, for #12's freshness checks.
             other: { 'catalog-revision': catalog.revisionId },
             openGraph: { siteName: 'Keyur Golani Photography', type: 'website', url: `/work/route-a/photo/${P[1]}` },
         });
@@ -319,7 +319,7 @@ describe('the Viewer\'s share metadata', () => {
             title: 'Route title one, Route A',
             description: 'Route caption one.',
             alternates: { canonical: `/work/route-a/photo/${P[0]}` },
-            // The revision the page came from, for #12's freshness checks (B8).
+            // The revision the page came from, for #12's freshness checks.
             other: { 'catalog-revision': catalog.revisionId },
             openGraph: {
                 siteName: 'Keyur Golani Photography',
@@ -348,7 +348,7 @@ describe('the Viewer\'s share metadata', () => {
             expect(metadata, String(value)).toEqual({
                 title: 'Route title one, Route A',
                 description: 'Route caption one.',
-                // The revision the page came from, for #12's freshness checks (B8).
+                // The revision the page came from, for #12's freshness checks.
                 other: { 'catalog-revision': catalog.revisionId },
                 openGraph: { siteName: 'Keyur Golani Photography', type: 'website' },
             });

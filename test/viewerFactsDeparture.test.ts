@@ -3,7 +3,7 @@ import { technicalFacts } from '../components/viewer/viewerLabels';
 import { cameraRowDeparture, FACT_ROWS, readFactRows, type FactRow } from './helpers/viewerFacts';
 import { DEFAULT_TECHNICAL } from '../lib/catalog/testing';
 
-// Dark parity's sanctioned departure on the Viewer's details list (#175, B8). The base's "Camera make" and "Camera"
+// Dark parity's sanctioned departure on the Viewer's details list (#175). The base's "Camera make" and "Camera"
 // rows are one Camera row in the head, so the list has one row fewer, and three values gain the units #175 asks for.
 // The walk leaves the base's Camera make row out; this is the check that nothing else in the list changed: the three
 // unit rows hold the exact strings the coordinator ruled, and every other row is byte-equal, in order.
@@ -17,7 +17,7 @@ const BASE: FactRow[] = [
     ['Exposure', '1/250'],
     ['ISO', '200'],
 ];
-/** The head's rows, as B8's Viewer prints the same facts. */
+/** The head's rows, as the head's Viewer prints the same facts. */
 const HEAD: FactRow[] = [
     ['Camera', 'Fixture Model'],
     ['Focal length', '35 mm'],

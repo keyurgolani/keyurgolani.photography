@@ -410,7 +410,7 @@ describe('CatalogHome', () => {
       const width = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
       vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(3).variants.w1200.avif.url}`);
       await renderHome();
-      // ResponsivePhoto's mount check took the retry; the slide itself reports nothing at mount (B8 on B7's SlideImage).
+      // ResponsivePhoto's mount check took the retry; the slide itself reports nothing at mount, since the retry is ResponsivePhoto's.
       expect(failure()).toBe('');
       expect(loading()).toBe('true');
       expect(mountedIds()).toEqual([id(3)]);

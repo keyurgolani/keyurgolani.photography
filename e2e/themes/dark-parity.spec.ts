@@ -212,7 +212,7 @@ interface Pair {
     /** Elements both walks leave out with their subtrees, where the builds differ on purpose and another pair compares them. */
     leaveOut?: { selector: string; why: string }[];
     /**
-     * A Viewer page with the details list (#175, B8): the base's Camera make row, its first, is left out of the base's
+     * A Viewer page with the details list (#175): the base's Camera make row, its first, is left out of the base's
      * walk, since the head merged it into Camera, and both builds' rows are read and held to cameraRowDeparture().
      */
     cameraRows?: true;
@@ -563,13 +563,13 @@ const failCover = async (page: Page) => {
 };
 
 /**
- * The Viewer header's spoken position, which moved into the heading (#175, B8): the base's screen-reader-only span
+ * The Viewer header's spoken position, which moved into the heading (#175): the base's screen-reader-only span
  * after the padded numbers, gone in the head. Screen-reader only, so neither build gives it room; the padded
  * numbers, the heading and the header around them are still compared.
  */
 const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr-only', why: '#175 (B8): the position is said in the heading' }];
 /**
- * A sanctioned departure (#175, B8): a Viewer photograph whose file failed says "This photograph could not be
+ * A sanctioned departure (#175): a Viewer photograph whose file failed says "This photograph could not be
  * loaded.", shows its alt and offers Retry, where the base had the missing-image label alone. Only the box's contents
  * are left out. The box itself is still compared, its Dark paint (ground, edge, diagonal) and its place included,
  * except the scroll it gains for a long alt (the viewer-missing allowance in ALLOWANCES); so are the stage, the moves and the reading area.
@@ -911,7 +911,7 @@ const FOLDED: { url: string; selector: string; why: string; focus?: { page: stri
             why: "#171 (B3): a focused Work entry's ring, inset on its title link's ::after",
         },
     },
-    // The Viewer heading's title (#175, B8), on each Viewer url: the h1 is named "{series}, photograph N of T" by its
+    // The Viewer heading's title (#175), on each Viewer url: the h1 is named "{series}, photograph N of T" by its
     // aria-label, and the title it shows is a span hidden from screen readers, the h1's one child, where the base had
     // the title as the h1's own text. Folded, so it must paint as its h1 does. The modal pairs open from the series
     // page, so that url carries it too; nothing matches there until the Viewer opens.
@@ -1035,7 +1035,7 @@ const INBOX_PICK_ROWS: Allowance[] = Array.from({ length: OPENED_INBOX_ITEMS }, 
 }));
 
 /**
- * A sanctioned departure (#175, B8): Zoom is `clamp(fitted, 2 * fitted, largest file)`, where the base zoomed every
+ * A sanctioned departure (#175): Zoom is `clamp(fitted, 2 * fitted, largest file)`, where the base zoomed every
  * photograph to its largest file. HOME_OPENING is a 1600 by 2400 portrait, so the base's zoomed print is 1600 by 2400
  * at every size, and the head's about twice its fitted width. Only the zoomed print's own boxes may differ, by up to
  * that print's height; their styles are still compared. The zoomed stage is capped at the stage's height, which both
@@ -1051,7 +1051,7 @@ const VIEWER_ZOOM: Allowance[] = [
         }),
     ),
     // The zoomed print's two <source>s, AVIF and WebP, on desktop and tablet on the routes with JavaScript, where Zoom
-    // applies (the coordinator's ruling, B8's CI): they paint nothing, and their boxes follow the img's, which the
+    // applies, as a sanctioned departure: they paint nothing, and their boxes follow the img's, which the
     // entries above allow. One entry each, since a selector resolves to one path.
     ...[1440, 1024].flatMap((width) =>
         [1, 2].map(
@@ -1173,7 +1173,7 @@ async function styles(
         }));
         // Without JavaScript, React's late segments wait at the end of the body. Where they go is content no-JS never
         // shows, so they're put there in both builds, and the walk compares the page as it's built, not how its payload
-        // split (A8's CI: the Inbox's rows streamed one by one). Then the details list is read, then the walk, so both
+        // split (the Inbox's rows stream one by one). Then the details list is read, then the walk, so both
         // reads see the same DOM.
         if (!js) await page.evaluate(completeHiddenSegments);
         // The base's Camera make row, its first, which the head merged into Camera (cameraRows); the rest keep their paths.
@@ -1268,7 +1268,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             const sanctioned = sanctionedFor(pair, viewport.width, against.walk, route);
             const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const comparison = compare(against.walk, head.walk, allowances, sanctioned, shifts);
-            // The details list's departure (#175, B8): Camera make merged into Camera, and the three unit rows. A failing
+            // The details list's departure (#175): Camera make merged into Camera, and the three unit rows. A failing
             // line is structural, so the report counts and prints it; the sanction is recorded only when none fails.
             if (pair.cameraRows) {
                 const camera = cameraRowDeparture(against.facts, head.facts);
@@ -1459,11 +1459,11 @@ test.describe('the visitor site', () => {
         ["a folded link's padding", '/work', 'main ul li h2 a{padding-left:1px!important}', undefined, undefined, { seen: '(folded) padding-left: 1px' }],
         ["a folded link's border", '/work', 'main ul li h2 a{border-bottom:1px solid!important}', undefined, undefined, { seen: '(folded) border-bottom-width: 1px' }],
         ["a folded link's ::after border at rest", '/work', 'main ul li h2 a::after{border-top:1px solid!important}', undefined, undefined, { seen: '(folded)::after border-top-width: 1px' }],
-        // FOLD_PAINT pins a folded element's ::before and ::after to no text (B8): a word on the title link's ::after must fail.
+        // FOLD_PAINT pins a folded element's ::before and ::after to no text: a word on the title link's ::after must fail.
         ["a folded link's ::after with text at rest", '/work', 'main ul li h2 a::after{content:"x"!important}', undefined, undefined, { seen: '(folded)::after content: "x"' }],
         // The Viewer's own theme tokens ride its module (themes PR 4): one leaking into Dark must fail it.
         ["the Viewer's bands gone", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"]{--cc-bands:none!important}', undefined, undefined],
-        // The Viewer heading's folded title (#175, B8): its own ink must fail as a fold line, the first mutant on any fold
+        // The Viewer heading's folded title (#175): its own ink must fail as a fold line, the first mutant on any fold
         // that its inherited check sees. A size change needs none: the h1's box, compared at 0 px, catches it.
         ["the Viewer heading's title red", `${series}/photo/${HOME_OPENING}`, '[data-surface="viewer"] header h1 > span{color:rgb(255 0 0)!important}', undefined, undefined, { seen: '>span (folded) color: rgb(255, 0, 0)' }],
         // A changed title, in the head only (nothing in the base matches the span): left out of the walk as a fold, it
@@ -1475,7 +1475,7 @@ test.describe('the visitor site', () => {
         const box = rest[0] && 'box' in rest[0] ? (rest[0] as { box: string }).box : null;
         test(`self-test: ${name} in the head fails the gate`, async () => {
             // Work's under its sanctioned departures, as the gate's `work` rows are, so B3's entry box (`position`)
-            // can't be what fails it: what's left is the injected change (B3's CI review, S1). The Viewer's leaves out
+            // can't be what fails it: what's left is the injected change. The Viewer's leaves out
             // what its gate rows do, the old spoken position and the base's Camera make row, for the same reason.
             const pair: Pair = {
                 name: `self-test, ${name}`,

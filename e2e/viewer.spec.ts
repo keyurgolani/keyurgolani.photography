@@ -605,7 +605,7 @@ test('share metadata names the photo and its series, on SITE_URL, with a /media 
     expect(await page.locator('meta[name="description"]').getAttribute('content')).toBe('Fixture authored caption.');
     expect(await meta('og:image')).toMatch(new RegExp(`^${SITE_URL}/media/${P[0]}/sha256-[0-9a-f]{64}/p_[0-9a-f]+/w1200\\.webp$`));
     expect(await meta('og:image:alt')).toBe('Fixture description of the harbor.');
-    // The revision the page came from, neither seen nor heard, for #12's freshness checks (B8, read in B12).
+    // The revision the page came from, neither seen nor heard, for #12's freshness checks.
     await expect(page.locator('meta[name="catalog-revision"]')).toHaveCount(1);
     expect(await page.locator('meta[name="catalog-revision"]').getAttribute('content')).toMatch(/^rev_[0-9a-f]{64}$/);
 });

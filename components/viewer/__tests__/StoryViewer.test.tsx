@@ -462,7 +462,7 @@ describe('StoryViewer', () => {
     });
 
     // The heading's name is its aria-label, from the same data as its visible text, and what shows is hidden from
-    // screen readers, so the title is said once, with no space before the comma and no text drawn at no size (B8's CI).
+    // screen readers, so the title is said once, with no space before the comma and no text drawn at no size: a part that isn't inline gets a space on each side in the name.
     it.each([
         ['Fixture series', 'Fixture series, photograph 3 of 12'],
         ['Fixture shapes along the northern shoreline at the turn of the tide', 'Fixture shapes along the northern shoreline at the turn of the tide, photograph 3 of 12'],

@@ -186,7 +186,7 @@ test("the series cover's hover mark draws above the print, and a missing photogr
     expect(hover.shadow).toMatch(/rgba\(255, 255, 255, 0\.4\).*inset/);
     // A thumbnail whose image fails: the box keeps its edge and its diagonal in the strong rule (C2-6.5).
     const missing = page.locator('section[aria-labelledby="series-sequence"] [data-photo="unavailable"]').first();
-    // Its WebP retry fails too (#6, B8).
+    // Its WebP retry fails too (#6).
     await failImage(page, 'section[aria-labelledby="series-sequence"] ol li a img', missing);
     await expect(missing).toHaveCount(1);
     const paint = await missing.evaluate((el) => ({ image: getComputedStyle(el).backgroundImage, shadow: getComputedStyle(el).boxShadow }));
