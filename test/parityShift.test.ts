@@ -77,7 +77,7 @@ describe("the parity gate's comparison under a shift", () => {
     const at = (path: string, rect: Walked['rect'], styles = ['color: rgb(1, 2, 3)']): Walked => ({ path, styles, pseudos: {}, rect, slot: false });
     const walkOf = (elements: Walked[]): Walk => ({ tokens: { root: {}, body: {} }, elements, resolved: { body: 'body' }, folded: [], foldedPinned: [] });
     const HIDDEN = 'body>div:nth-of-type(1)';
-    const page = (dy: number, hidden: Walked['rect'] = [0, 0, 0, 0]) => [...BOXES.map((box, i) => at(`body>p:nth-of-type(${i + 1})`, moved(box, dy))), at(HIDDEN, hidden)];
+    const page = (dy: number, hidden: Walked['rect'] = [0, 0, 0, 0]) => [...BOXES.map((box, i) => at(`body>p:nth-of-type(${i + 1})`, [...moved(box, dy)] as Walked['rect'])), at(HIDDEN, hidden)];
     const named = (elements: Walked[]) => Object.fromEntries(elements.map((element) => [element.path, SHIFT]));
     const shifts = named(page(0));
 
