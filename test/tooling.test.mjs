@@ -315,6 +315,46 @@ describe("CI's retried steps", () => {
     expect(read(['echo "$tag"'], { header: 'for tag in "${tags[@]}"; do' })).toEqual([]);
   });
 
+  /** A step whose run is `script`, line for line. */
+  const steps = (script, minutes = 22) => retriedStepsIn('fixture.yml', ['      - name: Fixture', `        timeout-minutes: ${minutes}`, '        run: |', ...script.map((line) => `          ${line}`), ''].join('\n'));
+
+  it('counts a command substitution as unbounded, whatever command it sits in, and timeout 0 or -k 0 too', () => {
+    expect.soft(read([INSTALL, 'echo "$(sudo apt-get update)"', ...CLEAN_UP])[0].unbounded).toEqual(['echo "$(sudo apt-get update)"']);
+    expect.soft(read([INSTALL, '[ -n "`sudo apt-get update`" ] || true', ...CLEAN_UP])[0].unbounded).toEqual(['[ -n "`sudo apt-get update`" ]']);
+    expect.soft(read(['[ -n "$(sudo apt-get update)" ] && exit 0', ...CLEAN_UP])[0].unbounded).toEqual(['[ -n "$(sudo apt-get update)" ]']);
+    // GNU timeout reads a duration of 0 as no limit, and a kill-after of 0 as no kill.
+    expect.soft(read([INSTALL.replace('timeout 360', 'timeout 0'), ...CLEAN_UP])[0].unbounded).toHaveLength(1);
+    expect.soft(read([INSTALL.replace('timeout 360', 'timeout -k 0 360'), ...CLEAN_UP])[0].unbounded).toHaveLength(1);
+    expect.soft(read([INSTALL, ...CLEAN_UP, 'sleep 0'])[0]).toMatchObject({ pass: 420, unbounded: [] });
+  });
+
+  it('finds a loop written on one line, an until loop, and a for loop that leaves from inside an if', () => {
+    expect.soft(steps([`for try in 1 2 3; do ${INSTALL}; sleep 600; done`, 'exit 1'])).toMatchObject([{ header: 'for try in 1 2 3', tries: 3, pass: 960, unbounded: [] }]);
+    expect.soft(steps(['until timeout 360 npx playwright install; do sleep 600; done'])).toMatchObject([{ header: 'until timeout 360 npx playwright install', tries: NaN, pass: 960 }]);
+    expect.soft(steps(['for i in 1 2 3; do', '  if timeout 360 npx playwright install; then exit 0; fi', '  sleep 600', 'done', 'exit 1'])).toMatchObject([{ header: 'for i in 1 2 3', tries: 3, pass: 960, unbounded: [] }]);
+  });
+
+  /**
+   * The workflows' loops that aren't retries, each with how many loops of that header the step has and why it needn't
+   * fit the retry rule. Every other loop in a workflow's run is held to it.
+   */
+  const NOT_RETRIES = {
+    'ci.yml: Require every job to succeed: while read -r job result': { loops: 1, why: 'reads the needs results from a here-string, one pass a job, and waits on nothing' },
+    'release.yml: Wait for the main publish of this commit: while :': { loops: 1, why: 'a poll, not a retry: its own 40-minute deadline on $SECONDS and 30 s between polls, inside the job\'s 50' },
+    'release.yml: Promote the image: for tag in "${tags[@]}"': { loops: 2, why: 'one pass for each of at most two tags, building an argument list, then reading each tag back' },
+    'mirror-dockerhub.yml: Copy the image by digest: for tag in "${requested[@]}"': { loops: 1, why: 'one pass for each tag the dispatch asked for, reading GHCR latest at most once' },
+    'mirror-dockerhub.yml: Copy the image by digest: for tag in "${tags[@]}"': { loops: 2, why: 'one pass for each tag kept, building an argument list, then reading each tag back' },
+  };
+
+  it('finds every loop in a workflow run, and knows each one that is no retry', async () => {
+    const found = {};
+    for (const step of await retriedSteps()) {
+      const key = `${step.where}: ${step.header}`;
+      if (key in NOT_RETRIES) found[key] = (found[key] ?? 0) + 1;
+    }
+    expect(found).toEqual(Object.fromEntries(Object.entries(NOT_RETRIES).map(([key, { loops }]) => [key, loops])));
+  });
+
   it('give every pass through the loop its full bound, with no unbounded command, inside the step timeout with a minute to spare', async () => {
     const steps = await retriedSteps();
     expect(steps.map((step) => step.where)).toEqual(['ci.yml: Install Playwright browsers', 'ci.yml: Install Chromium']);
@@ -343,9 +383,14 @@ describe("the smokes' temp roots", () => {
 });
 
 describe("Perf A/B's wiring", () => {
+  const perfAbText = () => fs.readFile(path.join(REPO_ROOT, '.github', 'workflows', 'perf-ab.yml'), 'utf8');
+  const perfAbSteps = async () => perfAbStepsIn(await perfAbText());
+
+  /** Where a step hands an input, or any expression, to a script other than through env: `<step>: <key>` each. */
+  const leaks = (steps) => steps.flatMap(({ name, keys }) => Object.entries(keys).filter(([key, text]) => key !== 'env' && /\binputs\./.test(text)).map(([key]) => `${name}: ${key}`));
+
   /** perf-ab.yml's steps, each as its step-level keys (`name`, `uses`, `with`, `env`, `run`, ...) and their text. */
-  async function perfAbSteps() {
-    const text = await fs.readFile(path.join(REPO_ROOT, '.github', 'workflows', 'perf-ab.yml'), 'utf8');
+  function perfAbStepsIn(text) {
     const steps = text.slice(text.indexOf('\n    steps:\n')).split(/\n(?= {6}- )/).slice(1);
     return steps.map((step) => {
       const keys = {};
@@ -375,8 +420,17 @@ describe("Perf A/B's wiring", () => {
 
   it('passes its inputs to the scripts only through env, never as ${{ inputs.* }} in a run or a with', async () => {
     const steps = await perfAbSteps();
-    const uses = steps.flatMap(({ name, keys }) => Object.entries(keys).filter(([, text]) => /\binputs\./.test(text)).map(([key]) => `${name}: ${key}`));
-    expect(uses.length).toBeGreaterThan(0);
-    expect(uses.filter((use) => !use.endsWith(': env'))).toEqual([]);
+    expect(steps.some(({ keys }) => /\binputs\./.test(keys.env ?? ''))).toBe(true);
+    expect(leaks(steps)).toEqual([]);
+  });
+
+  it('has no ${{ }} expression in any run, so neither env nor an input by index reaches a script as text', async () => {
+    const text = await perfAbText();
+    const resolve = 'sha=$(bash tool/ci/perf/resolve-ref.sh tool/.git "$BASE_INPUT")';
+    expect.soft(text).toContain(resolve);
+    for (const expression of ['${{ env.BASE_INPUT }}', "${{ inputs['head'] }}", '${{ github.event.inputs.base }}']) {
+      const mutated = text.replace(resolve, `sha=$(bash tool/ci/perf/resolve-ref.sh tool/.git "${expression}")`);
+      expect.soft(leaks(perfAbStepsIn(mutated)), expression).toEqual(['Resolve the base: run']);
+    }
   });
 });
