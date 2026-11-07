@@ -391,6 +391,36 @@ function retriedStepsIn(name, text) {
   );
 }
 
+/**
+ * The workflows' loops that aren't retries, each with how many loops of that header the step has and why it needn't
+ * fit the retry rule. Every other loop in a workflow's run is held to it.
+ */
+const NOT_RETRIES = {
+  'ci.yml: Require every job to succeed: while read -r job result': { loops: 1, why: 'reads the needs results from a here-string, one pass a job, and waits on nothing' },
+  'release.yml: Wait for the main publish of this commit: while :': { loops: 1, why: 'a poll, not a retry: its own 40-minute deadline on $SECONDS and 30 s between polls, inside the job\'s 50' },
+  'release.yml: Promote the image: for tag in "${tags[@]}"': { loops: 2, why: 'one pass for each of at most two tags, building an argument list, then reading each tag back' },
+  'mirror-dockerhub.yml: Copy the image by digest: for tag in "${requested[@]}"': { loops: 1, why: 'one pass for each tag the dispatch asked for, reading GHCR latest at most once' },
+  'mirror-dockerhub.yml: Copy the image by digest: for tag in "${tags[@]}"': { loops: 2, why: 'one pass for each tag kept, building an argument list, then reading each tag back' },
+};
+
+/**
+ * What's wrong with a workflow's loops, one message each: a loop NOT_RETRIES doesn't list must close, have tries the
+ * header counts, no command without a bound, and fit its step timeout with a minute to spare.
+ */
+function problemsIn(name, text) {
+  const problems = [];
+  for (const step of retriedStepsIn(name, text)) {
+    const where = `${step.where}: ${step.header}`;
+    if (where in NOT_RETRIES) continue;
+    if (!step.closed) problems.push(`${where}: the loop has no done`);
+    if (!(Number.isInteger(step.tries) && step.tries > 0)) problems.push(`${where}: can't count the tries; write it as for try in 1 2 3, or list it in NOT_RETRIES with why`);
+    // A hung dpkg would otherwise eat the next try's time, so the clean-up is bounded too.
+    if (step.unbounded.length > 0) problems.push(`${where}: commands in the loop with no bound: ${step.unbounded.join('; ')}`);
+    else if (!(step.minutes * 60 >= step.tries * step.pass + 60)) problems.push(`${where}: ${step.tries} passes of at most ${step.pass} s need more than ${step.minutes} minutes less one`);
+  }
+  return problems;
+}
+
 describe("CI's retried steps", () => {
   async function retriedSteps() {
     const dir = path.join(REPO_ROOT, '.github', 'workflows');
@@ -449,18 +479,6 @@ describe("CI's retried steps", () => {
     expect.soft(steps(['for i in 1 2 3; do', '  if timeout 360 npx playwright install; then exit 0; fi', '  sleep 600', 'done', 'exit 1'])).toMatchObject([{ header: 'for i in 1 2 3', tries: 3, pass: 960, unbounded: [] }]);
   });
 
-  /**
-   * The workflows' loops that aren't retries, each with how many loops of that header the step has and why it needn't
-   * fit the retry rule. Every other loop in a workflow's run is held to it.
-   */
-  const NOT_RETRIES = {
-    'ci.yml: Require every job to succeed: while read -r job result': { loops: 1, why: 'reads the needs results from a here-string, one pass a job, and waits on nothing' },
-    'release.yml: Wait for the main publish of this commit: while :': { loops: 1, why: 'a poll, not a retry: its own 40-minute deadline on $SECONDS and 30 s between polls, inside the job\'s 50' },
-    'release.yml: Promote the image: for tag in "${tags[@]}"': { loops: 2, why: 'one pass for each of at most two tags, building an argument list, then reading each tag back' },
-    'mirror-dockerhub.yml: Copy the image by digest: for tag in "${requested[@]}"': { loops: 1, why: 'one pass for each tag the dispatch asked for, reading GHCR latest at most once' },
-    'mirror-dockerhub.yml: Copy the image by digest: for tag in "${tags[@]}"': { loops: 2, why: 'one pass for each tag kept, building an argument list, then reading each tag back' },
-  };
-
   it('finds every loop in a workflow run, and knows each one that is no retry', async () => {
     const found = {};
     for (const step of await retriedSteps()) {
@@ -470,17 +488,40 @@ describe("CI's retried steps", () => {
     expect(found).toEqual(Object.fromEntries(Object.entries(NOT_RETRIES).map(([key, { loops }]) => [key, loops])));
   });
 
+  const workflows = async () => {
+    const dir = path.join(REPO_ROOT, '.github', 'workflows');
+    const names = (await fs.readdir(dir)).filter((file) => /\.ya?ml$/.test(file)).sort();
+    return Promise.all(names.map(async (name) => [name, await fs.readFile(path.join(dir, name), 'utf8')]));
+  };
+
   it('give every pass through the loop its full bound, with no unbounded command, inside the step timeout with a minute to spare', async () => {
     const steps = (await retriedSteps()).filter((step) => !(`${step.where}: ${step.header}` in NOT_RETRIES));
     // Soft, so a new loop also says what's wrong with it below.
     expect.soft(steps.map((step) => step.where)).toEqual(['ci.yml: Install Playwright browsers', 'ci.yml: Install Chromium']);
-    for (const step of steps) {
-      const where = `${step.where}: ${step.header}`;
-      expect.soft(step.closed, `${where}: the loop's done`).toBe(true);
-      expect.soft(Number.isInteger(step.tries) && step.tries > 0, `${where}: can't count the tries; write it as for try in 1 2 3, or list it in NOT_RETRIES with why`).toBe(true);
-      // A hung dpkg would otherwise eat the next try's time, so the clean-up is bounded too.
-      expect.soft(step.unbounded, `${where}: commands in the loop with no bound`).toEqual([]);
-      expect.soft(step.minutes * 60, `${where}: ${step.tries} passes of at most ${step.pass} s`).toBeGreaterThanOrEqual(step.tries * step.pass + 60);
+    expect((await workflows()).flatMap(([name, text]) => problemsIn(name, text))).toEqual([]);
+  });
+
+  it("refuses what it can't read rather than misread it: a loop it can't place, and a heredoc or an ANSI-C quote in a step with a loop", async () => {
+    const ci = (await workflows()).find(([name]) => name === 'ci.yml')[1];
+    const LOOP = '          for try in 1 2 3; do\n            timeout 360 npx playwright install --with-deps --only-shell chromium && exit 0\n';
+    expect(ci).toContain(LOOP);
+    const before = (line) => `          ${line}\n${LOOP}`;
+    const inside = (...lines) => `${LOOP}${lines.map((line) => `            ${line}\n`).join('')}`;
+    const PLACE = "a loop the check can't place";
+    for (const [mutant, text, problem] of [
+      ['C1, a loop in a case arm', before('case "$RUNNER_OS" in Linux) for t in 1 2 3; do sleep 600; done ;; esac'), PLACE],
+      ['S1, a loop in a subshell', before('( for t in 1 2 3; do sleep 600; done )'), PLACE],
+      ['S2, a loop in a command substitution', before('waited=$(for t in 1 2 3; do sleep 600; done)'), PLACE],
+      ['S3, time for', before('time for t in 1 2 3; do sleep 600; done'), PLACE],
+      // A heredoc's lines aren't commands: here its done line would end the retry loop early, and hide the sleep 600.
+      ['H1b, a heredoc in a step with a loop', inside("sed 's/^/  /' <<'EOF'", '  done', '  EOF', 'sleep 600').replace(/\n {12} {2}(done|EOF)\n/g, '\n          $1\n'), "heredocs aren't read"],
+      // $'it\'s' ends at its escaped quote for a plain reading, which then swallows the sleep 600 into the echo.
+      ['Q2b, an ANSI-C quote in a step with a loop', inside("echo $'it\\'s'", 'sleep 600', "echo \\'"), "ANSI-C quotes aren't read"],
+    ]) {
+      // A function, since a replacement string reads $' as the text after the match.
+      const mutated = ci.replace(LOOP, () => text);
+      expect(mutated, mutant).not.toBe(ci);
+      expect.soft(problemsIn('ci.yml', mutated).filter((message) => message.includes(problem)), mutant).toHaveLength(1);
     }
   });
 });
