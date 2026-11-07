@@ -901,11 +901,14 @@ const WORK_ENTRIES: Allowance[] = [1, 2].flatMap((n) => {
  * work-focus at 1440 by 900 the first entry is 633 px tall, 645 px with its ring, so it fits the 676 px room (the
  * screen less the 96 and 128 px paddings), but its foot is at 932, past the screen: the reveal scrolls it to the
  * room's foot at 772, exactly 160 px. So every box on the page is the base's moved up exactly 160 px, with no
- * tolerance band, except a box with no area in either build, which has nothing to scroll and must stay exactly where
- * the base has it: `body>div:nth-of-type(1)`, Next's hidden metadata wrapper (`<div hidden>`, display: none, 0 0 0 0),
- * is the one here (test/helpers/parityShift.ts). Otherwise a move of 159 or 161 px, a fraction off, or none fails
- * the row (the self-tests below, and test/parityShift.test.ts), and every style is still compared exactly. Only in the two routes with JavaScript, at
- * 1440: with none nothing reveals, and at 1024 and 390 the entry needs no scroll, so those rows stay exact.
+ * tolerance band. Only no box at all, a rect of all zeros in both builds, has nothing to scroll and must stay exactly
+ * where the base has it: `body>div:nth-of-type(1)`, Next's hidden metadata wrapper (`<div hidden>`, display: none,
+ * 0 0 0 0), is the one here. A zero-size box at a real position is in the page's flow and scrolls with it, so it takes
+ * the shift too: each entry's empty <picture> and its two <source>s, and next-route-announcer at the page's foot (CI
+ * run 42346229076; test/helpers/parityShift.ts). Any move of 159 or 161 px, a fraction off, or none fails the row
+ * (the self-tests below, and test/parityShift.test.ts), and every style is still compared exactly. Only in the two
+ * routes with JavaScript, at 1440: with none nothing reveals, and at 1024 and 390 the entry needs no scroll, so those
+ * rows stay exact.
  *
  * The ring is WORK_ENTRIES' departure above, inset on the title link's ::after. Measured at 1x and 2x in both routes
  * (CI run 42337453713, e2e/themes/work-focus-probe.spec.ts on a test branch), its light band is 19.85:1 against the
