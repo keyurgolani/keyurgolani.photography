@@ -405,6 +405,23 @@ describe('CatalogHome', () => {
       expect(holds()).toBe('');
     });
 
+    it('an opening AVIF that failed before hydration takes its WebP retry, not a failure, and the WebP load commits (#6)', async () => {
+      vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+      const width = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
+      vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(3).variants.w1200.avif.url}`);
+      await renderHome();
+      // ResponsivePhoto's mount check took the retry; the slide itself reports nothing at mount (B8 on B7's SlideImage).
+      expect(failure()).toBe('');
+      expect(loading()).toBe('true');
+      expect(mountedIds()).toEqual([id(3)]);
+      expect(slideImage(3)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
+      width.mockReturnValue(2400);
+      load(3);
+      expect(loading()).toBe('false');
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+      expect(failure()).toBe('');
+    });
+
     for (const [settled, naturalWidth] of [['loaded', 2400], ['failed', 0]] as const) {
       it(`counts an image that ${settled} before hydration, which fires no event`, async () => {
         vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
@@ -647,6 +664,21 @@ describe('CatalogHome', () => {
       expect(button('Skip')).toBeInTheDocument();
       // Nothing to fetch again.
       expect(queryButton('Retry')).toBeNull();
+    });
+
+    it('counts a photograph as failed only once its WebP retry fails too (#6)', async () => {
+      await renderHome();
+      load(3);
+      click('Next photograph');
+      const current = vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(0).variants.w1200.avif.url}`);
+      fail(0);
+      expect(failure()).toBe('');
+      expect(queryButton('Retry')).toBeNull();
+      expect(slideImage(0)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
+      current.mockReturnValue(`http://localhost${image(0).variants.w1200.webp.url}`);
+      fail(0);
+      expect(failure()).toBe('Couldn’t load photograph 04 of 04');
+      expect(button('Retry')).toBeInTheDocument();
     });
 
     it('a one-photograph series that fails offers Retry alone', async () => {
@@ -1162,6 +1194,21 @@ describe('CatalogHome', () => {
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
       });
 
+      it('a decode() that rejects for an image that did load still commits it', async () => {
+        const decodes = holdDecodes();
+        await renderHome();
+        load(3);
+        await decodes.resolve(3);
+        click('Next photograph');
+        load(0);
+        // Its source changed under it, as a wider window picks a larger candidate, and the image it has is loaded.
+        vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
+        vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(2400);
+        await decodes.reject(0);
+        expect(failure()).toBe('');
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(0));
+      });
+
       it('runs no automatic move while a manual move loads, and gives the commit a full interval', async () => {
         await renderHome();
         load(3);
@@ -1241,6 +1288,27 @@ describe('CatalogHome', () => {
         advance(HOME_AUTO_ADVANCE_MS);
         load(1);
         expect(shownSlide()).toHaveAttribute('data-photo-id', id(1));
+      });
+
+      it('a first failure that is AVIF waits on its WebP retry, which #18\'s 6 s bound still counts as failed, and a second suspends (#6)', async () => {
+        await renderHome();
+        load(3);
+        tick();
+        vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${image(0).variants.w1200.avif.url}`);
+        fail(0);
+        // The AVIF failure is the retry's, not the photograph's: no skip yet, and the WebP retry is in flight.
+        expect(slideImage(0)?.parentElement?.querySelector('source[type="image/avif"]')).toBeNull();
+        expect(mountedIds()).not.toContain(id(1));
+        advance(HOME_LOADING_TIMEOUT_MS - 1);
+        expect(mountedIds()).not.toContain(id(1));
+        advance(1);
+        // The bound counts the photograph whose retry never came back as failed: skipped past, to 4, whose next is 1.
+        expect(mountedIds()).toContain(id(1));
+        expect(playback()).toBe('advancing');
+        fail(4);
+        expect(shownSlide()).toHaveAttribute('data-photo-id', id(3));
+        expect(failure()).toBe('Some photographs couldn’t load.');
+        expect(playback()).toBe('held');
       });
 
       it('a manual move that loads ends the suspension too', async () => {

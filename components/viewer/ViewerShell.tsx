@@ -77,7 +77,8 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  * Next replace the history entry without scrolling, an end announces itself
  * and doesn't move, and each move is announced in a polite live region
  * that's empty at mount.
- * Zoom resets on every move.
+ * Zoom resets on every move. The technical details stay as the visitor left
+ * them, open or closed, for the whole visit.
  *
  * The photograph follows the finger (9a, useSwipe and StageMotion), with its
  * neighbors peeking in beside it once a finger has gone down on it (their
@@ -101,6 +102,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const { catalogApiHref } = useSiteRoutes();
     const [chrome, setChrome] = useState<ViewerChromeState | null>(null);
     const [zoomed, setZoomed] = useState(false);
+    /** The technical details, open or not, for the whole visit: a move keeps them as they are (#7, decided). */
+    const [technicalOpen, setTechnicalOpen] = useState(false);
     const [message, setMessage] = useState('');
     const headingId = useId();
     const rootRef = useRef<HTMLElement | null>(null);
@@ -363,8 +366,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
 
     const actions = useMemo<ViewerChromeActions>(() => ({ step: (direction) => step(direction), close }), [step, close]);
     const context = useMemo<ViewerShellContext>(
-        () => ({ mode, claimed: chrome !== null, zoomed, headingId, report, peeks: reduced ? NO_PEEKS : peeks }),
-        [mode, chrome, zoomed, headingId, report, reduced, peeks],
+        () => ({ mode, claimed: chrome !== null, zoomed, headingId, report, technicalOpen, setTechnicalOpen, peeks: reduced ? NO_PEEKS : peeks }),
+        [mode, chrome, zoomed, headingId, report, technicalOpen, reduced, peeks],
     );
     // The counter, the accents and the arrows' ends show a move once it's decided, before its photograph arrives.
     const shown = useMemo<ViewerChromeState | null>(() => {

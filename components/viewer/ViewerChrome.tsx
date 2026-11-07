@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, X, ZoomIn } from 'lucide-react';
 import Link from 'next/link';
 import type { ViewerChromeState, ViewerMode } from './viewerContext';
 import type { ViewerStep } from './viewerKeys';
-import { CLOSE_LABEL, NEXT_LABEL, PREVIOUS_LABEL, ZOOM_LABEL, positionLabel, positionText } from './viewerLabels';
+import { CLOSE_LABEL, NEXT_LABEL, PREVIOUS_LABEL, ZOOM_LABEL, headingLabel, positionLabel } from './viewerLabels';
 import styles from './StoryViewer.module.css';
 
 /** What the shell does with the controls. Null is the server's form, before the shell takes them over. */
@@ -82,11 +82,14 @@ export default function ViewerChrome({ state, mode, headingId, zoomed, onZoom, a
                     </Link>
                 )}
                 <div className={styles.heading} id={headingId}>
-                    <h1 className={styles.series}>{seriesTitle}</h1>
+                    {/* Named "{series title}, photograph 3 of 12" (#7) by its aria-label; the title it shows is hidden from screen
+                        readers, so it's said once. The image says "Photograph N of T" for a photograph named by its place, so this doesn't. */}
+                    <h1 className={styles.series} aria-label={headingLabel(seriesTitle, position, total, namedByPlace)}>
+                        <span aria-hidden="true">{seriesTitle}</span>
+                    </h1>
+                    {/* The padded numbers are for the eye, to the digits of the total: the heading says the place in words. */}
                     <p className={styles.position}>
                         <span aria-hidden="true">{positionLabel(position, total)}</span>
-                        {/* The image says "Photograph N of T" for a photograph named by its place, so this doesn't. */}
-                        {!namedByPlace && <span className="sr-only">{positionText(position, total)}</span>}
                     </p>
                 </div>
                 {/* With no usable set there's nothing to enlarge. aria-disabled keeps focus on Zoom when a move lands on such a photo. */}

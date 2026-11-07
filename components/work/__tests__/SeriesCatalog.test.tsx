@@ -317,6 +317,25 @@ describe('WorkCoverImage', () => {
         expect(fallback?.querySelector('[aria-hidden="true"]')).toHaveTextContent('Cover unavailable');
     });
 
+    it('retries a failed AVIF cover with WebP before it shows the fallback (#6)', () => {
+        const ref = REF(4);
+        imageState({ complete: false, naturalWidth: 0, currentSrc: `http://localhost${mediaUrl(ref, 'w800', 'avif')}` });
+        const { container } = render(<WorkCoverImage cover={cover(4)} />);
+        fireEvent.error(container.querySelector('img') as HTMLImageElement);
+        expect(container.querySelector('[data-cover="unavailable"]')).toBeNull();
+        expect(container.querySelector('source[type="image/avif"]')).toBeNull();
+        imageState({ complete: false, naturalWidth: 0, currentSrc: `http://localhost${mediaUrl(ref, 'w800', 'webp')}` });
+        fireEvent.error(container.querySelector('img') as HTMLImageElement);
+        expect(container.querySelector('[data-cover="unavailable"]')).not.toBeNull();
+    });
+
+    it('retries an AVIF cover that failed before hydration with WebP, and keeps it', () => {
+        imageState({ complete: true, naturalWidth: 0, currentSrc: `http://localhost${mediaUrl(REF(4), 'w1200', 'avif')}` });
+        const { container } = render(<WorkCoverImage cover={cover(4)} />);
+        expect(container.querySelector('img')).not.toBeNull();
+        expect(container.querySelector('source[type="image/avif"]')).toBeNull();
+    });
+
     it('swaps in the fallback at mount for an image that failed before hydration', () => {
         imageState({ complete: true, naturalWidth: 0, currentSrc: 'http://localhost/media/x/w1200.webp' });
         const { container } = render(<WorkCoverImage cover={cover(4)} />);

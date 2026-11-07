@@ -24,3 +24,15 @@ export const fitSizes = (width: number, height: number) =>
         { media: '(min-width: 48rem)', vw: 80 },
         { vw: 100 },
     ]);
+
+/**
+ * #7's zoomed width: `clamp(fitted, 2 * fitted, natural)`, where natural is
+ * the largest file's width. Zoom doubles the photograph up to that file, and
+ * never shrinks it on a screen wider than the file. Before the fitted width is
+ * known (the server HTML), the largest file's width.
+ */
+export function zoomWidth(fitted: number | null, natural: number): number {
+    if (fitted === null || !(fitted > 0)) return natural;
+    // Up to a whole pixel, so it's never under the fitted width.
+    return Math.ceil(Math.max(fitted, Math.min(2 * fitted, natural)));
+}

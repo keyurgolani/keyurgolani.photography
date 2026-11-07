@@ -221,6 +221,25 @@ describe('ViewerShell, on a page', () => {
         expect(document.activeElement).toBe(step('Previous photograph'));
     });
 
+    it('keeps the technical details open across moves within a visit, and a new visit starts with them closed (#7, decided)', () => {
+        const { move, unmount } = renderShell('page', 1);
+        fireEvent.click(screen.getByRole('button', { name: 'Show technical details' }));
+        move(2);
+        const toggle = screen.getByRole('button', { name: 'Hide technical details' });
+        expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        expect(document.getElementById(toggle.getAttribute('aria-controls') ?? '')).toBeVisible();
+        move(3);
+        expect(screen.getByRole('button', { name: 'Hide technical details' })).toHaveAttribute('aria-expanded', 'true');
+        // Closed on one photograph, closed on the next.
+        fireEvent.click(screen.getByRole('button', { name: 'Hide technical details' }));
+        move(2);
+        expect(screen.getByRole('button', { name: 'Show technical details' })).toHaveAttribute('aria-expanded', 'false');
+        fireEvent.click(screen.getByRole('button', { name: 'Show technical details' }));
+        unmount();
+        renderShell('page', 2);
+        expect(screen.getByRole('button', { name: 'Show technical details' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
     it('resets Zoom on a move, and Zoom on a photo with nothing to enlarge stays focusable and does nothing', () => {
         const { move } = renderShell('page', 1);
         const zoom = screen.getByRole('button', { name: 'Zoom' });
@@ -252,7 +271,7 @@ describe('ViewerShell, on a page', () => {
     it('sends whole server HTML: the photograph renders the header and the steps until the shell takes them', () => {
         const html = renderToString(<ViewerShell mode="page">{photo(1)}</ViewerShell>);
         expect(html.match(/<header/g)).toHaveLength(1);
-        expect(html).toMatch(/<h1[^>]*>Fixture series<\/h1>/);
+        expect(html).toMatch(/<h1[^>]*aria-label="Fixture series, photograph 1 of 3"[^>]*><span aria-hidden="true">Fixture series<\/span><\/h1>/);
         expect(html).toContain('01 / 03');
         // Before hydration, a direction with a photograph is a link, so it works without the shell.
         expect(html).toMatch(new RegExp(`<a(?=[^>]*aria-label="Next photograph")(?=[^>]*href="${photoHref(2)}")`));
@@ -270,11 +289,21 @@ describe('ViewerShell, as the modal', () => {
         expect(dialog()).toHaveAttribute('open');
         expect(dialog()).toHaveAttribute('data-surface', 'viewer');
         expect(dialog()).toHaveAttribute('data-viewer-mode', 'modal');
-        expect(screen.getByRole('dialog')).toHaveAccessibleName('Fixture series Photograph 2 of 3');
+        expect(screen.getByRole('dialog')).toHaveAccessibleName('Fixture series, photograph 2 of 3');
         const closeButton = within(dialog() as HTMLElement).getByRole('button', { name: 'Close' });
         expect(document.activeElement).toBe(closeButton);
         // Close is a button in the modal; nothing in it links into the series.
         expect(within(dialog() as HTMLElement).queryByRole('link')).toBeNull();
+    });
+
+    it('names the dialog "Fixture series, photograph 2 of 3" through the heading\'s aria-label', () => {
+        renderShell('modal', 2);
+        expect(screen.getByRole('dialog')).toHaveAccessibleName('Fixture series, photograph 2 of 3');
+        const heading = within(dialog() as HTMLElement).getByRole('heading', { level: 1 });
+        expect(heading).toHaveAttribute('aria-label', 'Fixture series, photograph 2 of 3');
+        expect(heading).toHaveAccessibleName('Fixture series, photograph 2 of 3');
+        // The dialog is named by the header line that holds the heading.
+        expect(heading.closest('[id]')).toBe(document.getElementById(dialog()!.getAttribute('aria-labelledby')!));
     });
 
     it('closes with one Back however many cancel, close, and Close presses arrive', () => {

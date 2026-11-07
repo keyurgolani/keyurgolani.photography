@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import React, { useState } from 'react';
 import ResponsivePhoto from '../../components/ResponsivePhoto';
 import type { AboutPortraitView } from '../../lib/siteConfig/portraitVariants';
 import NameLine from './NameLine';
@@ -25,12 +25,8 @@ export const PORTRAIT_SIZES = '(min-width: 64rem) 41vw, 100vw';
  * is needed only to notice a failed load. Nothing here tilts, scales, or transitions.
  */
 export default function ArtistPortrait({ portrait, name, alias }: ArtistPortraitProps) {
+  // ResponsivePhoto reports a failure once a failed AVIF file's WebP retry fails too, and catches one from before hydration.
   const [failed, setFailed] = useState(false);
-  // The server-rendered image can fail before React hydrates and attaches
-  // onError, so check it once React has it: complete with no pixels is a failed load.
-  const checkLoaded = useCallback((image: HTMLImageElement | null) => {
-    if (image && image.complete && image.naturalWidth === 0) setFailed(true);
-  }, []);
   if (portrait === null || failed) {
     return (
       <div data-testid="about-portrait" className={`${styles.portrait} ${styles.fallback}`}>
@@ -65,7 +61,6 @@ export default function ArtistPortrait({ portrait, name, alias }: ArtistPortrait
           preload
           className={styles.image}
           onError={() => setFailed(true)}
-          ref={checkLoaded}
         />
       </div>
       <figcaption className={styles.caption}>

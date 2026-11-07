@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
 // Types only: the projection modules pull node:crypto in through lib/media/url.ts, which must stay out of the client bundle.
 import type { WorkCover } from '@/lib/catalog/projections/work';
@@ -23,18 +23,11 @@ export interface WorkCoverImageProps {
  * A series cover in its reserved box on the dark ground, cropped around its
  * focal point. Decorative, outside the link: the title names it. When there is no
  * cover, or the image fails, the box holds a plain text fallback instead of a
- * broken image. An image that fails before hydration never fires onError, so
- * the mount check looks too. An empty currentSrc means a lazy image that
- * hasn't started, which isn't a failure.
+ * broken image. ResponsivePhoto reports the failure, once a failed AVIF
+ * file's WebP retry fails too, and catches one that failed before hydration.
  */
 export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' }: WorkCoverImageProps) {
-    const image = useRef<HTMLImageElement>(null);
     const [failed, setFailed] = useState(false);
-
-    useEffect(() => {
-        const element = image.current;
-        if (element && element.complete && element.naturalWidth === 0 && element.currentSrc !== '') setFailed(true);
-    }, []);
 
     if (cover === null || failed) {
         return (
@@ -51,7 +44,6 @@ export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' 
     return (
         <div className={styles.frame} style={focal} data-cover={cover.crop}>
             <ResponsivePhoto
-                ref={image}
                 asset={cover}
                 alt=""
                 sizes={coverSizes(cover, span)}

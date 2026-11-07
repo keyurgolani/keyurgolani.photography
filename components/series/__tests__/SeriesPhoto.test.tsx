@@ -75,6 +75,21 @@ describe('SeriesPhoto', () => {
         expect(frame?.textContent).toBe('');
     });
 
+    it('retries a failed AVIF file with WebP before it shows the fallback (#6)', () => {
+        const current = vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockReturnValue(`http://localhost${mediaUrl(REF, 'w800', 'avif')}`);
+        try {
+            const { container } = render(<SeriesPhoto {...base} image={image()} />);
+            fireEvent.error(container.querySelector('img') as HTMLImageElement);
+            expect(container.querySelector('[data-photo="unavailable"]')).toBeNull();
+            expect(container.querySelector('source[type="image/avif"]')).toBeNull();
+            current.mockReturnValue(`http://localhost${mediaUrl(REF, 'w800', 'webp')}`);
+            fireEvent.error(container.querySelector('img') as HTMLImageElement);
+            expect(container.querySelector('[data-photo="unavailable"]')).not.toBeNull();
+        } finally {
+            current.mockRestore();
+        }
+    });
+
     it('catches an image that failed before hydration, and leaves one that hasn\'t started alone', () => {
         const complete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true);
         const natural = vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(0);
