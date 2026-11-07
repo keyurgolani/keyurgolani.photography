@@ -26,8 +26,9 @@ const HEAD: FactRow[] = [
     ['ISO', '200'],
 ];
 
-/** HEAD with one row's value changed. */
+/** HEAD, or BASE, with one row's value changed. */
 const headWith = (label: string, value: string): FactRow[] => HEAD.map(([name, text]): FactRow => [name, name === label ? value : text]);
+const baseWith = (label: string, value: string): FactRow[] => BASE.map(([name, text]): FactRow => [name, name === label ? value : text]);
 const departure = (label: string, base: string, head: string) => `, where #175's departure is "${label}: ${base}" against "${label}: ${head}"`;
 
 describe("the Viewer details list's departure", () => {
@@ -47,7 +48,7 @@ describe("the Viewer details list's departure", () => {
         expect(technicalFacts(DEFAULT_TECHNICAL).map(({ label, value }): FactRow => [label, value])).toEqual(HEAD);
     });
 
-    it('fails any other row whose label or value differs, by its place', () => {
+    it('fails any other row whose value differs, by its place', () => {
         const head = headWith('ISO', '100').map(([label, value]): FactRow => [label, label === 'Camera' ? 'Fixture Make Fixture Model' : value]);
         expect(cameraRowDeparture(BASE, head).failing).toEqual([
             'row 1: "Camera: Fixture Model" in the base against "Camera: Fixture Make Fixture Model" in the head',
@@ -112,6 +113,31 @@ describe("the Viewer details list's departure", () => {
             ]);
             const renamed = HEAD.map(([label, value]): FactRow => [label === 'Exposure' ? 'Shutter' : label, value]);
             expect(cameraRowDeparture(BASE, renamed).failing).toEqual(['the head has 0 Exposure rows, not 1', `row 4: "Exposure: 1/250" in the base against "Shutter: 1/250 s" in the head${departure('Exposure', '1/250', '1/250 s')}`]);
+        });
+    });
+
+    // The round-3 review's checklist: each a mutant of the gate that the cases above let through, and each must give
+    // exactly its row's line.
+    describe('the checklist: one line each', () => {
+        it('a base the formatter would map to the head, "35.0", is not the table\'s "35" (a gate that formats the base)', () => {
+            expect(cameraRowDeparture(baseWith('Focal length', '35.0'), HEAD).failing).toEqual([`row 2: "Focal length: 35.0" in the base against "Focal length: 35 mm" in the head${departure('Focal length', '35', '35 mm')}`]);
+        });
+
+        it('a unit row in another case, "F/2.8", is not "f/2.8"', () => {
+            expect(cameraRowDeparture(BASE, headWith('Aperture', 'F/2.8')).failing).toEqual([`row 3: "Aperture: 2.8" in the base against "Aperture: F/2.8" in the head${departure('Aperture', '2.8', 'f/2.8')}`]);
+        });
+
+        it('an ordinary row relabelled, "ISO speed", is not "ISO"', () => {
+            const head = HEAD.map(([label, value]): FactRow => [label === 'ISO' ? 'ISO speed' : label, value]);
+            expect(cameraRowDeparture(BASE, head).failing).toEqual(['row 5: "ISO: 200" in the base against "ISO speed: 200" in the head']);
+        });
+
+        it('an ordinary row in another case, "fixture model", is not "Fixture Model"', () => {
+            expect(cameraRowDeparture(BASE, headWith('Camera', 'fixture model')).failing).toEqual(['row 1: "Camera: Fixture Model" in the base against "Camera: fixture model" in the head']);
+        });
+
+        it('an ordinary row cut short, "20", is not "200"', () => {
+            expect(cameraRowDeparture(BASE, headWith('ISO', '20')).failing).toEqual(['row 5: "ISO: 200" in the base against "ISO: 20" in the head']);
         });
     });
 
