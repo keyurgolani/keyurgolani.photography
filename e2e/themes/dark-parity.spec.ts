@@ -11,7 +11,7 @@ import { createInboxFixture, openInboxItems, type InboxFixture } from '../suppor
 import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
-import { cameraRowDeparture, FACT_ROWS, type FactRow } from '../../test/helpers/viewerFacts';
+import { cameraRowDeparture, FACT_ROWS, readFactRows, type FactRow } from '../../test/helpers/viewerFacts';
 
 // Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
 // same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
@@ -1037,8 +1037,8 @@ interface Walked2 {
     theme: string | null;
     /** Next's bare error shell: `<html id="__next_error__">` with nothing in its body but scripts and an empty hidden div. */
     shell: boolean;
-    /** The Viewer's details list rows, for a `cameraRows` pair; empty for any other. */
-    facts: FactRow[];
+    /** The Viewer's details list rows, for a `cameraRows` pair, null where a dt or dd is missing; empty for any other. */
+    facts: (FactRow | null)[];
 }
 
 /**
@@ -1083,9 +1083,8 @@ async function styles(
         }));
         // The base's Camera make row, its first, which the head merged into Camera (cameraRows); the rest keep their paths.
         const baseOnly = pair.cameraRows && !head ? [`${FACT_ROWS}:first-of-type`] : [];
-        const facts: FactRow[] = pair.cameraRows
-            ? await page.evaluate((rows) => [...document.querySelectorAll(rows)].map((row): [string, string] => [row.querySelector('dt')?.textContent?.trim() ?? '', row.querySelector('dd')?.textContent?.trim() ?? '']), FACT_ROWS)
-            : [];
+        // Read as the text is, untrimmed, with a missing dt or dd as null (readFactRows).
+        const facts: (FactRow | null)[] = pair.cameraRows ? await page.evaluate(readFactRows, FACT_ROWS) : [];
         const leaveOut = [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector);
         return { walk: await walk(page, selectors, [...leaveOut, ...baseOnly], { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted, facts };
     } finally {

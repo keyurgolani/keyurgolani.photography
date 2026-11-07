@@ -8,6 +8,20 @@ export const CAMERA_MAKE = 'Camera make';
 export const FACT_ROWS = '[data-surface="viewer"] dl > div';
 
 /**
+ * Each row under `selector`: its dt's text and its dd's, exactly as read, untrimmed, or null where either is missing.
+ * StoryViewer renders <dt>{label}</dt><dd>{value}</dd> with no whitespace, so there's nothing to trim; JavaScript's
+ * trim() would also strip U+00A0, U+202F and U+FEFF, and hide them from the exact-string check. Self-contained, as the
+ * parity spec runs it in the page with page.evaluate().
+ */
+export function readFactRows(selector: string): (FactRow | null)[] {
+    return [...document.querySelectorAll(selector)].map((row): FactRow | null => {
+        const label = row.querySelector('dt')?.textContent ?? null;
+        const value = row.querySelector('dd')?.textContent ?? null;
+        return label === null || value === null ? null : [label, value];
+    });
+}
+
+/**
  * The rows whose value gains #175's unit (B8), by label: the base's text, then the head's, for the parity fixture's
  * camera facts. Exact strings, with U+0020 spaces, compared with === only. A no-break or narrow space would be a new
  * departure, written with \u escapes.
@@ -27,10 +41,19 @@ export const UNIT_ROWS: Readonly<Record<string, readonly [base: string, head: st
  * - a unit row has the same label in both, the base's value is the table's base string and the head's is its head
  *   string, exactly;
  * - every other row's label and value are byte-equal, in order.
+ * - every row has a dt and a dd.
  * `record` lists both builds' rows and each unit row, for the report's sanctioned departures.
  */
-export function cameraRowDeparture(base: FactRow[], head: FactRow[]): { failing: string[]; record: string[] } {
+export function cameraRowDeparture(baseRead: readonly (FactRow | null)[], headRead: readonly (FactRow | null)[]): { failing: string[]; record: string[] } {
     const failing: string[] = [];
+    // A row with no dt or no dd fails, in either build, and is never compared as an empty value.
+    for (const [build, rows] of [['base', baseRead], ['head', headRead]] as const) {
+        rows.forEach((row, i) => {
+            if (row === null) failing.push(`the ${build}'s row ${i + 1} has no dt or no dd`);
+        });
+    }
+    const base = baseRead.filter((row): row is FactRow => row !== null);
+    const head = headRead.filter((row): row is FactRow => row !== null);
     const makes = base.filter(([label]) => label === CAMERA_MAKE).length;
     const at = base.findIndex(([label]) => label === CAMERA_MAKE);
     if (makes !== 1) failing.push(`the base has ${makes} Camera make rows, not 1`);
