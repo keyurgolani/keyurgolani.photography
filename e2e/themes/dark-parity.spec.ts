@@ -1224,11 +1224,12 @@ async function portraitWarm(origin: string): Promise<boolean> {
 }
 
 /**
- * The properties the gate sanctions for `pair` at `width`, by the path each allowance resolved to in the base's walk.
+ * The properties the gate sanctions for `pair` at `width` on `route`, by the path each allowance resolved to in the base's
+ * walk. The route is required, so no caller can take an allowance limited to other routes.
  * A path that two allowances name takes both their properties: a state takes its page's too, as work-focus does
  * work's `position` on the entry box its own ring departure names (B3's CI).
  */
-function sanctionedFor(pair: Pair, width: number, base: Walk, route?: string): Record<string, string[]> {
+function sanctionedFor(pair: Pair, width: number, base: Walk, route: string): Record<string, string[]> {
     const sanctioned: Record<string, string[]> = {};
     for (const entry of allowancesFor(pair, width, route).filter((candidate) => candidate.properties && base.resolved[candidate.selector])) {
         const path = base.resolved[entry.selector];
@@ -1487,7 +1488,8 @@ test.describe('the visitor site', () => {
             };
             const viewport = VIEWPORTS.desktop;
             const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'dark', pair, viewport, 'head')];
-            const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk));
+            // Both on a stored `dark`, the gate's route of that name.
+            const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk, 'a stored `dark`'));
             judge(pair.name, viewport.width, comparison, [...base.timedOut, ...head.timedOut]);
             // Seen as the change itself, in a style or a token, on loads that settled; a change that moves only a box, in its
             // geometry, at that box.
@@ -1537,7 +1539,8 @@ test.describe('the visitor site', () => {
         const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'black', pair, viewport, 'head')];
         expect([...base.timedOut, ...head.timedOut], 'both loads settled').toEqual([]);
         expect(paintsDark(head), 'the gate sees Black').toEqual(['painted black, not dark']);
-        const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk));
+        // The head on a stored theme with JavaScript, against the base's stored `dark`: the gate's stored route.
+        const comparison = compare(base.walk, head.walk, {}, sanctionedFor(pair, viewport.width, base.walk, 'a stored `dark`'));
         expect(comparison.styles.length + comparison.tokens.length, "the comparison sees Black's styles too").toBeGreaterThan(0);
         // And a Dark head passes the same check, so the check isn't failing everything.
         expect(paintsDark(await styles(visitor.head, 'dark', pair, viewport, 'head')), 'a Dark head passes it').toEqual([]);
