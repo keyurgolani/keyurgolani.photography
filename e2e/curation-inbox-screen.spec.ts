@@ -238,7 +238,8 @@ test('stops polling quietly once the session ends', async ({ page }) => {
     // The check heard the session is gone and stopped the watch for good, so no check can follow.
     await expect(updatesRegion(page)).toHaveAttribute('data-watch', 'stopped');
     await page.clock.fastForward(10 * 60_000);
-    await page.waitForTimeout(500);
+    // Still stopped ten minutes on, with no timer left to fire, so the one check stays the only one.
+    await expect(updatesRegion(page)).toHaveAttribute('data-watch', 'stopped');
     expect(asked).toHaveLength(1);
     await expect(page.getByRole('status', { name: 'Inbox updates' })).toHaveText('');
     await expect(page.getByRole('heading', { level: 1, name: 'Curation inbox' })).toBeVisible();

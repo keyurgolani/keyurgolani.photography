@@ -333,6 +333,8 @@ describe('the Inbox watch', () => {
         h.watch.start();
         h.hold();
         await h.advance(INBOX_WATCH_INTERVAL_MS);
+        // Out for 3 s, past the 2 s an online check waits, so neither may start another.
+        await h.advance(3_000);
         h.watch.wake();
         h.watch.resume();
         await h.advance(0);

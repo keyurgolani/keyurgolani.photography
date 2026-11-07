@@ -147,19 +147,24 @@ function declarations(source: string, name: string, file?: string): number {
 }
 
 /**
- * Each `javascript` key in `source`: an object literal's property (as an allowance's `javascript: true`), a read of
- * one (`allowance.javascript`, `allowance['javascript']`), and a member of an interface or type named Allowance. An
+ * Each `javascript` key in `source`: an object literal's property (as an allowance's `javascript: true`), computed
+ * names too, a read of one (`allowance.javascript`, `allowance['javascript']`), one taken by destructuring
+ * (`{ javascript }`, `{ javascript: js }`), and a member of an interface or type named Allowance. An
  * allowance says which routes it holds on with `routes`, so it can't hold on a route without JavaScript by accident.
  */
 function javascriptKeys(source: string, file?: string): string[] {
     const found: string[] = [];
-    const named = (name: ts.PropertyName | ts.Expression | undefined) =>
-        !!name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) && name.text === 'javascript';
+    const named = (name: ts.PropertyName | ts.Expression | undefined): boolean => {
+        if (!name) return false;
+        if (ts.isComputedPropertyName(name)) return named(name.expression);
+        return (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) && name.text === 'javascript';
+    };
     const allowance = (node: ts.Node) => (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) && node.name.text === 'Allowance';
     for (const node of nodes(parse(source, file))) {
         if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && named(node.name)) found.push('a javascript property');
         else if (ts.isPropertyAccessExpression(node) && node.name.text === 'javascript') found.push('a read of javascript');
         else if (ts.isElementAccessExpression(node) && named(node.argumentExpression)) found.push('a read of javascript');
+        else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent) && named(node.propertyName ?? (ts.isIdentifier(node.name) ? node.name : undefined))) found.push('a javascript binding');
         else if (allowance(node)) {
             for (const member of nodes(node)) if (ts.isPropertySignature(member) && named(member.name)) found.push('Allowance.javascript');
         }

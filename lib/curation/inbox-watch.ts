@@ -74,14 +74,19 @@ export interface InboxWatch {
 
 export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
     let timer: unknown = null;
-    let stopped = true;
-    /** Stopped for good: the session ended, or the cap ran out. resume() doesn't undo it. */
+    let started = false;
+    /** Stopped for errors, five in a row: a refocus or the network coming back starts it again. */
+    let halted = false;
+    /** Stopped for good: the session ended, the cap ran out, or stop(). Nothing starts it again. */
     let ended = false;
     let inFlight = false;
+    /** The browser came back online while a check was out or the tab was hidden: check once that's over. */
+    let pendingOnline = false;
     let checks = 0;
     let errors = 0;
     let last = -Infinity;
 
+    const running = () => started && !halted && !ended;
     const asleep = () => deps.hidden() || (deps.offline?.() ?? false);
     const backoff = () => Math.min(INBOX_WATCH_INTERVAL_MS * 2 ** errors, MAX_BACKOFF_MS);
     const clear = () => {
@@ -90,45 +95,63 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
     };
     const schedule = (ms: number) => {
         clear();
-        if (!stopped) timer = deps.setTimer(tick, ms);
+        if (running()) timer = deps.setTimer(tick, ms);
     };
     const end = (forGood: boolean) => {
-        stopped = true;
         clear();
-        if (forGood && !ended) {
+        if (!forGood) {
+            halted = true;
+            return;
+        }
+        pendingOnline = false;
+        if (!ended) {
             ended = true;
             deps.onState?.('stopped');
         }
     };
+    /** The check the browser coming back online asks for: at once, or 2 s after the last check started. */
+    const online = () => {
+        pendingOnline = false;
+        const since = deps.now() - last;
+        if (since >= INBOX_WATCH_ONLINE_GAP_MS) void run();
+        else schedule(INBOX_WATCH_ONLINE_GAP_MS - since);
+    };
 
     async function run(): Promise<void> {
+        clear();
         inFlight = true;
         last = deps.now();
         checks += 1;
         let failed = false;
         try {
             const answer = await deps.check();
-            if (stopped) return;
-            // The session ended: stop without a word, and never swap the page for an error (A9's review).
+            if (!running()) return;
+            // The session ended: stop without a word, and never swap the page for an error.
             if (answer.kind === 'signed-out') return end(true);
             deps.onAnswer(answer);
             failed = answer.kind !== 'summary';
         } catch {
             failed = true;
-            if (!stopped) deps.onAnswer({ kind: 'offline' });
+            if (running()) deps.onAnswer({ kind: 'offline' });
         } finally {
             inFlight = false;
         }
-        if (stopped) return;
-        errors = failed ? errors + 1 : 0;
+        if (!running()) return;
         if (checks >= INBOX_WATCH_MAX_CHECKS) return end(true);
+        if (pendingOnline) {
+            // The browser came back online while this check was out, so whatever this one met is over: start afresh.
+            errors = 0;
+            if (!asleep()) online();
+            return;
+        }
+        errors = failed ? errors + 1 : 0;
         if (errors >= INBOX_WATCH_MAX_ERRORS) return end(false);
         schedule(failed ? backoff() : INBOX_WATCH_INTERVAL_MS);
     }
 
     function tick(): void {
         timer = null;
-        if (stopped || inFlight) return;
+        if (!running() || inFlight) return;
         // Hidden or offline: sleep with no timer; wake() or resume() picks it up.
         if (asleep()) return;
         void run();
@@ -136,8 +159,8 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
 
     return {
         start() {
-            if (!stopped || ended) return;
-            stopped = false;
+            if (started || ended) return;
+            started = true;
             // The page's own load counts as a check, so a focus straight after it sends nothing.
             last = deps.now();
             schedule(INBOX_WATCH_INTERVAL_MS);
@@ -145,36 +168,38 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
         },
         stop: () => end(true),
         wake() {
-            // A8 review S5: errors stopped it, but the curator is back on the tab: try again, at the backoff's cap.
-            if (stopped && !ended && errors >= INBOX_WATCH_MAX_ERRORS && !asleep()) {
-                stopped = false;
+            if (!started || ended || inFlight || asleep()) return;
+            // The browser came back online while the tab was hidden: that check comes first.
+            if (pendingOnline) return online();
+            // Errors stopped it, but the curator is back on the tab: try again, at the backoff's cap.
+            if (halted) {
+                halted = false;
                 schedule(MAX_BACKOFF_MS);
                 return;
             }
-            if (stopped || inFlight || asleep()) return;
             // After an error the backoff's timer decides; one asleep while hidden picks it up again.
             if (errors > 0) {
                 if (timer === null) schedule(backoff());
                 return;
             }
             const since = deps.now() - last;
-            if (since >= INBOX_WATCH_MIN_GAP_MS) {
-                clear();
-                void run();
-            } else if (timer === null) {
-                schedule(Math.max(INBOX_WATCH_MIN_GAP_MS - since, 0) || INBOX_WATCH_INTERVAL_MS);
-            }
+            if (since >= INBOX_WATCH_MIN_GAP_MS) void run();
+            else if (timer === null) schedule(Math.max(INBOX_WATCH_MIN_GAP_MS - since, 0) || INBOX_WATCH_INTERVAL_MS);
         },
         resume() {
-            if (ended || inFlight || asleep()) return;
-            stopped = false;
+            // Online again resets the errors and the backoff, never the end of the session.
+            if (!started || ended) return;
+            halted = false;
             errors = 0;
             clear();
+            // A check is out, or the tab is hidden: keep it, and check once that's over (run() and wake()).
+            if (inFlight || asleep()) {
+                pendingOnline = true;
+                return;
+            }
             // At once, so the offline state clears as soon as the server answers; 2 s apart at most, so flapping on and
             // offline is no request storm.
-            const since = deps.now() - last;
-            if (since >= INBOX_WATCH_ONLINE_GAP_MS) void run();
-            else schedule(INBOX_WATCH_ONLINE_GAP_MS - since);
+            online();
         },
     };
 }
