@@ -10,6 +10,7 @@ import StoryViewer from '../StoryViewer';
 import SiteRoutesProvider from '@/components/site/SiteRoutes';
 import ViewerShell from '../ViewerShell';
 import type { ViewerMode } from '../viewerContext';
+import { applyViewerRule } from './viewerRule';
 
 // jsdom has HTMLDialogElement but no showModal() or close(), so these stand in:
 // showModal() opens the dialog and focuses its first control, as the browser's
@@ -294,6 +295,13 @@ describe('ViewerShell, as the modal', () => {
         expect(document.activeElement).toBe(closeButton);
         // Close is a button in the modal; nothing in it links into the series.
         expect(within(dialog() as HTMLElement).queryByRole('link')).toBeNull();
+    });
+
+    it('names the dialog "Fixture series, photograph 2 of 3" under the page\'s CSS, with no space before the comma', () => {
+        renderShell('modal', 2);
+        // The page's own rule for the heading's spoken part: a part that isn't inline gets a space on each side in the name.
+        applyViewerRule(dialog() as HTMLElement, '.series > .spokenPosition', 'header h1 > span.sr-only');
+        expect(screen.getByRole('dialog')).toHaveAccessibleName('Fixture series, photograph 2 of 3');
     });
 
     it('closes with one Back however many cancel, close, and Close presses arrive', () => {

@@ -6,6 +6,7 @@ import { mediaUrl } from '@/lib/media/url';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import StoryViewer, { type StoryViewerProps } from '../StoryViewer';
 import { fitSizes } from '../viewerSizes';
+import { applyViewerRule } from './viewerRule';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 import { FAILED_LABEL, HIDE_TECHNICAL, RETRY_LABEL, SHOW_TECHNICAL, TECHNICAL_SOURCE, UNAVAILABLE_LABEL, accentValue, positionLabel, positionText, technicalFacts, viewerTitle } from '../viewerLabels';
 
@@ -459,6 +460,19 @@ describe('StoryViewer', () => {
         const header = container.querySelector('header')!;
         expect(within(header).getByText('007 / 120')).toHaveAttribute('aria-hidden', 'true');
         expect(within(header).getByRole('heading', { level: 1 })).toHaveAccessibleName('Fixture series, photograph 7 of 120');
+    });
+
+    // The page's own rule for the spoken part, applied: a part that isn't inline gets a space on each side in the name,
+    // which put one before the comma (e2e viewer-modal and viewer-touch, B8's CI).
+    it.each([
+        ['Fixture series', 'Fixture series, photograph 3 of 12'],
+        ['Fixture shapes along the northern shoreline at the turn of the tide', 'Fixture shapes along the northern shoreline at the turn of the tide, photograph 3 of 12'],
+    ])('reads the heading "%s" with its place and no space before the comma, under the page\'s CSS', (title, name) => {
+        const { container } = renderViewer({ viewer: model({}, { series: { id: 'ser_fixture', slug: 'fixture', title, accent: null } }) });
+        applyViewerRule(container, '.series > .spokenPosition', 'header h1 > span.sr-only');
+        const heading = within(container.querySelector('header')!).getByRole('heading', { level: 1 });
+        expect(heading).toHaveAccessibleName(name);
+        expect(heading).toHaveTextContent(name, { normalizeWhitespace: false });
     });
 
     it('renders authored text as text, never as markup', () => {
