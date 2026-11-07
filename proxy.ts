@@ -138,8 +138,8 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  * - The series and Viewer pages pass with SERIES_CACHE_CONTROL, so their
  *   308s are never stored.
  * - Everything under /assets/photos gets a 404, at any depth: the original
- *   sources, and the legacy basename derivatives the watcher writes until
- *   the second PR of #13's slice E stops them. Photos serve only from the
+ *   sources, and any legacy basename derivatives a watcher before v1.7.0
+ *   wrote and the library still holds. Photos serve only from the
  *   /media sets the served revision holds. None of this reads the data root.
  */
 export function proxy(request: NextRequest): NextResponse {

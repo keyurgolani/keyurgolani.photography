@@ -62,9 +62,6 @@ const MAX_SIDE = 16383;
 
 const SOURCE_FILE = /\.(jpg|jpeg|png|webp)$/i;
 
-/** `/api/image` cached files as `<base>-<width>-<quality>.<format>`. */
-const DYNAMIC_CACHE_FILE = /^(.+)-\d+-\d+\.(avif|webp|jpeg)$/;
-
 /** The `code` writeVariants() throws with when its source changed or went away mid-job. */
 export const SOURCE_CHANGED = 'SOURCE_CHANGED';
 
@@ -310,9 +307,9 @@ async function matchSpelling(target: string, names: ReadonlySet<string> | undefi
  * written. On failure it removes this attempt's temp files and rethrows, so
  * the previous outputs stay as they were. If the source changed or went away,
  * as in a takedown, it discards the attempt the same way and throws an error
- * with `code` SOURCE_CHANGED. After a full regeneration it also deletes the
- * photo's `/api/image` cache files, which would still serve the old version.
- * Before the first rename it records in `cache/set-sources` that a build
+ * with `code` SOURCE_CHANGED. It deletes nothing but its own temp files:
+ * the removed `/api/image` route's cache in cache/dynamic stays, since
+ * nothing serves it. Before the first rename it records in `cache/set-sources` that a build
  * from this source started, and after the last one that it finished, so a
  * build killed partway is rebuilt at the next start. When that first record
  * can't be written and the set was last built whole from another source
@@ -412,8 +409,8 @@ export async function writeVariants(
         throw error;
     }
 
-    if (overwrite) purgeDynamicCache(baseName, paths);
-    // A fill of only the missing outputs leaves a set some other source may have built the rest of.
+    // A fill of only the missing outputs leaves the record as it was: when another source built the
+    // rest, the record names that one, so builtFromAnother() still has the set rebuilt.
     if (order.length === VARIANTS.length) {
         try {
             await recordSetSource(filename, paths, { finished: true });
@@ -421,45 +418,8 @@ export async function writeVariants(
             // The record still says the build didn't finish, so the next start rebuilds the set.
             console.error(`[imageOptimizer] Couldn't record that ${filename}'s set was built from it: ${error instanceof Error ? error.message : String(error)}`);
         }
-    } else {
-        forgetSetSource(filename, paths);
     }
     return order.map(({ target }) => target);
-}
-
-/** Whether each folder is a real directory. lstat, so a symlink never counts and nothing follows one out of the library. */
-function realFolders(dirs: string[]): boolean {
-    return dirs.every((dir) => {
-        try {
-            return fs.lstatSync(dir).isDirectory();
-        } catch {
-            return false;
-        }
-    });
-}
-
-/**
- * Delete `/api/image`'s cached copies of one photo, which still serve its
- * previous version as static files. Matches the cached file's base exactly, so
- * `landscape` leaves `landscape-edited` alone, and never follows a symlinked
- * cache folder out of the library.
- */
-function purgeDynamicCache(baseName: string, paths: LibraryPaths): void {
-    if (!realFolders([path.dirname(paths.dynamicCache), paths.dynamicCache])) return;
-    let names: string[];
-    try {
-        names = listNames(paths.dynamicCache);
-    } catch {
-        return; // Best effort, after the new set is in place.
-    }
-    for (const name of names) {
-        if (DYNAMIC_CACHE_FILE.exec(name)?.[1] !== baseName) continue;
-        try {
-            fs.unlinkSync(path.join(paths.dynamicCache, name));
-        } catch {
-            // Gone already, or not removable.
-        }
-    }
 }
 
 /**
@@ -747,15 +707,6 @@ async function recordSetSource(filename: string, paths: LibraryPaths, { finished
     makeFolders(path.dirname(path.dirname(file)), path.dirname(file));
     const record = finished ? { source: filename } : { source: filename, complete: false };
     await atomicWriteFile(file, `${JSON.stringify(record)}\n`, { mode: 0o666, tempPath: tempPathFor(file, baseNameOf(filename)) });
-}
-
-/** Drop `filename`'s set's record, when the set may no longer be all its own. */
-function forgetSetSource(filename: string, paths: LibraryPaths): void {
-    try {
-        fs.rmSync(setSourceFile(filename, paths), { force: true });
-    } catch (error) {
-        console.error(`[imageOptimizer] Couldn't remove the record of which source ${filename}'s set was built from: ${error instanceof Error ? error.message : String(error)}`);
-    }
 }
 
 /**

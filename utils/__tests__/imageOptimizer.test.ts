@@ -379,18 +379,19 @@ describe('writeVariants', { timeout: 60_000 }, () => {
         expect(await outputChannels('landscape')).toEqual(Array(7).fill('blue'));
     });
 
-    it("deletes the photo's /api/image cache files after a full regeneration, matching its base exactly", async () => {
+    // Since v2.0.0 (A12) the pipeline deletes nothing in cache/dynamic: nothing serves it, and the owner's
+    // library is never the place for a delete. utils/__tests__/imageOptimizerDeletes.test.ts holds the rest.
+    it("leaves the removed /api/image route's cache files alone after a full regeneration", async () => {
         fs.mkdirSync(lib.file('cache/dynamic'), { recursive: true });
-        for (const name of ['landscape-800-85.webp', 'landscape-400-80.avif', 'landscape-edited-800-85.webp', 'portrait-800-85.webp']) {
-            fs.writeFileSync(lib.file('cache/dynamic', name), 'cached');
-        }
+        const names = ['landscape-400-80.avif', 'landscape-800-85.webp', 'landscape-edited-800-85.webp', 'portrait-800-85.webp'];
+        for (const name of names) fs.writeFileSync(lib.file('cache/dynamic', name), 'cached');
 
         await reprocessImage('landscape.jpg');
 
-        expect(fs.readdirSync(lib.file('cache/dynamic')).sort()).toEqual(['landscape-edited-800-85.webp', 'portrait-800-85.webp']);
+        expect(fs.readdirSync(lib.file('cache/dynamic')).sort()).toEqual(names);
     });
 
-    it("still regenerates when the /api/image cache folder can't be listed, since purging it is best effort", async () => {
+    it("still regenerates when the /api/image cache folder can't be listed", async () => {
         fs.mkdirSync(lib.file('cache/dynamic'), { recursive: true });
         fs.writeFileSync(lib.file('cache/dynamic', 'landscape-800-85.webp'), 'cached');
         const dynamic = lib.file('cache/dynamic');

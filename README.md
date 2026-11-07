@@ -169,7 +169,7 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 ### Replacing and Removing Photos
 - **Replace** a photo by saving over it under the same name. The watcher sees new bytes, and the curation Inbox opens a replacement item for its new `/media` set. The site serves no file from the library: `/assets/photos` answers 404, `/_next/image` refuses it, and visitors see photos only through the `/media` sets the active revision holds.
 - **Delete** a photo's file and the site keeps showing it: the active catalog revision keeps listing the photo, and `/media` keeps serving it. Take it down as the next item describes.
-- **The legacy derivatives** a watcher before v1.7.0 wrote, the seven folders `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` and `lqip`, and `cache/`, at the top of the library, are left exactly as they are. Nothing writes, reads, or serves them, and the identity scan skips those folder names, so a photo inside them is never taken for one of yours. They harm nothing, so leave them in place: #15's GC reclaims them once it ships. No step here moves or deletes them.
+- **The legacy derivatives** a watcher before v1.7.0 wrote, the seven folders `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` and `lqip`, and `cache/`, at the top of the library, stay there until you move them. Nothing in the stack writes or serves them, and nothing reclaims them automatically: `photos gc` cleans the data root only. The identity scan skips those eight names at the top of the library only, so a photo inside them is never taken for one of yours while they stay there. Two things still read them: `photos carry-over`, which rebuilds the legacy Gallery's list from them, and a `v1.6.x` watcher after a rollback, which writes them again and fills in what's missing. They take space and nothing else, so leaving them is fine. To take them out of the library, [move them aside](#moving-the-legacy-derivatives-aside) on the host.
 - **Take a photo down** from the site: archive, then publish. `/assets/photos` never serves, so its legacy derivatives are out of reach already. Deleting, moving, or renaming the file takes nothing down by itself. The active revision keeps listing the photo, `/media` keeps serving it, and the watcher opens a `missing` item in the curation inbox. Putting the same file back closes that item. Run each command below in `image-watcher`, as `docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>`. To take the photo down:
   1. Move its file out of the library, or delete it, and find its `missing` item with `curation list`.
   2. Run `curation archive <eventId> --version <n> --base <revisionId>`, with the version and base `curation show` prints. It takes the photo out of every series in the draft with `sequence remove` and archives it. Nothing is public yet. A publish then needs these too. Archive prints the cover, opening photograph, and chapter ones that apply, and `validate` names the rest:
@@ -190,6 +190,74 @@ Most commands in this README and in [docs/](docs/) name `-f docker-compose.prod.
 - **Restore the library folder** if it was deleted. The watcher exits 1 when its folder disappears, and since Compose never creates a missing photos folder, `image-watcher` can't start until it's back. Stop the stack, copy the folder back into place rather than moving it with `mv`, then start the stack.
 - **Preview stable photo IDs** with `npm run photos:migrate -- --dry-run`. It proposes an ID for every photo and writes only a plan and a report, to `identity/migration/` in the data root or to `--out <dir>`. Applying the plan with `-- --apply --plan <file>` initializes the data root, and from then on the watcher keeps the IDs current, nested folders included, and builds each photo's `/media` set. The site serves only a published catalog revision, and a publish needs the IDs, so until the plan is applied and a revision is published, `/api/ready` answers 503 with `not-published`, and Home and Work show the error page. In production, follow the runbook in [docs/data-root.md](docs/data-root.md), which backs up the library and the data root first and runs the same steps in the watcher container.
 - **Check and publish the catalog** with `npm run photos -- validate`, which compiles the authored records in the data root and prints every problem without taking a lock or writing anything, so it also runs on a read-only data root, and `npm run photos -- publish --actor <name>`, which validates them again under a lock and makes the result the active revision. Add `--dry-run` to stop after validation. The first publish also needs `--confirm-launch`. From then on, the site serves the active revision, and `/media` serves only the sets it holds. "Curating the catalog" below has the rest of the commands.
+
+### Moving the legacy derivatives aside
+
+This takes the eight legacy folders out of the library, into a dated folder beside it on the same filesystem. A folder's name is never enough to move it, since on a case-insensitive disk `medium` is also an album named `Medium`. So it moves only the folders the app vouches for, in three steps, all as yourself. A host with a checkout of this repository can run `scripts/host/legacy-move-aside.sh` from it. Otherwise fetch it from the release the host runs, `v2.0.0` or later, and read it first. It needs `bash` and `perl`, which most hosts have:
+
+```bash
+curl -fsSL -o legacy-move-aside.sh https://raw.githubusercontent.com/keyurgolani/keyurgolani.photography/vX.Y.Z/scripts/host/legacy-move-aside.sh
+```
+
+1. **Let the app judge the folders, and save the manifest it prints.** This runs in the watcher's container, as every `photos` command does, and only reads the library. `--stdout` prints the manifest, and `-T` keeps Compose from adding a terminal's line endings to it, so the redirect saves it byte for byte in your home folder. That copy is the one the script takes. Each legacy folder it found by its exact name, and whether it moves or stays, and why, goes to the terminal on stderr:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm --no-deps -T image-watcher node dist/scripts/photos.mjs legacy-derivatives --stdout > ~/legacy-derivatives.json
+   ```
+
+2. **Run the dry run, as yourself.** Give it that copy and the folder the host binds at `/data/library`, which is `public/assets/photos` unless an override binds another:
+
+   ```bash
+   bash legacy-move-aside.sh --manifest ~/legacy-derivatives.json public/assets/photos
+   ```
+
+3. **Move them**, once the dry run lists what you expect. The dry run says first when the moves need `--rename-as-root`, and why: on Linux, moving a folder to a new parent needs write permission on the folder itself, for its `..` entry, and on the library's top folder, and the v1.x watcher wrote these folders as uid 1001. Then `--apply` without the flag refuses before it writes anything, so add `--rename-as-root` to the same command. Only the rename helper then runs through `sudo`, once a folder, by absolute path in a clean environment, and it checks everything again itself:
+
+   ```bash
+   bash legacy-move-aside.sh --manifest ~/legacy-derivatives.json --apply public/assets/photos
+   ```
+
+- **What step 1 vouches for:** a folder named exactly `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` or `lqip` at the top of the library, only when every file in it is that folder's derivative of an original at the top of the library, such as `thumbnails/beach.webp` for `beach.jpg`, a real WebP or AVIF no wider than the folder's 400, 800 or 1920 px, or an LQIP data URL. `cache/` moves only when it holds nothing but the old image route's files in `cache/dynamic/`, named `<original>-<width>-<quality>.webp` or `.avif` for a root original, the v1.x pipeline's records in `cache/set-sources/`, `<original>.json` holding that original's `source`, and its one `cache/upright-rebuild.json`, in exactly the shape v1.6 wrote. Anything else and the folder stays, with the reason: an original's extension, any other file name or a dot-file, a subfolder, a symlink, an empty folder, a file whose header or width isn't the pipeline's, or a name that matches an original only in another Unicode form. A folder whose files belong to originals in series folders stays too: "stays: its originals are nested, so nothing vouches for it". Move those by hand if you want them gone from the library. A folder by another name or case, and everything else in the library, is never in it.
+- **The dry run** lists each folder that moves, with its file count and its first few files, and each one that stays, with why. Then each move as an `mv` line with its size, the total, and the `move-back.sh` it would write. It moves nothing. It refuses, exits 1 and moves nothing unless the manifest is the one step 1 printed, unedited, under 24 hours old and not yet used, and it names this library by device and inode. It also checks again, itself, that every file the manifest vouches for has the name the pipeline gave it for an original at the top of the library, so even an edited and resealed manifest can't move an original. On a Linux host with a bind mount, the container and the host see the same device and inode. Under Docker Desktop they don't, and the script refuses rather than guess. Each folder it would move must also list exactly the files the manifest holds, at the same sizes and times. Run step 1 again after any change in the library, as the refusal says.
+- **`--apply`** prints the same. Before the first move, it writes `move-back.sh` in the dated folder and records the manifest as used in `~/.local/state/photos/legacy-derivatives.used`, or under `$XDG_STATE_HOME`. A manifest, and any copy of it, is good for one `--apply`. Each move is one rename, by a helper that rereads the manifest and the library itself and checks, from a fresh listing, that the folder is still the one the manifest describes, by its exact name, its files, its device and inode, and that the aside folder is yours and this run's. So a folder swapped in since stays where it is, even across a wait for a `sudo` password, and nothing is ever copied or put inside a folder that's already there. Nothing else runs as root, and the script refuses to run under `sudo` itself.
+- **Where it moves them:** to `<library name>.legacy-derivatives-<YYYY-MM-DD>/` beside the library, which on a host laid out as above is `public/assets/photos.legacy-derivatives-<YYYY-MM-DD>/`, or to the folder `--to <dir>` names. It refuses, exits 1 and moves nothing when that folder:
+  - is the library or inside it, which it checks by the folders' device and inode, so a different letter case, a symlink or a second mount of the library can't hide it. Inside the library, the scan would take every WebP in them for a new photo, since it skips the eight names at the top only;
+  - is inside a checkout of this repository, under a folder holding a `package.json` or `next.config.*`, which an image build copies. On a checkout, the default folder is there, so pass `--to` a folder outside the checkout on the same filesystem;
+  - is inside the data root, under a folder holding `data-root.json`;
+  - sits under a folder another user owns (root's and yours are fine), or one others can write, or one a group can write unless that group is your own private one (your primary group, with no other member, and no one else's primary group), sticky or not, where the aside folder could be swapped. That takes the full account list: on Linux, only when `/etc/nsswitch.conf` lists `passwd` and `group` once each, from `files` and `systemd` alone. macOS can't list its accounts in full, so there group write is always refused, and so is it on Linux when the account list can't be read in full; the refusal says which. The folders above the library must pass the same rule. One refusal lists every folder at fault, above the library and above the destination alike, with the one `chmod g-w,o-w '<folder>'...` line that fixes the write bits, each folder quoted so you can paste it. On macOS, a folder whose ACL allows others to change it is refused too;
+  - already holds any of the eight names, a `move-back.sh` or a used record from an earlier run. Pass a different `--to`;
+  - is on another filesystem or mount than the library, where a move would have to copy them. If the library is a disk of its own, there's nowhere it can go, so leave the folders in place;
+  - has a newline in its path, or the library or the manifest does;
+  - is an existing folder that isn't yours, that you can't write, or that its group or others can write, whatever the group. The dry run refuses it too, before it says `--apply` would work.
+
+  The dated folder is made 0700, whatever your umask, and checked before the manifest is spent. On Linux, a library on a read-only mount is refused up front, from `/proc/self/mountinfo`. That check doesn't run on macOS, which has no mountinfo.
+- **What it costs:** a rename frees no disk space, since the folders stay on the same filesystem. The watcher keeps running meanwhile, since it never looked inside them. Once they're moved, `photos carry-over` and a `v1.6.x` rollback can't find them, and a backup of `public/assets/photos` no longer holds them, so keep the dated folder with your backups if you want them back after a restore.
+
+Move them back first before any of these:
+- restoring a data-root backup made before the catalog launch with `web` on `v1.5.x` or older, as [After the catalog launch](docs/releasing.md#after-the-catalog-launch) describes;
+- rolling back to `v1.6.x`, whose watcher otherwise writes every one of them again;
+- rerunning `photos carry-over`, which reads them.
+
+To move them back, run the `move-back.sh` the script wrote in the dated folder, with `sh`, adding `--rename-as-root` if the moves needed it. Each folder goes back through the same checked rename, only while it's still the folder that moved and the library doesn't hold that name again, as it may after restoring an older backup. It's safe to run after a move that stopped partway, or twice. Compare the two folders first if it says one exists:
+
+```bash
+sh public/assets/photos.legacy-derivatives-<YYYY-MM-DD>/move-back.sh
+```
+
+`move-back.sh` goes by the device and inode each folder had, so it refuses, moving nothing for that folder, when those changed: after the library was restored from a backup, which gives every folder new ones, or after the dated folder itself was moved. Then the way back is your own manual step, a folder at a time, from the folder `docker-compose.prod.yml` is in. Set the three names: `aside` is the folder you passed to `--to`, or the dated folder beside the library. Then run the one line. It moves the folder only when the library holds no entry by that name in any letter case, and never into a folder that's there. It says "Not moved" rather than nest one folder inside another:
+
+```bash
+aside=public/assets/photos.legacy-derivatives-<YYYY-MM-DD>; library=public/assets/photos; name=thumbnails
+[ ! -e "$library/$name" ] && ! ls -a "$library" | grep -Fixq -- "$name" && mv -n "$aside/$name" "$library/$name" || echo "Not moved: $name is taken or the check failed"
+```
+
+`[ ! -e ]` already matches a name in another case on macOS's disks, and `grep -Fix` catches it on Linux's. On a Linux host, GNU `mv -nT` is a second guard against nesting, for the same line:
+
+```bash
+[ ! -e "$library/$name" ] && ! ls -a "$library" | grep -Fixq -- "$name" && mv -nT "$aside/$name" "$library/$name" || echo "Not moved: $name is taken or the check failed"
+```
+
+Put `sudo` in front of `mv` only if the folder belongs to uid 1001 and `mv` says permission denied.
 
 ### Curating the catalog
 
