@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { checkShift, shiftLine, type Shift } from '../../test/helpers/parityShift';
 
 /**
  * The parity gate for Dark, today's site (the lead's ruling, 2026-10-29): computed style, element by element, against the base. The base
@@ -315,7 +316,7 @@ export function compare(
     head: Walk,
     allowances: Record<string, number> = {},
     sanctioned: Record<string, readonly string[]> = {},
-    shifts: Record<string, readonly [number, number]> = {},
+    shifts: Record<string, Shift> = {},
 ): Comparison {
     const result: Comparison = { structural: [], styles: [], geometry: [], deltas: [], largest: 0, tokens: [], added: [], sanctioned: [] };
     // A folded element that paints for itself is a style the walk can't compare, so it fails as one.
@@ -358,13 +359,12 @@ export function compare(
         const delta = Math.max(...b.rect.map((value, i) => Math.abs(value - h.rect[i])));
         const shift = shifts[b.path];
         if (shift) {
-            // Exactly the base's box moved by the shift, compared as the boxes are: no slack.
-            const expected = [b.rect[0] + shift[0], b.rect[1] + shift[1], b.rect[2], b.rect[3]];
-            const off = Math.max(...expected.map((value, i) => Math.abs(value - h.rect[i])));
-            const line = `${b.path}: ${b.rect.map((v) => +v.toFixed(3)).join(' ')} against ${h.rect.map((v) => +v.toFixed(3)).join(' ')} (${+delta.toFixed(3)} px, the sanctioned shift ${shift[0]} ${shift[1]}, off by ${+off.toFixed(3)} px)`;
+            // Where the shift says the box must be, compared as the boxes are: no slack (test/helpers/parityShift.ts).
+            const checked = checkShift(b.rect, h.rect, shift);
+            const line = shiftLine(b.path, b.rect, h.rect, shift, checked);
             result.deltas.push(line);
-            result.largest = Math.max(result.largest, delta);
-            if (off > 0) result.geometry.push(line);
+            result.largest = Math.max(result.largest, checked.delta);
+            if (checked.off > 0) result.geometry.push(line);
             continue;
         }
         if (delta > 0) {
