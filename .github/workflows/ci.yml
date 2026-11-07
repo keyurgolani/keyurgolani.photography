@@ -99,8 +99,9 @@ jobs:
       # WebKit runs Home's first-tap cases on the mobile-webkit project. --only-shell applies to Chromium alone.
       # The apt half of --with-deps has hung for the whole job on a slow mirror
       # (#84, #87, #88). Bound each try and retry a hung one.
-      # The step's timeout covers every try: 3 tries of 360 s plus 2 clean-ups of at most 60 s is 1200 s, 20 minutes,
-      # and 22 leaves 2 for the rest. test/tooling.test.mjs holds it to that.
+      # The step's timeout covers every try: 3 tries of 360 s, each followed by a clean-up of at most 60 s (the last
+      # try's too, before exit 1), is 1260 s, 21 minutes, and 22 leaves 1 for the rest. test/tooling.test.mjs counts
+      # every timeout and sleep in the loop and holds it to that.
       - name: Install Playwright browsers
         timeout-minutes: 22
         run: |
@@ -192,8 +193,8 @@ jobs:
           cd ../parity-base
           npm ci
 
-      # As the e2e job's install: 3 tries of 360 s plus 2 clean-ups of at most 60 s is 1200 s, 20 minutes, and 22
-      # leaves 2 for the rest. At 15, the third try could never finish. test/tooling.test.mjs holds it to that.
+      # As the e2e job's install: 3 tries of 360 s, each followed by a clean-up of at most 60 s, is 1260 s, 21 minutes,
+      # and 22 leaves 1 for the rest. At 15, the third try could never finish. test/tooling.test.mjs holds it to that.
       - name: Install Chromium
         timeout-minutes: 22
         run: |

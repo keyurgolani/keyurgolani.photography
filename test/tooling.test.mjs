@@ -168,39 +168,163 @@ describe('the legacy photo list', () => {
   });
 });
 
-describe("CI's retried browser installs", () => {
-  /**
-   * Every workflow step that retries a bounded install: its step timeout, how many tries, each try's bound, and the
-   * bound on the clean-up between tries. Read as text, one step to a block, as the other workflow tests do.
-   */
+/** Seconds in a timeout(1) or sleep(1) duration: a number with an optional s, m, h or d. NaN when it isn't one. */
+function seconds(duration) {
+  const match = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(duration ?? '');
+  return match ? Number(match[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[match[2]] : NaN;
+}
+
+/** A shell line's commands, split on unquoted `&&`, `||`, `;` and `|`, so a quoted 'apt-get|dpkg' stays whole. */
+function commandsOf(line) {
+  const commands = [];
+  let current = '';
+  let quote = '';
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (quote) {
+      if (char === quote) quote = '';
+      else if (char === '\\' && quote === '"') current += line[(i += 1)] ?? '';
+    } else if (char === "'" || char === '"') quote = char;
+    else if (char === '#' && /^\s?$/.test(line[i - 1] ?? '')) break;
+    else if ('&|;'.includes(char)) {
+      if (line[i + 1] === char && char !== ';') i += 1;
+      commands.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  commands.push(current);
+  return commands.map((command) => command.trim()).filter(Boolean);
+}
+
+/** Commands that return at once, so a try's clean-up needs no bound on them. Anything else must run under timeout. */
+const PROMPT = new Set(['echo', 'printf', 'true', 'false', ':', 'exit', 'break', 'continue', 'pkill', 'kill', 'sed', '[', 'test']);
+
+/**
+ * The longest one command can take, in seconds: `timeout [-k K] N cmd`, under sudo or not, takes at most N + K, and
+ * `sleep N` N. A command PROMPT names takes none. Anything else is unbounded: Infinity.
+ */
+function boundOf(command) {
+  const words = command.split(/\s+/).filter((word) => !/^[A-Z_][A-Z0-9_]*=/.test(word));
+  if (words[0] === 'sudo') words.shift();
+  if (words[0] === 'sleep') return seconds(words[1]) || Infinity;
+  if (words[0] === 'timeout') {
+    let kill = 0;
+    let at = 1;
+    for (; at < words.length && words[at].startsWith('-'); at += 1) {
+      const word = words[at];
+      if (word === '-k' || word === '--kill-after') kill = seconds(words[(at += 1)]);
+      else if (word.startsWith('--kill-after=')) kill = seconds(word.slice('--kill-after='.length));
+      else if (/^-k\d/.test(word)) kill = seconds(word.slice(2));
+      else if (word === '-s' || word === '--signal') at += 1;
+      else if (!/^(?:--signal=.+|--preserve-status|--foreground|-v|--verbose)$/.test(word)) return Infinity;
+    }
+    const bound = seconds(words[at]) + kill;
+    return Number.isFinite(bound) && words.length > at + 1 ? bound : Infinity;
+  }
+  return PROMPT.has(words[0]) ? 0 : Infinity;
+}
+
+/** How many times a loop header runs its body: a list of numbers, {A..B}, $(seq [A] B), or for ((V = A; V <= B; V++)). */
+function triesOf(header) {
+  let match = /^for (\w+) in (\d+(?: +\d+)*) *(?:;|$)/.exec(header);
+  if (match) return match[2].trim().split(/ +/).length;
+  match = /^for (\w+) in \{(\d+)\.\.(\d+)\} *(?:;|$)/.exec(header);
+  if (match) return Number(match[3]) - Number(match[2]) + 1;
+  match = /^for (\w+) in (?:\$\(|`)seq (?:(\d+) +)?(\d+)(?:\)|`) *(?:;|$)/.exec(header);
+  if (match) return Number(match[3]) - Number(match[2] ?? 1) + 1;
+  match = /^for \(\( *(\w+) *= *(\d+) *; *\1 *(<=?) *(\d+) *; *(?:\1\+\+|\+\+\1|\1 *\+= *1) *\)\) *(?:;|$)/.exec(header);
+  if (match) return Number(match[4]) - Number(match[2]) + (match[3] === '<=' ? 1 : 0);
+  return NaN;
+}
+
+/**
+ * Every workflow step with a loop that retries: one whose body leaves on a command's success (`... && exit 0` or
+ * `&& break`), or whose variable is a try or an attempt. Each with its step timeout, how many tries, the longest one
+ * pass through the body takes (every timeout and sleep in it, the last try's clean-up too), and the body's commands
+ * that have no bound. Read as text, one step to a block, as the other workflow tests do.
+ */
+function retriedStepsIn(name, text) {
+  const steps = [];
+  for (const step of text.split(/\n(?= +- (?:name|uses|run|if|id):)/)) {
+    const lines = step.split('\n');
+    for (let at = 0; at < lines.length; at += 1) {
+      // A loop's header, with its `do` on the same line or the next.
+      const header = /^( *)((?:for|while|until)\s.*?)(; *do)? *$/.exec(lines[at]);
+      if (!header || (!header[3] && lines[at + 1]?.trim() !== 'do')) continue;
+      const indent = header[1];
+      const close = lines.findIndex((line, index) => index > at && (line === `${indent}done` || line.startsWith(`${indent}done `)));
+      const body = lines.slice(header[3] ? at + 1 : at + 2, close < 0 ? undefined : close).filter((line) => !/^\s*#/.test(line));
+      const variable = /^for (?:\(\( *)?(\w+)/.exec(header[2])?.[1] ?? '';
+      const leavesOnSuccess = body.some((line) => /&& *(?:exit 0|break)\b/.test(line));
+      if (!leavesOnSuccess && !/^(?:try|tries|attempt|attempts|retry|retries)$/.test(variable)) continue;
+      const commands = body.flatMap(commandsOf);
+      steps.push({
+        where: `${name}: ${/name: (.+)/.exec(step)?.[1] ?? 'a step'}`,
+        header: header[2],
+        closed: close >= 0,
+        minutes: Number(/timeout-minutes: (\d+)/.exec(step)?.[1]),
+        tries: triesOf(header[2]),
+        pass: commands.reduce((sum, command) => sum + boundOf(command), 0),
+        unbounded: commands.filter((command) => boundOf(command) === Infinity),
+      });
+    }
+  }
+  return steps;
+}
+
+describe("CI's retried steps", () => {
   async function retriedSteps() {
     const dir = path.join(REPO_ROOT, '.github', 'workflows');
     const steps = [];
     for (const name of (await fs.readdir(dir)).filter((file) => /\.ya?ml$/.test(file)).sort()) {
-      const text = await fs.readFile(path.join(dir, name), 'utf8');
-      for (const step of text.split(/\n(?= +- (?:name|uses|run|if|id):)/)) {
-        const loop = /for try in ([\d ]+); do/.exec(step);
-        if (!loop) continue;
-        steps.push({
-          where: `${name}: ${/name: (.+)/.exec(step)?.[1] ?? 'a step'}`,
-          minutes: Number(/timeout-minutes: (\d+)/.exec(step)?.[1]),
-          tries: loop[1].trim().split(/\s+/).length,
-          tryBound: Number(/\btimeout (\d+) npx playwright install\b/.exec(step)?.[1]),
-          cleanupBound: Number(/\btimeout (\d+) dpkg --configure -a\b/.exec(step)?.[1]),
-        });
-      }
+      steps.push(...retriedStepsIn(name, await fs.readFile(path.join(dir, name), 'utf8')));
     }
     return steps;
   }
 
-  it('give every try its full bound, and the clean-up between tries its own, inside the step timeout with a minute to spare', async () => {
+  /** A step as ci.yml writes its retried installs, with `body` for the loop's body. */
+  const fixture = (body, { header = 'for try in 1 2 3; do', minutes = 22 } = {}) =>
+    ['      - name: Fixture', `        timeout-minutes: ${minutes}`, '        run: |', `          ${header}`, ...body.map((line) => `            ${line}`), '          done', '          exit 1', ''].join('\n');
+  const read = (...args) => retriedStepsIn('fixture.yml', fixture(...args));
+  const INSTALL = 'timeout 360 npx playwright install --with-deps --only-shell chromium && exit 0';
+  const CLEAN_UP = ["sudo pkill -9 -f 'apt-get|dpkg' || true", 'sudo timeout 60 dpkg --configure -a || true'];
+
+  it('counts every timeout and sleep in the body, a timeout -k as its bound plus its grace, and nothing else as bounded', () => {
+    expect(read([INSTALL, 'echo "try $try failed"', ...CLEAN_UP])).toMatchObject([{ tries: 3, pass: 420, unbounded: [] }]);
+    expect(read([INSTALL, ...CLEAN_UP, 'sleep 300'])[0].pass).toBe(720);
+    expect(read([INSTALL, ...CLEAN_UP, 'sleep 2m'])[0].pass).toBe(540);
+    expect(read([INSTALL.replace('timeout 360', 'timeout -k 30 360'), ...CLEAN_UP])[0].pass).toBe(450);
+    expect(read([INSTALL.replace('timeout 360', 'timeout --kill-after=30s 6m'), ...CLEAN_UP])[0].pass).toBe(450);
+    expect(read([INSTALL, 'timeout 360 npx playwright install-deps || true', ...CLEAN_UP])[0].pass).toBe(780);
+    expect(read([INSTALL, ...CLEAN_UP, 'sudo dpkg --configure -a || true'])[0].unbounded).toEqual(['sudo dpkg --configure -a']);
+    expect(read([INSTALL.replace('timeout 360 ', ''), ...CLEAN_UP])[0].unbounded).toEqual(['npx playwright install --with-deps --only-shell chromium']);
+    // A timeout with no command, or an option it doesn't know, bounds nothing.
+    expect(read([INSTALL.replace('timeout 360', 'timeout --bogus 360'), ...CLEAN_UP])[0].unbounded).toHaveLength(1);
+  });
+
+  it('finds a retried step of any loop shape, and counts its tries where the header says', () => {
+    for (const [header, tries] of [['for try in 1 2 3; do', 3], ['for try in {1..4}; do', 4], ['for try in $(seq 3); do', 3], ['for attempt in $(seq 2 5); do', 4], ['for ((try = 1; try <= 3; try++)); do', 3], ['for ((n=0; n<2; n++)); do', 2]]) {
+      expect(read([INSTALL, ...CLEAN_UP], { header }), header).toMatchObject([{ tries }]);
+    }
+    for (const header of ['while [ "$try" -le 3 ]; do', 'until timeout 360 npx playwright install; do', 'for try in $TRIES; do']) {
+      expect(read([INSTALL, ...CLEAN_UP], { header }), header).toMatchObject([{ tries: NaN }]);
+    }
+    // Not a retry: a loop over items that never leaves on success.
+    expect(read(['echo "$tag"'], { header: 'for tag in "${tags[@]}"; do' })).toEqual([]);
+  });
+
+  it('give every pass through the loop its full bound, with no unbounded command, inside the step timeout with a minute to spare', async () => {
     const steps = await retriedSteps();
     expect(steps.map((step) => step.where)).toEqual(['ci.yml: Install Playwright browsers', 'ci.yml: Install Chromium']);
     for (const step of steps) {
+      expect(step.closed, `${step.where}: the loop's done`).toBe(true);
+      expect(Number.isInteger(step.tries) && step.tries > 0, `${step.where}: can't count the tries of "${step.header}"; write it as for try in 1 2 3`).toBe(true);
       // A hung dpkg would otherwise eat the next try's time, so the clean-up is bounded too.
-      expect(step.cleanupBound, step.where).toBeGreaterThan(0);
-      const worst = step.tries * step.tryBound + (step.tries - 1) * step.cleanupBound;
-      expect(step.minutes * 60, `${step.where}: ${step.tries} tries of ${step.tryBound} s and ${step.tries - 1} clean-ups of ${step.cleanupBound} s`).toBeGreaterThanOrEqual(worst + 60);
+      expect(step.unbounded, `${step.where}: commands in the loop with no bound`).toEqual([]);
+      const worst = step.tries * step.pass;
+      expect(step.minutes * 60, `${step.where}: ${step.tries} passes of at most ${step.pass} s`).toBeGreaterThanOrEqual(worst + 60);
     }
   });
 });
