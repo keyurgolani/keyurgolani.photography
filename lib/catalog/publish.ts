@@ -470,7 +470,7 @@ export function removedPhotos(active: RevisionFile | null, candidate: CompileRes
         .sort((a, b) => (a.photoId < b.photoId ? -1 : a.photoId > b.photoId ? 1 : 0));
 }
 
-function ruleContext(root: string, snapshot: Snapshot) {
+function ruleContext(root: string, snapshot: Pick<Snapshot, 'layer' | 'registry' | 'active' | 'compiled' | 'review'>) {
     return {
         candidate: snapshot.compiled.content,
         authored: snapshot.layer,
@@ -480,6 +480,15 @@ function ruleContext(root: string, snapshot: Snapshot) {
         excluded: snapshot.compiled.excluded,
         review: snapshot.review,
     };
+}
+
+/**
+ * Every rule's issues for a draft the caller has already read and compiled, as publish() and `photos validate` check
+ * it, with the same context. #16's Publish screen lists the warnings from it on each load, so they're current with
+ * the registry's source health as well as the draft. Writes nothing.
+ */
+export function checkDraft(root: string, draft: Pick<Snapshot, 'layer' | 'registry' | 'active' | 'compiled' | 'review'>): Issue[] {
+    return runRules(ruleContext(root, draft));
 }
 
 export type ValidateOutcome = 'VALID' | 'VALIDATION_FAILED' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
@@ -551,7 +560,7 @@ export async function checkLayer(dataRoot: string, layer: WorkingLayer): Promise
     if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
     const compiled = await compileCandidate({ layer, registry, root, active });
     const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
-    const issues = runRules(ruleContext(root, { layer, registry, pointer, active, compiled, review }));
+    const issues = runRules(ruleContext(root, { layer, registry, active, compiled, review }));
     const launch = pointer ? null : launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
     return { compiled, issues, launch };
 }

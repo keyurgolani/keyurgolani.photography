@@ -577,10 +577,10 @@ const ICON: Record<'done' | 'change' | 'alert', LucideIcon> = { done: Check, cha
  * prints them. A warning, not an error: the change tone and an icon beside the words, never the alert's red, and a
  * heading that says Publish isn't held. Nothing at all when there are none.
  */
-function WarningList({ warnings }: { warnings: readonly PublishWarning[] }) {
+function WarningList({ warnings, ctx }: { warnings: readonly PublishWarning[]; ctx: FixContext }) {
     if (warnings.length === 0) return null;
     const n = warnings.length;
-    const heading = `${n} ${n === 1 ? 'warning' : 'warnings'}, which don't block publishing`;
+    const heading = n === 1 ? "1 warning, which doesn't block publishing" : `${n} warnings, which don't block publishing`;
     return (
         <section className={`${curator.notice} ${styles.warnings}`} data-tone="change" aria-labelledby="warnings-heading">
             <h3 id="warnings-heading" className={styles.warningsHeading}>
@@ -595,16 +595,38 @@ function WarningList({ warnings }: { warnings: readonly PublishWarning[] }) {
                         </strong>
                         <span>{warning.message}</span>
                         {warning.hint ? <span className={styles.warningHint}>{warning.hint}</span> : null}
-                        {warning.href ? (
-                            <a className={styles.textLink} href={warning.href}>
-                                Edit the series: {warning.record}
-                            </a>
+                        {warning.link ? (
+                            <span className={styles.errorActions}>
+                                <WarningLinkTo warning={warning} ctx={ctx} />
+                            </span>
                         ) : null}
                     </li>
                 ))}
             </ul>
         </section>
     );
+}
+
+/** A warning's link: the series' own page, or the photograph's fix as its ledger row offers it, through BlockerLink. */
+function WarningLinkTo({ warning, ctx }: { warning: PublishWarning; ctx: FixContext }) {
+    const { link } = warning;
+    if (!link) return null;
+    if (link.type === 'series') {
+        return (
+            <a className={curator.linkButton} href={link.href}>
+                Edit the series: {link.name}
+            </a>
+        );
+    }
+    const blocker: Blocker = {
+        key: warning.key,
+        rowId: link.type === 'description' ? link.rowId : null,
+        record: warning.record,
+        field: warning.field,
+        message: warning.message,
+        link: link.type === 'description' ? { type: 'description', name: link.name } : { type: 'inbox', record: link.name, eventId: link.eventId },
+    };
+    return <BlockerLink blocker={blocker} ctx={ctx} />;
 }
 
 /** The one result slot, above the bar: every answer to Validate or Publish, its heading the focus target. */
@@ -977,7 +999,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
                         <Group heading={facts.groups.authored} rows={ledger.authored} tone="authored" facts={facts} ctx={ctx} />
                         <Group heading={facts.groups.derived} rows={ledger.derived} tone="derived" facts={facts} ctx={ctx} />
                         <Group heading="Source health" rows={ledger.health} tone="health" facts={facts} ctx={ctx} />
-                        <WarningList warnings={facts.warnings} />
+                        <WarningList warnings={facts.warnings} ctx={ctx} />
                         <ResultSlot answer={state.result} view={view} facts={facts} ctx={ctx} zone={zone} />
                         <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} historyParams={historyParams} />
                     </section>

@@ -115,9 +115,15 @@ export interface Blocker {
 }
 
 /**
- * A warning the last check of the draft found: a rule of severity warning, which never blocks a publish. Its message
- * and hint are the rule's own, as the diagnostics hold them and `photos validate` prints them; `record` names the
- * series or photograph, and `href` is its edit page where the curator has one (a series), else null.
+ * Where a warning takes the curator: a series' own page, or for a photograph the fix its ledger row already offers,
+ * its description review on this screen or its Inbox item.
+ */
+export type WarningLink = { type: 'series'; href: string; name: string } | { type: 'description'; rowId: string; name: string } | { type: 'inbox'; eventId: string; name: string };
+
+/**
+ * A warning a check of the draft found: a rule of severity warning, which never blocks a publish. Its message and
+ * hint are the rule's own, as `photos validate` prints them; `record` names the series, with its slug, so two of one
+ * title read apart, or the photograph; `link` is where to fix it, where there's one.
  */
 export interface PublishWarning {
     key: string;
@@ -125,7 +131,14 @@ export interface PublishWarning {
     field: string;
     message: string;
     hint: string | null;
-    href: string | null;
+    link: WarningLink | null;
+}
+
+/** The answer's line about the warnings listed above it, where the focus lands, or none. */
+export function warningsLine(warnings: readonly PublishWarning[] | undefined): string[] {
+    const n = warnings?.length ?? 0;
+    if (n === 0) return [];
+    return [n === 1 ? "1 warning, listed above, which doesn't block publishing." : `${n} warnings, listed above, which don't block publishing.`];
 }
 
 /** A revision as the page names it. */
@@ -176,7 +189,7 @@ export interface ScreenView {
     ledger: Ledger;
     /** The blockers the review context shows on load, before any Validate. */
     blockers: Blocker[];
-    /** The warnings the last check of this draft found, from its diagnostics, or none when no check has run under these rules. */
+    /** The warnings this load's own check of the draft found, current with the draft and the registry's source health. */
     warnings?: PublishWarning[];
     panel: PanelView;
     /** Whether the active revision is rollback-ready (#117), which the line while a draft is pending says. */
@@ -276,7 +289,7 @@ export interface DisplayFacts {
     /** The ledger and blockers to show: the latest answer's when it carries a fresh join, else the page's. */
     ledger: Ledger;
     blockers: Blocker[];
-    /** The warnings to list while a draft is pending: the latest check's on this page, else the page's from the diagnostics. None otherwise. */
+    /** The warnings to list while a draft is pending: the latest check's on this page, else the page load's own. None otherwise. */
     warnings: PublishWarning[];
     /** True while Publish may go: a validation of this candidate passed on this page and still holds. */
     validated: boolean;
@@ -583,11 +596,11 @@ export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): 
     const n = view.draftNumber;
     switch (answer.kind) {
         case 'blocked':
-            return { tone: 'alert', heading: 'Publication blocked', body: [answer.lead] };
+            return { tone: 'alert', heading: 'Publication blocked', body: [answer.lead, ...warningsLine(answer.warnings)] };
         case 'blocked-at-publish':
-            return { tone: 'alert', heading: 'Nothing was published', body: [answer.lead] };
+            return { tone: 'alert', heading: 'Nothing was published', body: [answer.lead, ...warningsLine(answer.warnings)] };
         case 'valid':
-            return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes] };
+            return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes, ...warningsLine(answer.warnings)] };
         case 'published':
             // The owner's words (v1.2.1), in place of the mockup's "published atomically" and its ETag line.
             return { tone: 'done', heading: `Revision ${answer.live.number} is live`, body: ['Visitors get it on their next page load.'] };

@@ -1,5 +1,6 @@
 import { positionsPhrase, type CatalogChange, type CatalogDiff } from '../catalog/diff';
 import { hashValue, inboxReviewOf, publishedIndexes, type FieldReviewState, type InboxItem, type PublishedIndex, type ReviewContext } from '../catalog/review';
+import { SERIES_ID_RE } from '../catalog/schema';
 import { USE_PUBLISHED_REASONS, publishedValueOffer } from '../catalog/use-published-rules';
 import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-reasons';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
@@ -29,8 +30,8 @@ export interface LedgerInput {
     /** The answer's errors, or null on a page load, where the review state predicts them. */
     issues: readonly Issue[] | null;
     /**
-     * On a page load, the last check's issues for this candidate, from its diagnostics, or null when none ran under
-     * these rules. Only their warnings are read: the review state predicts the errors.
+     * On a page load, the issues the load's own check of the draft found, or null when it ran none. Only their
+     * warnings are read: the review state predicts the errors.
      */
     diagnostics?: readonly Issue[] | null;
     /** A `/media` URL for an image of the candidate (the preview's mirror) and of the active revision. */
@@ -617,6 +618,28 @@ function blockerMessage(change: CatalogChange, entry: FieldReviewState | undefin
 }
 
 /**
+ * What a warning names and where it takes the curator. A series by its title and slug, so two of one title read
+ * apart, linked to its page only from an ID a series could have. A photograph by its title, linked to the fix its
+ * ledger row already offers, its description review or its Inbox item, where it has one; else nothing.
+ */
+function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, changes: ReadonlyMap<string, CatalogChange>): Pick<PublishWarning, 'record' | 'link'> {
+    if (record.kind === 'series') {
+        const slug = [...input.candidate.series, ...input.active.series].find((series) => series.id === record.id)?.slug ?? (input.layer.series.find((series) => series.id === record.id) as { slug?: string } | undefined)?.slug;
+        const name = slug ? `${names.series(record.id)} (${slug})` : names.series(record.id);
+        return { record: name, link: SERIES_ID_RE.test(record.id) ? { type: 'series', href: `/curation/series/${encodeURIComponent(record.id)}`, name } : null };
+    }
+    const name = names.record(record);
+    if (record.kind !== 'photo') return { record: name, link: null };
+    for (const [rowId, change] of changes) {
+        if (change.record.kind !== 'photo' || change.record.id !== record.id) continue;
+        const fix = fixOf(change, input, names);
+        if (fix?.type === 'description') return { record: name, link: { type: 'description', rowId, name: fix.record } };
+        if (fix?.type === 'inbox') return { record: name, link: { type: 'inbox', eventId: fix.eventId, name: fix.record } };
+    }
+    return { record: name, link: null };
+}
+
+/**
  * The join: the ledger's rows and the blocker list, from the diff, the review
  * context and the answer's diagnostics (or, on a page load, what the review
  * state predicts the gate refuses). Every blocker that names a changed
@@ -626,20 +649,14 @@ function blockerMessage(change: CatalogChange, entry: FieldReviewState | undefin
  */
 export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const names = new Names(input);
+    const built = rowsOf(input, names);
     const warnings: PublishWarning[] = [];
     const warn = (issue: Issue) => {
         // "alt.text" is the description, as the ledger names it.
         const field = fieldName({ record: issue.record, field: issue.field.split(/[.[]/)[0] });
-        warnings.push({
-            key: `${issue.code} ${issue.record.kind} ${issue.record.id} ${issue.field}`,
-            record: names.record(issue.record),
-            field,
-            message: issue.message,
-            hint: issue.hint ?? null,
-            href: issue.record.kind === 'series' ? `/curation/series/${issue.record.id}` : null,
-        });
+        const { record, link } = warningTarget(issue.record, input, names, built.change);
+        warnings.push({ key: `${issue.code} ${issue.record.kind} ${issue.record.id} ${issue.field}`, record, field, message: issue.message, hint: issue.hint ?? null, link });
     };
-    const built = rowsOf(input, names);
     const blockers: Blocker[] = [];
     const marked = new Set<string>();
     const conflicts = conflictFields(input.layer);

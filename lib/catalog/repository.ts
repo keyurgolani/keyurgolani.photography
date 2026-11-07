@@ -236,36 +236,6 @@ export async function writeDiagnostics(root: string, diagnostics: DiagnosticsFil
     await atomicWriteJson(path.join(/*turbopackIgnore: true*/ dir, `${diagnostics.candidateId}.json`), diagnostics);
 }
 
-const isIssue = (value: unknown): value is Issue => {
-    if (typeof value !== 'object' || value === null) return false;
-    const issue = value as Record<string, unknown>;
-    const record = issue.record as Record<string, unknown> | null;
-    return typeof issue.code === 'string' && (issue.severity === 'error' || issue.severity === 'warning') && typeof issue.field === 'string' && typeof issue.message === 'string'
-        && (issue.hint === undefined || typeof issue.hint === 'string') && typeof record === 'object' && record !== null && typeof record.kind === 'string' && typeof record.id === 'string';
-};
-
-const isDiagnostics = (value: unknown, candidateId: string): value is DiagnosticsFile => {
-    if (typeof value !== 'object' || value === null) return false;
-    const file = value as Record<string, unknown>;
-    return file.schemaVersion === CATALOG_SCHEMA_VERSION && file.candidateId === candidateId && typeof file.rulesetVersion === 'string' && typeof file.checkedAt === 'string'
-        && Number.isInteger(file.errors) && Number.isInteger(file.warnings) && Array.isArray(file.issues) && file.issues.every(isIssue);
-};
-
-/**
- * What the last check of `candidateId` found, from `catalog/diagnostics/<candidateId>.json`, or null when none has
- * run. publish() writes it, a dry run too; `photos validate` writes nothing. Throws CatalogIntegrityError when the
- * file can't be used.
- */
-export async function readDiagnostics(root: string, candidateId: string): Promise<DiagnosticsFile | null> {
-    if (!REVISION_ID_RE.test(candidateId)) return null;
-    const file = path.join(/*turbopackIgnore: true*/ catalogPaths(root).diagnosticsDir, `${candidateId}.json`);
-    const read = await readJson(file);
-    if (read === null) return null;
-    const name = relative(root, file);
-    if (!read.json || !isDiagnostics(read.value, candidateId)) throw new CatalogIntegrityError(name, `${name} is not a diagnostics file this build reads.`);
-    return read.value;
-}
-
 /**
  * `catalog/diagnostics/last-publish.json`: how the last publish attempt that
  * held the catalog lock ended, for `photos status` and #16. A publish that
