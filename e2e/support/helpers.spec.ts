@@ -690,24 +690,34 @@ test.describe('parkPointer', () => {
 <script>
     window.overs = [];
     window.addEventListener('pointerover', (e) => { if (e.isTrusted) overs.push(e.target.id); }, true);
-    window.swap = (id) => { document.getElementById('frame').innerHTML = '<div id="' + id + '" style="height: 100%"></div>'; };
+    // The swap lands inside a frame, so that frame lays it out after its hover check has run, and only a later frame
+    // sends the hover: the order a slow runner sometimes takes, on every run.
+    window.swap = (id) => new Promise((resolve) => requestAnimationFrame(() => {
+        document.getElementById('frame').innerHTML = '<div id="' + id + '" style="height: 100%"></div>';
+        resolve();
+    }));
 </script>`);
-        type Probe = { overs: string[]; swap: (id: string) => void };
+        type Probe = { overs: string[]; swap: (id: string) => Promise<void> };
         const hovered = () => page.evaluate(() => Array.from(document.querySelectorAll(':hover'), (el) => el.id || el.localName));
         const overs = () => page.evaluate(() => (window as unknown as Probe).overs.splice(0));
         const swap = (id: string) => page.evaluate((next) => (window as unknown as Probe).swap(next), id);
+        // Chromium updates hover after layout at the start of the next frame, and asks for no frame to do it, so the
+        // test asks for two.
+        const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
         // Resting on the page, the pointer gets a native hover when new content arrives under it.
         await page.mouse.move(500, 300);
         expect(await overs()).toEqual(['a']);
         await swap('b');
-        await expect.poll(overs).toEqual(['b']);
+        await frames();
+        expect(await overs()).toEqual(['b']);
 
         await parkPointer(page);
         expect(await hovered()).toEqual([]);
         await swap('c');
-        // Two frames and then some, for the hover update Chromium runs after layout.
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 300)))));
+        // The same two frames that brought 'b' its hover, and then some.
+        await frames();
+        await page.waitForTimeout(300);
         expect(await overs()).toEqual([]);
         expect(await hovered()).toEqual([]);
     });
