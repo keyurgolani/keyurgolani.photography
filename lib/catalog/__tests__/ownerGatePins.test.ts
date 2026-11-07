@@ -135,6 +135,9 @@ const WRITERS: { name: string; argv: Argv }[] = [
     // activation when the target is live already, so it's a lock-taking read: the owner's alone.
     { name: 'rollback --to <the live revision> without --yes (settles under the catalog lock)', argv: () => ['rollback', '--to', '3', '--reason', 'r', '--actor', 'test'] },
     { name: 'rollback --to <an eligible revision> without --yes', argv: (w) => ['rollback', '--to', '2', '--reason', 'r', '--actor', 'test', '--expect-active', w.built.revisions[3]] },
+    // It writes status/legacy-derivatives.json, and makes status/ when there is none, so --stdout writes too.
+    { name: 'legacy-derivatives', argv: () => ['legacy-derivatives'] },
+    { name: 'legacy-derivatives --stdout', argv: () => ['legacy-derivatives', '--stdout'] },
 ];
 
 /**

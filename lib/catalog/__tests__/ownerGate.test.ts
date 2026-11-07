@@ -102,6 +102,8 @@ describe('the owner gate covers every command (A11 round 3)', () => {
         expect(at(['curation', 'frobnicate'])).toBe('curation');
         expect(at(['curation'])).toBe('curation');
         expect(at(['verify'])).toBe('verify');
+        expect(at(['legacy-derivatives'])).toBe('legacy-manifest');
+        expect(at(['legacy-derivatives', '--stdout'])).toBe('legacy-manifest');
         expect(at(['nonsense'])).toBeUndefined();
     });
 });
