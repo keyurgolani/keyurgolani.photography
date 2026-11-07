@@ -174,28 +174,89 @@ function seconds(duration) {
   return match ? Number(match[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[match[2]] : NaN;
 }
 
-/** A shell line's commands, split on unquoted `&&`, `||`, `;` and `|`, so a quoted 'apt-get|dpkg' stays whole. */
-function commandsOf(line) {
+/**
+ * A shell script's simple commands, in order: split on unquoted newlines, `;`, `&&`, `||`, `|` and `&` (not the `&`
+ * of a redirection such as `>&2`), with comments dropped. Quotes, $(…), `…`, ${…} and ((…)) stay whole inside their
+ * command, across lines too, so a quoted 'apt-get|dpkg' or a jq program over several lines is one word.
+ */
+function commandsOf(script) {
   const commands = [];
+  /** What's open, innermost last: ', ", `, $(, (, ${ or ((. */
+  const open = [];
   let current = '';
-  let quote = '';
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (quote) {
-      if (char === quote) quote = '';
-      else if (char === '\\' && quote === '"') current += line[(i += 1)] ?? '';
-    } else if (char === "'" || char === '"') quote = char;
-    else if (char === '#' && /^\s?$/.test(line[i - 1] ?? '')) break;
-    else if ('&|;'.includes(char)) {
-      if (line[i + 1] === char && char !== ';') i += 1;
-      commands.push(current);
-      current = '';
+  const end = () => {
+    if (current.trim()) commands.push(current.trim());
+    current = '';
+  };
+  for (let i = 0; i < script.length; i += 1) {
+    const char = script[i];
+    const next = script[i + 1];
+    const top = open.at(-1);
+    if (top === "'" || top === '`') {
+      current += char;
+      if (char === top) open.pop();
       continue;
+    }
+    if (char === '\\') {
+      current += char + (next ?? '');
+      i += 1;
+      continue;
+    }
+    if (top === '"' || top === '${') {
+      current += char;
+      if ((top === '"' && char === '"') || (top === '${' && char === '}')) open.pop();
+      else if (char === '`' || (top === '${' && (char === "'" || char === '"'))) open.push(char);
+      else if (char === '$' && (next === '(' || next === '{')) {
+        current += next;
+        i += 1;
+        open.push(`$${next}`);
+      }
+      continue;
+    }
+    if (top === '((') {
+      current += char;
+      if (char === ')' && next === ')') {
+        current += next;
+        i += 1;
+        open.pop();
+      }
+      continue;
+    }
+    // Unquoted: at the top, or inside $( ) or ( ).
+    if (char === "'" || char === '"' || char === '`') open.push(char);
+    else if ((char === '$' && next === '(' && script[i + 2] === '(') || (char === '(' && next === '(')) {
+      const opener = char === '$' ? '$((' : '((';
+      current += opener;
+      i += opener.length - 1;
+      open.push('((');
+      continue;
+    } else if (char === '$' && (next === '(' || next === '{')) {
+      current += char + next;
+      i += 1;
+      open.push(`$${next}`);
+      continue;
+    } else if (char === '(') open.push('(');
+    else if (char === ')' && (top === '$(' || top === '(')) open.pop();
+    else if (open.length === 0) {
+      if (char === '#' && /^\s?$/.test(script[i - 1] ?? '')) {
+        while (i + 1 < script.length && script[i + 1] !== '\n') i += 1;
+        continue;
+      }
+      if (char === '\n' || char === ';') {
+        end();
+        continue;
+      }
+      const redirection = char === '&' && (/[<>]/.test(script[i - 1] ?? '') || next === '>');
+      if ((char === '&' || char === '|') && !redirection) {
+        if (next === char || (char === '|' && next === '&')) i += 1;
+        end();
+        continue;
+      }
     }
     current += char;
   }
-  commands.push(current);
-  return commands.map((command) => command.trim()).filter(Boolean);
+  end();
+  return commands;
 }
 
 /** Commands that return at once, so a try's clean-up needs no bound on them. Anything else must run under timeout. */
@@ -203,12 +264,17 @@ const PROMPT = new Set(['echo', 'printf', 'true', 'false', ':', 'exit', 'break',
 
 /**
  * The longest one command can take, in seconds: `timeout [-k K] N cmd`, under sudo or not, takes at most N + K, and
- * `sleep N` N. A command PROMPT names takes none. Anything else is unbounded: Infinity.
+ * `sleep N` N. A command PROMPT names takes none. Anything else is unbounded, Infinity: so is any command with a
+ * command substitution in it, whatever its first word, since what it runs has no bound of its own, and a timeout of 0,
+ * or a -k of 0, which GNU timeout reads as no limit and no kill.
  */
 function boundOf(command) {
-  const words = command.split(/\s+/).filter((word) => !/^[A-Z_][A-Z0-9_]*=/.test(word));
+  if (/\$\(|`|[<>]\(/.test(command)) return Infinity;
+  const words = command.split(/\s+/);
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? '')) words.shift();
+  if (words.length === 0) return 0;
   if (words[0] === 'sudo') words.shift();
-  if (words[0] === 'sleep') return seconds(words[1]) || Infinity;
+  if (words[0] === 'sleep') return Number.isFinite(seconds(words[1])) ? seconds(words[1]) : Infinity;
   if (words[0] === 'timeout') {
     let kill = 0;
     let at = 1;
@@ -219,59 +285,110 @@ function boundOf(command) {
       else if (/^-k\d/.test(word)) kill = seconds(word.slice(2));
       else if (word === '-s' || word === '--signal') at += 1;
       else if (!/^(?:--signal=.+|--preserve-status|--foreground|-v|--verbose)$/.test(word)) return Infinity;
+      if (kill === 0 && /^(?:-k|--kill-after)/.test(word)) return Infinity;
     }
-    const bound = seconds(words[at]) + kill;
-    return Number.isFinite(bound) && words.length > at + 1 ? bound : Infinity;
+    const limit = seconds(words[at]);
+    return limit > 0 && Number.isFinite(kill) && words.length > at + 1 ? limit + kill : Infinity;
   }
   return PROMPT.has(words[0]) ? 0 : Infinity;
 }
 
 /** How many times a loop header runs its body: a list of numbers, {A..B}, $(seq [A] B), or for ((V = A; V <= B; V++)). */
 function triesOf(header) {
-  let match = /^for (\w+) in (\d+(?: +\d+)*) *(?:;|$)/.exec(header);
+  let match = /^for (\w+) in (\d+(?: +\d+)*)$/.exec(header);
   if (match) return match[2].trim().split(/ +/).length;
-  match = /^for (\w+) in \{(\d+)\.\.(\d+)\} *(?:;|$)/.exec(header);
+  match = /^for (\w+) in \{(\d+)\.\.(\d+)\}$/.exec(header);
   if (match) return Number(match[3]) - Number(match[2]) + 1;
-  match = /^for (\w+) in (?:\$\(|`)seq (?:(\d+) +)?(\d+)(?:\)|`) *(?:;|$)/.exec(header);
+  match = /^for (\w+) in (?:\$\(|`)seq (?:(\d+) +)?(\d+)(?:\)|`)$/.exec(header);
   if (match) return Number(match[3]) - Number(match[2] ?? 1) + 1;
-  match = /^for \(\( *(\w+) *= *(\d+) *; *\1 *(<=?) *(\d+) *; *(?:\1\+\+|\+\+\1|\1 *\+= *1) *\)\) *(?:;|$)/.exec(header);
+  match = /^for \(\( *(\w+) *= *(\d+) *; *\1 *(<=?) *(\d+) *; *(?:\1\+\+|\+\+\1|\1 *\+= *1) *\)\)$/.exec(header);
   if (match) return Number(match[4]) - Number(match[2]) + (match[3] === '<=' ? 1 : 0);
   return NaN;
 }
 
 /**
- * Every workflow step with a loop that retries: one whose body leaves on a command's success (`... && exit 0` or
- * `&& break`), or whose variable is a try or an attempt. Each with its step timeout, how many tries, the longest one
- * pass through the body takes (every timeout and sleep in it, the last try's clean-up too), and the body's commands
- * that have no bound. Read as text, one step to a block, as the other workflow tests do.
+ * A script's loops, every for, while and until, nested ones too, each with its header, how many times it runs (NaN
+ * where the header doesn't say), the commands one pass runs (a while or until loop's condition among them) and the
+ * loops inside it. The words that lead a command (if, then, else, do, !) are read past, since what follows them runs.
+ */
+function loopsIn(script) {
+  const loops = [];
+  const stack = [];
+  for (let command of commandsOf(script)) {
+    for (let lead; (lead = /^(?:if|elif|then|else|do|!|\{)(?:\s+|$)/.exec(command)); ) command = command.slice(lead[0].length);
+    if (!command || /^(?:fi|esac|\}|;;)(?:\s|$)/.test(command)) continue;
+    if (/^done(?:\s|$)/.test(command)) {
+      const loop = stack.pop();
+      if (loop) loop.closed = true;
+      continue;
+    }
+    const kind = /^(for|while|until)\s/.exec(command)?.[1];
+    if (kind) {
+      const loop = { header: command, tries: triesOf(command), commands: kind === 'for' ? [] : [command.slice(kind.length).trim()], inner: [], closed: false };
+      stack.at(-1)?.inner.push(loop);
+      stack.push(loop);
+      loops.push(loop);
+      continue;
+    }
+    stack.at(-1)?.commands.push(command);
+  }
+  return loops;
+}
+
+/** The longest one pass through `loop` takes, its inner loops' every pass included. */
+const passOf = (loop) => loop.commands.reduce((sum, command) => sum + boundOf(command), 0) + loop.inner.reduce((sum, inner) => sum + inner.tries * passOf(inner), 0);
+const unboundedIn = (loop) => [...loop.commands.filter((command) => boundOf(command) === Infinity), ...loop.inner.flatMap(unboundedIn)];
+
+/** The keys a workflow step can start with, so a `- name:` under `steps:` is told from a list item elsewhere. */
+const STEP_KEYS = new Set(['name', 'uses', 'run', 'if', 'id', 'env', 'with', 'shell', 'timeout-minutes', 'working-directory', 'continue-on-error']);
+
+/** Each step's run script in a workflow, with the step's name and its own timeout-minutes, read as text. */
+function runsIn(text) {
+  const lines = text.split('\n');
+  const runs = [];
+  for (let at = 0; at < lines.length; at += 1) {
+    const item = /^( *)- ([a-z-]+):/.exec(lines[at]);
+    if (!item || !STEP_KEYS.has(item[2])) continue;
+    const keyIndent = item[1].length + 2;
+    let end = at + 1;
+    while (end < lines.length && (lines[end].trim() === '' || lines[end].search(/\S/) >= keyIndent)) end += 1;
+    const step = [' '.repeat(keyIndent) + lines[at].slice(keyIndent), ...lines.slice(at + 1, end)];
+    const keys = {};
+    let script = null;
+    for (let k = 0; k < step.length; k += 1) {
+      const key = /^ *([a-z-]+):(.*)$/.exec(step[k]);
+      if (!key || step[k].search(/\S/) !== keyIndent) continue;
+      if (key[1] !== 'run') keys[key[1]] = key[2].trim();
+      else if (/^[|>][-+]?$/.test(key[2].trim())) {
+        let last = k + 1;
+        while (last < step.length && (step[last].trim() === '' || step[last].search(/\S/) > keyIndent)) last += 1;
+        const block = step.slice(k + 1, last);
+        const indent = Math.min(...block.filter((line) => line.trim()).map((line) => line.search(/\S/)));
+        script = block.map((line) => line.slice(indent)).join('\n');
+      } else script = key[2].trim();
+    }
+    if (script !== null) runs.push({ name: keys.name ?? 'a step', minutes: Number(keys['timeout-minutes']), script });
+    at = end - 1;
+  }
+  return runs;
+}
+
+/**
+ * Every loop in a workflow's run scripts: each a candidate retry, with its step timeout, how many tries, the longest
+ * one pass takes (every timeout and sleep in it, the last try's clean-up too), and the commands in it with no bound.
  */
 function retriedStepsIn(name, text) {
-  const steps = [];
-  for (const step of text.split(/\n(?= +- (?:name|uses|run|if|id):)/)) {
-    const lines = step.split('\n');
-    for (let at = 0; at < lines.length; at += 1) {
-      // A loop's header, with its `do` on the same line or the next.
-      const header = /^( *)((?:for|while|until)\s.*?)(; *do)? *$/.exec(lines[at]);
-      if (!header || (!header[3] && lines[at + 1]?.trim() !== 'do')) continue;
-      const indent = header[1];
-      const close = lines.findIndex((line, index) => index > at && (line === `${indent}done` || line.startsWith(`${indent}done `)));
-      const body = lines.slice(header[3] ? at + 1 : at + 2, close < 0 ? undefined : close).filter((line) => !/^\s*#/.test(line));
-      const variable = /^for (?:\(\( *)?(\w+)/.exec(header[2])?.[1] ?? '';
-      const leavesOnSuccess = body.some((line) => /&& *(?:exit 0|break)\b/.test(line));
-      if (!leavesOnSuccess && !/^(?:try|tries|attempt|attempts|retry|retries)$/.test(variable)) continue;
-      const commands = body.flatMap(commandsOf);
-      steps.push({
-        where: `${name}: ${/name: (.+)/.exec(step)?.[1] ?? 'a step'}`,
-        header: header[2],
-        closed: close >= 0,
-        minutes: Number(/timeout-minutes: (\d+)/.exec(step)?.[1]),
-        tries: triesOf(header[2]),
-        pass: commands.reduce((sum, command) => sum + boundOf(command), 0),
-        unbounded: commands.filter((command) => boundOf(command) === Infinity),
-      });
-    }
-  }
-  return steps;
+  return runsIn(text).flatMap((run) =>
+    loopsIn(run.script).map((loop) => ({
+      where: `${name}: ${run.name}`,
+      header: loop.header,
+      closed: loop.closed,
+      minutes: run.minutes,
+      tries: loop.tries,
+      pass: passOf(loop),
+      unbounded: unboundedIn(loop),
+    })),
+  );
 }
 
 describe("CI's retried steps", () => {
@@ -308,11 +425,9 @@ describe("CI's retried steps", () => {
     for (const [header, tries] of [['for try in 1 2 3; do', 3], ['for try in {1..4}; do', 4], ['for try in $(seq 3); do', 3], ['for attempt in $(seq 2 5); do', 4], ['for ((try = 1; try <= 3; try++)); do', 3], ['for ((n=0; n<2; n++)); do', 2]]) {
       expect(read([INSTALL, ...CLEAN_UP], { header }), header).toMatchObject([{ tries }]);
     }
-    for (const header of ['while [ "$try" -le 3 ]; do', 'until timeout 360 npx playwright install; do', 'for try in $TRIES; do']) {
-      expect(read([INSTALL, ...CLEAN_UP], { header }), header).toMatchObject([{ tries: NaN }]);
+    for (const header of ['while [ "$try" -le 3 ]; do', 'until timeout 360 npx playwright install; do', 'for try in $TRIES; do', 'for tag in "${tags[@]}"; do']) {
+      expect(read([INSTALL, ...CLEAN_UP], { header }), header).toMatchObject([{ header: header.replace(/; do$/, ''), tries: NaN }]);
     }
-    // Not a retry: a loop over items that never leaves on success.
-    expect(read(['echo "$tag"'], { header: 'for tag in "${tags[@]}"; do' })).toEqual([]);
   });
 
   /** A step whose run is `script`, line for line. */
@@ -356,15 +471,16 @@ describe("CI's retried steps", () => {
   });
 
   it('give every pass through the loop its full bound, with no unbounded command, inside the step timeout with a minute to spare', async () => {
-    const steps = await retriedSteps();
-    expect(steps.map((step) => step.where)).toEqual(['ci.yml: Install Playwright browsers', 'ci.yml: Install Chromium']);
+    const steps = (await retriedSteps()).filter((step) => !(`${step.where}: ${step.header}` in NOT_RETRIES));
+    // Soft, so a new loop also says what's wrong with it below.
+    expect.soft(steps.map((step) => step.where)).toEqual(['ci.yml: Install Playwright browsers', 'ci.yml: Install Chromium']);
     for (const step of steps) {
-      expect(step.closed, `${step.where}: the loop's done`).toBe(true);
-      expect(Number.isInteger(step.tries) && step.tries > 0, `${step.where}: can't count the tries of "${step.header}"; write it as for try in 1 2 3`).toBe(true);
+      const where = `${step.where}: ${step.header}`;
+      expect.soft(step.closed, `${where}: the loop's done`).toBe(true);
+      expect.soft(Number.isInteger(step.tries) && step.tries > 0, `${where}: can't count the tries; write it as for try in 1 2 3, or list it in NOT_RETRIES with why`).toBe(true);
       // A hung dpkg would otherwise eat the next try's time, so the clean-up is bounded too.
-      expect(step.unbounded, `${step.where}: commands in the loop with no bound`).toEqual([]);
-      const worst = step.tries * step.pass;
-      expect(step.minutes * 60, `${step.where}: ${step.tries} passes of at most ${step.pass} s`).toBeGreaterThanOrEqual(worst + 60);
+      expect.soft(step.unbounded, `${where}: commands in the loop with no bound`).toEqual([]);
+      expect.soft(step.minutes * 60, `${where}: ${step.tries} passes of at most ${step.pass} s`).toBeGreaterThanOrEqual(step.tries * step.pass + 60);
     }
   });
 });
@@ -387,7 +503,12 @@ describe("Perf A/B's wiring", () => {
   const perfAbSteps = async () => perfAbStepsIn(await perfAbText());
 
   /** Where a step hands an input, or any expression, to a script other than through env: `<step>: <key>` each. */
-  const leaks = (steps) => steps.flatMap(({ name, keys }) => Object.entries(keys).filter(([key, text]) => key !== 'env' && /\binputs\./.test(text)).map(([key]) => `${name}: ${key}`));
+  const leaks = (steps) =>
+    steps.flatMap(({ name, keys }) =>
+      Object.entries(keys)
+        .filter(([key, text]) => (key === 'run' && text.includes('${{')) || (key !== 'env' && /\binputs\s*[.[]/.test(text)))
+        .map(([key]) => `${name}: ${key}`),
+    );
 
   /** perf-ab.yml's steps, each as its step-level keys (`name`, `uses`, `with`, `env`, `run`, ...) and their text. */
   function perfAbStepsIn(text) {
