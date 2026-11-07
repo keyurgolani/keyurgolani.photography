@@ -690,9 +690,14 @@ test.describe('parkPointer', () => {
 <script>
     window.overs = [];
     window.addEventListener('pointerover', (e) => { if (e.isTrusted) overs.push(e.target.id); }, true);
-    window.swap = (id) => { document.getElementById('frame').innerHTML = '<div id="' + id + '" style="height: 100%"></div>'; };
+    // The swap lands inside a frame, so that frame lays it out after its hover check has run, and only a later frame
+    // sends the hover: the order a slow runner sometimes takes, on every run.
+    window.swap = (id) => new Promise((resolve) => requestAnimationFrame(() => {
+        document.getElementById('frame').innerHTML = '<div id="' + id + '" style="height: 100%"></div>';
+        resolve();
+    }));
 </script>`);
-        type Probe = { overs: string[]; swap: (id: string) => void };
+        type Probe = { overs: string[]; swap: (id: string) => Promise<void> };
         const hovered = () => page.evaluate(() => Array.from(document.querySelectorAll(':hover'), (el) => el.id || el.localName));
         const overs = () => page.evaluate(() => (window as unknown as Probe).overs.splice(0));
         const swap = (id: string) => page.evaluate((next) => (window as unknown as Probe).swap(next), id);
