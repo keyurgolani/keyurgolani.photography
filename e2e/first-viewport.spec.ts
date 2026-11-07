@@ -1,8 +1,11 @@
 import { devices, type Browser, type BrowserContextOptions, type Page, type Request } from '@playwright/test';
 import sharp from 'sharp';
+import { TONE_IDLE_TIMEOUT_MS } from '../components/badgePlace';
+import { TONE_SETTLE_MS } from '../components/home/useCopyTone';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { BUDGET_FIXTURE, BUDGET_VARIANT_BYTES } from '../lib/perf/fixture';
+import { declaredMediaBytes, MAX_TONE_REREADS_PER_IMAGE } from '../lib/perf/report';
 import { startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
@@ -119,9 +122,21 @@ interface MediaRequest {
     /** The rung's nominal width: 400, 800, 1200, or 1920. */
     rung: number;
     format: string;
+    /** The pathname, by which images are told apart. */
     url: string;
+    /** The pathname and query, by which a re-read is matched to the file it reads. */
+    href: string;
     /** What the server said it sent. */
     bytes: number;
+}
+
+/** A /media fetch() as the page's Resource Timing saw it: a copy-tone re-read, and whether it touched the network. */
+interface ToneRead {
+    /** Pathname and query. */
+    url: string;
+    transferSize: number;
+    deliveryType: string;
+    encodedBodySize: number;
 }
 
 interface Measured {
@@ -130,9 +145,13 @@ interface Measured {
     media: MediaRequest[];
     /**
      * Home's copy-tone sampler's fetch() of the file its slide shows (components/badgePlace.ts's canvasSampler), from
-     * the cache only (`only-if-cached`): a second read of an image already loaded, never a download. Not an image request.
+     * the cache only (`only-if-cached`): a second read of an image already loaded. Not an image request. `reads` are
+     * the ones that finished and `refused` the ones that failed, by pathname and query, as Playwright saw them;
+     * `timing` is each one the page's Resource Timing recorded, in the settled snapshot.
      */
     reads: string[];
+    refused: string[];
+    timing: ToneRead[];
     api: string[];
     /** About's portrait, which Home's intro and badge show: the variants asked for. Not catalog images, but part of the first load. */
     portraits: string[];
@@ -142,11 +161,41 @@ interface Measured {
 const MEDIA = /^\/media\/(ph_[^/]+)\/[^/]+\/[^/]+\/w(\d+)\.(avif|webp)$/;
 const PORTRAIT = /^\/about\/portrait\/[0-9a-f]{32}\/w(\d+)\.(avif|webp)$/;
 
-/** Open `path` in a fresh context, wait until the first load is quiet, and sort what it asked for. `prepare` runs before the load. */
-async function measure(browser: Browser, profile: Profile, path: string, prepare?: (page: Page) => Promise<void>): Promise<Measured> {
+/**
+ * How long the copy tone's reads must stay unchanged before the snapshot: the sampler waits for the browser to be idle
+ * for up to TONE_IDLE_TIMEOUT_MS before it reads, after a TONE_SETTLE_MS settle, so an earlier snapshot can miss a read.
+ */
+const TONE_QUIET_MS = TONE_IDLE_TIMEOUT_MS + TONE_SETTLE_MS;
+
+/** Every /media fetch() the page's Resource Timing holds, by pathname and query. */
+const toneTiming = (page: Page): Promise<ToneRead[]> =>
+    page.evaluate(() =>
+        (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+            .filter((entry) => entry.initiatorType === 'fetch' && new URL(entry.name).pathname.startsWith('/media/'))
+            .map((entry) => {
+                const url = new URL(entry.name);
+                return { url: url.pathname + url.search, transferSize: entry.transferSize, deliveryType: (entry as PerformanceResourceTiming & { deliveryType?: string }).deliveryType ?? '', encodedBodySize: entry.encodedBodySize };
+            }),
+    );
+
+/** A copy-tone read that came from the cache, of the whole file the fixture declares: the proof the read happened and stayed off the network. */
+const fromCache = (read: ToneRead) => read.deliveryType === 'cache' && read.transferSize === 0 && read.encodedBodySize === declaredMediaBytes(new URL(read.url, 'http://x').pathname);
+
+/**
+ * Open `path` in a fresh context, wait until the first load is quiet and the copy tone's reads have settled, and sort
+ * what it asked for. `prepare` runs before the load. `toneControl` first waits for one read from the cache (Home's
+ * success path), so a snapshot can't pass by coming before the sampler.
+ */
+async function measure(browser: Browser, profile: Profile, path: string, { prepare, toneControl = false }: { prepare?: (page: Page) => Promise<void>; toneControl?: boolean } = {}): Promise<Measured> {
     const context = await browser.newContext(PROFILES[profile]);
     const page = await context.newPage();
+    // Room for every request a load makes, as ci/perf/measure.mjs gives it, so the snapshot misses none.
+    await page.addInitScript(() => performance.setResourceTimingBufferSize(2000));
     await prepare?.(page);
+    let toneAsks = 0;
+    page.on('request', (request) => {
+        if (request.resourceType() === 'fetch' && new URL(request.url()).pathname.startsWith('/media/')) toneAsks += 1;
+    });
     const finished: Promise<void>[] = [];
     const seen: { request: Request; bytes: number; transfer: number }[] = [];
     page.on('requestfinished', (request) => {
@@ -162,33 +211,49 @@ async function measure(browser: Browser, profile: Profile, path: string, prepare
     await page.goto(`${origin()}${path}`);
     await waitForHydration(page);
     await page.waitForLoadState('networkidle');
+    if (toneControl) {
+        await expect
+            .poll(async () => (await toneTiming(page)).some(fromCache), { message: 'one copy-tone read from the cache, of the whole file, with no transfer', timeout: 20_000 })
+            .toBe(true);
+    }
+    // Settled: the reads, as Resource Timing and Playwright both count them, unchanged for TONE_QUIET_MS.
+    let count = -1;
+    let since = Date.now();
+    for (const deadline = Date.now() + 30_000; Date.now() < deadline; await page.waitForTimeout(250)) {
+        const now = (await toneTiming(page)).length + toneAsks;
+        if (now !== count) [count, since] = [now, Date.now()];
+        else if (Date.now() - since >= TONE_QUIET_MS) break;
+    }
+    const timing = await toneTiming(page);
     await Promise.all(finished);
 
     const all = [...seen.map((entry) => ({ ...entry, failed: false })), ...failed.map((request) => ({ request, bytes: 0, transfer: 0, failed: true }))];
     const media: MediaRequest[] = [];
     const reads: string[] = [];
+    const refused: string[] = [];
     const api: string[] = [];
     let other = 0;
     const portraits: string[] = [];
     let document = { transfer: 0 };
-    for (const { request, bytes, transfer } of all) {
+    for (const { request, bytes, transfer, failed: refusedRead } of all) {
         const url = new URL(request.url());
         const match = MEDIA.exec(url.pathname);
         if (request.resourceType() === 'document') document = { transfer };
-        else if (match && request.resourceType() === 'fetch') reads.push(url.pathname);
-        else if (match) media.push({ photoId: match[1], rung: Number(match[2]), format: match[3], url: url.pathname, bytes });
+        // Any fetch() of /media, matched or not, so none falls into `other`, where nothing asserts it.
+        else if (url.pathname.startsWith('/media/') && request.resourceType() === 'fetch') (refusedRead ? refused : reads).push(url.pathname + url.search);
+        else if (match) media.push({ photoId: match[1], rung: Number(match[2]), format: match[3], url: url.pathname, href: url.pathname + url.search, bytes });
         else if (url.pathname.startsWith('/api/')) api.push(url.pathname);
         else if (PORTRAIT.test(url.pathname)) portraits.push(url.pathname);
         else other += 1;
     }
-    return { page, document, media, reads, api, portraits, other };
+    return { page, document, media, reads, refused, timing, api, portraits, other };
 }
 
 for (const profile of Object.keys(PROFILES) as Profile[]) {
     for (const screen of SCREENS) {
         test(`${screen} on the ${profile}: the first viewport's requests, rungs, and reach stay inside the policy`, async ({ browser }) => {
             const policy = POLICY[screen];
-            const { page, document: doc, media, reads, api, portraits, other } = await measure(browser, profile, pathOf(screen));
+            const { page, document: doc, media, reads, refused, timing, api, portraits, other } = await measure(browser, profile, pathOf(screen), { toneControl: screen === 'home' });
             try {
                 const bytes = media.reduce((sum, request) => sum + request.bytes, 0);
                 // Every screen leads with the featured series' first photograph: Home's opening, Work's first cover, the series cover, the Viewer's photograph.
@@ -199,7 +264,7 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                     imageKiB: Number((bytes / KIB).toFixed(1)),
                     rungs: [...new Set(media.map((request) => request.rung))].sort((a, b) => a - b),
                     api: api.length,
-                    reads: reads.length,
+                    reads: timing.map(({ url, transferSize, deliveryType }) => ({ url, transferSize, deliveryType })),
                     portraits: portraits.length,
                     other,
                 };
@@ -211,10 +276,13 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                 // The browser takes AVIF, so the AVIF-only preload is the request the <picture> makes, never a second format.
                 for (const request of media) expect(request.format, request.url).toBe('avif');
                 expect(new Set(media.map((request) => request.url)).size, 'no image is asked for twice').toBe(media.length);
-                // Only Home's copy tone reads a file again, and only one its images already loaded, from the cache.
-                if (screen !== 'home') expect(reads, 'fetch() of /media').toEqual([]);
-                for (const url of reads) expect(media.map((request) => request.url), `${url} is read again, not fetched new`).toContain(url);
-                expect(reads.length, "the copy tone's reads").toBeLessThanOrEqual(media.length);
+                // Only Home's copy tone reads a file again: only a file its images already loaded, by pathname and query,
+                // at most MAX_TONE_REREADS_PER_IMAGE times each, and never over the network (transferSize 0).
+                if (screen !== 'home') expect([reads, refused, timing], 'fetch() of /media off Home').toEqual([[], [], []]);
+                const loaded = media.map((request) => request.href);
+                for (const url of [...reads, ...refused, ...timing.map((read) => read.url)]) expect(loaded, `${url} is read again, not fetched new`).toContain(url);
+                for (const read of timing) expect(read.transferSize, `${read.url} came from the cache`).toBe(0);
+                for (const url of new Set(reads)) expect(reads.filter((read) => read === url).length, `${url}: re-reads`).toBeLessThanOrEqual(MAX_TONE_REREADS_PER_IMAGE);
 
                 // Each image at no more than the rung its sizes ask for at this width and pixel ratio.
                 expect(media.map((request) => request.photoId), 'the lead photograph is asked for').toContain(leadId);
@@ -270,7 +338,7 @@ test('the viewer on the desktop: an AVIF file that fails takes one WebP retry at
     const lead = catalog!.content.photos.find((photo) => photo.id === leadId);
     if (!lead) throw new Error('No lead photograph');
     const leadMedia = (url: URL) => MEDIA.exec(url.pathname)?.[1] === leadId;
-    const { page, media, reads, api } = await measure(browser, 'desktop', pathOf('viewer'), async (page) => {
+    const { page, media, reads, api } = await measure(browser, 'desktop', pathOf('viewer'), { prepare: async (page) => {
         await page.route(
             (url) => leadMedia(url),
             async (route) => {
@@ -281,7 +349,7 @@ test('the viewer on the desktop: an AVIF file that fails takes one WebP retry at
                 return route.fulfill({ status: 200, contentType: 'image/webp', headers: { 'content-length': String(body.length) }, body });
             },
         );
-    });
+    } });
     try {
         const avif = media.filter((request) => request.format === 'avif');
         const webp = media.filter((request) => request.format === 'webp');
@@ -295,6 +363,27 @@ test('the viewer on the desktop: an AVIF file that fails takes one WebP retry at
         await expect(page.locator('[data-viewer-current] img').first()).toHaveJSProperty('complete', true);
         expect(await page.locator('[data-viewer-current] img').first().evaluate((image: HTMLImageElement) => [image.naturalWidth > 0, new URL(image.currentSrc).pathname])).toEqual([true, webp[0].url]);
         await expect(page.locator('[data-surface="viewer"] [data-photo="unavailable"]')).toHaveCount(0);
+    } finally {
+        await page.context().close();
+    }
+});
+
+// The copy tone with the browser's cache off (Home, on the phone): the sampler still runs, and its cache-only read is
+// refused, so nothing it fetches finishes with a response. The one in-browser kill of a sampler that drops its cache
+// option or uses force-cache, which would download the slide again here. No route, which would turn the cache off for
+// everything and hide the difference.
+test('home on the phone with the cache off: the copy tone reads nothing from the network', async ({ browser }) => {
+    const { page, reads, refused, timing } = await measure(browser, 'phone', pathOf('home'), {
+        prepare: async (page) => {
+            const cdp = await page.context().newCDPSession(page);
+            await cdp.send('Network.enable');
+            await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+        },
+    });
+    try {
+        report['home/phone, cache off'] = { reads, refused, timing };
+        expect(refused.length, 'the sampler ran: its cache-only read was refused').toBeGreaterThan(0);
+        expect(reads, 'no /media fetch() finished with a response').toEqual([]);
     } finally {
         await page.context().close();
     }
@@ -323,6 +412,15 @@ test('each server HTML holds its lead photograph and a preload carrying the same
 });
 
 test.describe('a failed derivative keeps its box and the way on', () => {
+    // The library's AVIF files decode, so each case fails its own: every /media file, both formats, answers 404, on
+    // every page the case goes to.
+    test.beforeEach(async ({ page }) => {
+        await page.route(
+            (url) => url.pathname.startsWith('/media/'),
+            (route) => route.fulfill({ status: 404, body: '' }),
+        );
+    });
+
     test('Home: the failure is offered, and the series and the site stay reachable', async ({ page }) => {
         await page.goto(`${origin()}/`);
         await waitForHydration(page);
