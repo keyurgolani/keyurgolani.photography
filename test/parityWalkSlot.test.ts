@@ -26,8 +26,8 @@ afterEach(() => {
 });
 
 describe("the parity walk's control slot", () => {
-    it("doesn't take a heading for the theme control's slot when its only element is one the head adds beside its text", async () => {
-        const { before, after } = await walkBoth('<header><h1>Fixture harbor</h1></header>', '<header><h1>Fixture harbor<span class="sr-only">, photograph 2 of 3</span></h1></header>', ['header h1 > span.sr-only']);
+    it("doesn't take an element for the theme control's slot when its only element is one the head adds", async () => {
+        const { before, after } = await walkBoth('<header><h1>Fixture title</h1></header>', '<header><h1>Fixture title<span data-added="">, more</span></h1></header>', ['header h1 > span[data-added]']);
         const heading = (walked: typeof before) => walked.elements.find((element) => element.path === 'body>header:nth-of-type(1)>h1:nth-of-type(1)');
         expect(heading(before)?.slot).toBe(false);
         expect(heading(after)?.slot).toBe(false);
