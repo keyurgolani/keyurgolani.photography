@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { checkShift, shiftLine, type Box, type Shift } from './helpers/parityShift';
+import { compare, failures, type Walk, type Walked } from './helpers/parityWalk';
 
 // The Dark parity gate's exact shift (#171, e2e/themes/computed.ts): a sanctioned scroll moves a box by exactly its
 // distance, with no tolerance band. A box moved by any other distance, by a fraction too, sideways, or not at all,
@@ -67,5 +68,56 @@ describe("the parity gate's exact shift", () => {
         const box = BOXES[2];
         const head = moved(box, -161);
         expect(shiftLine('body>main', box, head, SHIFT, checkShift(box, head, SHIFT))).toBe('body>main: 47.516 298.953 771.219 633.141 against 47.516 137.953 771.219 633.141 (161 px, the sanctioned shift 0 -160, off by 1 px)');
+    });
+});
+
+// The same rule through the gate's own comparison (test/helpers/parityWalk.ts, re-exported by e2e/themes/computed.ts),
+// on walks of the page as the gate reads them, with Next's hidden metadata div under body.
+describe("the parity gate's comparison under a shift", () => {
+    const at = (path: string, rect: Walked['rect'], styles = ['color: rgb(1, 2, 3)']): Walked => ({ path, styles, pseudos: {}, rect, slot: false });
+    const walkOf = (elements: Walked[]): Walk => ({ tokens: { root: {}, body: {} }, elements, resolved: { body: 'body' }, folded: [], foldedPinned: [] });
+    const HIDDEN = 'body>div:nth-of-type(1)';
+    const page = (dy: number, hidden: Walked['rect'] = [0, 0, 0, 0]) => [...BOXES.map((box, i) => at(`body>p:nth-of-type(${i + 1})`, moved(box, dy))), at(HIDDEN, hidden)];
+    const named = (elements: Walked[]) => Object.fromEntries(elements.map((element) => [element.path, SHIFT]));
+    const shifts = named(page(0));
+
+    it('passes every box moved by exactly the shift, lists each one that moved, and leaves the hidden div unlisted', () => {
+        const c = compare(walkOf(page(0)), walkOf(page(-160)), {}, {}, shifts);
+        expect(failures(c)).toEqual([]);
+        expect(c.deltas).toHaveLength(BOXES.length);
+        expect(c.deltas.some((line) => line.startsWith(HIDDEN))).toBe(false);
+        expect(c.largest).toBe(160);
+    });
+
+    it('fails every box with area when nothing moved, each 160 px off', () => {
+        const c = compare(walkOf(page(0)), walkOf(page(0)), {}, {}, shifts);
+        expect(c.geometry).toHaveLength(BOXES.length);
+        expect(c.geometry.every((line) => line.endsWith('off by 160 px)'))).toBe(true);
+    });
+
+    it.each([-159, -161, -160.015625])('fails every box with area moved by %s px', (dy) => {
+        const c = compare(walkOf(page(0)), walkOf(page(dy)), {}, {}, shifts);
+        expect(c.geometry).toHaveLength(BOXES.length);
+        expect(c.geometry.every((line) => line.endsWith(`off by ${+Math.abs(dy + 160).toFixed(3)} px)`))).toBe(true);
+    });
+
+    it('fails the hidden div if it moves, or gains a size', () => {
+        expect(compare(walkOf(page(0)), walkOf(page(-160, [0, -160, 0, 0])), {}, {}, shifts).geometry).toEqual([`${HIDDEN}: 0 0 0 0 against 0 -160 0 0 (160 px, the sanctioned shift 0 -160, off by 160 px)`]);
+        expect(compare(walkOf(page(0)), walkOf(page(-160, [0, -160, 4, 2])), {}, {}, shifts).geometry).toHaveLength(1);
+    });
+
+    it('still fails a style under the shift', () => {
+        const head = page(-160);
+        head[1] = at(head[1].path, head[1].rect, ['color: rgb(1, 2, 4)']);
+        const c = compare(walkOf(page(0)), walkOf(head), {}, {}, shifts);
+        expect(c.styles).toEqual(['body>p:nth-of-type(2) color: rgb(1, 2, 3) against rgb(1, 2, 4)']);
+        expect(c.geometry).toEqual([]);
+    });
+
+    it('fails the same 160 px move on a box the shift doesn\'t name', () => {
+        const only = { [`body>p:nth-of-type(1)`]: SHIFT, [HIDDEN]: SHIFT };
+        const c = compare(walkOf(page(0)), walkOf(page(-160)), {}, {}, only);
+        expect(c.geometry).toHaveLength(BOXES.length - 1);
+        expect(c.geometry.every((line) => line.endsWith('(160 px)'))).toBe(true);
     });
 });
