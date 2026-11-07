@@ -84,9 +84,9 @@ const NONE: readonly HomeLoopSeries[] = [];
  * How many photographs the opening walk tries before Home says the
  * photographs can't be shown: #6's first-load cap of two full-size
  * photographs, so a dead media route costs two photographs rather than the
- * whole loop. Each costs its AVIF and, after its WebP retry, its WebP, so four file
- * requests in a browser that takes AVIF. A photograph with no image files costs
- * no request and doesn't count. Retry tries two more.
+ * whole loop. Each costs its AVIF and, after the retry, its WebP, so four
+ * file requests in a browser that takes AVIF. A photograph with no image files
+ * costs no request and doesn't count. Retry tries two more.
  */
 const OPENING_ATTEMPTS = 2;
 
