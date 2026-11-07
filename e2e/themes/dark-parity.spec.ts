@@ -17,14 +17,14 @@ import { cameraRowDeparture, FACT_ROWS, readFactRows, type FactRow } from '../..
 // same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
 // fixtures, a dark device and reduced motion.
 //
-// The gate is computed style (the lead's ruling, 2026-10-29; spec §10; e2e/themes/computed.ts). The base doesn't render
+// The gate is computed style (the lead's ruling, 2026-10-29; spec §10; test/helpers/parityWalk.ts). The base doesn't render
 // the same pixels twice: its own photographs, the intro's ripples and a focus ring's edge differ from one load to the
 // next, so a pixel gate flakes on the base itself. What Dark is made of can be compared exactly instead:
 // 1. Tokens: every custom property the base resolves on :root and body must resolve the same in the head's Dark. New
 //    tokens are allowed, and listed.
 // 2. Elements: every element under body (and in the curator's preview frame), matched by a path of tag and
 //    nth-of-type, with its ::before, ::after, ::placeholder and ::marker: paint, backgrounds, borders and radii, type and
-//    its decoration, crop, clipping and stacking, compositing, SVG paint, visibility and display, all exact (computed.ts
+//    its decoration, crop, clipping and stacking, compositing, SVG paint, visibility and display, all exact (parityWalk.ts
 //    lists them), and its box exact, every delta logged, with one named allowance (the Inbox's KG ring at 390). A
 //    missing or extra element fails, by path. The theme control and today's toggle are left out with their subtrees,
 //    and the slot that holds only them is compared by style alone; the curator's head takes its control out of the
@@ -880,7 +880,7 @@ const HEAD_ONLY: { selector: string; why: string }[] = [
  * - RETAGGED: the head's entry box is walked as the `a` it replaces, so the cover, the copy and everything under them
  *   keep today's paths, and their styles and boxes are compared as before;
  * - FOLDED: the title link is left out of both walks, with no layout change, since it adds no element the base had.
- *   Its own paint must equal its h2's (computed.ts's FOLD_PAINT): the same ink and type, no margin or padding, and no
+ *   Its own paint must equal its h2's (test/helpers/parityWalk.ts's FOLD_PAINT): the same ink and type, no margin or padding, and no
  *   fill, line, outline, band, decoration, clip, mask or compositing of its own. Its ::before and ::after are read
  *   too, and paint nothing at rest. The ::after is the target, and in `work-focus` the ring, pinned to its values in
  *   Dark as a departure of its own (B3's review, 2). work.spec.ts checks the target and the ring in every theme.

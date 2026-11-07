@@ -212,9 +212,22 @@ async function measure(browser: Browser, profile: Profile, path: string, { prepa
     await waitForHydration(page);
     await page.waitForLoadState('networkidle');
     if (toneControl) {
-        await expect
-            .poll(async () => (await toneTiming(page)).some(fromCache), { message: 'one copy-tone read from the cache, of the whole file, with no transfer', timeout: 20_000 })
-            .toBe(true);
+        // The message carries the entries the poll last saw, so a red control leaves each read's url, transferSize,
+        // deliveryType and encodedBodySize behind, not just a trace.
+        let last: ToneRead[] = [];
+        try {
+            await expect
+                .poll(
+                    async () => {
+                        last = await toneTiming(page);
+                        return last.some(fromCache);
+                    },
+                    { message: 'one copy-tone read from the cache, of the whole file, with no transfer', timeout: 20_000 },
+                )
+                .toBe(true);
+        } catch (error) {
+            throw new Error(`One copy-tone read from the cache, of the whole file, with no transfer, never came. Resource Timing had ${JSON.stringify(last)}`, { cause: error });
+        }
     }
     // Settled: the reads, as Resource Timing and Playwright both count them, unchanged for TONE_QUIET_MS.
     let count = -1;
@@ -289,6 +302,8 @@ for (const profile of Object.keys(PROFILES) as Profile[]) {
                 for (const url of [...reads, ...refused, ...timing.map((read) => read.url)]) expect(loaded, `${url} is read again, not fetched new`).toContain(url);
                 for (const read of timing) expect(read.transferSize, `${read.url} came from the cache`).toBe(0);
                 for (const url of new Set(reads)) expect(reads.filter((read) => read === url).length, `${url}: re-reads`).toBeLessThanOrEqual(MAX_TONE_REREADS_PER_IMAGE);
+                // The same cap on Resource Timing's list, which also holds a read Playwright saw refused.
+                for (const url of new Set(timing.map((read) => read.url))) expect(timing.filter((read) => read.url === url).length, `${url}: re-reads in Resource Timing`).toBeLessThanOrEqual(MAX_TONE_REREADS_PER_IMAGE);
 
                 // Each image at no more than the rung its sizes ask for at this width and pixel ratio.
                 expect(media.map((request) => request.photoId), 'the lead photograph is asked for').toContain(leadId);
