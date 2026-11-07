@@ -1181,14 +1181,14 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             const sanctioned = sanctionedFor(pair, viewport.width, against.walk);
             const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
             const comparison = compare(against.walk, head.walk, allowances, sanctioned);
-            // The details list's one change, Camera make merged into Camera (#175, B8), recorded with both builds' rows.
-            const camera = pair.cameraRows ? cameraRowDeparture(against.facts, head.facts) : { failing: [], record: [] };
-            comparison.sanctioned.push(...camera.record.map((line) => `#175 (B8), Camera make merged into Camera: ${line}`));
-            const failing = [
-                ...judge(`${pair.name}, ${route}`, viewport.width, comparison, timedOut),
-                ...camera.failing.map((line) => `the details list: ${line}`),
-                ...paintsDark(head, against),
-            ];
+            // The details list's departure (#175, B8): Camera make merged into Camera, and the three unit rows. A failing
+            // line is structural, so the report counts and prints it; the sanction is recorded only when none fails.
+            if (pair.cameraRows) {
+                const camera = cameraRowDeparture(against.facts, head.facts);
+                comparison.structural.push(...camera.failing.map((line) => `the details list: ${line}`));
+                if (camera.failing.length === 0) comparison.sanctioned.push(...camera.record.map((line) => `#175 (B8), the details list: ${line}`));
+            }
+            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, comparison, timedOut), ...paintsDark(head, against)];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
