@@ -19,9 +19,16 @@ export interface ShiftCheck {
     off: number;
 }
 
-/** The head's box against the base's moved by exactly `shift`, its size unchanged. */
+/** Whether a box has neither width nor height, as one with display: none (0 0 0 0 wherever the page is scrolled). */
+const noArea = (box: Box) => box[2] === 0 && box[3] === 0;
+
+/**
+ * The head's box against the base's moved by exactly `shift`, its size unchanged. A box with no area in either build
+ * has nothing to scroll, as Next's hidden metadata <div hidden> under body: it must be exactly where the base has it.
+ */
 export function checkShift(base: Box, head: Box, shift: Shift): ShiftCheck {
-    const expected: Box = [base[0] + shift[0], base[1] + shift[1], base[2], base[3]];
+    const still = noArea(base) && noArea(head);
+    const expected: Box = still ? base : [base[0] + shift[0], base[1] + shift[1], base[2], base[3]];
     return { delta: boxDelta(base, head), off: boxDelta(expected, head) };
 }
 

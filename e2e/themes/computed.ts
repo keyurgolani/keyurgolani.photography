@@ -361,6 +361,7 @@ export function compare(
         if (shift) {
             // Where the shift says the box must be, compared as the boxes are: no slack (test/helpers/parityShift.ts).
             const checked = checkShift(b.rect, h.rect, shift);
+            if (checked.delta === 0 && checked.off === 0) continue;
             const line = shiftLine(b.path, b.rect, h.rect, shift, checked);
             result.deltas.push(line);
             result.largest = Math.max(result.largest, checked.delta);
