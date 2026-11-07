@@ -1,22 +1,24 @@
 import type { InboxWatcher, ReadyInboxSummary } from './inbox-view';
 
 /**
- * #14 (A8): the Inbox's poll. While the page is open it reads
+ * #14: the Inbox's poll. While the page is open it reads
  * /api/curation/inbox/summary every 60 s and when the tab comes back, and the
  * page's one polite region says what changed since it loaded: new items that
  * need judgment, the watcher stopping or coming back, the browser going
  * offline or coming back. The open item changing is flagged for its own
- * `role="alert"`, never the polite line. A9's Publish watch is the model
- * (lib/curation/publish-watch.ts there); this one reads a route, not a
- * server action, and adds the offline state. Client-safe and pure apart from
- * the timers and the fetch it's given, so the bounds are tested here:
+ * `role="alert"`, never the polite line. The Publish screen's watch is the
+ * model; this one reads a route, not a server action, and adds the offline
+ * state. Client-safe and pure apart from the timers and the fetch it's given,
+ * so the bounds are tested here:
  *
  * - one check at a time: the next is scheduled only after an answer, and a
  *   wake while one is in flight does nothing;
  * - nothing while the tab is hidden or the browser says it's offline; when
  *   the tab comes back, one check, unless one ran in the last 15 s; when the
- *   browser is online again, one check at once, or 2 s after the last if one
- *   ran that recently, so the offline state clears as soon as one gets through;
+ *   browser is online again, one check at once, or 2 s after the last check
+ *   started if that was more recent, and if a check is out or the tab is
+ *   hidden then, once that's over, so the offline state clears as soon as one
+ *   gets through; going online never restarts a watch whose session ended;
  * - errors back off, doubling up to 10 minutes, and five in a row stop it. A
  *   check that can't reach the server is the offline state; resume(), when
  *   the browser is online again, starts over;
@@ -40,7 +42,7 @@ export const ITEM_CHANGED_EVENT = 'curation-inbox:item-changed';
 /** `rebased`: the server refused the cursor the poll sent, so this answer counts from its own cursor instead (4a). */
 export type InboxWatchAnswer = { kind: 'summary'; summary: ReadyInboxSummary; rebased?: true } | { kind: 'signed-out' } | { kind: 'offline' } | { kind: 'unavailable' };
 
-/** One wording for the offline state, in the notice and in the live line alike (A8 review N6). */
+/** One wording for the offline state, in the notice and in the live line alike. */
 export const OFFLINE_TEXT = "You're offline, or the server can't be reached, so the inbox can't check for changes, and what it shows may be out of date. An action won't go through until you're back.";
 
 export interface InboxWatchDeps {
@@ -68,7 +70,7 @@ export interface InboxWatch {
     stop(): void;
     /** The tab came back or took focus: check now, unless one ran moments ago or one is in flight. */
     wake(): void;
-    /** The browser is online again: forget the backoff and check at once, or 2 s after the last check, even after errors stopped it. */
+    /** The browser is online again: forget the backoff and check at once, or 2 s after the last check started, even after errors stopped it. */
     resume(): void;
 }
 
@@ -263,7 +265,7 @@ export async function fetchInboxSummary(itemId: string | null, since: number | n
     if (since !== null && Number.isSafeInteger(since) && since >= 0) query.set('since', String(since));
     const at = () => (query.toString() ? `${SUMMARY_PATH}?${query.toString()}` : SUMMARY_PATH);
     const answer = await readSummary(at(), fetcher);
-    // A8 review, 4a: a cursor the server didn't issue, as after a restore of the data root. Read again without it.
+    // A cursor the server didn't issue, as after a restore of the data root. Read again without it.
     if (answer === 'bad-cursor') {
         query.delete('since');
         const again = await readSummary(at(), fetcher);
@@ -343,9 +345,9 @@ export function inboxNews(page: InboxPageFacts, answer: InboxWatchAnswer, announ
         lines.push(BACK_LINE);
         news.forget.push('offline');
     }
-    // The link after the line is named "Refresh the inbox", so the line doesn't say it again (C1 review).
-    // A8 review B4, 4a: the items that arrived after the page's cursor, by the server's own order, not the net count,
-    // which an item decided elsewhere would cancel out.
+    // The link after the line is named "Refresh the inbox", so the line doesn't say it again.
+    // The items that arrived after the page's cursor, by the server's own order, not the net count, which an item
+    // decided elsewhere would cancel out.
     const more = summary.arrived ?? 0;
     if (more > 0 && !announced.has(`arrived:${more}`)) {
         lines.push(more === 1 ? '1 new item needs judgment.' : `${more} new items need judgment.`);

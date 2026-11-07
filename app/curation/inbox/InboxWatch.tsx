@@ -12,19 +12,19 @@ interface InboxWatchProps {
     watcher: InboxWatcher;
     /** How many items needed judgment when the page loaded. */
     needsJudgment: number;
-    /** The arrival sequence the page loaded at, which every check sends back as `since` (A8 review, 4a). */
+    /** The arrival sequence the page loaded at, which every check sends back as `since`. */
     cursor: number;
     /** The item the page has open, and the version its forms carry, or null. */
     item: { id: string; version: number } | null;
 }
 
 /**
- * #14 (A8): the top of the Inbox while the page is open. It holds A2's watcher strip, now kept current by the poll
+ * #14: the top of the Inbox while the page is open. It holds the watcher strip, now kept current by the poll
  * (lib/curation/inbox-watch.ts) of /api/curation/inbox/summary every 60 s; the offline state, when the browser goes
  * offline or the server can't be reached; and the one polite region that says what changed since the page loaded,
  * each thing once, with a way to refresh. The strip and the offline state are named regions, not live ones, so
  * nothing is said twice. It never reloads the page, and a session that ended stops it without a word. Its pieces go
- * straight into the page, with no wrapper, so the watcher strip is where it was before A8 (A8's CI, Dark parity).
+ * straight into the page, with no wrapper, so the watcher strip is where it was before the poll, as Dark parity holds.
  */
 export default function InboxWatch({ watcher, needsJudgment, cursor, item }: InboxWatchProps) {
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
@@ -52,7 +52,7 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                 setCurrent(news.watcher);
             }
             if (answer.kind === 'summary') {
-                // A check got through, so whatever said offline was wrong or is over (A8 review S5).
+                // A check got through, so whatever said offline was wrong or is over.
                 browserOffline = false;
                 setOffline(false);
                 if (answer.rebased) since.current = answer.summary.cursor;
