@@ -28,7 +28,7 @@ import { expect, test } from './support/test';
 // so this runs once, on the desktop project, and opens the phone as its own
 // context.
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'default' });
 
 const HOOK_TIMEOUT = 15 * 60_000;
 const KIB = 1024;
