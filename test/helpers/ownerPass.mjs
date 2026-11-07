@@ -6,8 +6,8 @@ export const HEADING = "## The owner's screen-reader and device pass";
 export const AREAS = ['Home', 'Site navigation and the theme menu', 'The Viewer', 'Publish', 'The Inbox', 'What to do with a finding'];
 
 /**
- * #184's acceptance steps, and the two the plan adds. Each is one step in its area: a step whose bold title matches
- * every `title` pattern, and whose whole text matches every `body` pattern.
+ * #184's acceptance steps, the two the plan adds, and the Viewer heading in NVDA's browse mode. Each is one step in its
+ * area: a step whose bold title matches every `title` pattern, and whose whole text matches every `body` pattern.
  */
 export const ACCEPTANCE = [
   { name: 'Home, one double-tap with VoiceOver', area: 'Home', title: [/double-tap/i, /VoiceOver on iOS Safari/], body: [/Next photograph/, /Work/] },
@@ -22,6 +22,7 @@ export const ACCEPTANCE = [
   { name: 'the end message twice', area: 'The Viewer', title: [/end/i, /twice/i], body: [/both times/] },
   { name: 'the Viewer modal', area: 'The Viewer', title: [/modal/i, /VoiceOver with Safari/, /NVDA with Chrome/], body: [/dialog/, /Escape/, /focus/] },
   { name: 'the Viewer page', area: 'The Viewer', title: [/page/i, /VoiceOver with Safari/, /NVDA with Chrome/], body: [/main landmark/, /no dialog/i] },
+  { name: "the Viewer heading in NVDA's browse mode", area: 'The Viewer', title: [/heading/i, /browse mode/i, /NVDA with Chrome/], body: [/aria-label/, /photograph 3 of 12/, /once/, /doubled title/] },
   { name: 'the grouped ledger', area: 'Publish', title: [/group/i, /ledger/i], body: [/heading level 3/] },
   { name: 'a collapsed group', area: 'Publish', title: [/collapsed/i], body: [/collapsed/, /expanded/] },
   { name: 'a review', area: 'Publish', title: [/review/i], body: [/mark reviewed/i] },
