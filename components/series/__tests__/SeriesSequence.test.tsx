@@ -289,6 +289,41 @@ describe('SeriesSequence', () => {
         expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 200 } });
     });
 
+    // #6 gap 28 (mutation d28): the held extent is cleared once it's written, so a later Back never writes it again
+    // over a newer extent the series entry has since been given.
+    it('clears an extent it held once the series entry has it, so a later Back never puts it back over a newer one', async () => {
+        let resolve: (response: Response) => void = () => undefined;
+        fetch.mockImplementation(() => new Promise<Response>((done) => (resolve = done)));
+        show();
+        const back = () =>
+            act(async () => {
+                const popped = new Promise((done) => window.addEventListener('popstate', done, { once: true }));
+                window.history.back();
+                await popped;
+            });
+        const extent = () => (window.history.state as Record<string, { loaded: number }>)[SERIES_PAGES_KEY]?.loaded;
+        // Page 2 arrives while the modal Viewer's entry is current, so it's held, and written on the Back to the series.
+        fireEvent.click(more());
+        await flush();
+        window.history.pushState({ __NA: true, viewer: true }, '', `/work/fixture-long/photo/${id(150)}`);
+        resolve(pageAnswer(PAGE_2));
+        await flush();
+        await back();
+        expect(extent()).toBe(200);
+        // Page 3 arrives with the series entry current, so it's written at once.
+        fireEvent.click(more());
+        await flush();
+        resolve(pageAnswer(PAGE_3));
+        await flush();
+        expect(positions()).toHaveLength(250);
+        expect(extent()).toBe(250);
+        // The modal Viewer opens again and closes with nothing new: the series entry keeps its 250.
+        window.history.pushState({ __NA: true, viewer: true }, '', `/work/fixture-long/photo/${id(220)}`);
+        await back();
+        expect(window.location.pathname).toBe('/work/fixture-long');
+        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 250 } });
+    });
+
     it('records the loaded extent in the history entry, keeping the keys already there', async () => {
         show();
         fireEvent.click(more());

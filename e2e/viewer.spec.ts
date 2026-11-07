@@ -1,4 +1,4 @@
-import type { Page, Request } from '@playwright/test';
+import type { Page, Request, Route } from '@playwright/test';
 import { expectHoverRulesGated } from './support/hover';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
@@ -208,6 +208,36 @@ test('moves replace the history entry, so one Back leaves the Viewer for the pag
     await page.goForward();
     await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
     await expect(header(page)).toContainText('02 / 03');
+});
+
+// #6 gap 30: a photograph the visitor moves past before it finished stops loading (stopFetching.ts). Its /media
+// response is held, so it's still on its way at the second Next. The first photograph is the server's preloaded lead,
+// which can't be stopped, so the race is on the second. Under reduced motion, since otherwise the passed photograph
+// stays on as the previous neighbour's peek (9a), which keeps loading it on purpose. Chromium reports a stopped
+// request as ERR_ABORTED.
+test('a photograph passed before it finished loading stops loading', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'The abort is read from Chromium\'s network events.');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const held: Route[] = [];
+    await page.route((url) => url.pathname.startsWith(`/media/${P[1]}/`), (route) => void held.push(route));
+    const failed: { pathname: string; error: string }[] = [];
+    page.on('requestfailed', (request) => failed.push({ pathname: new URL(request.url()).pathname, error: request.failure()?.errorText ?? '' }));
+    await openViewer(page, P[0]);
+    await next(page).click();
+    await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
+    await expect.poll(() => held.length, 'the second photograph was asked for and is held').toBeGreaterThan(0);
+    expect(await photograph(page).evaluate((image: HTMLImageElement) => image.naturalWidth), 'nothing painted yet').toBe(0);
+    const asked = held.map((route) => new URL(route.request().url()).pathname);
+
+    await next(page).click();
+    await expect(page).toHaveURL(`${origin()}${href(P[2])}`);
+    await expect(header(page)).toContainText('03 / 03');
+    await expect
+        .poll(() => failed.filter((request) => asked.includes(request.pathname)).map((request) => request.error), 'the passed photograph was stopped')
+        .toContainEqual(expect.stringMatching(/ERR_ABORTED/));
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    for (const route of held) await route.continue().catch(() => undefined);
 });
 
 /** Where the reading area's title line sits on screen: the title (when shown), and the first line of the caption or the description. */
