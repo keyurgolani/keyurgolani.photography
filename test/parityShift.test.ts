@@ -33,23 +33,52 @@ describe("the parity gate's exact shift", () => {
         expect(checkShift(box, [box[0], box[1] - 160, box[2], box[3] + 1], SHIFT).off).toBe(1);
     });
 
-    // A box with no area in either build, as Next's hidden metadata <div hidden> under body, has nothing to scroll:
-    // display: none gives it 0 0 0 0 wherever the page is. It's compared exactly, unshifted.
-    describe('a box with no area in either build', () => {
+    // "No box": a rect of all zeros, x, y, width and height, in both builds, as Next's hidden metadata <div hidden>
+    // under body, which is display: none, has nothing to scroll and is compared unshifted. Every other box, a
+    // zero-size one at a real position included, as a <picture>, its <source>s and next-route-announcer, is in the
+    // page's flow and scrolls with it, so it must make the exact move (CI run 42346229076).
+    describe('no box, and zero-size boxes', () => {
         const NONE: Box = [0, 0, 0, 0];
 
-        it('is where the base has it, unshifted', () => {
+        it('passes no box unshifted, and fails it if it moves anywhere but by the shift', () => {
             expect(checkShift(NONE, NONE, SHIFT)).toEqual({ delta: 0, off: 0 });
+            // Moved in the head, it's a positioned box there, judged against the shift's place for it, 0 -160.
+            expect(checkShift(NONE, [0, 1, 0, 0], SHIFT).off).toBe(161);
+            expect(checkShift(NONE, [0, -159, 0, 0], SHIFT).off).toBe(1);
+            expect(checkShift(NONE, [3, 0, 0, 0], SHIFT).off).toBe(160);
         });
 
-        it('is off if it moves, by the shift or by anything else', () => {
-            expect(checkShift(NONE, [0, -160, 0, 0], SHIFT).off).toBe(160);
-            expect(checkShift(NONE, [0, 1, 0, 0], SHIFT).off).toBe(1);
-            expect(checkShift([12, 30, 0, 0], [12, 30.015625, 0, 0], SHIFT).off).toBe(0.015625);
+        it.each([
+            [-160, 0],
+            [-159, 1],
+            [-161, 1],
+            [0, 160],
+        ])('takes a zero-size box at a real position moved by %s px as off by %s px', (dy, off) => {
+            const at: Box = [47.515625, 298.953125, 0, 0];
+            expect(checkShift(at, moved(at, dy), SHIFT).off).toBe(off);
         });
 
-        it('takes the shift once it has area in either build', () => {
-            // A box that gains a width or a height in the head, or had one in the base, must make the exact move.
+        // Run 42346229076's rows, in the 1/64 px the gate reads: each moved exactly 160 px with the page.
+        it.each([
+            ["the first entry's <picture> and both its <source>s", [47.515625, 298.953125, 0, 0], [47.515625, 138.953125, 0, 0]],
+            ["the second entry's <picture> and both its <source>s", [850.734375, 298.953125, 0, 0], [850.734375, 138.953125, 0, 0]],
+            ['next-route-announcer', [0, 1191.140625, 0, 0], [0, 1031.140625, 0, 0]],
+        ] as const)('passes %s, as CI read them', (_, base, head) => {
+            expect(checkShift(base, head, SHIFT)).toEqual({ delta: 160, off: 0 });
+            // And each fails unshifted, where the old area-only rule put them.
+            expect(checkShift(base, base, SHIFT).off).toBe(160);
+        });
+
+        it('judges a box that is no box in one build and positioned in the other as a positioned box', () => {
+            // No box in the base, a zero-size box in the head: the head's must be where the shift takes the base's.
+            expect(checkShift(NONE, [0, -160, 0, 0], SHIFT)).toEqual({ delta: 160, off: 0 });
+            expect(checkShift(NONE, [0, 0.015625, 0, 0], SHIFT).off).toBe(160.015625);
+            // A zero-size box in the base, no box in the head: it didn't move with the page.
+            expect(checkShift([0, 300, 0, 0], NONE, SHIFT).off).toBe(140);
+            expect(checkShift([0, 160, 0, 0], NONE, SHIFT).off).toBe(0);
+        });
+
+        it('takes the shift once it has a size in either build', () => {
             expect(checkShift(NONE, [0, 0, 1, 0], SHIFT).off).toBe(160);
             expect(checkShift(NONE, [0, -160, 0, 1], SHIFT).off).toBe(1);
             expect(checkShift([0, 300, 10, 0], [0, 140, 10, 0], SHIFT)).toEqual({ delta: 160, off: 0 });
@@ -77,32 +106,34 @@ describe("the parity gate's comparison under a shift", () => {
     const at = (path: string, rect: Walked['rect'], styles = ['color: rgb(1, 2, 3)']): Walked => ({ path, styles, pseudos: {}, rect, slot: false });
     const walkOf = (elements: Walked[]): Walk => ({ tokens: { root: {}, body: {} }, elements, resolved: { body: 'body' }, folded: [], foldedPinned: [] });
     const HIDDEN = 'body>div:nth-of-type(1)';
-    const page = (dy: number, hidden: Walked['rect'] = [0, 0, 0, 0]) => [...BOXES.map((box, i) => at(`body>p:nth-of-type(${i + 1})`, [...moved(box, dy)] as Walked['rect'])), at(HIDDEN, hidden)];
+    // The page's boxes, a zero-size <picture> at a real position among them, as in CI run 42346229076.
+    const PICTURE: Box = [47.515625, 298.953125, 0, 0];
+    const page = (dy: number, hidden: Walked['rect'] = [0, 0, 0, 0]) => [...[...BOXES, PICTURE].map((box, i) => at(`body>p:nth-of-type(${i + 1})`, [...moved(box, dy)] as Walked['rect'])), at(HIDDEN, hidden)];
     const named = (elements: Walked[]) => Object.fromEntries(elements.map((element) => [element.path, SHIFT]));
     const shifts = named(page(0));
 
     it('passes every box moved by exactly the shift, lists each one that moved, and leaves the hidden div unlisted', () => {
         const c = compare(walkOf(page(0)), walkOf(page(-160)), {}, {}, shifts);
         expect(failures(c)).toEqual([]);
-        expect(c.deltas).toHaveLength(BOXES.length);
+        expect(c.deltas).toHaveLength(BOXES.length + 1);
         expect(c.deltas.some((line) => line.startsWith(HIDDEN))).toBe(false);
         expect(c.largest).toBe(160);
     });
 
-    it('fails every box with area when nothing moved, each 160 px off', () => {
+    it('fails every box but the hidden div when nothing moved, each 160 px off', () => {
         const c = compare(walkOf(page(0)), walkOf(page(0)), {}, {}, shifts);
-        expect(c.geometry).toHaveLength(BOXES.length);
+        expect(c.geometry).toHaveLength(BOXES.length + 1);
         expect(c.geometry.every((line) => line.endsWith('off by 160 px)'))).toBe(true);
     });
 
-    it.each([-159, -161, -160.015625])('fails every box with area moved by %s px', (dy) => {
+    it.each([-159, -161, -160.015625])('fails every box but the hidden div moved by %s px', (dy) => {
         const c = compare(walkOf(page(0)), walkOf(page(dy)), {}, {}, shifts);
-        expect(c.geometry).toHaveLength(BOXES.length);
+        expect(c.geometry).toHaveLength(BOXES.length + 1);
         expect(c.geometry.every((line) => line.endsWith(`off by ${+Math.abs(dy + 160).toFixed(3)} px)`))).toBe(true);
     });
 
     it('fails the hidden div if it moves, or gains a size', () => {
-        expect(compare(walkOf(page(0)), walkOf(page(-160, [0, -160, 0, 0])), {}, {}, shifts).geometry).toEqual([`${HIDDEN}: 0 0 0 0 against 0 -160 0 0 (160 px, the sanctioned shift 0 -160, off by 160 px)`]);
+        expect(compare(walkOf(page(0)), walkOf(page(-160, [0, 1, 0, 0])), {}, {}, shifts).geometry).toEqual([`${HIDDEN}: 0 0 0 0 against 0 1 0 0 (1 px, the sanctioned shift 0 -160, off by 161 px)`]);
         expect(compare(walkOf(page(0)), walkOf(page(-160, [0, -160, 4, 2])), {}, {}, shifts).geometry).toHaveLength(1);
     });
 
@@ -117,7 +148,7 @@ describe("the parity gate's comparison under a shift", () => {
     it('fails the same 160 px move on a box the shift doesn\'t name', () => {
         const only = { [`body>p:nth-of-type(1)`]: SHIFT, [HIDDEN]: SHIFT };
         const c = compare(walkOf(page(0)), walkOf(page(-160)), {}, {}, only);
-        expect(c.geometry).toHaveLength(BOXES.length - 1);
+        expect(c.geometry).toHaveLength(BOXES.length);
         expect(c.geometry.every((line) => line.endsWith('(160 px)'))).toBe(true);
     });
 });
