@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogChange, CatalogDiff } from '../../catalog/diff';
 import type { FieldReviewReason, FieldReviewState, ReviewContext } from '../../catalog/review';
-import type { CandidateContent, RevisionContent, WorkingLayer } from '../../catalog/types';
-import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, rollbackStakes, rollbackWarning, timeOf, type Ledger, type ScreenView } from '../publish-facts';
+import type { CandidateContent, Issue, RevisionContent, WorkingLayer } from '../../catalog/types';
+import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, rollbackStakes, rollbackWarning, timeOf, type Ledger, type PublishWarning, type ScreenView } from '../publish-facts';
 import { localize } from '../publish-history';
 import { buildLedger } from '../publish-view';
 
@@ -49,9 +49,9 @@ function change(reason: FieldReviewReason, overrides: Partial<CatalogChange> = {
     };
 }
 
-const ledgerFor = (changes: CatalogChange[], issues: Parameters<typeof buildLedger>[0]['issues'] = null) => {
+const ledgerFor = (changes: CatalogChange[], issues: Parameters<typeof buildLedger>[0]['issues'] = null, diagnostics: readonly Issue[] | null = null) => {
     const diff: CatalogDiff = { activeRevisionId: REV(2), empty: false, changes };
-    return buildLedger({ diff, layer, active: content, candidate: content as CandidateContent, registry: null, review, activations: [], issues, media: { draft: (url) => `/draft${url}`, live: (url) => url } });
+    return buildLedger({ diff, layer, active: content, candidate: content as CandidateContent, registry: null, review, activations: [], issues, diagnostics, media: { draft: (url) => `/draft${url}`, live: (url) => url } });
 };
 
 describe('the join, over 16-1 reasons', () => {
@@ -263,5 +263,56 @@ describe('facts by state', () => {
     it('says who did a thing without a producer ID', () => {
         expect(actorPhrase('curator:web')).toBe('from this screen');
         expect(actorPhrase('keyur')).toBe('from the command line');
+    });
+});
+
+describe('warnings, which never block a publish', () => {
+    const issue = (code: string, severity: Issue['severity'], record: Issue['record'], field: string, message: string, hint?: string): Issue => ({ code, severity, record, field, message, ...(hint ? { hint } : {}) });
+    // The three warning rules at once, in the words the rules give them and the CLI prints.
+    const three: Issue[] = [
+        issue('description.camera-tokens', 'warning', { kind: 'photo', id: PHOTO }, 'alt.text', 'The description mentions camera details.', 'Screen readers read the description aloud. The camera details are stored separately.'),
+        issue('description.length', 'warning', { kind: 'photo', id: PHOTO }, 'alt.text', 'The description runs 301 characters, past 250.', 'Keep it to what the photograph shows.'),
+        issue('series.duplicate-title', 'warning', { kind: 'series', id: SERIES }, 'title', 'The series view-test and view-other share this title, so Work shows 2 links with the same name.', 'Give each series its own title. This is a warning only; nothing is blocked.'),
+    ];
+    const listed = (warnings: readonly PublishWarning[]) => warnings.map(({ record, field, message, hint, href }) => ({ record, field, message, hint, href }));
+    const expected = [
+        { record: 'Pier lamps', field: 'description', message: three[0].message, hint: three[0].hint, href: null },
+        { record: 'Pier lamps', field: 'description', message: three[1].message, hint: three[1].hint, href: null },
+        { record: 'View test', field: 'title', message: three[2].message, hint: three[2].hint, href: `/curation/series/${SERIES}` },
+    ];
+    const blocking = issue('description.required', 'error', { kind: 'series', id: SERIES }, 'statement', 'A published series needs a statement.');
+
+    it("lists every warning in an answer's issues in the rule's own words, naming its record and linking a series to its page, apart from the blockers", () => {
+        const { blockers, warnings } = ledgerFor([], three);
+        expect(blockers).toEqual([]);
+        expect(listed(warnings)).toEqual(expected);
+        expect(new Set(warnings.map((warning) => warning.key)).size).toBe(3);
+        // An error among them still blocks, and the warnings stay listed beside it.
+        const mixed = ledgerFor([], [...three, blocking]);
+        expect(mixed.blockers).toHaveLength(1);
+        expect(listed(mixed.warnings)).toEqual(expected);
+    });
+
+    it("lists a page load's warnings from the last check of this candidate, whose errors the review state predicts instead", () => {
+        const { blockers, warnings } = ledgerFor([], null, [...three, blocking]);
+        expect(blockers).toEqual([]);
+        expect(listed(warnings)).toEqual(expected);
+    });
+
+    it('lists none when there are none, or no check has run', () => {
+        expect(ledgerFor([], []).warnings).toEqual([]);
+        expect(ledgerFor([], null, null).warnings).toEqual([]);
+        expect(ledgerFor([], [blocking]).warnings).toEqual([]);
+    });
+
+    it("shows a passing Validate's warnings, else the page's, with Publish still open, and none once nothing is pending", () => {
+        const fromPage: PublishWarning[] = [{ key: 'k', record: 'View test', field: 'title', message: three[2].message, hint: null, href: null }];
+        const fromAnswer: PublishWarning[] = ledgerFor([], three).warnings;
+        expect(displayFacts(view({ warnings: fromPage }), null, null).warnings).toEqual(fromPage);
+        const valid = displayFacts(view({ warnings: fromPage }), { kind: 'valid', stakes: 'S', warnings: fromAnswer }, null);
+        expect(valid.warnings).toEqual(fromAnswer);
+        expect(valid.bar).toMatchObject({ validate: 'available', publish: 'available' });
+        expect(displayFacts(view(), null, null).warnings).toEqual([]);
+        expect(displayFacts(view({ kind: 'nothing', warnings: fromPage }), null, null).warnings).toEqual([]);
     });
 });
