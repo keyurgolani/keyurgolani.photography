@@ -11,7 +11,7 @@ import { createInboxFixture, openInboxItems, type InboxFixture } from '../suppor
 import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
-import { cameraRowDeparture, FACT_ROWS, type FactRow } from './viewerFacts';
+import { cameraRowDeparture, FACT_ROWS, type FactRow } from '../../test/helpers/viewerFacts';
 
 // Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
 // same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same

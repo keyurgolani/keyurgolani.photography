@@ -1,10 +1,9 @@
-import type { Page } from '@playwright/test';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { compare, walk } from '../e2e/themes/computed';
+import { compare, walk, type EvaluatingPage } from './helpers/parityWalk';
 
-// The Dark parity walk (e2e/themes/computed.ts) in jsdom, through a page that runs the walk's own function here.
+// The Dark parity walk (test/helpers/parityWalk.ts) in jsdom, through a page that runs the walk's own function here.
 // jsdom has no layout, so every box is zero; what this checks is which elements the walk calls the theme control's slot.
-const page = { evaluate: (fn: (args: unknown) => unknown, args: unknown) => Promise.resolve(fn(args)) } as unknown as Page;
+const page = { evaluate: (fn: (args: unknown) => unknown, args: unknown) => Promise.resolve(fn(args)) } as unknown as EvaluatingPage;
 
 /** The base's markup and the head's, walked in turn, with the head's added elements left out as HEAD_ONLY leaves them. */
 async function walkBoth(base: string, head: string, leaveOut: string[]) {

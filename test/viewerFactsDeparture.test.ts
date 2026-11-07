@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { technicalFacts } from '../components/viewer/viewerLabels';
-import { cameraRowDeparture, type FactRow } from '../e2e/themes/viewerFacts';
+import { cameraRowDeparture, type FactRow } from './helpers/viewerFacts';
 import { DEFAULT_TECHNICAL } from '../lib/catalog/testing';
 
 // Dark parity's sanctioned departure on the Viewer's details list (#175, B8). The base's "Camera make" and "Camera"
