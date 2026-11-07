@@ -24,6 +24,9 @@ const nextConfig = {
       // First, so every entry below overrides it for a key the two share.
       // Nothing frames a visitor page: the owner's other site sends frame-src 'none'.
       { source: '/:path*', headers: SITE_HEADERS },
+      // No policy here sends script-src, so the root layout's two inline scripts run unhashed. A future script-src must
+      // allow the submit gate (components/site/submitGateScript.ts) by the same nonce or hash as THEME_INIT_SCRIPT, or
+      // the Inbox's early presses post again (__tests__/curatorBoundary.test.ts checks both hashes).
       { source: '/:path*', headers: [{ key: 'Content-Security-Policy', value: "frame-ancestors 'self'" }] },
       ...CURATOR_SOURCES.map((source) => ({
         source,

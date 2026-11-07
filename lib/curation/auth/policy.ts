@@ -560,7 +560,11 @@ export const CURATOR_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
     'Referrer-Policy': 'no-referrer',
 };
 
-/** The curator's framing policy, sent apart from the other headers. */
+/**
+ * The curator's framing policy, sent apart from the other headers. It sends no script-src. A future one must allow the
+ * submit gate (components/site/submitGateScript.ts) by the same nonce or hash as THEME_INIT_SCRIPT, or the Inbox's
+ * early presses post again.
+ */
 export const CURATOR_FRAME_POLICY: Readonly<Record<string, string>> = {
     'Content-Security-Policy': "frame-ancestors 'none'",
 };

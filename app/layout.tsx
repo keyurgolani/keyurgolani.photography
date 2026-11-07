@@ -10,6 +10,7 @@ import './globals.css';
 import '../styles/themes.css';
 import { sans, serif } from './fonts';
 import { ThemeProvider } from '../components/ThemeContext';
+import { SUBMIT_GATE_SCRIPT } from '../components/site/submitGateScript';
 import { THEME_INIT_SCRIPT } from '../components/site/themeScript';
 import { getMetadataBase } from '../lib/site/config';
 import { SITE_NAME, siteOpenGraph } from '../lib/site/metadata';
@@ -50,6 +51,8 @@ export default function RootLayout({
     <html lang="en" data-theme="dark" data-theme-choice="system" suppressHydrationWarning className={`${serif.variable} ${sans.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* Drops a press on a form that opts in until that form has mounted (submitGateScript.ts); inert everywhere else. */}
+        <script dangerouslySetInnerHTML={{ __html: SUBMIT_GATE_SCRIPT }} />
         <noscript>
           <style>{NO_SCRIPT_THEME_STYLE}</style>
         </noscript>
