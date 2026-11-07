@@ -281,7 +281,7 @@ export const canvasSampler: ToneSampler = async (image, source) => {
     // WebKit's private browsing, rejects with no request and the tone skips, so it never downloads the slide again.
     // Any other same-origin file, as a curator's preview's media, served `private, no-store` under its own path, is
     // fetched again. Keyed on the file, not the page: shipped visitor code never names the preview's routes (#16).
-    const cache = new URL(url, document.baseURI).pathname.startsWith('/media/') ? 'only-if-cached' : 'force-cache';
+    const cache = 'force-cache' as RequestCache;
     const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
     if (!response.ok) return null;
     bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
