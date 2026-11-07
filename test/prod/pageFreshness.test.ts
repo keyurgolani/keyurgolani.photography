@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * #12's freshness rows in production mode (B12). `npm run test:prod` builds,
+ * #12's freshness rows in production mode. `npm run test:prod` builds,
  * then this serves a copy of .next/standalone on a temp data root, with
  * SITE_URL set, and reads the pages' raw HTML as a browser and as Twitterbot
  * (test/helpers/standaloneServer.ts says why both). Plain `npm test` skips it
@@ -13,9 +13,9 @@
  *   after </head>, and tag for tag the body /work sends. Then the same on a second server whose
  *   first request meets a damaged active pointer.
  * - F1, F3, F6: the launch, then a publish that changes the series
- *   statement. After each, Work's one marker (`ul[data-catalog-revision]`,
- *   B3), Home's ready `main` (B6), and the series page's meta tag, main and
- *   statement show the revision /api/ready names.
+ *   statement. After each, Work's one marker (`ul[data-catalog-revision]`),
+ *   Home's ready `main`, and the series page's meta tag, main and statement
+ *   show the revision /api/ready names.
  * - H1, H2: the series head (title, description, canonical, og:image,
  *   catalog-revision) is all inside <head>, for Twitterbot and a browser.
  * - S1, the series half: the canonical URL, an alias and a case variant, an
@@ -93,8 +93,8 @@ const UNKNOWN_PHOTO = 'ph_00000000-0000-4000-8000-000000000000';
 const quiet = { log: () => undefined };
 
 /**
- * A featured three-photo series with an alias, a second series (B8's moved
- * photo goes there), and a draft. Sparse variants, so the profile is ready
+ * A featured three-photo series with an alias, a second series (the Viewer's
+ * moved photo goes there), and a draft. Sparse variants, so the profile is ready
  * and the cover has a share image without writing image files.
  */
 const fixture = (seed: number): TestCatalogOptions => ({
@@ -184,7 +184,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         expect(page.status, where).toBe(500);
         expect(page.headers.get('content-type'), where).toContain('text/html');
         expect(page.html, where).toMatch(/<html\b[^>]*\bid="__next_error__"/);
-        // No revision answered, so neither B8's Viewer tag nor the series page's names one, in <head> or after it.
+        // No revision answered, so neither the Viewer's tag nor the series page's names one, in <head> or after it.
         expect(meta(page.html, 'catalog-revision'), `${where}: <meta name="catalog-revision">`).toEqual([]);
         const body = bodyOf(page.html);
         expect(errorShellProblems(body), `${where}: ${withoutScripts(body)}`).toEqual([]);
@@ -219,7 +219,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
 
     /**
      * Work as each agent comes from `revision`: the list's marker is the page's
-     * only one (B3), and every rev_ in the page is that revision.
+     * only one, and every rev_ in the page is that revision.
      */
     async function expectWorkAt(revision: string): Promise<void> {
         for (const agent of AGENTS) {
@@ -233,7 +233,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
         }
     }
 
-    /** Home as each agent comes from `revision`: one marker on its main, the ready state (B6), and every rev_ that one. */
+    /** Home as each agent comes from `revision`: one marker on its main, the ready state, and every rev_ that one. */
     async function expectHomeAt(revision: string): Promise<void> {
         for (const agent of AGENTS) {
             const page = await get(base(), '/', agent);
@@ -247,7 +247,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     }
 
     /**
-     * The Viewer as each agent comes from `revision` on `at`: B8's meta tag
+     * The Viewer as each agent comes from `revision` on `at`: its meta tag
      * is its one marker, every rev_ in it is that one, and its caption, in
      * the reading area and the description, is `caption`.
      */
@@ -452,7 +452,7 @@ describe.skipIf(process.env.RUN_PROD_TESTS !== '1')('the pages in production mod
     it('F4: shows a rollback from this process on Home', async () => {
         expect(r2, 'F1, F3, F6 published').not.toBe('');
         // rollback(), not activateRevision() alone: it also rebases the working layer onto R1, as every rollback the
-        // curator runs does. activateRevision() alone left the draft on R2, so slot 4's R3 edit raised
+        // curator runs does. activateRevision() alone would leave the draft on R2, so the R3 edit below would raise
         // working.conflicts on the statement (this field changed here and in the active revision).
         const rolled = await rollback({ dataRoot: catalog!.root, revisionId: r1, expectedActiveRevisionId: r2, actor: 'test', reason: 'F4', logger: quiet });
         expect(rolled.outcome, blockingText(rolled)).toBe('ROLLED_BACK');

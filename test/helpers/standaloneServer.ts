@@ -2,7 +2,7 @@
  * A production server for the rows in test/prod that read pages: a copy of
  * .next/standalone, served on 127.0.0.1 with only the temp roots a test
  * names, plus the readers those rows check the HTML with. activation.test.ts
- * keeps its own copy of the start-up, since A11 edits that folder.
+ * keeps its own copy of the start-up, and stays as it is.
  *
  * Every fetch sets its user agent. In Next 16.4.2 only HTML_LIMITED_BOT_UA_RE
  * (Twitterbot here) gets blocking metadata; every other agent, Node's own
@@ -234,13 +234,13 @@ export function links(html: string, rel: string): string[] {
 
 /** The revision markers a page carries, each as often as it's there, from tags only. */
 export interface Markers {
-    /** `<meta name="catalog-revision">`: the series page (on next) and the Viewer (B8). */
+    /** `<meta name="catalog-revision">`: the series page and the Viewer. */
     meta: string[];
-    /** `main[data-catalog-revision]`: the series page, and Home (B6). */
+    /** `main[data-catalog-revision]`: the series page, and Home. */
     main: string[];
-    /** `ul[data-catalog-revision]`: Work's list (B3). */
+    /** `ul[data-catalog-revision]`: Work's list. */
     list: string[];
-    /** `main[data-home-state]`: Home's state (B6). */
+    /** `main[data-home-state]`: Home's state. */
     homeState: string[];
     /** Every distinct `rev_<64 hex>` anywhere in the text, scripts included, sorted. */
     revisions: string[];
@@ -273,7 +273,7 @@ export function skeleton(html: string): string[] {
 /**
  * Change a series' statement or short statement the way the curator does:
  * read the record, change only those fields, and write it at the version
- * read. A3's slug and accent rules never see a change.
+ * read. The slug and accent rules never see a change.
  */
 export async function editSeries(root: string, seriesId: string, change: { statement?: string; shortStatement?: string }): Promise<void> {
     const record = await readAuthoredRecord(root, 'series', seriesId);

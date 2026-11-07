@@ -71,8 +71,8 @@ describe('forRequest', () => {
 
     // Modelled on work-routes.test.tsx's one read per request. When the page throws, Next renders the error page's
     // head in a second render of the same request, where cache() starts empty. A fresh read there lands the metadata
-    // after the shell, and Next streams the title and meta tags into the body (B12's E1, the series and Viewer pages
-    // as a browser). Kept by the request, the answer is the page's, at once.
+    // after the shell, and Next streams the title and meta tags into the body (the series and Viewer error pages, as
+    // a browser, in test/prod/pageFreshness.test.ts). Kept by the request, the answer is the page's, at once.
     it("keeps the request's read for a later render of it, as the error page's head, and reads again in the next request", async () => {
         let readable = false;
         const load = vi.fn(async () => ({ state: readable ? 'ok' : 'unavailable' }));

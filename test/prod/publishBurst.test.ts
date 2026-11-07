@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * C1, #12's burst row (B12): 50 fetches of a series page while 20 publishes
+ * C1, #12's burst row: 50 fetches of a series page while 20 publishes
  * run one after another, on a copy of .next/standalone with its own data
  * root and server. `npm run test:prod` builds first; plain `npm test` skips
  * it unless RUN_PROD_TESTS=1.

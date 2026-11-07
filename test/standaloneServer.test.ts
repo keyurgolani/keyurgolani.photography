@@ -79,7 +79,7 @@ describe("the error shell's skeleton", () => {
 });
 
 /**
- * The Viewer's body as B8 renders it on a page (ViewerChrome's header, the
+ * The Viewer's body as it renders on a page (ViewerChrome's header, the
  * photograph's <picture>, and the reading area), then a Flight payload
  * naming tags of its own, which no reader may count.
  */

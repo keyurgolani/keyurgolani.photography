@@ -14,9 +14,10 @@ import { cache } from 'react';
  * Next renders the error page's head in a second render of the same request,
  * which would read the catalog again from disk. That read lands after the
  * error shell went out, so Next streams the page's title and meta tags into
- * the body, where a visitor without JavaScript keeps them (B1's CI fix 3 on
- * /work, B12's E1 on the series and Viewer pages). Kept by the request, the
- * answer is there at once. cache() still shares the load inside a render.
+ * the body, where a visitor without JavaScript keeps them (first on /work's
+ * error page, then on the series and Viewer error pages). Kept by the
+ * request, the answer is there at once. cache() still shares the load inside
+ * a render.
  *
  * The only next/* importer in lib/catalog; the CLI never imports it.
  */
