@@ -219,11 +219,17 @@ async function measure(browser: Browser, profile: Profile, path: string, { prepa
     // Settled: the reads, as Resource Timing and Playwright both count them, unchanged for TONE_QUIET_MS.
     let count = -1;
     let since = Date.now();
+    let settled = false;
     for (const deadline = Date.now() + 30_000; Date.now() < deadline; await page.waitForTimeout(250)) {
         const now = (await toneTiming(page)).length + toneAsks;
         if (now !== count) [count, since] = [now, Date.now()];
-        else if (Date.now() - since >= TONE_QUIET_MS) break;
+        else if (Date.now() - since >= TONE_QUIET_MS) {
+            settled = true;
+            break;
+        }
     }
+    // A snapshot of reads still coming isn't one: fail rather than judge it.
+    expect(settled, "the copy tone's reads never settled").toBe(true);
     const timing = await toneTiming(page);
     await Promise.all(finished);
 
