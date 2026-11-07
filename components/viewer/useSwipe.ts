@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { StageMotion } from './stageMotion';
-import { SWIPE_IDLE, caughtBase, claimsTouch, followOffset, followTravel, isPinched, reduceSwipe, type SwipeInput, type SwipeState } from './swipe';
+import { SWIPE_IDLE, caughtBase, claimsTouch, clearOfEdges, followOffset, followTravel, gesturePhase, isPinched, reduceSwipe, swipesWith, type SwipeInput, type SwipeState } from './swipe';
 import type { ViewerStep } from './viewerKeys';
 
 /**
@@ -19,6 +19,8 @@ export interface SwipeShell {
     /** Whether there's a photograph each way, so a pull toward an end meets the rubber band. */
     previous: boolean;
     next: boolean;
+    /** Whether the browser says it's online: offline, a swipe slides back, and the step says why (#178). */
+    online(): boolean;
     /** Whether a move (by any route: a swipe, a control, a key) is on its way, so no swipe can start until it arrives. */
     pending(): boolean;
     /** The move the swipe asks for, at the lift. `settling` when the photograph is already settling into it. */
@@ -35,7 +37,12 @@ export interface SwipeShell {
  * lift comes back to it wherever the finger ends. The rule is reduceSwipe's.
  * The stage's `touch-action: pan-y pinch-zoom` (StoryViewer.module.css)
  * leaves vertical scroll and pinch zoom to the browser, which cancels the
- * pointer when it takes one, and a cancel never moves. While the page is
+ * pointer when it takes one, and a cancel never moves. Only a touch or a
+ * pen swipes, never a mouse (#178, bug 4), and never from within 24 px of
+ * either edge of the window, where the browser's own back gesture lives.
+ * The window losing focus, the tab being hidden, and a context menu (a long
+ * press on a phone) drop the gesture in flight, so its lift never moves. The
+ * root's `data-gesture` says what the recognizer holds (gesturePhase). While the page is
  * pinch-zoomed, the returned flag goes on the shell root as `data-pinched`,
  * which gives the stage `touch-action: auto`, so a sideways drag pans the
  * zoomed page instead. A new photograph (any route), Zoom, a pinch, and
@@ -78,16 +85,20 @@ export function useSwipe(
     useEffect(() => {
         const root = rootRef.current;
         if (root === null) return;
+        const show = () => root.setAttribute('data-gesture', gesturePhase(state.current));
+        show();
         const apply = (input: SwipeInput) => {
             const result = reduceSwipe(state.current, input);
             state.current = result.state;
+            show();
             const { release } = result;
             if (release === undefined) return;
             const shell = shellRef.current;
             const motion = shell.motion ? motionRef.current : null;
             const step = release.step;
             // Toward an end there's nothing to bring in: the photograph slides back, and the step announces the end.
-            const toward = step === null ? false : step === 'next' ? shell.next : shell.previous;
+            // Offline nothing can come either, so it slides back the same way, and the step says it couldn't load.
+            const toward = step === null ? false : (step === 'next' ? shell.next : shell.previous) && shell.online();
             const settles = motion !== null && (release.followed || motion.heldOffset() !== 0);
             if (settles) motion.release(toward ? step : null, release.velocity);
             if (step !== null) shell.step(step, settles && toward);
@@ -100,7 +111,15 @@ export function useSwipe(
             const motion = shell.motion ? motionRef.current : null;
             // A move already decided is on its way, by a swipe, a control, or a key, so a finger can't start another until
             // its photograph arrives.
-            const eligible = onStage && !shell.zoomed && !isPinched(window.visualViewport?.scale) && !shell.pending() && motion?.pendingStep() == null;
+            // A touch or a pen only: a mouse drag on the stage is a drag, never a move (bug 4), as useDoubleTap reads touch only.
+            const eligible =
+                swipesWith(event.pointerType) &&
+                clearOfEdges(event.clientX, window.innerWidth) &&
+                onStage &&
+                !shell.zoomed &&
+                !isPinched(window.visualViewport?.scale) &&
+                !shell.pending() &&
+                motion?.pendingStep() == null;
             apply({ type: 'down', pointerId: event.pointerId, x: event.clientX, y: event.clientY, t: event.timeStamp, primary: event.isPrimary, eligible });
             if (state.current.start?.pointerId !== event.pointerId) return;
             // Caught past an end, the drag picks up the pull the rubber band gave, so the photograph stays where it was caught.
@@ -139,12 +158,25 @@ export function useSwipe(
             claim.current ??= claimsTouch(touch.clientX - start.x, touch.clientY - start.y);
             if (claim.current === true && event.cancelable) event.preventDefault();
         };
+        // The window losing focus, the tab hidden, or a context menu (a long press on a phone): the lift may never come, or
+        // come from somewhere else, so the gesture ends here with no move, and a photograph that followed slides back.
+        const interrupt = () => {
+            const had = state.current.start !== null;
+            state.current = reduceSwipe(state.current, { type: 'reset' }).state;
+            claim.current = null;
+            show();
+            const motion = motionRef.current;
+            if (had && motion !== null && motion.pendingStep() === null && motion.heldOffset() !== 0) motion.release(null, 0);
+        };
         root.addEventListener('pointerdown', onDown);
         root.addEventListener('pointermove', onMove);
         root.addEventListener('pointerup', onUp);
         root.addEventListener('pointercancel', onCancel);
         root.addEventListener('lostpointercapture', onCancel);
         root.addEventListener('touchmove', onTouchMove, { passive: false });
+        root.addEventListener('contextmenu', interrupt);
+        window.addEventListener('blur', interrupt);
+        document.addEventListener('visibilitychange', interrupt);
         return () => {
             root.removeEventListener('pointerdown', onDown);
             root.removeEventListener('pointermove', onMove);
@@ -152,8 +184,12 @@ export function useSwipe(
             root.removeEventListener('pointercancel', onCancel);
             root.removeEventListener('lostpointercapture', onCancel);
             root.removeEventListener('touchmove', onTouchMove);
+            root.removeEventListener('contextmenu', interrupt);
+            window.removeEventListener('blur', interrupt);
+            document.removeEventListener('visibilitychange', interrupt);
             state.current = SWIPE_IDLE;
             claim.current = null;
+            root.removeAttribute('data-gesture');
         };
     }, [rootRef, shellRef, motionRef]);
 
@@ -162,14 +198,16 @@ export function useSwipe(
     useEffect(() => {
         const had = state.current.start !== null;
         state.current = reduceSwipe(state.current, { type: 'reset' }).state;
+        rootRef.current?.setAttribute('data-gesture', gesturePhase(state.current));
         const motion = motionRef.current;
         if (had && motion !== null && motion.pendingStep() === null) motion.release(null, 0);
-    }, [photoId, zoomed, pinched, motionRef]);
+    }, [photoId, zoomed, pinched, motionRef, rootRef]);
 
     const drop = useCallback(() => {
         state.current = reduceSwipe(state.current, { type: 'reset' }).state;
         claim.current = null;
-    }, []);
+        rootRef.current?.setAttribute('data-gesture', gesturePhase(state.current));
+    }, [rootRef]);
 
     return { pinched, drop };
 }

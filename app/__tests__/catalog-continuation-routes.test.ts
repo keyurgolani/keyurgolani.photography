@@ -317,9 +317,12 @@ describe('GET /api/catalog/series/[slug]/photos/[photoId]', () => {
         expect((await peekGET('fixture-featured', FEATURED[0], revision(), { 'If-None-Match': first })).status).toBe(304);
     });
 
-    it('answers 409 when the Viewer\'s revision isn\'t the one served, before it looks at the photograph', async () => {
-        await expectError(await peekGET('fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
-        await expectError(await peekGET('fixture-draft', DRAFT[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
+    it('answers 409 when the Viewer\'s revision isn\'t the one served, saying whether its photograph is still there (#178)', async () => {
+        // Still where the Viewer has it, under a former slug of its series (a rename), or gone: unpublished, or never published.
+        await expectError(await peekGET('fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'kept' });
+        await expectError(await peekGET('old-fixture-long', LONG[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'renamed' });
+        await expectError(await peekGET('fixture-draft', DRAFT[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'gone' });
+        await expectError(await peekGET('fixture-featured', LONG[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'gone' });
     });
 
     it('answers 400 for no revision, two of them, or a malformed one, without reading the catalog', async () => {

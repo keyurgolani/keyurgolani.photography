@@ -96,6 +96,8 @@ export default function ViewerChrome({ state, mode, headingId, zoomed, onZoom, a
                 <button
                     type="button"
                     className={`${styles.control} ${styles.zoom}`}
+                    // Where focus goes when the zoomed region it was in resets (#178).
+                    data-viewer-zoom=""
                     aria-pressed={zoomed && hasImage}
                     aria-disabled={hasImage ? undefined : 'true'}
                     onClick={hasImage ? onZoom : undefined}

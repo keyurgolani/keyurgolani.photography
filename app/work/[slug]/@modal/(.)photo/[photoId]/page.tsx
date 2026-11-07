@@ -7,4 +7,7 @@
 // Per request, never at build, like the page it re-exports. Segment config has to be written in this file.
 export const dynamic = 'force-dynamic';
 
-export { default, generateMetadata } from '@/app/work/[slug]/photo/[photoId]/page';
+// A move out of the series mid-visit is not-found here, shown as ViewerUnavailable; a renamed series' photograph
+// renders (InterceptedViewerRoute, #178).
+export { InterceptedViewerRoute as default } from '@/app/work/[slug]/photo/[photoId]/viewerRoute';
+export { generateInterceptedMetadata as generateMetadata } from '@/app/work/[slug]/photo/[photoId]/viewerLookup';

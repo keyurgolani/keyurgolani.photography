@@ -14,7 +14,7 @@ import { catalogError, catalogJson, errorName } from '@/lib/catalog/validators';
  * | --- | --- |
  * | 404 | whatever the Viewer route answers not-found, or a former slug |
  * | 400 | no `revision`, more than one, or a malformed one |
- * | 409 | `revision` isn't the one being served |
+ * | 409 | `revision` isn't the one being served; `photo` says whether the photograph is `kept`, `renamed` or `gone` there |
  * | 503 | the catalog is unavailable, or nothing is published yet |
  * | 200 | `{ revisionId, photoId, image, accent }`, or 304 on `If-None-Match` |
  *
@@ -43,7 +43,8 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
             case 'bad-request':
                 return catalogError(400, { reason: 'bad-request' });
             case 'revision-changed':
-                return catalogError(409, { reason: 'revision-changed' });
+                // Whether the photograph asked for is still there in the revision served (#178): `kept`, `renamed` or `gone`.
+                return catalogError(409, { reason: 'revision-changed', photo: result.photo });
             case 'unavailable':
                 return catalogError(503, { reason: result.reason });
         }

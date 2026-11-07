@@ -135,7 +135,7 @@ describe('every screen agrees on which series open', () => {
         // With the canonical slug in shape, both redirect.
         const fine = sourceOf(content());
         expect(seriesPageOf(fine, 'old-shared-a', routes)).toEqual({ kind: 'redirect', slug: 'shared-a', location: '/work/shared-a' });
-        expect(viewerPhotoOf(fine, 'old-shared-a', A[0])).toEqual({ kind: 'redirect', slug: 'shared-a', photoId: A[0] });
+        expect(viewerPhotoOf(fine, 'old-shared-a', A[0])).toEqual({ kind: 'redirect', slug: 'shared-a', photoId: A[0], reason: 'alias' });
     });
 });
 

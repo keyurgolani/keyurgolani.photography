@@ -207,8 +207,10 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
             previousPhotoId: viewer.previousPhotoId,
             nextPhotoId: viewer.nextPhotoId,
             image,
+            title: photo.title,
+            description: photo.description,
         }),
-        [photo.id, photo.namedByPlace, photo.title, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
+        [photo.id, photo.namedByPlace, photo.title, photo.description, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
     );
     const report = shell?.report;
     // Before paint, so the shell's controls replace these in the same frame and show this photograph's state.
@@ -250,6 +252,8 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                 // Where a swipe can start (#9's useSwipe), and only there: the controls and the reading area sit outside it.
                 data-viewer-stage=""
                 data-zoomed={zoomedIn ? 'true' : undefined}
+                // From a move's press to its photograph's arrival (#178): this photograph is on its way out.
+                aria-busy={shell?.busy ? 'true' : undefined}
                 // Zoomed, the photograph can overflow its box, and a scroll region has to be reachable by keyboard.
                 tabIndex={zoomedIn ? 0 : undefined}
                 role={zoomedIn ? 'region' : undefined}

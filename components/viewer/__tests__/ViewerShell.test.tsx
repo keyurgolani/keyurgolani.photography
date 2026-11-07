@@ -112,6 +112,11 @@ const root = () => document.querySelector<HTMLElement>('[data-surface="viewer"]'
 const announcer = () => document.querySelector('[data-viewer-announcer]');
 const step = (name: 'Previous photograph' | 'Next photograph') => screen.getByRole('button', { name });
 const stage = () => document.querySelector<HTMLElement>('[data-viewer-stage]') as HTMLElement;
+/** A move's announcement settles 250 ms after its photograph arrives (#178), so a check of it waits that long. */
+const announced = () =>
+    act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+    });
 
 /**
  * A touchmove at `dx` across and `dy` down from the swipe's 200, 300 start, with `fingers` touches down, and whether the
@@ -125,9 +130,9 @@ function touchMove(target: HTMLElement, dx: number, dy = 0, { fingers = 1, cance
     return event.defaultPrevented;
 }
 
-/** One finger down on `target` and up `dx` across and `dy` down, as the root sees it once it holds the capture. */
+/** One finger down on `target` and up `dx` across and `dy` down, as the root sees it once it holds the capture. A touch: the swipe answers touch and pen only (#178). */
 function swipe(target: HTMLElement, dx: number, dy = 0) {
-    fireEvent.pointerDown(target, { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+    fireEvent.pointerDown(target, { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
     fireEvent.pointerUp(target, { pointerId: 1, clientX: 200 + dx, clientY: 300 + dy });
 }
 
@@ -150,7 +155,7 @@ describe('ViewerShell, on a page', () => {
         expect(announcer()).toHaveTextContent('');
     });
 
-    it('moves through the router without scrolling, keeps focus on the same Next, and announces the new position', () => {
+    it('moves through the router without scrolling, keeps focus on the same Next, and announces the new position', async () => {
         const { move } = renderShell('page', 1);
         const next = step('Next photograph');
         next.focus();
@@ -160,6 +165,7 @@ describe('ViewerShell, on a page', () => {
         expect(step('Next photograph')).toBe(next);
         expect(document.activeElement).toBe(next);
         expect(document.querySelector('header')).toHaveTextContent('02 / 03');
+        await announced();
         expect(announcer()).toHaveTextContent('Photograph 2 of 3');
         expect(router.back).not.toHaveBeenCalled();
     });
@@ -331,7 +337,7 @@ describe('ViewerShell, as the modal', () => {
         expect(router.back).toHaveBeenCalledOnce();
     });
 
-    it('takes arrows only inside the dialog, and moves keep focus on the same control', () => {
+    it('takes arrows only inside the dialog, and moves keep focus on the same control', async () => {
         const { move } = renderShell('modal', 1);
         const outside = document.createElement('button');
         document.body.append(outside);
@@ -344,6 +350,7 @@ describe('ViewerShell, as the modal', () => {
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(2), { scroll: false });
         move(2);
         expect(document.activeElement).toBe(next);
+        await announced();
         expect(within(dialog() as HTMLElement).getByRole('status')).toHaveTextContent('Photograph 2 of 3');
         // The moves never open a second dialog or show it again.
         expect(showModal).toHaveBeenCalledOnce();
@@ -430,11 +437,12 @@ describe('ViewerShell, swipes', () => {
         delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
     });
 
-    it('moves on a horizontal swipe on the photograph: toward the left is Next, toward the right Previous', () => {
+    it('moves on a horizontal swipe on the photograph: toward the left is Next, toward the right Previous', async () => {
         const { move } = renderShell('page', 2);
         swipe(stage(), -48);
         expect(router.replace).toHaveBeenCalledExactlyOnceWith(photoHref(3), { scroll: false });
         move(3);
+        await announced();
         expect(announcer()).toHaveTextContent('Photograph 3 of 3');
         router.replace.mockClear();
         swipe(stage(), 120, 20);
@@ -443,14 +451,14 @@ describe('ViewerShell, swipes', () => {
 
     it('takes the pointer\'s capture on the root, which outlives the photograph, for a gesture it follows', () => {
         renderShell('page', 2);
-        fireEvent.pointerDown(stage(), { pointerId: 4, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 4, isPrimary: true, clientX: 200, clientY: 300 });
         expect(setPointerCapture).toHaveBeenCalledExactlyOnceWith(4);
         expect(setPointerCapture.mock.contexts[0]).toBe(root());
         fireEvent.pointerUp(root() as HTMLElement, { pointerId: 4, clientX: 100, clientY: 300 });
         expect(router.replace).toHaveBeenCalledOnce();
         // A start off the photograph takes no capture.
         setPointerCapture.mockClear();
-        fireEvent.pointerDown(step('Next photograph'), { pointerId: 5, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(step('Next photograph'), { pointerType: 'touch', pointerId: 5, isPrimary: true, clientX: 200, clientY: 300 });
         expect(setPointerCapture).not.toHaveBeenCalled();
     });
 
@@ -481,10 +489,10 @@ describe('ViewerShell, swipes', () => {
         swipe(stage(), 47);
         swipe(stage(), -60, 49);
         swipe(stage(), 5, 200);
-        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
         fireEvent.pointerCancel(stage(), { pointerId: 1 });
         fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 50, clientY: 300 });
-        fireEvent.pointerDown(stage(), { pointerId: 2, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 2, isPrimary: true, clientX: 200, clientY: 300 });
         (root() as HTMLElement).dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 2, bubbles: true }));
         fireEvent.pointerUp(stage(), { pointerId: 2, clientX: 50, clientY: 300 });
         expect(router.replace).not.toHaveBeenCalled();
@@ -495,12 +503,12 @@ describe('ViewerShell, swipes', () => {
 
     it('never moves on two fingers, a pinch, or a second finger on a control', () => {
         renderShell('page', 2);
-        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
-        fireEvent.pointerDown(stage(), { pointerId: 2, isPrimary: false, clientX: 220, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 2, isPrimary: false, clientX: 220, clientY: 300 });
         fireEvent.pointerUp(stage(), { pointerId: 2, clientX: 400, clientY: 300 });
         fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 20, clientY: 300 });
-        fireEvent.pointerDown(stage(), { pointerId: 3, isPrimary: true, clientX: 200, clientY: 300 });
-        fireEvent.pointerDown(step('Previous photograph'), { pointerId: 4, isPrimary: false, clientX: 10, clientY: 10 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 3, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(step('Previous photograph'), { pointerType: 'touch', pointerId: 4, isPrimary: false, clientX: 10, clientY: 10 });
         fireEvent.pointerUp(stage(), { pointerId: 3, clientX: 20, clientY: 300 });
         expect(router.replace).not.toHaveBeenCalled();
     });
@@ -515,7 +523,7 @@ describe('ViewerShell, swipes', () => {
 
     describe('claims a sideways touch from the browser, so it leaves no fling to swallow the next tap', () => {
         const down = (target: HTMLElement, pointerId = 1, isPrimary = true) =>
-            fireEvent.pointerDown(target, { pointerId, isPrimary, clientX: 200, clientY: 300 });
+            fireEvent.pointerDown(target, { pointerType: 'touch', pointerId, isPrimary, clientX: 200, clientY: 300 });
 
         it('cancels every move of a touch that settles sideways, from the slop on, and still moves at the lift', () => {
             renderShell('page', 2);
@@ -601,7 +609,7 @@ describe('ViewerShell, swipes', () => {
         expect(router.replace).not.toHaveBeenCalled();
         // Started unzoomed, then zoomed before the lift.
         fireEvent.click(zoom);
-        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
         fireEvent.click(zoom);
         fireEvent.pointerUp(stage(), { pointerId: 1, clientX: 20, clientY: 300 });
         expect(router.replace).not.toHaveBeenCalled();
@@ -649,7 +657,7 @@ describe('ViewerShell, swipes', () => {
 
         it('drops a gesture in flight when the page is pinched mid-way', () => {
             renderShell('page', 2);
-            fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+            fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
             pinch(1.5);
             fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 20, clientY: 300 });
             expect(router.replace).not.toHaveBeenCalled();
@@ -664,13 +672,14 @@ describe('ViewerShell, swipes', () => {
         });
     });
 
-    it('drops a gesture in flight when the photograph changes by another route', () => {
+    it('drops a gesture in flight when the photograph changes by another route', async () => {
         // From the first photograph to the second, which still has a Next, so a gesture that survived would move.
         const { move } = renderShell('page', 1);
-        fireEvent.pointerDown(stage(), { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stage(), { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
         move(2);
         fireEvent.pointerUp(root() as HTMLElement, { pointerId: 1, clientX: 20, clientY: 300 });
         expect(router.replace).not.toHaveBeenCalled();
+        await announced();
         expect(announcer()).toHaveTextContent('Photograph 2 of 3');
     });
 
@@ -678,7 +687,7 @@ describe('ViewerShell, swipes', () => {
         const { unmount } = renderShell('page', 2);
         const element = root() as HTMLElement;
         const stageElement = stage();
-        fireEvent.pointerDown(stageElement, { pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
+        fireEvent.pointerDown(stageElement, { pointerType: 'touch', pointerId: 1, isPrimary: true, clientX: 200, clientY: 300 });
         unmount();
         element.append(stageElement);
         document.body.append(element);
@@ -1117,12 +1126,14 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
         expect(router.replace).toHaveBeenCalledOnce();
         // It arrives, and the latest press, Previous, runs from there.
         move(3);
-        expect(announcer()).toHaveTextContent('Photograph 3 of 3');
         expect(router.replace).toHaveBeenCalledTimes(2);
         expect(router.replace).toHaveBeenLastCalledWith(photoHref(2), { scroll: false });
         expect(counter()).toBe('02 / 03');
-        // Once that one arrives there's nothing left to run.
+        // Once that one arrives there's nothing left to run, and the one announcement is for where the visitor stopped (#178).
         move(2);
+        await announced();
+        expect(announcer()).toHaveTextContent('Photograph 2 of 3');
+        expect(announcer()).not.toHaveTextContent('Photograph 3 of 3');
         expect(router.replace).toHaveBeenCalledTimes(2);
         fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
         expect(router.replace).toHaveBeenLastCalledWith(photoHref(1), { scroll: false });
@@ -1208,8 +1219,8 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
             await new Promise((resolve) => setTimeout(resolve, 250));
         });
         expect(router.prefetch.mock.calls).toEqual([
-            [photoHref(3), { kind: 'full' }],
-            [photoHref(1), { kind: 'full' }],
+            [photoHref(3), expect.objectContaining({ kind: 'full' })],
+            [photoHref(1), expect.objectContaining({ kind: 'full' })],
         ]);
         expect(fetchMock).not.toHaveBeenCalled();
         move(3);
@@ -1217,7 +1228,7 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
             await new Promise((resolve) => setTimeout(resolve, 250));
         });
         // At the last photograph there's only the one before.
-        expect(router.prefetch).toHaveBeenLastCalledWith(photoHref(2), { kind: 'full' });
+        expect(router.prefetch).toHaveBeenLastCalledWith(photoHref(2), expect.objectContaining({ kind: 'full' }));
         expect(router.prefetch).toHaveBeenCalledTimes(3);
     });
 
