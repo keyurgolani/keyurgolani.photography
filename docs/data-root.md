@@ -143,6 +143,7 @@ So there is one rule: a command that takes a lock or writes anything under the d
 | `publish` | always, `--dry-run` included | the candidate and diagnostics; with no `--dry-run`, the revision, activation and pointer |
 | `rollback` | `--yes` | an activation and the pointer, the working layer |
 | `verify` | always | `status/verify.json` |
+| `legacy-derivatives` | always, `--stdout` included | `status/legacy-derivatives.json`, and `status/` when there is none |
 | `curation edit`, `approve`, `defer`, `dismiss`, `retry`, `reopen`, `confirm`, `bind`, `archive`, `resolve`, `confirm-missing` | always | Inbox items in `curation/`, decisions, working-layer records |
 | `purge` | `--yes` | a tombstone in `catalog/tombstones/` |
 | `purge --revoke` | `--yes` | a revoke in `catalog/tombstones/` |

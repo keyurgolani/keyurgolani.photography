@@ -38,6 +38,8 @@ export type WriterKind =
     | 'curator'
     /** Round 4: a credential command whose --out is inside the data root. */
     | 'credential'
+    /** photos legacy-derivatives: status/legacy-derivatives.json, and status/ when there is none. */
+    | 'legacy-manifest'
     /** Round 3b: a dry run or read that takes a lock to read, which writes the lock file. */
     | 'locking-read';
 
@@ -54,6 +56,7 @@ export const BREAKS: Record<WriterKind, string> = {
     curation: "An Inbox item or decision this uid writes is one the watcher, the curator and every command of the owner's can't read, so the Inbox would stop until the file is fixed by hand.",
     watcher: "Sets, registry versions, Inbox items and the heartbeat this uid writes are ones web and every command of the owner's can't read: /media would 404 the new sets, and the healthcheck would fail.",
     credential: "A secret file this uid writes inside the data root is one the owner can't read, replace or clear, and one written at a lock file's name in locks/ would stop every command of the owner's that takes that lock. Write it outside the data root, where docs/curator.md puts the curator's secrets.",
+    'legacy-manifest': "A status/ this uid makes, when there is none yet, is one the watcher and photos verify can't write in, so the heartbeat would stop and the healthcheck fail, and a status/legacy-derivatives.json it writes is one the owner can't replace, until it's fixed by hand.",
     curator: "Inbox items, decisions, working-layer records and lock files this uid writes are ones the watcher and every command of the owner's can't read, so the Inbox and the draft would stop until the files are fixed by hand.",
     'locking-read': "It takes a lock to read, which writes a lock file in locks/, and one this uid leaves behind if it's killed, or a locks/ it makes, would stop every command of the owner's until it's removed by hand.",
 };

@@ -146,6 +146,8 @@ export const PHOTOS_ACCESS: Record<string, Rule> = {
         if (has(args, 'set-aside')) return 'set-aside';
         return has(args, 'apply') ? 'gc-apply' : 'locking-read';
     },
+    // It writes status/legacy-derivatives.json, making status/ when there is none, with --stdout too.
+    'legacy-derivatives': 'legacy-manifest',
 };
 
 /** <argv>'s command as the refusal names it, and how it uses the data root, or undefined for a command the dispatcher doesn't know. */
