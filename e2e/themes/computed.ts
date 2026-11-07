@@ -51,6 +51,8 @@ export interface Allowance {
     properties?: readonly string[];
     /** `maxDelta` covers every element under it too, for a departure that moves a whole section's layout. */
     subtree?: boolean;
+    /** Only on the routes with JavaScript, for a departure that needs it, as Zoom does. */
+    javascript?: true;
     why: string;
 }
 

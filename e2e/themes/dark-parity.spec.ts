@@ -11,6 +11,7 @@ import { createInboxFixture, openInboxItems, type InboxFixture } from '../suppor
 import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
+import { cameraRowDeparture, FACT_ROWS, type FactRow } from './viewerFacts';
 
 // Dark is today's site, exactly (the owner's ruling, 2026-10-29: the remap; it was Black until then). This loads the
 // same page states from two builds, the base (PARITY_BASE_DIR: next before the themes) and the head, on the same
@@ -210,6 +211,11 @@ interface Pair {
     stateOf?: string;
     /** Elements both walks leave out with their subtrees, where the builds differ on purpose and another pair compares them. */
     leaveOut?: { selector: string; why: string }[];
+    /**
+     * A Viewer page with the details list (#175, B8): the base's Camera make row, its first, is left out of the base's
+     * walk, since the head merged it into Camera, and both builds' rows are read and held to cameraRowDeparture().
+     */
+    cameraRows?: true;
 }
 
 let browser: Browser;
@@ -647,13 +653,14 @@ const VISITOR: Pair[] = [
             await focusInPlace(page.locator('main figure a').first());
         },
     },
-    { name: 'viewer', url: `${series}/photo/${HOME_OPENING}`, leaveOut: VIEWER_POSITION },
+    { name: 'viewer', url: `${series}/photo/${HOME_OPENING}`, leaveOut: VIEWER_POSITION, cameraRows: true },
     // The Viewer's other states (#126's review, L2): another photograph, zoomed, a print that fails, and the modal
     // opened from a series, with its ::backdrop. The modal's styles load with its shell, not the series page
     // (components/viewer/viewerShellLoader.ts), so the open modal is checked against today's too.
-    { name: 'viewer-second', url: `${series}/photo/${HOME_PHOTO_IDS[1]}`, leaveOut: VIEWER_POSITION },
+    { name: 'viewer-second', url: `${series}/photo/${HOME_PHOTO_IDS[1]}`, leaveOut: VIEWER_POSITION, cameraRows: true },
     {
         name: 'viewer-zoomed',
+        cameraRows: true,
         url: `${series}/photo/${HOME_OPENING}`,
         leaveOut: VIEWER_POSITION,
         act: async (page) => {
@@ -663,6 +670,7 @@ const VISITOR: Pair[] = [
     },
     {
         name: 'viewer-missing',
+        cameraRows: true,
         url: `${series}/photo/${HOME_OPENING}`,
         leaveOut: [...VIEWER_POSITION, VIEWER_FAILED_BOX],
         act: async (page) => {
@@ -672,6 +680,7 @@ const VISITOR: Pair[] = [
     },
     {
         name: 'viewer-modal',
+        cameraRows: true,
         url: series,
         leaveOut: VIEWER_POSITION,
         act: async (page) => {
@@ -682,6 +691,7 @@ const VISITOR: Pair[] = [
     // The same modal from the sequence's first slot, the other way in (#126's Delta 1, L1').
     {
         name: 'viewer-modal-sequence',
+        cameraRows: true,
         url: series,
         leaveOut: VIEWER_POSITION,
         act: async (page) => {
@@ -972,12 +982,27 @@ const ABOUT_LINK_SCROLL: Allowance[] = (() => {
  * that print's height; their styles are still compared. The zoomed stage is capped at the stage's height, which both
  * builds' prints overflow at the gate's three sizes, so the stage, the moves and the reading area must still match.
  */
-const VIEWER_ZOOM: Allowance[] = ['figure', 'figure > picture', 'figure img'].map((part) => ({
-    page: 'viewer-zoomed',
-    selector: `[data-surface="viewer"] [data-zoomed] ${part}`,
-    maxDelta: 2400,
-    why: '#175 (B8): Zoom is clamp(fitted, 2 * fitted, the largest file)',
-}));
+const VIEWER_ZOOM: Allowance[] = [
+    ...['figure', 'figure > picture', 'figure img'].map((part) => ({
+        page: 'viewer-zoomed',
+        selector: `[data-surface="viewer"] [data-zoomed] ${part}`,
+        maxDelta: 2400,
+        why: '#175 (B8): Zoom is clamp(fitted, 2 * fitted, the largest file)',
+    })),
+    // The zoomed print's two <source>s, AVIF and WebP, on desktop and tablet with JavaScript, where Zoom applies (the
+    // coordinator's ruling, B8's CI): they paint nothing, and their boxes follow the img's, which the entries above
+    // allow. One entry each, since a selector resolves to one path.
+    ...[1440, 1024].flatMap((width) =>
+        [1, 2].map((n) => ({
+            page: 'viewer-zoomed',
+            width,
+            javascript: true as const,
+            selector: `[data-surface="viewer"] [data-zoomed] figure > picture > source:nth-of-type(${n})`,
+            maxDelta: 2400,
+            why: "#175 (B8): Zoom's sources follow the zoomed img",
+        })),
+    ),
+];
 
 const ALLOWANCES: Allowance[] = [
     ...WORK_ENTRIES,
@@ -1012,6 +1037,8 @@ interface Walked2 {
     theme: string | null;
     /** Next's bare error shell: `<html id="__next_error__">` with nothing in its body but scripts and an empty hidden div. */
     shell: boolean;
+    /** The Viewer's details list rows, for a `cameraRows` pair; empty for any other. */
+    facts: FactRow[];
 }
 
 /**
@@ -1054,7 +1081,13 @@ async function styles(
                 [...document.body.children].every((child) => child.localName === 'script' || (child.localName === 'div' && child.hasAttribute('hidden') && child.textContent?.trim() === '')) &&
                 [...document.body.childNodes].every((node) => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim() === ''),
         }));
-        return { walk: await walk(page, selectors, [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
+        // The base's Camera make row, its first, which the head merged into Camera (cameraRows); the rest keep their paths.
+        const baseOnly = pair.cameraRows && !head ? [`${FACT_ROWS}:first-of-type`] : [];
+        const facts: FactRow[] = pair.cameraRows
+            ? await page.evaluate((rows) => [...document.querySelectorAll(rows)].map((row): [string, string] => [row.querySelector('dt')?.textContent?.trim() ?? '', row.querySelector('dd')?.textContent?.trim() ?? '']), FACT_ROWS)
+            : [];
+        const leaveOut = [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector);
+        return { walk: await walk(page, selectors, [...leaveOut, ...baseOnly], { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted, facts };
     } finally {
         await context.close();
     }
@@ -1136,7 +1169,7 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             ['no JavaScript', '', false, baseNoJs],
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
-            const named = allowancesFor(pair, viewport.width).filter((entry) => against.walk.resolved[entry.selector]);
+            const named = allowancesFor(pair, viewport.width).filter((entry) => against.walk.resolved[entry.selector] && (entry.javascript === undefined || js));
             // A subtree allowance covers the element and every path under it in the base's walk. A path that two
             // allowances name (a state's own and its page's) takes the larger.
             const allowances: Record<string, number> = {};
@@ -1147,7 +1180,15 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             }
             const sanctioned = sanctionedFor(pair, viewport.width, against.walk);
             const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const failing = [...judge(`${pair.name}, ${route}`, viewport.width, compare(against.walk, head.walk, allowances, sanctioned), timedOut), ...paintsDark(head, against)];
+            const comparison = compare(against.walk, head.walk, allowances, sanctioned);
+            // The details list's one change, Camera make merged into Camera (#175, B8), recorded with both builds' rows.
+            const camera = pair.cameraRows ? cameraRowDeparture(against.facts, head.facts) : { failing: [], record: [] };
+            comparison.sanctioned.push(...camera.record.map((line) => `#175 (B8), Camera make merged into Camera: ${line}`));
+            const failing = [
+                ...judge(`${pair.name}, ${route}`, viewport.width, comparison, timedOut),
+                ...camera.failing.map((line) => `the details list: ${line}`),
+                ...paintsDark(head, against),
+            ];
             expect.soft(failing, `${pair.name} at ${size} ${viewport.width}, ${route}: computed style against the base`).toEqual([]);
         }
         if (pair.intro) {
