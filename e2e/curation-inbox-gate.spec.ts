@@ -41,6 +41,10 @@ test.describe('with JavaScript, before the page hydrates', () => {
             const release = await holdScripts(page);
             await page.goto(urlOf(where.item), { waitUntil: 'domcontentloaded' });
             await expect(actionForms(page, where.scope).first()).toBeVisible();
+            // The page shows its own item, in the state the press once ready needs, before anything is pressed. A page that
+            // shows another item, or this one moved on, fails here by name, not at the last click.
+            if (where.item !== null) await expect(page.locator('#item input[name="eventId"]').first(), `${where.name}: the page shows its item`).toHaveValue(ids[where.item]);
+            await expect(actionForms(page, where.scope).locator(where.ready), `${where.name}: the press it makes once ready is offered`).toHaveCount(1);
             expect(await page.locator('html[data-hydrated]').count(), 'the page is held back from hydrating').toBe(0);
             // Nothing pressed, nothing said.
             await expect(page.locator(GATE_STATUS), `${where.name}: no status before a press`).toHaveCount(0);
@@ -109,7 +113,12 @@ test.describe('with JavaScript, before the page hydrates', () => {
                 covered.push('a missing source to bind: radio');
             }
 
+            const beforeRelease = await written();
             await release();
+            // Nothing a dropped press did goes out while the page hydrates, or once it's ready.
+            await page.waitForTimeout(400);
+            expect(posts, `${where.name}: nothing posted while the page hydrated`).toEqual([]);
+            expect(await written(), `${where.name}: nothing written while the page hydrated`).toEqual(beforeRelease);
             // Once every form is ready, the word goes.
             await expect(page.locator(GATE_STATUS), `${where.name}: the status once ready`).toHaveCount(0);
             if (was) {
@@ -157,6 +166,12 @@ test.describe('with JavaScript, before the page hydrates', () => {
             }
             expect((await sent).status(), `${where.name}: the press once ready`).toBe(200);
             await expect.poll(async () => (await readEvent(data().root, target))!.version, `${where.name}: the press once ready writes`).toBeGreaterThan(version);
+            // Decide later then opens the next item that needs a decision. That load lands before the next page is opened,
+            // so the two never race.
+            if (where.item === 'fresh') {
+                await expect.poll(() => new URL(page.url()).searchParams.get('item'), { message: `${where.name}: Decide later moves on to another item`, timeout: 15_000 }).not.toBe(ids.fresh);
+                await page.waitForLoadState('domcontentloaded');
+            }
             posts.length = 0;
             await page.unrouteAll({ behavior: 'ignoreErrors' });
         }

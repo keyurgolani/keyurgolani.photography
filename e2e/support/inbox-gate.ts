@@ -19,8 +19,9 @@ export const GATE_STATUS = '[data-submit-gate-status]';
 export const GATE_STATUS_TEXT = SUBMIT_GATE_STATUS_TEXT;
 
 /**
- * Registers this file's fixture and server, made before its first test and stopped after its last, and returns what
- * the tests read them by. Each file and worker has its own, so a test that writes never changes another file's items.
+ * Registers the fixture and server, one per test: made before each test and stopped after it. Returns what the
+ * tests read them by. The early-press test writes to every item, so a second run on the same fixture (a repeat, or
+ * another test in the same worker) would start on items it had already moved on.
  */
 export function useGateWorld() {
     let fixture: InboxFixture | undefined;
@@ -35,8 +36,9 @@ export function useGateWorld() {
         return curator.origin;
     };
     const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetRevision: data().revisionOf(photoId), key: `new:${photoId}:${data().revisionOf(photoId)}` }));
-    test.beforeAll(async () => {
-        test.setTimeout(HOOK_TIMEOUT);
+    // Each hook gets its own time on top of the test's.
+    test.beforeEach(async () => {
+        test.setTimeout(test.info().timeout + HOOK_TIMEOUT);
         fixture = await createInboxFixture();
         await openInboxItems(fixture);
         ids.replacement = await openReplacementItem(fixture);
@@ -51,8 +53,8 @@ export function useGateWorld() {
         ids.failed = events.find((event) => event.type === 'processing-failure')!.id;
         curator = await startCuratorServer(fixture.root, undefined, { library: fixture.library });
     });
-    test.afterAll(async () => {
-        test.setTimeout(HOOK_TIMEOUT);
+    test.afterEach(async () => {
+        test.setTimeout(test.info().timeout + HOOK_TIMEOUT);
         await curator?.stop();
         await fixture?.cleanup();
     });
@@ -76,15 +78,18 @@ export function useGateWorld() {
     };
 }
 
-/** Every page with an action form: the list's bulk form, and each kind of item's own forms. */
+/**
+ * Every page with an action form: the list's bulk form, and each kind of item's own forms. `ready` finds, in `scope`,
+ * the button the early-press test presses once the form is ready: Archive's first step opens the one that sends.
+ */
 export const PAGES = [
-    { name: 'the list', item: null, scope: '#inbox-bulk' },
-    { name: 'a new photograph', item: 'fresh', scope: '#item' },
-    { name: 'a photograph decided later', item: 'reopen', scope: '#item' },
-    { name: 'a file the watcher cannot read', item: 'failed', scope: '#item' },
-    { name: 'a replacement', item: 'replacement', scope: '#item' },
-    { name: 'a missing source to bind', item: 'bind', scope: '#item' },
-    { name: 'a missing source to archive', item: 'archive', scope: '#item' },
+    { name: 'the list', item: null, scope: '#inbox-bulk', ready: 'button[name="intent"][value="defer"]' },
+    { name: 'a new photograph', item: 'fresh', scope: '#item', ready: 'button[name="intent"][value="defer"]' },
+    { name: 'a photograph decided later', item: 'reopen', scope: '#item', ready: 'button[name="intent"][value="reopen"]' },
+    { name: 'a file the watcher cannot read', item: 'failed', scope: '#item', ready: 'button[name="intent"][value="dismiss"]' },
+    { name: 'a replacement', item: 'replacement', scope: '#item', ready: 'button[name="intent"][value="confirm"]' },
+    { name: 'a missing source to bind', item: 'bind', scope: '#item', ready: 'button[name="intent"][value="bind"]' },
+    { name: 'a missing source to archive', item: 'archive', scope: '#item', ready: 'button[aria-controls="archive-confirm"]' },
 ] as const;
 /**
  * Puts the streamed Inbox in place as React's own inline script would, which doesn't run without JavaScript: each
