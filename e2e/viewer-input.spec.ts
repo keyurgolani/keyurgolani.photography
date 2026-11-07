@@ -3,7 +3,7 @@ import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 import { HARBOR, SHAPES, href, useViewerCatalog } from './support/viewerCatalog';
 
-// B9 (#178, #174): the Viewer's input, on #7's published fixture. A mouse drag never swipes (bug 4), held keys move
+// #178, #174: the Viewer's input, on #7's published fixture. A mouse drag never swipes (bug 4), held keys move
 // once, Escape while zoomed only resets the zoom, a move is busy until it lands, an offline move stays and says so,
 // saveData skips the idle prefetch, Back then Forward reopens the modal, and the controls hold at five named
 // viewports. Bug 3's end message is in viewer-touch.spec.ts, on all three projects; the publish mid-visit (bug 5) and
@@ -112,7 +112,7 @@ test.describe('keys (#178)', () => {
 });
 
 test.describe('Escape while zoomed in the modal (#178)', () => {
-    // WebKit too: its dialog sends its own cancel for Escape (the B9 review).
+    // WebKit too: its dialog sends its own cancel for Escape, so there the modal could close instead of the zoom resetting.
     test.beforeEach(() => runsOn(test.info(), 'desktop', 'mobile', 'mobile-webkit'));
 
     test('in the modal, Escape while zoomed only resets the zoom, with focus from the zoomed region onto Zoom; the next Escape closes', async ({ page }) => {
@@ -137,7 +137,7 @@ test.describe('a move (#178)', () => {
 
     test('the stage is aria-busy from the press until the photograph lands, and the move is announced in full', async ({ page }) => {
         // Nothing prefetched, so the move waits for its page, and every aria-busy change on the stage is recorded as it
-        // happens, so the check doesn't depend on how long the page takes (the B9 review).
+        // happens, so the check doesn't depend on how long the page takes to arrive.
         await saveData(page);
         await openPage(page, HARBOR[1]);
         await expect(stage(page)).not.toHaveAttribute('aria-busy');

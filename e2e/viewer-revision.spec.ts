@@ -7,7 +7,7 @@ import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 
-// B9 (#178, bug 5): a publish while the Viewer is open. Its own catalog and server, since the shared per-worker
+// #178, bug 5: a publish while the Viewer is open. Its own catalog and server, since the shared per-worker
 // Viewer catalog can't be republished mid-run: a five-photo series, one with a 600-character caption, published as
 // Revision A, then republished without a photograph each test (B, C, D) while a page or the modal is open. The
 // tests run in order and each builds on the revision before. In this serial group a failure retries the whole group,

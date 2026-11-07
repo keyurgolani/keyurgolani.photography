@@ -10,7 +10,7 @@ import ViewerShell from '../ViewerShell';
 import ViewerUnavailable from '../ViewerUnavailable';
 import type { ViewerMode } from '../viewerContext';
 
-// B9 (#178): the Viewer's input. The repeated end message (bug 3), the mouse swipe (bug 4), the revision check for
+// #178: the Viewer's input. The repeated end message (bug 3), the mouse swipe (bug 4), the revision check for
 // stale neighbours (bug 5), the keys, the swipe's edges and resets, Escape while zoomed, the move's busy stage and its
 // queue under reduced motion, the offline move, the unavailable photograph, the announcements' settle, and saveData.
 
@@ -745,7 +745,7 @@ describe('a photograph unpublished or moved mid-visit (#178)', () => {
     });
 });
 
-describe('the B9 review', () => {
+describe('a renamed series, a waiting move message at the end, Escape and Zoom focus, one check at a time, ViewerUnavailable\'s refresh, a neighbour prefetched again (#178)', () => {
     beforeEach(() => {
         vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => 'visible');
     });
