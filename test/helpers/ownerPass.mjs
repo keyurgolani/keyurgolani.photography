@@ -6,8 +6,9 @@ export const HEADING = "## The owner's screen-reader and device pass";
 export const AREAS = ['Home', 'Site navigation and the theme menu', 'The Viewer', 'Publish', 'The Inbox', 'What to do with a finding'];
 
 /**
- * #184's acceptance steps, the two the plan adds, and the Viewer heading in NVDA's browse mode. Each is one step in its
- * area: a step whose bold title matches every `title` pattern, and whose whole text matches every `body` pattern.
+ * #184's acceptance steps, the two the plan adds, the Viewer heading in NVDA's browse mode, and an early press on the
+ * Inbox. Each is one step in its area: a step whose bold title matches every `title` pattern, and whose whole text
+ * matches every `body` pattern.
  */
 export const ACCEPTANCE = [
   { name: 'Home, one double-tap with VoiceOver', area: 'Home', title: [/double-tap/i, /VoiceOver on iOS Safari/], body: [/Next photograph/, /Work/] },
@@ -32,6 +33,7 @@ export const ACCEPTANCE = [
   { name: "one item's detail", area: 'The Inbox', title: [/detail/i], body: [/focus/, /heading/] },
   { name: "an action's error summary", area: 'The Inbox', title: [/error summary/i], body: [/focus/, /summary/] },
   { name: 'the stale role="alert"', area: 'The Inbox', title: [/stale/i, /role="alert"/], body: [/alert/, /typed|edits/] },
+  { name: 'an early Inbox press', area: 'The Inbox', title: [/early press/i], body: [/Still loading\. Try again in a moment\./, /once/, /politely/, /second press/, /submitGateScript\.ts/, /curation-inbox-gate\.spec\.ts/] },
 ];
 
 /** The section, its parts by heading, and each part's checkbox steps with their bold titles. */
