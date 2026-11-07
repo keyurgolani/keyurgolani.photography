@@ -299,13 +299,20 @@ for (const theme of THEMES) {
             expect(own.outline.style, `${series.slug}'s title draws no ring of its own`).toBe('none');
             expect(own.boxShadow, `${series.slug}'s title draws no band of its own`).toBe('none');
             // The ring never paints over the copy (B3's review, 1): every line of the title, statement and count lies
-            // inside the target shrunk by what the ring paints, its outline and band (width plus offset).
+            // inside the target shrunk by what the ring paints, its outline and band (width plus offset). Keyboard focus
+            // can move the page: an entry partly off screen is revealed in the frame after the focus (B10), so the
+            // target and the copy are both measured once focus has settled, at one scroll position. The target measured
+            // above, before the focus, is from before that scroll.
+            const scrollAt = await listItem.evaluate(
+                () => new Promise<number>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(window.scrollY)))),
+            );
+            const focused = (await measure(link, STRETCHED)).box;
             const painted = await link.evaluate((el) => {
                 const style = getComputedStyle(el);
                 return parseFloat(style.getPropertyValue('--focus-ring-width')) + parseFloat(style.getPropertyValue('--focus-ring-offset'));
             });
-            const clear = { left: target.left + painted, top: target.top + painted, right: target.right - painted, bottom: target.bottom - painted };
-            const lines = await listItem.evaluate((el) => {
+            const clear = { left: focused.left + painted, top: focused.top + painted, right: focused.right - painted, bottom: focused.bottom - painted };
+            const { lines, scrollY } = await listItem.evaluate((el) => {
                 const found: { text: string; left: number; top: number; right: number; bottom: number }[] = [];
                 const walker = document.createTreeWalker(el.querySelector('h2')?.parentElement ?? el, NodeFilter.SHOW_TEXT);
                 for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -314,8 +321,9 @@ for (const theme of THEMES) {
                     range.selectNodeContents(node);
                     for (const r of range.getClientRects()) found.push({ text: node.textContent.trim().slice(0, 24), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
                 }
-                return found;
+                return { lines: found, scrollY: window.scrollY };
             });
+            expect(scrollY, `${series.slug}: the target and the copy are measured at one scroll position`).toBe(scrollAt);
             expect(lines.length, `${series.slug} has copy to check`).toBeGreaterThan(0);
             const covered = lines.filter((line) => !holds(clear, line)).map((line) => `"${line.text}" at ${JSON.stringify(line)} against ${JSON.stringify(clear)}`);
             expect(covered, `${series.slug}: the ring paints over none of the copy`).toEqual([]);
