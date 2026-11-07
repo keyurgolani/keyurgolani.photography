@@ -177,10 +177,16 @@ function seconds(duration) {
 /**
  * A shell script's simple commands, in order: split on unquoted newlines, `;`, `&&`, `||`, `|` and `&` (not the `&`
  * of a redirection such as `>&2`), with comments dropped. Quotes, $(…), `…`, ${…} and ((…)) stay whole inside their
- * command, across lines too, so a quoted 'apt-get|dpkg' or a jq program over several lines is one word.
+ * command, across lines too, so a quoted 'apt-get|dpkg' or a jq program over several lines is one word. With them,
+ * what this reading can't follow, so a check can refuse it: how many for, while and until words stand unquoted in the
+ * code (inside $( ), ( ) and `…` too), and whether the code has a heredoc (<<, not the <<< here-string) or an ANSI-C
+ * $'…' quote, whose lines and escapes it reads as plain shell.
  */
-function commandsOf(script) {
+function scan(script) {
   const commands = [];
+  let loopWords = 0;
+  let heredoc = false;
+  let ansiC = false;
   /** What's open, innermost last: ', ", `, $(, (, ${ or ((. */
   const open = [];
   let current = '';
@@ -192,6 +198,11 @@ function commandsOf(script) {
     const char = script[i];
     const next = script[i + 1];
     const top = open.at(-1);
+    if (top === undefined || top === '$(' || top === '(' || top === '`') {
+      if (/^(?:for|while|until)(?=[\s;(]|$)/.test(script.slice(i, i + 6)) && /^[\s;&|()`{]?$/.test(script[i - 1] ?? '')) loopWords += 1;
+      if (char === '<' && next === '<' && script[i + 2] !== '<' && script[i - 1] !== '<') heredoc = true;
+      if (char === '$' && next === "'") ansiC = true;
+    }
     if (top === "'" || top === '`') {
       current += char;
       if (char === top) open.pop();
@@ -256,8 +267,10 @@ function commandsOf(script) {
     current += char;
   }
   end();
-  return commands;
+  return { commands, loopWords, heredoc, ansiC };
 }
+
+const commandsOf = (script) => scan(script).commands;
 
 /** Commands that return at once, so a try's clean-up needs no bound on them. Anything else must run under timeout. */
 const PROMPT = new Set(['echo', 'printf', 'true', 'false', ':', 'exit', 'break', 'continue', 'pkill', 'kill', 'sed', '[', 'test']);
@@ -404,11 +417,20 @@ const NOT_RETRIES = {
 };
 
 /**
- * What's wrong with a workflow's loops, one message each: a loop NOT_RETRIES doesn't list must close, have tries the
- * header counts, no command without a bound, and fit its step timeout with a minute to spare.
+ * What's wrong with a workflow's loops, one message each: every loop must be one the reading places, in a step it
+ * can read, and a loop NOT_RETRIES doesn't list must close, have tries the header counts, no command without a bound,
+ * and fit its step timeout with a minute to spare.
  */
 function problemsIn(name, text) {
   const problems = [];
+  // What the reading can't follow fails loudly, rather than being misread.
+  for (const run of runsIn(text)) {
+    const { loopWords, heredoc, ansiC } = scan(run.script);
+    const where = `${name}: ${run.name}`;
+    if (loopWords > loopsIn(run.script).length) problems.push(`${where}: a loop the check can't place, in a case arm, ( ), $( ) or after time; write it as its own for, while or until command`);
+    if (loopWords > 0 && heredoc) problems.push(`${where}: heredocs aren't read; in a step with a loop, use a here-string or a file`);
+    if (loopWords > 0 && ansiC) problems.push(`${where}: ANSI-C quotes aren't read; in a step with a loop, use printf or a plain quote`);
+  }
   for (const step of retriedStepsIn(name, text)) {
     const where = `${step.where}: ${step.header}`;
     if (where in NOT_RETRIES) continue;
