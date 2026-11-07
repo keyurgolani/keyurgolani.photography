@@ -109,6 +109,19 @@ export async function readinessOf(root: string, revisionId: string, registry?: R
     return { state: readiness.state === 'none' ? 'unknown' : readiness.state };
 }
 
+/**
+ * The load's own check of the draft, or null when it throws: the warnings it lists never block, so a check that fails
+ * lists none and leaves the page, its ledger, History and Restore, as they are. The log names why.
+ */
+function checkedOrNull(snapshot: Snapshot): Issue[] | null {
+    try {
+        return checkDraft(snapshot.root, snapshot);
+    } catch (error) {
+        console.error('[curation] The Publish screen could not check the draft for warnings:', error);
+        return null;
+    }
+}
+
 /** The view for a snapshot, as a page load shows it, with what readinessOf() said of its active revision. */
 export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { state: 'unknown' }): ScreenView {
     const { compiled, active, activations, diff } = snapshot;
@@ -129,7 +142,7 @@ export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { 
     const lines = kind === 'ledger' ? panelLines(diff, compiled.content, active.content, target.seriesId, names) : liveLines(active, names);
     // The warnings come from the same rules `photos validate` runs, on the draft this load compiled, so they're current
     // with the registry's source health too, which the draft's ID doesn't cover. About a third of the read's own time.
-    const { ledger, blockers, warnings } = kind === 'ledger' ? ledgerOf(snapshot, null, checkDraft(snapshot.root, snapshot)) : { ledger: { authored: [], derived: [], health: [] }, blockers: [], warnings: [] };
+    const { ledger, blockers, warnings } = kind === 'ledger' ? ledgerOf(snapshot, null, checkedOrNull(snapshot)) : { ledger: { authored: [], derived: [], health: [] }, blockers: [], warnings: [] };
     return {
         draftId,
         draftNumber: revisionNumberFor(activations, draftId),

@@ -619,10 +619,11 @@ function blockerMessage(change: CatalogChange, entry: FieldReviewState | undefin
 
 /**
  * What a warning names and where it takes the curator. A series by its title and slug, so two of one title read
- * apart, linked to its page only from an ID a series could have. A photograph by its title, linked to the fix its
- * ledger row already offers, its description review or its Inbox item, where it has one; else nothing.
+ * apart, linked to its page only from an ID a series could have. A photograph by its title: its description review
+ * only from a row that shows one, marked with that fix, since the review panel renders for nothing else; else its
+ * Inbox item, which opens from anywhere; else nothing.
  */
-function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, changes: ReadonlyMap<string, CatalogChange>): Pick<PublishWarning, 'record' | 'link'> {
+function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, built: Built): Pick<PublishWarning, 'record' | 'link'> {
     if (record.kind === 'series') {
         const slug = [...input.candidate.series, ...input.active.series].find((series) => series.id === record.id)?.slug ?? (input.layer.series.find((series) => series.id === record.id) as { slug?: string } | undefined)?.slug;
         const name = slug ? `${names.series(record.id)} (${slug})` : names.series(record.id);
@@ -630,13 +631,16 @@ function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, ch
     }
     const name = names.record(record);
     if (record.kind !== 'photo') return { record: name, link: null };
-    for (const [rowId, change] of changes) {
+    let inbox: PublishWarning['link'] = null;
+    for (const [rowId, change] of built.change) {
         if (change.record.kind !== 'photo' || change.record.id !== record.id) continue;
-        const fix = fixOf(change, input, names);
-        if (fix?.type === 'description') return { record: name, link: { type: 'description', rowId, name: fix.record } };
-        if (fix?.type === 'inbox') return { record: name, link: { type: 'inbox', eventId: fix.eventId, name: fix.record } };
+        const shown = built.rows.get(rowId)?.fix;
+        if (shown?.type === 'description') return { record: name, link: { type: 'description', rowId, name: shown.record } };
+        const fix = shown ?? fixOf(change, input, names);
+        if (fix?.type === 'inbox') inbox ??= { type: 'inbox', eventId: fix.eventId, name: fix.record };
+        else if (fix?.type === 'description' && fix.inboxItem) inbox ??= { type: 'inbox', eventId: fix.inboxItem, name: fix.record };
     }
-    return { record: name, link: null };
+    return { record: name, link: inbox };
 }
 
 /**
@@ -650,13 +654,9 @@ function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, ch
 export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const names = new Names(input);
     const built = rowsOf(input, names);
-    const warnings: PublishWarning[] = [];
-    const warn = (issue: Issue) => {
-        // "alt.text" is the description, as the ledger names it.
-        const field = fieldName({ record: issue.record, field: issue.field.split(/[.[]/)[0] });
-        const { record, link } = warningTarget(issue.record, input, names, built.change);
-        warnings.push({ key: `${issue.code} ${issue.record.kind} ${issue.record.id} ${issue.field}`, record, field, message: issue.message, hint: issue.hint ?? null, link });
-    };
+    // The warnings, named and linked once every row is marked, since a link to a row's review needs its mark.
+    const warned: Issue[] = [];
+    const warn = (issue: Issue) => warned.push(issue);
     const blockers: Blocker[] = [];
     const marked = new Set<string>();
     const conflicts = conflictFields(input.layer);
@@ -731,6 +731,12 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
     const order = [...ledger.authored, ...ledger.derived, ...ledger.health].map((row) => row.id);
     const rank = (blocker: Blocker) => (blocker.rowId === null ? order.length : order.indexOf(blocker.rowId));
     blockers.sort((a, b) => rank(a) - rank(b));
+    const warnings = warned.map((issue): PublishWarning => {
+        // "alt.text" is the description, as the ledger names it.
+        const field = fieldName({ record: issue.record, field: issue.field.split(/[.[]/)[0] });
+        const { record, link } = warningTarget(issue.record, input, names, built);
+        return { key: `${issue.code} ${issue.record.kind} ${issue.record.id} ${issue.field}`, record, field, message: issue.message, hint: issue.hint ?? null, link };
+    });
     return { ledger, blockers, warnings };
 }
 

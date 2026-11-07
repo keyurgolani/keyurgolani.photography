@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogChange, CatalogDiff } from '../../catalog/diff';
-import type { FieldReviewReason, FieldReviewState, ReviewContext } from '../../catalog/review';
+import type { FieldReviewReason, FieldReviewState, InboxItem, ReviewContext } from '../../catalog/review';
 import type { CandidateContent, Issue, RevisionContent, WorkingLayer } from '../../catalog/types';
 import { actorPhrase, countLine, displayFacts, orderRuns, resultCopy, rollbackStakes, rollbackWarning, timeOf, type Ledger, type PublishWarning, type ScreenView } from '../publish-facts';
 import { localize } from '../publish-history';
@@ -342,6 +342,12 @@ describe('warnings, which never block a publish', () => {
         expect(ledgerFor([reopened], [three[0]]).warnings[0].link).toEqual({ type: 'inbox', eventId, name: 'Pier lamps' });
         // No row about it: named, with no link.
         expect(ledgerFor([], [three[0]]).warnings[0].link).toBeNull();
+        // A row that shows no review panel, for a photograph with an Inbox item: that item, which opens from anywhere.
+        const item = 'evt_fedcba9876543210fedcba98';
+        const withItem: ReviewContext = { ...review, inbox: new Map([[item, { id: item, photoId: PHOTO, type: 'new', lastObservedAt: '2026-10-25T08:30:00.000Z' } as unknown as InboxItem]]) };
+        const diff: CatalogDiff = { activeRevisionId: REV(2), empty: false, changes: [generated] };
+        const answered = buildLedger({ diff, layer, active: content, candidate: content as CandidateContent, registry: null, review: withItem, activations: [], issues: [three[0]], media: { draft: (url) => url, live: (url) => url } });
+        expect(answered.warnings[0].link).toEqual({ type: 'inbox', eventId: item, name: 'Pier lamps' });
     });
 
     it("shows the latest check's warnings, a passing or a blocked one, else the page's, with Publish open after a pass, and none once nothing is pending", () => {
