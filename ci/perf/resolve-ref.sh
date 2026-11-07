@@ -5,14 +5,19 @@
 #
 #   bash ci/perf/resolve-ref.sh <git-dir> <ref>
 #
-# <ref> is a full or short SHA (4 to 40 hex digits), a branch, or a tag. It
+# <ref> is a full or short SHA (4 to 40 hex digits), a branch, or a tag, by
+# its own name: a full refs/heads/... or refs/tags/... name is refused, as is
+# any name git check-ref-format refuses. It
 # prints the 40-character SHA on stdout. A ref that names no commit, or names
 # more than one (a short SHA two commits share, or a branch and a tag of that
 # name on different commits), exits 1 with a ::error:: line that says which.
 # A branch is read from refs/remotes/origin, where actions/checkout fetches
 # it, or from refs/heads when origin has none of that name: the local branch
 # the checkout made can lag origin's if a push lands mid-run, and that isn't a
-# second commit. Only git; it writes nothing.
+# second commit. Only git; it writes nothing. The workflow's clone is a
+# partial one (blob:none), where git would fetch a missing object on demand
+# (rev-parse on a blob's SHA does), so every git call here runs with
+# GIT_NO_LAZY_FETCH=1, set for that command alone.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -27,14 +32,23 @@ fail() {
   exit 1
 }
 
+# The ref as the shell would quote it, so a newline in it can't end the ::error:: line and start another workflow
+# command. A ref that passes the checks below has none of the characters %q escapes.
+SHOWN=$(printf %q "$REF")
+
 [ -n "$REF" ] || fail "The ref is empty. Give a branch, a tag, or a commit SHA."
 # Never an option to git, and only the characters a branch, tag or SHA takes here.
 if [[ $REF == -* || ! $REF =~ ^[A-Za-z0-9._/-]+$ ]]; then
-  fail "'$REF' isn't a branch, tag or commit SHA: use letters, digits, '.', '_', '/' and '-', not starting with '-'."
+  fail "'$SHOWN' isn't a branch, tag or commit SHA: use letters, digits, '.', '_', '/' and '-', not starting with '-'."
+fi
+# Nor '..', a '.lock' or '/' at the end, an empty or dot-led part, and the rest git refuses in a ref name.
+GIT_NO_LAZY_FETCH=1 git check-ref-format --allow-onelevel "$REF" || fail "'$SHOWN' isn't a valid branch or tag name (git check-ref-format refuses it)."
+if [[ $REF =~ ^refs/(heads|tags|remotes/origin)/(.+)$ ]]; then
+  fail "'$SHOWN' is a full ref name. Give the branch or tag by its own name, as in '${BASH_REMATCH[2]}'."
 fi
 
 g() {
-  git --git-dir="$GIT_DIR_ARG" "$@"
+  GIT_NO_LAZY_FETCH=1 git --git-dir="$GIT_DIR_ARG" "$@"
 }
 
 # What the ref names, one "<sha> <what>" line each.
@@ -64,10 +78,10 @@ if [[ $REF =~ ^[0-9a-fA-F]{4,40}$ ]]; then
   fi
 fi
 
-[ "${#FOUND[@]}" -gt 0 ] || fail "No branch, tag or commit is named '$REF' in this repository."
+[ "${#FOUND[@]}" -gt 0 ] || fail "No branch, tag or commit is named '$SHOWN' in this repository."
 SHAS=$(printf '%s\n' "${FOUND[@]}" | cut -d' ' -f1 | sort -u)
 if [ "$(printf '%s\n' "$SHAS" | wc -l | tr -d ' ')" -ne 1 ]; then
   WHAT=$(printf '%s\n' "${FOUND[@]}" | sort -u | cut -d' ' -f2- | sort -u | paste -sd ';' - | sed 's/;/; /g')
-  fail "'$REF' is ambiguous: it names more than one commit ($WHAT). Give the full SHA, or a longer one."
+  fail "'$SHOWN' is ambiguous: it names more than one commit ($WHAT). Give the full SHA, or a longer one."
 fi
 printf '%s\n' "$SHAS"
