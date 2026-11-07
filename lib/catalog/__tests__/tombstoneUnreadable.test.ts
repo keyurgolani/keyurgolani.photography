@@ -21,7 +21,7 @@ vi.mock('next/headers', () => ({ headers: vi.fn(async () => new Headers()) }));
 const { GET } = await import('../../../app/media/[photoId]/[assetRevision]/[profileId]/[variant]/route');
 
 /**
- * #15's purge (#181's A10), the A11 coordinator's ruling (a): a tombstone
+ * #15's purge (#181): a tombstone
  * that can't be read never lets its set be served or go live. `/media`
  * passes such a file over, so the set falls through to the live revision's
  * policy, which 404s it, never a 200 and never a throw; and
@@ -69,7 +69,7 @@ const DAMAGES: { name: string; damage(file: string): void; detail: RegExp }[] = 
     { name: 'a malformed tombstone', damage: (file) => fs.writeFileSync(file, '{"tombstoneId": "tomb_'), detail: /not valid JSON/ },
 ];
 
-describe('a purged set whose tombstone cannot be read (A11, ruling a)', { timeout: 60_000 }, () => {
+describe('a purged set whose tombstone cannot be read (#15)', { timeout: 60_000 }, () => {
     for (const { name, damage, detail } of DAMAGES) {
         it(`${name}: /media answers 404 no-store for the set, not 200, and logs what it passed over`, async () => {
             const built = await purgeFixture(411);

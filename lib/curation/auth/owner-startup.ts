@@ -2,7 +2,7 @@ import { writerGate } from '../../catalog/data-root-owner';
 import { dataRoot } from '../../storage/config';
 
 /**
- * The A11 coordinator's round 3b: the curator, the same server as web with
+ * #15's one-uid rule: the curator, the same server as web with
  * CURATION_ENABLED=true, writes the data root (Inbox items, decisions,
  * working-layer records, their locks), so it starts only as the data root's
  * owner, uid 1001 under docker-compose.prod.yml. It sits in the auth

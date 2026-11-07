@@ -160,7 +160,7 @@ async function requireRoots(): Promise<string> {
         console.error(`[ImageWatcher] ${error.message} Nothing was processed.`);
         process.exit(1);
     }
-    // The A11 round 3 rule: the watcher writes the data root, so it runs only as its owner, the uid web runs as, and
+    // #15's one-uid rule: the watcher writes the data root, so it runs only as its owner, the uid web runs as, and
     // refuses before its first lock or write otherwise, reporting a missing library included (lib/catalog/owner-gate.ts).
     const wrongOwner = writerGate(dataRoot(), 'the image watcher', 'watcher');
     if (wrongOwner) {

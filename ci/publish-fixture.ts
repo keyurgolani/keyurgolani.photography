@@ -4,7 +4,7 @@
  *
  *   npx tsx ci/publish-fixture.ts <empty data root>
  *
- * It publishes twice: the launch, then a second revision (#15's A11) that
+ * It publishes twice: the launch, then a second revision (#15) that
  * retitles the published series, so both revisions hold the same sets and
  * `photos rollback --to 1` has somewhere to go. Prints one JSON line: the
  * live revision, the second, as `revisionId`, the first as
@@ -13,7 +13,7 @@
  * series, so it must 404, and the IDs of the featured series and of a photo
  * in it, for #6's Home records endpoint. It also prints, as `unlisted` and
  * `unlistedPhotoId`, a photo with a ready set that no series lists and no
- * revision holds, the one `photos purge` may take down (#15's A10). Never
+ * revision holds, the one `photos purge` may take down (#15). Never
  * touches the real data root: the root has to be empty and outside this
  * repository.
  */

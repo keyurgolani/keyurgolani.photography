@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 /**
- * The A11 coordinator's ruling (c), and rounds 2 and 3: a command that takes
+ * #15's one-uid rule: a command that takes
  * a lock or writes under the data root runs only as the uid that owns it,
  * the one `web`, the watcher and the curator run as. Everything they write
  * is `0600` in `0700` folders, lock files included, so a file another uid

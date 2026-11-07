@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The ingestion smoke test for a built image (#14 and #17, v2.0.0 A11), on a
+# The ingestion smoke test for a built image (#14 and #17, v2.0.0), on a
 # throwaway library and data root, with every command the image's own:
 #
 # 1. The image generates the fixture library from this checkout's

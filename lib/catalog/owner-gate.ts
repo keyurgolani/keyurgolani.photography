@@ -4,7 +4,7 @@ import type { CURATION_COMMANDS } from '../curation/commands';
 import { writerGate, type WriterKind } from './data-root-owner';
 
 /**
- * The A11 coordinator's round 3 rule, in one table: any command that takes a
+ * #15's one-uid rule, in one table: any command that takes a
  * lock or writes under the data root refuses as a non-owner before its first
  * lock, exit 1, WRONG_OWNER, writing nothing, with what its own files would
  * break. Read-only commands and dry runs still report, as any uid.

@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BREAKS, ownerRefusal, type WriterKind } from '../data-root-owner';
 
 /**
- * ownerRefusal(), the check the owner gate asks (A11 ruling c, rounds 2 and
- * 3). Which commands ask, and that each refuses before its first lock, is
+ * ownerRefusal(), the check the owner gate asks (#15: a
+ * takedown file is written only as the data root's owner). Which commands ask, and that each refuses before its first lock, is
  * ownerGatePins.test.ts, end to end; this is the check itself: the effective
  * uid against the data root's owner, through a symlink, and each writer's
  * own words. process.geteuid() and getuid() are faked against the owner of
@@ -27,7 +27,7 @@ function runAs(uid: number, realUid?: number): void {
 
 const WRONG = /runs as uid (\d+), but uid (\d+) owns the data root, and web runs as that owner\..* It took no lock\. Nothing was written\./;
 
-describe('ownerRefusal() (A11, ruling c)', () => {
+describe('ownerRefusal() (#15)', () => {
     it.runIf(posix)('refuses when the effective uid differs, even with the real uid the owner, and allows when it matches', () => {
         // Only stat()ed: whoever owns it, the faked uid differs from or matches that owner.
         const root = os.tmpdir();

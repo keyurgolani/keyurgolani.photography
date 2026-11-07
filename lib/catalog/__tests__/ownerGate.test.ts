@@ -9,7 +9,7 @@ import { REPO_ROOT } from '../../../test/helpers/runTsx';
 import { commandAccess, CURATION_ACCESS, IDENTITY_ACCESS, PHOTOS_ACCESS } from '../owner-gate';
 
 /**
- * The A11 coordinator's round 3: one table classifies every command the
+ * #15's one-uid rule: one table classifies every command the
  * dispatcher knows. A command added to scripts/photos.ts, to `photos
  * identity`, to `photos curation` or to its credential commands, and not to
  * lib/catalog/owner-gate.ts, fails here.
@@ -31,7 +31,7 @@ function identitySubcommands(source: string): string[] {
 
 const keys = (table: object) => Object.keys(table).sort();
 
-describe('the owner gate covers every command (A11 round 3)', () => {
+describe('the owner gate covers every command (#15)', () => {
     it('classifies every top-level command main() dispatches, and no other', () => {
         expect(dispatched(PHOTOS_SOURCE).length).toBeGreaterThan(15);
         expect(keys(PHOTOS_ACCESS)).toEqual(dispatched(PHOTOS_SOURCE));

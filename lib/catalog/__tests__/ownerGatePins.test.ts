@@ -10,11 +10,11 @@ import { readAuthoredRecord } from '../working-layer';
 import { cleanupPurgeTemplates, purgeFixture, quiet, snapshot, tempLibrary, writeOpenEvent, type PurgeFixture } from './purgeFixtures';
 
 /**
- * The A11 coordinator's round 3 rule, end to end: every command that takes a
+ * #15's one-uid rule, end to end: every command that takes a
  * lock or writes under the data root refuses as a non-owner before its first
  * lock, exit 1, WRONG_OWNER, writing nothing, locks/ included. Read-only
  * commands and dry runs still run. Each case spawns the real CLI, or the
- * watcher, as the npm scripts do, on its own copy of A10's purge fixture,
+ * watcher, as the npm scripts do, on its own copy of the purge fixture,
  * with test/helpers/fakeUid.cjs making the child's geteuid() answer another
  * uid than the temp root's owner, its real uid left as it is (round 4).
  *
@@ -165,7 +165,7 @@ const other = (w: World) => (w.owner === 0 ? 1 : 0);
 
 const WRONG = /\[photos\] WRONG_OWNER: .* runs as uid (\d+), but uid (\d+) owns the data root, and web runs as that owner\..*Nothing was written\./;
 
-describe.runIf(posix)('the owner gate, every writer (A11 round 3)', { timeout: 120_000 }, () => {
+describe.runIf(posix)('the owner gate, every writer (#15)', { timeout: 120_000 }, () => {
     for (const writer of WRITERS) {
         it(`photos ${writer.name} as another uid: exit 1, WRONG_OWNER, nothing written, locks/ untouched`, async () => {
             const w = await world();
@@ -221,7 +221,7 @@ function startCurator(w: World, uid: number | null) {
     });
 }
 
-describe.runIf(posix)('the owner gate, the curator at its start (A11 round 3b)', { timeout: 120_000 }, () => {
+describe.runIf(posix)('the owner gate, the curator at its start (#15)', { timeout: 120_000 }, () => {
     it('refuses to start as another uid: non-zero, WRONG_OWNER, nothing written, locks/ untouched', async () => {
         const w = await world();
         const check = untouched(w.built.root);
@@ -239,7 +239,7 @@ describe.runIf(posix)('the owner gate, the curator at its start (A11 round 3b)',
     });
 });
 
-describe.runIf(posix)('the owner gate, every reader and dry run (A11 round 3)', { timeout: 120_000 }, () => {
+describe.runIf(posix)('the owner gate, every reader and dry run (#15)', { timeout: 120_000 }, () => {
     for (const reader of READERS) {
         it(`photos ${reader.name} as another uid answers as it does for the owner`, async () => {
             const asOwner = await world();

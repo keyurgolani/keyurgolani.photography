@@ -814,7 +814,7 @@ async function statusCommand(args: string[]): Promise<number> {
     // status is the diagnostic command, so it reports even with no data root.
     const result = await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check });
     if (!values.json) return printed(result);
-    // A11 review: JSON goes to stdout whatever the exit code, as history --json's does, so a monitor reads one stream.
+    // JSON goes to stdout whatever the exit code, as history --json's does, so a monitor reads one stream.
     process.stdout.write(result.output);
     return result.exitCode;
 }
@@ -875,7 +875,7 @@ async function orderCommand(parse: () => SequenceCommand): Promise<number> {
 
 async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
-    // The A11 round 3 rule: a command that takes a lock or writes under the data root runs only as the data root's
+    // #15's one-uid rule: a command that takes a lock or writes under the data root runs only as the data root's
     // owner, the uid web runs as, and refuses before its first lock otherwise (lib/catalog/owner-gate.ts).
     const wrongOwner = ownerGate(argv, { root: dataRoot() });
     if (wrongOwner) {

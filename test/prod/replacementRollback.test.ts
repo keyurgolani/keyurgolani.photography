@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * #17's rollback after a replacement on the standalone build (#15's shared
- * row, v2.0.0 A11), which `npm run test:prod` makes first. Plain `npm test`
+ * row, v2.0.0), which `npm run test:prod` makes first. Plain `npm test`
  * skips it unless RUN_PROD_TESTS=1.
  *
  * It serves a copy of .next/standalone on 127.0.0.1 over #17's replacement

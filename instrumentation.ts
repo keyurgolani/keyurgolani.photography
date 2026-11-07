@@ -1,7 +1,7 @@
 // Runs once when a server starts. The build also loads it, so skip that phase.
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs' && process.env.NEXT_PHASE !== 'phase-production-build') {
-    // A11 round 3b: the curator writes the data root, so it starts only as the data root's owner, before
+    // #15's one-uid rule: the curator writes the data root, so it starts only as the data root's owner, before
     // any other step and before its first lock or write (lib/curation/auth/owner-startup.ts).
     const { curatorOwnerProblem } = await import('./lib/curation/auth/owner-startup');
     const wrongOwner = curatorOwnerProblem(process.env);

@@ -27,14 +27,14 @@
 #    served set flipped in place, its size kept, which only the digest check
 #    sees: exit 1, naming the file, and a record that fails the revision. The
 #    byte goes back, and a third run passes again.
-# 4. #15's history and rollback, in the image, on the published root (A11):
+# 4. #15's history and rollback, in the image, on the published root:
 #    `photos history --json --revisions` lists both publishes, revision 2
 #    live and revision 1 one a rollback can return to, and `photos rollback
 #    --to 1 --yes --expect-active <revision 2>` rolls back. The running web
 #    names revision 1 at /api/ready with no restart, the same after a
 #    restart, and still serves the set, and `photos history --json` lists
 #    the rollback as live.
-# 5. #15's purge and GC, in the image, on the published root (A10, A11), for
+# 5. #15's purge and GC, in the image, on the published root, for
 #    the fixture's photo that no series lists and no revision holds:
 #    `photos purge <photoId> --reason smoke` is a dry run that prints its
 #    "Takes down" line and writes nothing, `--yes` writes the tombstone and
@@ -164,8 +164,8 @@ sha256_of() {
 }
 
 # The uid web runs as: the image's USER, and what docker-compose.prod.yml
-# gives every container and so every run --rm photos.mjs command (A11's
-# ruling b). Step 11's commands run as it too, never as this machine's user.
+# gives every container and so every run --rm photos.mjs command, so
+# nothing has to widen a mode. Step 11's commands run as it too, never as this machine's user.
 WEB_USER=1001:1001
 
 # Runs <command> in the image as <user>, with the published root at
@@ -520,7 +520,7 @@ jq -e '.total == 3 and .pointer.revisionId == $first and (.rows[-1] | .kind == "
   fail "photos history --json doesn't list the rollback to $first as live: $(cat "$TMP/history-after.json")"
 echo "photos history listed revision 1 as one a rollback can return to, photos rollback --to 1 rolled back to $first, and /api/ready and the #6 Home records endpoint named revision 1 before and after a restart."
 
-# 11. #15's purge and GC (A10), in the image, on the published root, after
+# 11. #15's purge and GC, in the image, on the published root, after
 #     the rollback. The target is the fixture's photo no series lists and no
 #     revision holds, since purge refuses one the live revision or a draft
 #     series shows. Every command runs as web's uid on a root that uid owns,
