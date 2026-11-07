@@ -19,7 +19,7 @@ import { setDataDir } from '@/test/helpers/tempDataRoot';
 vi.mock('@/lib/curation/auth', async (importOriginal) => ({ ...(await importOriginal<object>()), requireCurator: async () => ({}) }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 // The next publish() the screen's action runs answers this instead, as one that found an error at the switch would.
-const stand: { next: PublishResult | null } = { next: null };
+const stand: { next: PublishResult | null; check: Error | null } = { next: null, check: null };
 vi.mock('@/lib/catalog/publish', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/lib/catalog/publish')>();
     return {
@@ -28,6 +28,11 @@ vi.mock('@/lib/catalog/publish', async (importOriginal) => {
             const answer = stand.next;
             stand.next = null;
             return answer ? Promise.resolve(answer) : actual.publish(options);
+        },
+        // The page load's check of the draft, which throws while `stand.check` is set.
+        checkDraft: (...args: Parameters<typeof actual.checkDraft>) => {
+            if (stand.check) throw stand.check;
+            return actual.checkDraft(...args);
         },
     };
 });
@@ -127,6 +132,34 @@ describe('the Publish screen with warnings', () => {
             expect(back.draftId).toBe(loaded.draftId);
             expect(codes(back)).toEqual([]);
         } finally {
+            restore();
+        }
+    });
+
+    it("keeps the page, its ledger, History and Restore when the load's check of the draft throws, listing no warnings and logging why", { timeout: 120_000 }, async () => {
+        const { root } = await launched(164, { warnings: true });
+        const restore = setDataDir(root);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            // A second revision, so History has one to restore, then the draft again.
+            const draft = await view();
+            const valid = await validate(draft);
+            expect((await publishAction(valid, form({ intent: 'publish', draftId: draft.draftId, active: draft.active.revisionId, validated: draft.draftId }))).answer).toMatchObject({ kind: 'published' });
+            const series = (await readWorkingLayer(root)).series[0];
+            await writeAuthoredRecord({ ...series, statement: 'A fixture statement that changes once more.' }, { expectedVersion: series.version, root });
+
+            stand.check = new Error('Test: the check of the draft throws.');
+            const page = await loadPublishPage();
+            if (page.state !== 'ready') throw new Error(`The page is ${page.state}`);
+            expect(page.view.kind).toBe('ledger');
+            expect([...page.view.ledger.authored, ...page.view.ledger.derived].length).toBeGreaterThan(0);
+            expect(page.view.warnings).toEqual([]);
+            expect(page.history.entries.length).toBeGreaterThanOrEqual(2);
+            expect(Object.keys(page.history.plans)).toContain('1');
+            expect(logged).toHaveBeenCalledWith('[curation] The Publish screen could not check the draft for warnings:', stand.check);
+        } finally {
+            stand.check = null;
+            logged.mockRestore();
             restore();
         }
     });

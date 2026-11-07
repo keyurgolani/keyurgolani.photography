@@ -325,12 +325,17 @@ describe('warnings, which never block a publish', () => {
         // An ID no series could have, as a damaged diagnostic might hold: named, never linked.
         const odd = ledgerFor([], [issue('series.duplicate-title', 'warning', { kind: 'series', id: 'ser_../../curation' }, 'title', three[2].message)]);
         expect(odd.warnings[0].link).toBeNull();
-        // A description waiting on review: the row's own Review the description.
+        // A description waiting on review, its row shown and marked on load: the row's own Review the description.
         const generated = change('generated');
-        const described = ledgerFor([generated], [three[0]]);
+        const described = ledgerFor([generated], null, [three[0]]);
         const rowId = described.ledger.authored[0]?.id;
         expect(rowId).toMatch(/^chg-/);
+        expect(described.ledger.authored[0]?.fix?.type).toBe('description');
         expect(described.warnings[0].link).toEqual({ type: 'description', rowId, name: 'Pier lamps' });
+        // The same row after a check that found no error: nothing marks it, so no review panel opens, and no link to one.
+        expect(ledgerFor([generated], [three[0]]).warnings[0].link).toBeNull();
+        // A hidden change is never marked, so its panel never renders: no link to it.
+        expect(ledgerFor([change('generated', { visible: false })], null, [three[0]]).warnings[0].link).toBeNull();
         // An Inbox item waiting on the photograph: its Decide it in the Inbox.
         const eventId = 'evt_0123456789abcdef01234567';
         const reopened = change('item-reopened', { record: { kind: 'photo', id: PHOTO }, field: 'alt', review: { state: 'stale', fields: [{ record: { kind: 'photo', id: PHOTO }, field: 'alt', state: 'stale', reason: 'item-reopened', eventId }] } });
