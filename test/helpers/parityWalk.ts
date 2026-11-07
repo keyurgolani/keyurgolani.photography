@@ -81,6 +81,8 @@ export interface Walk {
     folded: string[];
     /** Each pinned paint a focused folded element's pseudo-element showed, as WalkOptions.fold pinned it. Sanctioned, and listed. */
     foldedPinned: string[];
+    /** PROBE (f4-probe-systemdark, never merged): what WalkOptions.probe read, after the walk's own reads. */
+    probe?: unknown;
 }
 
 /**
@@ -170,8 +172,8 @@ export interface EvaluatingPage {
  * adds that the base never had (dark-parity.spec.ts's HEAD_ONLY). `options` retags or folds elements a head has
  * reshaped (WalkOptions).
  */
-export function walk(page: EvaluatingPage, selectors: string[] = [], leaveOut: string[] = [], { retag = [], fold = [] }: WalkOptions = {}): Promise<Walk> {
-    return page.evaluate(([properties, wanted, added, retagged, foldedAway, paint]) => {
+export function walk(page: EvaluatingPage, selectors: string[] = [], leaveOut: string[] = [], { retag = [], fold = [], probe = false }: WalkOptions & { probe?: boolean } = {}): Promise<Walk> {
+    return page.evaluate(([properties, wanted, added, retagged, foldedAway, paint, probing]) => {
         const skip = new Set(['SCRIPT', 'STYLE', 'LINK', 'NOSCRIPT', 'TEMPLATE', 'META']);
         const isToggle = (el: Element) => el.tagName === 'BUTTON' && /^Switch to/.test((el.textContent ?? '').trim());
         // Today's toggle comes with a hidden description beside it; the control with its popover.
@@ -285,14 +287,74 @@ export function walk(page: EvaluatingPage, selectors: string[] = [], leaveOut: s
             }
         };
         visit(document.body, 'body', 0, 0);
+        const tokensRead = { root: tokens(getComputedStyle(document.documentElement)), body: tokens(getComputedStyle(document.body)) };
+        // PROBE (f4-probe-systemdark, never merged): after every read above, in the same task, so nothing the probe reads
+        // can start what the walk saw. Then each animation finished, and Dismiss read again.
+        let probed: unknown;
+        if (probing) {
+            const shortPath = (target: unknown) => {
+                if (!(target instanceof Element)) return target === null || target === undefined ? null : String(target);
+                const parts: string[] = [];
+                for (let el: Element | null = target; el && el !== document.body && parts.length < 6; el = el.parentElement) {
+                    parts.unshift(`${el.localName}${el.id ? `#${el.id}` : ''}${el.getAttribute('name') ? `[name=${el.getAttribute('name')}]` : ''}${el.getAttribute('value') ? `[value=${el.getAttribute('value')}]` : ''}`);
+                }
+                return parts.join('>');
+            };
+            const animations = document.getAnimations().map((animation) => {
+                const effect = animation.effect as KeyframeEffect | null;
+                const keyframes = effect?.getKeyframes?.() ?? [];
+                return {
+                    kind: animation.constructor.name,
+                    target: shortPath(effect?.target),
+                    property: (animation as Animation & { transitionProperty?: string }).transitionProperty ?? (animation as Animation & { animationName?: string }).animationName ?? [...new Set(keyframes.flatMap((frame) => Object.keys(frame)))].filter((key) => !['offset', 'computedOffset', 'easing', 'composite'].includes(key)).join(','),
+                    playState: animation.playState,
+                    currentTime: animation.currentTime,
+                };
+            });
+            const claimed = (el: Element) => Object.keys(el).some((key) => key.startsWith('__reactFiber$') || key.startsWith('__reactProps$'));
+            const controls = [...document.querySelectorAll('main button[name="intent"], main #archive-reason')].map((el) => {
+                const style = getComputedStyle(el);
+                const details = el.closest('details');
+                return {
+                    control: `${el.localName}${el.getAttribute('value') ? `[${el.getAttribute('value')}]` : ''} ${(el.textContent ?? '').trim().slice(0, 30) || el.id}`,
+                    disabledAttr: el.hasAttribute('disabled'),
+                    matchesDisabled: el.matches(':disabled'),
+                    ariaDisabled: el.getAttribute('aria-disabled'),
+                    dataOff: el.getAttribute('data-off'),
+                    details: details ? (details.open ? 'open' : 'closed') : 'none',
+                    claimedByReact: claimed(el),
+                    color: style.color,
+                    transition: `${style.transitionProperty} ${style.transitionDuration} ${style.transitionDelay}`,
+                };
+            });
+            const dismiss = document.querySelector('main button[name="intent"][value="dismiss"]');
+            const dismissAtWalk = dismiss ? getComputedStyle(dismiss).color : null;
+            for (const animation of document.getAnimations()) {
+                try {
+                    animation.finish();
+                } catch {
+                    // An infinite animation can't finish; it's listed above.
+                }
+            }
+            probed = {
+                reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+                hydratedMark: document.documentElement.getAttribute('data-hydrated'),
+                hiddenSegments: document.querySelectorAll('body > div[hidden][id^="S:"]').length,
+                animations,
+                controls,
+                dismissAtWalk,
+                dismissAfterFinish: dismiss ? getComputedStyle(dismiss).color : null,
+            };
+        }
         return {
-            tokens: { root: tokens(getComputedStyle(document.documentElement)), body: tokens(getComputedStyle(document.body)) },
+            tokens: tokensRead,
             elements,
             resolved,
             folded,
             foldedPinned,
+            ...(probing ? { probe: probed } : {}),
         };
-    }, [[...PROPERTIES], selectors, leaveOut, [...retag], [...fold], FOLD_PAINT] as const);
+    }, [[...PROPERTIES], selectors, leaveOut, [...retag], [...fold], FOLD_PAINT, probe] as const);
 }
 
 /**

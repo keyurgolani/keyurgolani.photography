@@ -205,6 +205,8 @@ interface Pair {
     motion?: Motion;
     /** A hover or focus state: the gate walks it, and the pixel report leaves it out. */
     gateOnly?: boolean;
+    /** PROBE (f4-probe-systemdark, never merged): load with reducedMotion no-preference, in both builds, with no clock. */
+    probeMotion?: boolean;
     /** The page this is a state of, whose allowances it takes. */
     stateOf?: string;
     /** Elements both walks leave out with their subtrees, where the builds differ on purpose and another pair compares them. */
@@ -249,7 +251,7 @@ interface PassShot {
  * `pin` puts Home on the paused clock for the gate's walk (BADGE_LINGER_MS's note).
  */
 async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session, motion = pair.motion, pin = false }: { js?: boolean; session?: string; motion?: Motion; pin?: boolean } = {}) {
-    const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: motion ? 'no-preference' : 'reduce', javaScriptEnabled: js });
+    const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: motion || pair.probeMotion ? 'no-preference' : 'reduce', javaScriptEnabled: js });
     // Home's timers, held still (BADGE_LINGER_MS's note).
     const homeClock = pin && !motion && js && pair.url === '/';
     if (motion || homeClock) {
@@ -274,13 +276,20 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     // Every wait polls from here, so it works without JavaScript too (the page then runs none of our timers or
     // handlers), and every one that times out is named in `timedOut`: the gate fails a row on any, never passes it.
     const timedOut: string[] = [];
+    // PROBE (f4-probe-systemdark, never merged): every wait this load ran, how long it took and whether it passed.
+    const waited: { name: string; ms: number; passed: boolean }[] = [];
     const until = async (name: string, check: () => Promise<boolean>, ms: number) => {
         const deadline = Date.now() + ms;
+        const started = Date.now();
         while (Date.now() < deadline) {
-            if (await check().catch(() => false)) return;
+            if (await check().catch(() => false)) {
+                waited.push({ name, ms: Date.now() - started, passed: true });
+                return;
+            }
             await page.waitForTimeout(100);
         }
         timedOut.push(name);
+        waited.push({ name, ms: Date.now() - started, passed: false });
     };
     // The page and the curator's preview frame: every image that's going to load has (a lazy one far out of view won't),
     // and its fonts are in. With JavaScript, every image is decoded too: loaded isn't painted, and a photo still
@@ -339,7 +348,7 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     // allowed they're at their fixed points already.
     await until('animations', () => page.evaluate(() => document.getAnimations().every((animation) => animation.effect?.getComputedTiming().iterations === Number.POSITIVE_INFINITY || animation.playState !== 'running')), 5000);
     await page.waitForTimeout(600);
-    return { context, page, timedOut };
+    return { context, page, timedOut, waited };
 }
 
 /** One pass's capture, from its own fresh load: the shot, the controls' and photographs' boxes, and the photos' compositing. */
@@ -777,6 +786,29 @@ const CURATOR: Pair[] = [
         await inboxIn(page);
         await hoverOn(inboxRefresh(page));
     } },
+    // PROBE (f4-probe-systemdark, never merged): four control variants of inbox-button-hover, each its own test and log.
+    { name: 'inbox-button-hover-probe-motion', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', probeMotion: true, act: async (page) => {
+        await inboxIn(page);
+        await hoverOn(inboxRefresh(page));
+    } },
+    { name: 'inbox-button-hover-probe-wait-dismiss', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
+        await inboxIn(page);
+        const dismiss = page.locator('main button[name="intent"][value="dismiss"]');
+        if (await dismiss.count()) await expect(dismiss, "Dismiss's disabled has cleared").toBeEnabled({ timeout: 20_000 });
+        await hoverOn(inboxRefresh(page));
+    } },
+    { name: 'inbox-button-hover-probe-details-open', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
+        await inboxIn(page);
+        await page.evaluate(() => {
+            for (const details of document.querySelectorAll('main details')) (details as HTMLDetailsElement).open = true;
+        });
+        await hoverOn(inboxRefresh(page));
+    } },
+    // The module's .button class is hashed (_<hash>_button), so it's matched by its suffix.
+    { name: 'inbox-button-hover-probe-no-transition', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', headStyle: 'main [class*="_button"]{transition:none!important}', act: async (page) => {
+        await inboxIn(page);
+        await hoverOn(inboxRefresh(page));
+    } },
     { name: 'inbox-button-focus', url: '/curation/inbox', session: true, addsControl: true, gateOnly: true, stateOf: 'inbox', act: async (page) => {
         await inboxIn(page);
         await keyboardFocus(page, inboxRefresh(page));
@@ -1081,7 +1113,7 @@ async function styles(
         head ? `${HEAD_ONLY.map((entry) => entry.selector).join(',')}{display:none!important}` : '',
         pair.headStyle && head ? pair.headStyle : '',
     ].join('');
-    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion, pin: true });
+    const { context, page, timedOut, waited } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion, pin: true });
     try {
         const selectors = allowancesFor(pair, viewport.width).map((entry) => entry.selector);
         // The self-test's page with its theme taken off, to show a missing theme fails anywhere but the error shell.
@@ -1099,7 +1131,16 @@ async function styles(
         // shows, so they're put there in both builds, and the walk compares the page as it's built, not how its payload
         // split (A8's CI: the Inbox's rows streamed one by one).
         if (!js) await page.evaluate(completeHiddenSegments);
-        return { walk: await walk(page, selectors, [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted };
+        // PROBE (f4-probe-systemdark, never merged): on the Inbox, the walk reads the probe too, in its own evaluate.
+        const probing = pair.url === '/curation/inbox';
+        const walked = await walk(page, selectors, [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector), { retag: retagFor(pair), fold: foldFor(pair), probe: probing });
+        if (probing) {
+            const route = !js ? 'no JavaScript' : stored === 'dark' ? 'a stored `dark`' : stored === '' ? 'System on a dark device' : `stored ${stored}`;
+            fs.appendFileSync(path.join(OUT, 'f4-probe-systemdark.jsonl'), `${JSON.stringify({ pair: pair.name, tag, route, width: viewport.width, at: new Date().toISOString(), waited, probe: walked.probe })}\n`);
+        }
+        const { probe: _probe, ...walkOnly } = walked;
+        void _probe;
+        return { walk: walkOnly, timedOut, ...painted };
     } finally {
         await context.close();
     }
