@@ -236,12 +236,14 @@ describe('the Inbox watch', () => {
         await h.advance(INBOX_WATCH_INTERVAL_MS);
         expect(h.state.inFlight).toBe(1);
         h.watch.resume();
+        // The check takes 1.5 s to answer, so the 2 s, counted from when it started, have 0.5 s to go.
+        await h.advance(1_500);
         await h.release();
         await h.advance(0);
         expect(h.state.checks).toBe(1);
         expect(h.timers).toHaveLength(1);
-        expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_ONLINE_GAP_MS);
-        await h.advance(INBOX_WATCH_ONLINE_GAP_MS);
+        expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_ONLINE_GAP_MS - 1_500);
+        await h.advance(INBOX_WATCH_ONLINE_GAP_MS - 1_500);
         expect(h.state.checks).toBe(2);
         expect(h.timers).toHaveLength(1);
         expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_INTERVAL_MS);
@@ -253,17 +255,23 @@ describe('the Inbox watch', () => {
     it('runs one check for an online event kept while hidden, by the 2 s rule from the last check, once the tab is back', async () => {
         const h = harness([new Error('down')]);
         h.watch.start();
+        // A check that takes 1.5 s to fail.
+        h.hold();
         await h.advance(INBOX_WATCH_INTERVAL_MS);
-        await h.advance(500);
+        await h.advance(1_500);
+        await h.release();
+        await h.advance(0);
         h.state.hidden = true;
         h.watch.resume();
-        await h.advance(500);
+        await h.advance(0);
         h.state.hidden = false;
         h.watch.wake();
         await h.advance(0);
         expect(h.state.checks).toBe(1);
-        // The last check started 1 s ago, so the kept online event checks 1 s from now, once.
-        await h.advance(INBOX_WATCH_ONLINE_GAP_MS - 1_000 - 1);
+        // The last check started 1.5 s ago, so the kept online event checks 0.5 s from now, once.
+        expect(h.timers).toHaveLength(1);
+        expect(h.timers[0].at - h.now).toBe(INBOX_WATCH_ONLINE_GAP_MS - 1_500);
+        await h.advance(INBOX_WATCH_ONLINE_GAP_MS - 1_500 - 1);
         expect(h.state.checks).toBe(1);
         await h.advance(1);
         expect(h.state.checks).toBe(2);
@@ -289,6 +297,19 @@ describe('the Inbox watch', () => {
         expect(h.state.checks).toBe(1);
         expect(h.timers).toEqual([]);
         expect(h.states).toEqual(['armed', 'stopped']);
+    });
+
+    it('drops an online event kept while a check is out when that check finds the session ended', async () => {
+        const h = harness([{ kind: 'signed-out' }]);
+        h.watch.start();
+        h.hold();
+        await h.advance(INBOX_WATCH_INTERVAL_MS);
+        h.watch.resume();
+        await h.release();
+        await h.advance(10 * INBOX_WATCH_INTERVAL_MS);
+        expect(h.states).toEqual(['armed', 'stopped']);
+        expect(h.state.checks).toBe(1);
+        expect(h.timers).toEqual([]);
     });
 
     it('starts again from resume() after five errors stopped it: the check is heard, then the minute', async () => {
@@ -333,8 +354,8 @@ describe('the Inbox watch', () => {
         h.watch.start();
         h.hold();
         await h.advance(INBOX_WATCH_INTERVAL_MS);
-        // Out for 3 s, past the 2 s an online check waits, so neither may start another.
-        await h.advance(3_000);
+        // Out for 15 s, past both the 2 s an online check waits and the 15 s a refocus keeps, so neither may start another.
+        await h.advance(INBOX_WATCH_MIN_GAP_MS);
         h.watch.wake();
         h.watch.resume();
         await h.advance(0);

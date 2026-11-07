@@ -39,7 +39,7 @@ export const SUMMARY_PATH = '/api/curation/inbox/summary';
 /** The window event the open item listens for (ItemActions), once the poll sees it changed since the page loaded. */
 export const ITEM_CHANGED_EVENT = 'curation-inbox:item-changed';
 
-/** `rebased`: the server refused the cursor the poll sent, so this answer counts from its own cursor instead (4a). */
+/** `rebased`: the server refused the cursor the poll sent, so this answer counts from its own cursor instead. */
 export type InboxWatchAnswer = { kind: 'summary'; summary: ReadyInboxSummary; rebased?: true } | { kind: 'signed-out' } | { kind: 'offline' } | { kind: 'unavailable' };
 
 /** One wording for the offline state, in the notice and in the live line alike. */
@@ -206,7 +206,7 @@ export function createInboxWatch(deps: InboxWatchDeps): InboxWatch {
     };
 }
 
-/** As lib/curation/events.ts's EVENT_ID_RE and EVENT_STATUSES, which this client-side module can't import. A test pins both (N2). */
+/** As lib/curation/events.ts's EVENT_ID_RE and EVENT_STATUSES, which this client-side module can't import. A test pins both. */
 export const SUMMARY_EVENT_ID_RE = /^evt_[0-9a-f]{24}$/;
 export const SUMMARY_STATUSES: ReadonlySet<string> = new Set(['open', 'deferred', 'dismissed', 'approved', 'failed', 'resolved']);
 const EVENT_ID = SUMMARY_EVENT_ID_RE;
@@ -311,7 +311,7 @@ export interface InboxNews {
     forget: string[];
     /** The open item changed or left since the page loaded: the item's own alert says so. */
     itemChanged: boolean;
-    /** The version the page showed when it changed, so the item raises its alert only while it still shows that one (S4). */
+    /** The version the page showed when it changed, so the item raises its alert only while it still shows that one. */
     changedFrom: number | null;
     /** The line tells of new items, so the region follows it with the "Refresh the inbox" link. */
     refresh: boolean;

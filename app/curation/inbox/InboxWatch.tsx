@@ -32,7 +32,7 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
     const [watchState, setWatchState] = useState<InboxWatchState | null>(null);
     const [line, setLine] = useState<{ text: string; refresh: boolean; serial: number } | null>(null);
     const page = useRef<InboxPageFacts>({ needsJudgment, watcher, item });
-    // Arrivals count from the page's own cursor, until the server refuses it and answers its own (4a).
+    // Arrivals count from the page's own cursor, until the server refuses it and answers its own.
     const since = useRef(cursor);
     // The page's facts as it loaded; a later render with new props is a new load, which keys this component anew.
     useEffect(() => {
@@ -61,7 +61,7 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
                 serial += 1;
                 setLine({ text: news.line, refresh: news.refresh, serial });
             }
-            // With the version the page showed, so the item raises its alert only while it still shows that one (S4).
+            // With the version the page showed, so the item raises its alert only while it still shows that one.
             if (news.itemChanged && page.current.item) window.dispatchEvent(new CustomEvent(ITEM_CHANGED_EVENT, { detail: { id: page.current.item.id, version: news.changedFrom } }));
         };
         const watch = createInboxWatch({
