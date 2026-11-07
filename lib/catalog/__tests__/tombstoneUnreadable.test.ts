@@ -15,6 +15,8 @@ vi.mock('next/server', async (importOriginal) => ({
     // Outside Next there is no request scope, and the route only needs it to wait.
     connection: vi.fn(async () => undefined),
 }));
+// forRequest() keeps each request's read by its headers object: a new one per call, so every call is a request of its own.
+vi.mock('next/headers', () => ({ headers: vi.fn(async () => new Headers()) }));
 
 const { GET } = await import('../../../app/media/[photoId]/[assetRevision]/[profileId]/[variant]/route');
 
