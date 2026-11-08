@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BREAKS, ownerRefusal, type WriterKind } from '../data-root-owner';
+import { BREAKS, IMAGE_UID, ownerRefusal, type WriterKind } from '../data-root-owner';
 
 /**
  * ownerRefusal(), the check the owner gate asks (#15: a
@@ -11,12 +11,27 @@ import { BREAKS, ownerRefusal, type WriterKind } from '../data-root-owner';
  * ownerGatePins.test.ts, end to end; this is the check itself: the effective
  * uid against the data root's owner, through a symlink, and each writer's
  * own words. process.geteuid() and getuid() are faked against the owner of
- * the test's own temp folder.
+ * the test's own temp folder, which stat() reports as IMAGE_UID, uid 1001, as
+ * production's data root is, or another uid where a case says so (F15).
  */
 
 afterEach(() => vi.restoreAllMocks());
 
-const ownerOf = (root: string) => fs.statSync(root).uid;
+/** fs.statSync() of each folder, through any symlink, reports <uid> as its owner, IMAGE_UID unless given. Returns that uid. */
+function ownedBy(roots: string[], uid: number = IMAGE_UID): number {
+    const real = fs.statSync;
+    const targets = roots.map((root) => fs.realpathSync(root));
+    vi.spyOn(fs, 'statSync').mockImplementation(((each: fs.PathLike, options?: fs.StatSyncOptions) => {
+        const stat = real(each, options as fs.StatSyncOptions & { bigint?: false });
+        if (!stat) return stat;
+        let resolved: string;
+        try { resolved = fs.realpathSync(String(each)); } catch { return stat; }
+        if (!targets.includes(resolved)) return stat;
+        return Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as fs.Stats, stat, { uid });
+    }) as typeof fs.statSync);
+    return uid;
+}
+const ownerOf = (root: string) => ownedBy([root]);
 const posix = typeof process.geteuid === 'function' || typeof process.getuid === 'function';
 
 /** The effective uid answers <uid>, as if the command ran as that user. The real uid stays <realUid> when given, so only geteuid() can tell. */
@@ -89,6 +104,21 @@ describe('ownerRefusal() (#15)', () => {
         expect(ownerRefusal(link, 'photos purge --yes', 'tombstone')).toBeNull();
         runAs(owner + 1);
         expect(ownerRefusal(link, 'photos purge --yes', 'tombstone')).toContain(`but uid ${owner} owns the data root`);
+    });
+
+    it.runIf(posix)("on a data root that isn't uid 1001's, says to give it back to 1001, never to run as its owner (F15)", () => {
+        const root = os.tmpdir();
+        ownedBy([root], 0);
+        runAs(IMAGE_UID);
+        const asImage = ownerRefusal(root, 'photos purge --yes', 'tombstone') ?? '';
+        expect(asImage).toBe(`photos purge --yes runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid 0 owns the data root, which happens when something ran there as another user. It took no lock. Nothing was written. On the host, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/. Don't widen its permissions instead.`);
+        runAs(1000);
+        const asHostUser = ownerRefusal(root, 'photos purge --yes', 'tombstone') ?? '';
+        expect(asHostUser).toBe(`photos purge --yes runs as uid 1000 and uid 0 owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`);
+        for (const said of [asImage, asHostUser]) expect(said).not.toMatch(/as uid 0[,.]|user: "0:|web runs as that owner/);
+        // A run as root on a root-owned root matches its owner, so the gate lets it through; host step 3's check covers that host.
+        runAs(0);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toBeNull();
     });
 
     it('skips the check where there is no geteuid() or getuid(), as on Windows', () => {
