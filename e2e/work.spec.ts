@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Locator, Page, Request, Route } from '@playwright/test';
+import sharp from 'sharp';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { catalogPaths } from '../lib/catalog/working-layer';
@@ -68,6 +69,8 @@ const BROKEN_COVER = 'quarry';
 const FIRST_FOCAL = { x: 0.25, y: 0.75 };
 /** Its cover is authored `contain`. */
 const CONTAIN_COVER = 'ridge';
+/** The contain cover's own focal point, off centre on the axis its frame leaves room on, which a contain cover ignores. */
+const CONTAIN_FOCAL = { x: 0.3, y: 0.2 };
 
 let catalog: TestCatalog | undefined;
 let server: CatalogServer | undefined;
@@ -92,7 +95,7 @@ test.beforeAll(async () => {
                 focalPoint: FIRST_FOCAL,
             },
             photo(1),
-            { ...photo(2), crop: 'contain' },
+            { ...photo(2), crop: 'contain', focalPoint: CONTAIN_FOCAL },
             photo(3),
             photo(4),
             photo(5),
@@ -517,6 +520,75 @@ test('each cover holds its reserved box before its image loads, cropped at its f
 
 /** Whether the entry's cover image has loaded and painted. */
 const coverLoaded = (entryItem: Locator) => entryItem.locator('img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0);
+
+/** Every device pixel of the CSS pixel at (x, y) in the viewport. */
+async function pixelsAt(page: Page, x: number, y: number): Promise<number[][]> {
+    const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 }, animations: 'disabled', caret: 'hide' });
+    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pixels: number[][] = [];
+    for (let i = 0; i < data.length; i += info.channels) pixels.push([data[i], data[i + 1], data[i + 2]]);
+    return pixels;
+}
+const rgbOf = (css: string) => (css.match(/\d+/g) ?? []).slice(0, 3).map(Number);
+const distance = (a: number[], b: number[]) => Math.hypot(...a.map((value, channel) => value - b[channel]));
+
+for (const theme of ['dark', 'light', 'bright', 'black'] as const) {
+    test(`in ${theme}, a contain cover sits whole and centred in its frame whatever its focal point, on the frame's surface with no LQIP once it decodes`, async ({ page }) => {
+        await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+        await openWork(page);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        const ridge = item(page, CONTAIN_COVER);
+        await ridge.scrollIntoViewIfNeeded();
+        const frame = ridge.locator('[data-cover="contain"]');
+        // The fixture's off-centre focal point reaches the frame, so a rule that still read it would move the print.
+        expect(await frame.evaluate((el: HTMLElement) => [el.style.getPropertyValue('--focal-x'), el.style.getPropertyValue('--focal-y')])).toEqual([
+            `${CONTAIN_FOCAL.x * 100}%`,
+            `${CONTAIN_FOCAL.y * 100}%`,
+        ]);
+        await expect.poll(() => coverLoaded(ridge)).toBe(true);
+        // Its decode, not its load, is what drops the LQIP.
+        await expect(frame).toHaveAttribute('data-decoded', '');
+        const image = frame.locator('img');
+        expect(
+            await image.evaluate((img) => {
+                const computed = getComputedStyle(img);
+                return Object.fromEntries(['object-fit', 'object-position', 'background-size', 'background-repeat', 'background-image'].map((name) => [name, computed.getPropertyValue(name)]));
+            }),
+        ).toEqual({
+            'object-fit': 'contain',
+            'object-position': '50% 50%',
+            // While it loads, the LQIP fills the print's box, not the bands beside it.
+            'background-size': 'contain',
+            'background-repeat': 'no-repeat',
+            // Once the print has decoded the LQIP goes, since its own shape drifts from the photograph's.
+            'background-image': 'none',
+        });
+
+        // Where a centred print's edges fall, from the image's box and the photograph's own ratio. The fixture's 3:2
+        // photograph leaves bands above and below it in Work's 4:3 and 4:5 frames.
+        const at = await image.evaluate((img: HTMLImageElement) => {
+            const box = img.getBoundingClientRect();
+            const ratio = Number(img.getAttribute('width')) / Number(img.getAttribute('height'));
+            const width = Math.min(box.width, box.height * ratio);
+            const height = width / ratio;
+            const across = { x: Math.floor(box.left + box.width / 2), y: Math.floor(box.top + box.height / 2) };
+            if (box.height - height > 12) {
+                const top = box.top + (box.height - height) / 2;
+                return { band: box.height - height, centre: across, outside: [top - 3, top + height + 3].map((y) => ({ x: across.x, y: Math.floor(y) })), inside: [top + 3, top + height - 3].map((y) => ({ x: across.x, y: Math.floor(y) })) };
+            }
+            const left = box.left + (box.width - width) / 2;
+            return { band: box.width - width, centre: across, outside: [left - 3, left + width + 3].map((x) => ({ x: Math.floor(x), y: across.y })), inside: [left + 3, left + width - 3].map((x) => ({ x: Math.floor(x), y: across.y })) };
+        });
+        expect(at.band, 'the frame leaves room beside the print').toBeGreaterThan(12);
+        const surface = rgbOf(await frame.evaluate((el) => getComputedStyle(el).backgroundColor));
+        const [print] = await pixelsAt(page, at.centre.x, at.centre.y);
+        expect(distance(print, surface), `the print ${print} differs from the surface ${surface}`).toBeGreaterThan(60);
+        // Just outside the centred print, on both sides, is the frame's surface, with nothing of the LQIP; just inside it is
+        // the print. A print placed on its focal point instead sits off one of those edges.
+        for (const point of at.outside) for (const pixel of await pixelsAt(page, point.x, point.y)) expect(distance(pixel, surface), `outside the print at ${point.x},${point.y}: ${pixel} against the surface ${surface}`).toBeLessThan(distance(pixel, print));
+        for (const point of at.inside) for (const pixel of await pixelsAt(page, point.x, point.y)) expect(distance(pixel, print), `inside the print at ${point.x},${point.y}: ${pixel} against the print ${print}`).toBeLessThan(distance(pixel, surface));
+    });
+}
 
 test('covers load from /media, and a cover /media can\'t serve gives the text fallback, never a broken image', async ({ page }) => {
     await openWork(page);
