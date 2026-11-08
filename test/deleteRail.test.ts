@@ -150,7 +150,7 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             const ignored = rule.pattern.test('node_modules/x.js') || rule.pattern.test('.next/x.js');
             expect(all.some((file) => rule.pattern.test(file)), String(rule.pattern)).toBe(!ignored);
         }
-        expect(exclusionOf('ci/check-compose.mjs')?.reason).toMatch(/CI .*aren't shipped/);
+        expect(exclusionOf('ci/check-compose.sh')?.reason).toMatch(/CI .*aren't shipped/);
     });
 
     it('scans test/, e2e/ and ci/ but the files there that have to be left out, so a delete put anywhere else in them fails the rail', () => {

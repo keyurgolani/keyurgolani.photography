@@ -37,11 +37,11 @@
  *     `.then()` on its `import()`.
  *
  * It scans every source file in the repository, tracked or new, but what
- * RAIL_EXCLUSIONS leaves out, each rule with its reason: tests, e2e/ and
- * Playwright's config, ci/ (CI's own scripts, `.sh` and `.mjs`, which aren't
- * shipped), test/ (helpers, stubs and the rail's own fixtures), and the
- * git-ignored node_modules/ and .next/. Overwriting renames and copies onto
- * existing paths are out of its scope.
+ * RAIL_EXCLUSIONS leaves out, each rule with its reason: tests, Playwright's
+ * config, the files in e2e/, ci/ and test/ that need it, each by name, and
+ * the git-ignored node_modules/ and .next/. Any other file in e2e/, ci/ or
+ * test/ is scanned. Overwriting renames and copies onto existing paths are
+ * out of its scope.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -562,20 +562,51 @@ function scanShell(file: string, text: string): DeleteCall[] {
     return text.split('\n').flatMap((line, index) => (!/^\s*#/.test(line) && (SHELL_DELETE.test(line.trim()) || FIND_DELETE.test(line)) ? [{ file, fn: '<shell>', call: line.trim(), line: index + 1 }] : []));
 }
 
+/** A pattern that matches exactly these paths and nothing else, so a new file beside them is scanned. */
+const exactly = (files: readonly string[]) => new RegExp(`^(?:${files.map((file) => file.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')).join('|')})$`);
+
 /**
  * What the rail leaves out of "every source file in the repository", each
  * with its reason (item 44). Everything else with a source extension is
  * scanned: app/, components/, lib/, utils/, scripts/, data/, the root files
- * such as proxy.ts, instrumentation.ts and next.config.mjs, and the tool
- * configs.
+ * such as proxy.ts, instrumentation.ts and next.config.mjs, the tool
+ * configs, and every file in test/, e2e/ and ci/ but the ones named here,
+ * each of which holds a delete, a process call or a form the rail can't
+ * read. A test pins that every one named does, so none stays here after it
+ * no longer needs to.
  */
 export const RAIL_EXCLUSIONS: readonly { pattern: RegExp; reason: string }[] = [
     { pattern: /(?:^|\/)__tests__\//, reason: 'tests: vitest runs them; nothing ships them' },
     { pattern: /\.(?:test|spec)\.[cm]?[jt]sx?$/, reason: 'tests: vitest runs them; nothing ships them' },
-    { pattern: /^e2e\//, reason: 'Playwright tests, run against a built site in CI; nothing ships them' },
+    {
+        pattern: exactly(['e2e/budgets/run.ts', 'e2e/support/carry-over.ts', 'e2e/support/catalogServer.ts', 'e2e/support/curation-inbox.ts', 'e2e/support/inbox-gate.ts', 'e2e/support/touch.ts', 'e2e/support/write-site-config.ts', 'e2e/themes/build.ts']),
+        reason: "Playwright's runners and support files, run against a built site in CI and never shipped, that remove the fixtures and copies they made, start the build or server under test, remove page nodes, or keep state on the page's window",
+    },
     { pattern: /^playwright\.config\.ts$/, reason: "Playwright's config for the e2e/ run, which removes the temp folders it made for that run when it exits; nothing ships it" },
-    { pattern: /^ci\//, reason: "CI's own scripts, ci/*.sh and ci/*.mjs, which run in CI only and aren't shipped" },
-    { pattern: /^test\//, reason: "the test suite's helpers, stubs and fixtures, the rail's own positive controls among them, which hold deletes on purpose" },
+    {
+        pattern: exactly(['ci/audit-gate.mjs', 'ci/check-compose.sh', 'ci/perf/ab.mjs', 'ci/release-plan.mjs', 'ci/smoke-catalog.sh', 'ci/smoke-image.sh', 'ci/smoke-ingest.sh', 'ci/smoke-media.sh', 'ci/smoke-watcher-once.sh', 'ci/themes-budget.mjs']),
+        reason: "CI's own scripts, which run in CI only and aren't shipped, that remove the temp folders and containers they made, run git, npm or the server they measure, or load a built bundle's code",
+    },
+    { pattern: exactly(['test/fixtures/deleteRail/stray.ts', 'test/fixtures/deleteRail/strayForms.ts']), reason: "the rail's own positive controls, which hold every form it catches on purpose and are only ever parsed" },
+    {
+        pattern: exactly([
+            'test/helpers/caseDisk.ts',
+            'test/helpers/curatorSecrets.ts',
+            'test/helpers/deleteCalls.ts',
+            'test/helpers/directorySyncs.ts',
+            'test/helpers/noHardLinks.preload.mjs',
+            'test/helpers/noHardLinks.ts',
+            'test/helpers/parityWalk.ts',
+            'test/helpers/publishFixture.ts',
+            'test/helpers/runTsx.ts',
+            'test/helpers/standaloneServer.ts',
+            'test/helpers/tempDataRoot.ts',
+            'test/helpers/tempLibrary.ts',
+            'test/helpers/watcherProcess.ts',
+            'test/matchMedia.ts',
+        ]),
+        reason: "the test suite's helpers and stubs, never shipped, that remove the temp folders they made, start the script or server under test, stand in for fs, remove page nodes or listeners, or are the rail's own scanner",
+    },
     { pattern: /(?:^|\/)node_modules\//, reason: "dependencies, not this repository's code" },
     { pattern: /^\.next\//, reason: "Next's build output, made from the scanned sources" },
 ];
