@@ -10,6 +10,12 @@ import fs from 'node:fs';
  * container, and so every `run --rm` command, is uid 1001
  * (docker-compose.prod.yml).
  *
+ * So the advice keys on that uid, IMAGE_UID, not on whoever owns the root: a
+ * root that another uid took over (a run as root on the host, say) is the
+ * root to fix, not the uid to run as. Owner 1001 and another process uid:
+ * run it as 1001. Process 1001 and another owner: give the root back to
+ * 1001. Neither 1001: both.
+ *
  * lib/catalog/owner-gate.ts says which commands write. Its gate, in
  * scripts/photos.ts and at the watcher's start, asks here before the
  * command's first lock.
@@ -61,6 +67,12 @@ export const BREAKS: Record<WriterKind, string> = {
     'locking-read': "It takes a lock to read, which writes a lock file in locks/, and one this uid leaves behind if it's killed, or a locks/ it makes, would stop every command of the owner's until it's removed by hand.",
 };
 
+/** The uid the image runs every service as: the Dockerfile's adduser, and docker-compose.prod.yml's `user:` lines. */
+export const IMAGE_UID = 1001;
+
+/** The host's data root, as docker-compose.prod.yml mounts it at /data/portfolio. */
+const HOST_ROOT = 'portfolio-data/';
+
 function effectiveUid(): number | null {
     if (typeof process.geteuid === 'function') return process.geteuid();
     if (typeof process.getuid === 'function') return process.getuid();
@@ -79,6 +91,12 @@ export function ownerRefusal(root: string, name: string, kind: WriterKind): stri
     if (uid === null) return null;
     const { uid: owner, gid } = fs.statSync(root);
     if (uid === owner) return null;
+    if (owner !== IMAGE_UID) {
+        const chown = `sudo chown -R ${IMAGE_UID}:${IMAGE_UID} ${HOST_ROOT}`;
+        return uid === IMAGE_UID
+            ? `${name} runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid ${owner} owns the data root. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: ${chown}. Don't widen its permissions instead.`
+            : `${name} runs as uid ${uid} and uid ${owner} owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with ${chown}, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`;
+    }
     const user = `user: "${owner}:${gid}"`;
     const how = kind === 'watcher'
         ? `Run it as uid ${owner}, as docker-compose.prod.yml's image-watcher does with ${user}.`
