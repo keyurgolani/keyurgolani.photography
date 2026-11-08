@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
-import { badgePlace, boxOf, chromeOverflows, homeCopyTop, textEnlarged, type BadgePlace, type Box } from './badgePlace';
+import { badgePlace, boxOf, chromeOverflows, copyAboveDarkWash, homeCopyTop, textEnlarged, type BadgePlace, type Box } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -310,7 +310,8 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   // changes no box the observer watches (M2). New copy (`copyKey`) measures again and observes its own elements. When
   // the chrome scrolls, as large text can make it, the copy moves under a fixed scrim, so the hold covers the whole
   // print instead (M1). With the text enlarged Home's root says so too, and Black's wash then follows the copy as the
-  // other themes' does (spec §10); at default text it doesn't.
+  // other themes' does (spec §10); at default text it doesn't. Where the copy starts higher than Dark's fixed phone
+  // wash holds (copyAboveDarkWash()), Home's root says that too, and Dark's wash follows the copy there.
   useLayoutEffect(() => {
     const story = document.querySelector('[data-chrome-region="story"]');
     const root = story?.closest('main');
@@ -332,6 +333,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
         written = value;
       }
       root.toggleAttribute('data-text-enlarged', textEnlarged(parseFloat(getComputedStyle(document.documentElement).fontSize)));
+      root.toggleAttribute('data-copy-high', copyAboveDarkWash(typeof top === 'number' ? top : null));
     };
     measure();
     void document.fonts?.ready.then(measure);
@@ -342,6 +344,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       observer?.disconnect();
       scrim.style.removeProperty('--home-copy-top');
       root.removeAttribute('data-text-enlarged');
+      root.removeAttribute('data-copy-high');
     };
   }, [copyKey]);
 

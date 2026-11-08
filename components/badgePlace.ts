@@ -132,6 +132,23 @@ export function homeCopyTop(stage: Box, story: Box[]): number | null {
   return Math.round(Math.min(100, Math.max(0, (top / height) * 100)) * 100) / 100;
 }
 
+/**
+ * Where Home's copy may start on the stage, as homeCopyTop() gives it, for Dark's fixed phone wash to hold it. That
+ * wash (HomeChrome.module.css) is set in percentages of the stage: 0.92 at its bottom, 0.28 at 66% up it. Over a white
+ * photograph it holds Dark's title, #f5f5f5, at 4.5:1 up to 35% up the stage, so to a copy top 65% down it. The
+ * title's glyphs reach about 6 px above its box, so the line is a point lower.
+ */
+export const DARK_WASH_COPY_TOP = 66;
+
+/**
+ * Whether the copy starts higher on the stage than Dark's fixed phone wash holds, as on a short stage (a phone in
+ * Safari with its toolbars showing) or with reduced motion's hint lifting it. Dark's wash then follows the copy at
+ * every phone width, as Black's does; on a taller stage Dark keeps today's.
+ */
+export function copyAboveDarkWash(copyTop: number | null): boolean {
+  return copyTop !== null && copyTop < DARK_WASH_COPY_TOP;
+}
+
 /** Whether Home's chrome scrolls, as large text can make it: then the copy moves under a fixed scrim (M1). */
 export function chromeOverflows(scrollHeight: number, clientHeight: number): boolean {
   return scrollHeight > clientHeight + 1;

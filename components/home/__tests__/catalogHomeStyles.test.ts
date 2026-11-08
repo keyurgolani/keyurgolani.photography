@@ -77,8 +77,8 @@ describe('All bodies of work on a phone', () => {
   });
 });
 
-// Dark's phone wash, from HomeChrome.module.css. From 380 px it's today's fixed wash at default text, pixel for pixel
-// (Dark parity). Under 380 px that wash left the title at 4.319:1 over a white photograph at 360 px, so there it
+// Dark's phone wash, from HomeChrome.module.css. From 380 px it's today's fixed wash at default text on a taller stage,
+// pixel for pixel (Dark parity). Under 380 px that wash left the title at 4.319:1 over a white photograph at 360 px, so there it
 // follows the copy at every text size, as it does at enlarged text everywhere on a phone.
 const CHROME = postcss.parse(fs.readFileSync(fileURLToPath(new URL('../HomeChrome.module.css', import.meta.url)), 'utf8'));
 
