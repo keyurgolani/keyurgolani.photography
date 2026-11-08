@@ -101,9 +101,15 @@ export function ownerPassProblems(contract) {
       if (!/\bExpect\b/.test(step.text)) problems.push(`${area}: "${step.title}" says nothing to expect`);
     }
   }
+  // Each step once, across the whole section: a rebase or a merge that pastes a step twice fails here.
+  const titles = new Map();
+  for (const step of Object.values(pass.steps).flat()) if (step.title !== '') titles.set(step.title, (titles.get(step.title) ?? 0) + 1);
+  for (const [title, count] of titles) if (count > 1) problems.push(`step appears ${count === 2 ? 'twice' : `${count} times`}: ${title}`);
+  // Each acceptance item names exactly one step, so a doubled step, or words loose enough to match two, fail too.
   for (const item of ACCEPTANCE) {
-    const found = (pass.steps[item.area] ?? []).some((step) => item.title.every((words) => words.test(step.title)) && item.body.every((words) => words.test(step.text)));
-    if (!found) problems.push(`no step for ${item.name}`);
+    const matches = (pass.steps[item.area] ?? []).filter((step) => item.title.every((words) => words.test(step.title)) && item.body.every((words) => words.test(step.text))).length;
+    if (matches === 0) problems.push(`no step for ${item.name}`);
+    else if (matches > 1) problems.push(`${item.name} matches ${matches} steps`);
   }
   const finding = pass.parts['What to do with a finding'] ?? '';
   if (!/bug issue/.test(finding)) problems.push('a finding never becomes a bug issue');
