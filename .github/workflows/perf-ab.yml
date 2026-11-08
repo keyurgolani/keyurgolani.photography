@@ -1,8 +1,9 @@
 name: Perf A/B
 
 # On demand only: never on push, pull request or schedule. Home's LCP and TBT, base against head, on two published
-# test fixtures, with the base measured against itself in the same job for each metric's noise floor. ci/perf/ab.mjs
-# says what it measures and how; ci/perf/stats.mjs holds the rule; the job summary repeats it with the numbers.
+# test fixtures, and the Viewer's on the first of them, with the base measured against itself in the same job for each
+# metric's noise floor. ci/perf/ab.mjs says what it measures and how; ci/perf/stats.mjs holds the rule; the job summary
+# repeats it with the numbers.
 on:
   workflow_dispatch:
     inputs:
@@ -17,7 +18,7 @@ on:
         required: false
         default: ''
       rounds:
-        description: Rounds, 5 to 20. Each takes about 6 minutes.
+        description: Rounds, 5 to 20. Each takes about 9 minutes.
         type: number
         required: true
         default: 5
@@ -34,8 +35,9 @@ jobs:
     name: Perf A/B
     # Pinned, so a run months apart measures on the same image. Not -latest.
     runs-on: ubuntu-24.04
-    # Two installs and builds take about 10 minutes, and each round about 6, so this covers about 20 rounds.
-    timeout-minutes: 150
+    # Two installs and builds take about 10 minutes, and each round about 9 (Home on both fixtures, the Viewer on one),
+    # so this covers about 20 rounds.
+    timeout-minutes: 200
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:

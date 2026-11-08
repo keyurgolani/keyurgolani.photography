@@ -15,7 +15,7 @@
 
 /** The fewest rounds the job runs. Fewer, and one bad round decides a median. */
 export const MIN_ROUNDS = 5;
-/** The most, which the workflow's 150-minute ceiling covers. */
+/** The most, which the workflow's 200-minute ceiling covers. */
 export const MAX_ROUNDS = 20;
 /** The noise floor's multiple of the median A/A gap. */
 export const NOISE_FACTOR = 4;
@@ -27,6 +27,16 @@ export const MINIMUM_FLOOR_SHARE = 0.05;
 export const METRICS = /** @type {const} */ (['lcp', 'tbt']);
 /** What each load records for reference only: bytes transferred, and the tone sampler's fetch start against LCP and its bytes. */
 export const INFO_METRICS = /** @type {const} */ (['bytes', 'toneFetchAfterLcp', 'toneFetchBytes']);
+/** The INFO_METRICS that are Home's own: the Viewer has no copy-tone sampler, so its loads never have them. */
+const HOME_ONLY_INFO = new Set(['toneFetchAfterLcp', 'toneFetchBytes']);
+/**
+ * The pages each load can be of, by name: Home, and the Viewer, loaded directly at its first series' first photograph
+ * (ab.mjs). A round keeps each page's loads per profile under loadKey(): Home's under the profile's own name, as
+ * before the Viewer was measured, so an older raw.json reads the same.
+ */
+export const PAGES = /** @type {const} */ ({ home: '', viewer: 'viewer ' });
+/** The Viewer's loads' key prefix in a round. */
+const VIEWER_PREFIX = PAGES.viewer;
 /** Their labels in the job summary. */
 const INFO_LABELS = /** @type {Readonly<Record<string, string>>} */ ({ bytes: 'bytes transferred (B)', toneFetchAfterLcp: 'tone fetch − LCP (ms)', toneFetchBytes: 'tone fetch transferred (B)' });
 /** The three servers, by role. */
@@ -48,7 +58,7 @@ export const SERVERS = /** @type {const} */ (['A1', 'A2', 'B']);
 /** @typedef {{ name: string, gzip: number | null, raw: number | null, files: number | null }} RouteJs */
 /**
  * @typedef {{
- *   meta: { base: Tree, head: Tree, rounds: number, loads: number, browser: string, runner?: string },
+ *   meta: { base: Tree, head: Tree, rounds: number, loads: number, browser: string, runner?: string, viewer?: Record<string, string> },
  *   fixtures: Record<string, { rounds: Round[] }>,
  *   firstLoadJs?: { base: RouteJs[], head: RouteJs[] },
  * }} Raw
@@ -94,6 +104,38 @@ export function roundOrder(round) {
 export function medianGap(a1, a2) {
   if (a1.length === 0 || a1.length !== a2.length) throw new Error(`The A/A rounds don't pair up: ${a1.length} against ${a2.length}.`);
   return median(a1.map((value, round) => Math.abs(value - a2[round])));
+}
+
+/**
+ * Where a round keeps `page`'s loads for `profile`: the profile's name for Home, `viewer <profile>` for the Viewer.
+ * @param {string} page @param {string} profile
+ */
+export function loadKey(page, profile) {
+  if (!Object.hasOwn(PAGES, page)) throw new Error(`No page ${page}.`);
+  return `${PAGES[/** @type {keyof typeof PAGES} */ (page)]}${profile}`;
+}
+
+/** Every `href="..."` attribute's value in `html`, in order: links Next writes into its payload are escaped text, not attributes. @param {string} html */
+const hrefs = (html) => [...html.matchAll(/\shref="([^"]*)"/g)].map((match) => match[1].replaceAll('&amp;', '&'));
+
+/** The first series Work's HTML links to, as `/work/<slug>`, or null. @param {string} html */
+export function seriesPathIn(html) {
+  return hrefs(html).find((href) => /^\/work\/[^/?#]+$/.test(href)) ?? null;
+}
+
+/** The first photograph's Viewer that `series`' page links to, as `<series>/photo/<id>`, or null. @param {string} html @param {string} series */
+export function viewerPathIn(html, series) {
+  return hrefs(html).find((href) => href.startsWith(`${series}/photo/`) && /^[^/?#]+$/.test(href.slice(series.length + '/photo/'.length))) ?? null;
+}
+
+/**
+ * The one path every server found, so base and head measure the same page; else an error naming what each found.
+ * @param {Partial<Record<Server, string | null>>} found
+ */
+export function samePath(found) {
+  const paths = SERVERS.map((server) => found[server] ?? null);
+  if (paths[0] !== null && paths.every((path) => path === paths[0])) return paths[0];
+  throw new Error(`The servers don't find the same Viewer page: ${SERVERS.map((server, index) => `${server} ${paths[index] ?? 'none'}`).join(', ')}.`);
 }
 
 /** NOISE_FACTOR times the median per-round gap between the two base servers. @param {readonly number[]} a1 @param {readonly number[]} a2 */
@@ -210,7 +252,7 @@ export function informational(raw) {
   for (const [fixture, { rounds }] of Object.entries(raw.fixtures)) {
     if (rounds.length === 0) throw new Error(`Fixture ${fixture} has no rounds.`);
     for (const profile of Object.keys(rounds[0].servers.A1 ?? {})) {
-      for (const metric of INFO_METRICS) {
+      for (const metric of INFO_METRICS.filter((name) => !(profile.startsWith(VIEWER_PREFIX) && HOME_ONLY_INFO.has(name)))) {
         const baseLoads = { with: 0, of: 0 };
         const headLoads = { with: 0, of: 0 };
         /** @type {number[]} */
@@ -298,13 +340,25 @@ export function offLoopbackRequests(raw) {
   return found;
 }
 
+/**
+ * What the loads were of: Home on every fixture, and the Viewer on the fixtures whose rounds have its loads, with the
+ * page each loaded (meta.viewer).
+ * @param {Raw} raw
+ */
+function pagesLoaded(raw) {
+  const viewer = Object.entries(raw.fixtures).filter(([, { rounds }]) => Object.keys(rounds[0]?.servers.A1 ?? {}).some((key) => key.startsWith(VIEWER_PREFIX)));
+  if (viewer.length === 0) return 'Home';
+  const where = viewer.map(([name]) => `\`${name}\`${raw.meta.viewer?.[name] ? ` of the Viewer, \`${raw.meta.viewer[name]}\` loaded directly` : ' of the Viewer'}`);
+  return `Home, and on ${where.join(' and on ')}, the first photograph of the first series Work lists`;
+}
+
 /** The job summary: the setup, the rule, the table, and first-load JS for reference. @param {Raw} raw @param {{ rows: Row[], regressions: Row[] }} analysis */
 export function summaryMarkdown(raw, { rows, regressions }) {
   const { meta } = raw;
   const lines = [
     `## Perf A/B: head ${named(meta.head)} against base ${named(meta.base)}`,
     '',
-    `${meta.rounds} rounds on fixtures ${Object.keys(raw.fixtures).map((name) => `\`${name}\``).join(' and ')}, ${meta.loads} cold loads of Home per server, profile and round, in ${meta.browser}${meta.runner ? ` on ${meta.runner}` : ''}. Three servers on 127.0.0.1: A1 and A2 on the base build, B on the head. Even rounds run A1, B, A2 and odd rounds A2, B, A1, so base and head swap who goes first every round.`,
+    `${meta.rounds} rounds on fixtures ${Object.keys(raw.fixtures).map((name) => `\`${name}\``).join(' and ')}, ${meta.loads} cold loads per server, profile and round of ${pagesLoaded(raw)}, in ${meta.browser}${meta.runner ? ` on ${meta.runner}` : ''}. Three servers on 127.0.0.1: A1 and A2 on the base build, B on the head. Even rounds run A1, B, A2 and odd rounds A2, B, A1, so base and head swap who goes first every round.`,
     '',
     `**Rule.** A server's value in a round is the median of its loads there, and the base's is (A1 + A2) / 2, which brackets B. Each cell is the median over the rounds, with the min–max of the round values. A metric's noise floor is ${NOISE_FACTOR} × the median per-round |A1 − A2| in this run, but at least ${MINIMUM_FLOOR_MS.lcp} ms for LCP, ${MINIMUM_FLOOR_MS.tbt} ms for TBT, and ${MINIMUM_FLOOR_SHARE * 100}% of the base median for any other timing; "(minimum)" marks a floor set by that. Head − base past the floor is a **regression**, and fails the job; past it the other way is *faster*. Everything else is within noise.`,
     '',
