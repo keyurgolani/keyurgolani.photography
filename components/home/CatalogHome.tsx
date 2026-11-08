@@ -384,6 +384,7 @@ function FeaturedHome({ revisionId, opening, following = NONE, portrait }: Featu
         <CatalogSequence
           photoIds={photoIds}
           photos={photos}
+          recordsFailed={recordFailed}
           index={playback.index}
           openingId={opening.openingPhotoId}
           playbackState={playback.playbackState}

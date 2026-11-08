@@ -17,6 +17,8 @@ interface CatalogSequenceProps {
    * nothing, so the photograph before it stays on screen while it loads.
    */
   photos: ReadonlyMap<string, CatalogPhoto>;
+  /** The photos whose record failed to arrive, so the live region doesn't wait for a description that isn't coming. */
+  recordsFailed: ReadonlySet<string>;
   /** The position useHomePlayback is on: the photograph Home is moving to, or has committed. */
   index: number;
   /** The photograph Home opens on, the one the document head preloads. */
@@ -65,7 +67,7 @@ const removeFrom = (set: ReadonlySet<string>, id: string) => {
  * stops fetching (ResponsivePhoto). It keeps no timer, renders no control,
  * and never moves focus.
  */
-export default function CatalogSequence({ photoIds, photos, index, openingId, playbackState, attempts, label, slideLabel, seriesOf, announce, onImageReady, onImageFailed, onShownChange }: CatalogSequenceProps) {
+export default function CatalogSequence({ photoIds, photos, recordsFailed, index, openingId, playbackState, attempts, label, slideLabel, seriesOf, announce, onImageReady, onImageFailed, onShownChange }: CatalogSequenceProps) {
   // The mounted slides whose image has decoded. A slide leaves it when it unmounts, so a remount decodes again.
   const [decoded, setDecoded] = useState<ReadonlySet<string>>(new Set());
   const [anyDecoded, setAnyDecoded] = useState(false);
@@ -120,6 +122,10 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
 
   if (photoIds.length === 0) return null;
   const shownRecord = shownId === undefined ? undefined : photos.get(shownId);
+  // Before anything has decoded, the slide on screen is the one Home moved to, and its record may still be on its way:
+  // the line waits for it, so the slide and its description are one message, not the slide said twice. A record that
+  // failed has no description to wait for.
+  const waiting = shownId !== undefined && shownRecord === undefined && !recordsFailed.has(shownId);
 
   return (
     // A div with the region role, not a <section>: the same semantics, and the element Dark's parity gate walks.
@@ -182,7 +188,7 @@ export default function CatalogSequence({ photoIds, photos, index, openingId, pl
         message (#4).
       */}
       <p className="sr-only" aria-live={announce} aria-atomic="true">
-        {shownId === undefined ? '' : `${stage.crossed ? `Now showing ${seriesOf(shownId).title}. ` : ''}${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`}
+        {shownId === undefined || waiting ? '' : `${stage.crossed ? `Now showing ${seriesOf(shownId).title}. ` : ''}${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`}
       </p>
     </div>
   );
