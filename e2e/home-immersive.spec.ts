@@ -1,6 +1,6 @@
 import type { CDPSession, Locator, Page, TestInfo } from '@playwright/test';
 import { expectNoA11yViolations } from './support/a11y';
-import { CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER } from './support/catalog-home';
+import { CATALOG_ORIGIN, HOME_LONG_STATEMENT, HOME_OPENING, HOME_ORDER } from './support/catalog-home';
 import { expectContrastOverImage } from './support/contrast';
 import { expectFocusRingVisible } from './support/focus';
 import { expectHomeImmersive, photoPoint } from './support/home';
@@ -57,6 +57,50 @@ const sequenceControls = (page: Page) => previous(page).or(next(page)).or(playba
 /** Every control in the chrome. */
 const chromeControls = (page: Page) => chrome(page).locator('a[href], button');
 const currentPhoto = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"] img');
+
+/**
+ * At 320 by 640 CSS px with a 200% root font size, what expectReflow can't see of Home's series title and statement:
+ * text that runs past its own box sideways, is cut off by its own overflow, ends in an ellipsis, or is clamped, a story
+ * or page that scrolls sideways, and the title below the statement's top. Restores the viewport and root font size.
+ */
+async function copyCutShort(page: Page): Promise<string[]> {
+    const viewport = page.viewportSize();
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
+    try {
+        // As expectReflow: a transition reports its start value until it ends, so measure once size and font have settled.
+        await expect
+            .poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length))
+            .toBe(0);
+        return await page.evaluate((slack) => {
+            const problems: string[] = [];
+            const root = document.documentElement;
+            if (root.scrollWidth > root.clientWidth + slack) problems.push(`the page scrolls sideways, ${root.scrollWidth} px wide in ${root.clientWidth}`);
+            const chrome = document.querySelector<HTMLElement>('[data-home-chrome]')!;
+            if (chrome.scrollWidth > chrome.clientWidth + slack) problems.push(`the chrome scrolls sideways, ${chrome.scrollWidth} px wide in ${chrome.clientWidth}`);
+            const story = document.querySelector('[data-home-chrome] [data-chrome-region="story"]')!;
+            const title = story.querySelector<HTMLElement>('h1')!;
+            const statement = story.querySelector<HTMLElement>('p')!;
+            for (const el of [title, statement]) {
+                const name = `${el.tagName.toLowerCase()} "${(el.textContent ?? '').slice(0, 24)}"`;
+                const style = getComputedStyle(el);
+                if (el.scrollWidth > el.clientWidth + slack) problems.push(`${name} runs past its box sideways, ${el.scrollWidth} px in ${el.clientWidth}`);
+                // Downwards only where the element clips its own overflow: the display heading's 0.9 leading lets its
+                // glyphs run a few px past the line box, which clips nothing while overflow-y is visible.
+                if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY) && el.scrollHeight > el.clientHeight + slack) problems.push(`${name} is cut off by its own overflow-y ${style.overflowY}`);
+                if (style.textOverflow === 'ellipsis' && style.overflowX !== 'visible') problems.push(`${name} ends in an ellipsis`);
+                if (style.webkitLineClamp !== 'none' && style.webkitLineClamp !== '') problems.push(`${name} is clamped to ${style.webkitLineClamp} lines`);
+                const box = el.getBoundingClientRect();
+                if (box.left < -slack || box.right > root.clientWidth + slack) problems.push(`${name} runs past the side of the viewport`);
+            }
+            if (title.getBoundingClientRect().bottom > statement.getBoundingClientRect().top + slack) problems.push('the title runs into the statement');
+            return problems;
+        }, 0.5);
+    } finally {
+        await page.evaluate(() => document.documentElement.style.removeProperty('font-size'));
+        if (viewport) await page.setViewportSize(viewport);
+    }
+}
 
 const runsOn = (testInfo: TestInfo, ...projects: string[]) =>
     test.skip(!projects.includes(testInfo.project.name), `Runs on ${projects.join(' and ')}.`);
@@ -919,6 +963,26 @@ test.describe('contrast and reflow', () => {
         await page.keyboard.press('Tab');
         await expect(main(page)).toHaveAttribute('data-chrome-holds', 'keyboard-focus');
         await expectReflow(chromeControls(page));
+    });
+
+    test("at 320 px with 200% text, the series title and statement are clear of each other and of every control, and neither is clipped or cut short, with long copy too", async ({ page }) => {
+        await openHome(page);
+        await page.keyboard.press('Tab');
+        await expect(main(page)).toHaveAttribute('data-chrome-holds', 'keyboard-focus');
+        const story = chrome(page).locator('[data-chrome-region="story"]');
+        const title = story.getByRole('heading', { level: 1 });
+        const statement = story.locator('p');
+        await expect(title).toHaveCount(1);
+        await expect(statement).toHaveCount(1);
+        // In view in the scrolling chrome, inside the viewport, clear of each other and of the controls, and clipped by no ancestor.
+        const copyAndControls = title.or(statement).or(chromeControls(page));
+        await expectReflow(copyAndControls);
+        await expect(copyCutShort(page)).resolves.toEqual([]);
+        // Synthetic: a long title with a long word, and a statement twice the fixture's longest, swapped into the live page.
+        await title.evaluate((el) => (el.textContent = 'Unphotographable coastlines at the end of the season'));
+        await statement.evaluate((el, text) => (el.textContent = `${text} ${text}`), HOME_LONG_STATEMENT);
+        await expectReflow(copyAndControls);
+        await expect(copyCutShort(page)).resolves.toEqual([]);
     });
 });
 
