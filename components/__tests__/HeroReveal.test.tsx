@@ -725,19 +725,22 @@ describe("the badge's place once the fonts are in", () => {
     </main>
   );
   const at = (left: number, top: number, right: number, bottom: number) => DOMRect.fromRect({ x: left, y: top, width: right - left, height: bottom - top });
-  const fontsIn: Record<string, DOMRect> = {
+  /** Pixel 7 held sideways's boxes, once the fonts are in. */
+  const pixel7Sideways = () => ({
     NAV: at(0, 0, 863, 56),
     SPAN: at(0, 32, 489, 235.9),
     H1: at(28.48, 80, 393, 177.6),
     P: at(28.48, 189.6, 393, 211.9),
     A: at(28.48, 231.9, 166.48, 275.9),
-  };
+  });
+  let fontsIn: Record<string, DOMRect> = pixel7Sideways();
   let loaded = false;
   let fontsReady: () => void = () => undefined;
   const original = { width: window.innerWidth, height: window.innerHeight };
 
   beforeEach(() => {
     loaded = false;
+    fontsIn = pixel7Sideways();
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 863 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 360 });
     Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => (fontsReady = resolve)) } });
@@ -752,6 +755,20 @@ describe("the badge's place once the fonts are in", () => {
     Reflect.deleteProperty(document, 'fonts');
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original.width });
     Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: original.height });
+  });
+
+  it("tells the title's panel from the text, so beside the story stands on the panel's fade, as today", () => {
+    // 640 x 360 on the 256 px card: the panel's fade reaches under the place beside the story, the text doesn't.
+    loaded = true;
+    Object.assign(fontsIn, { SPAN: at(0, 32, 429.11, 220.72), H1: at(21.12, 80, 333.11, 163.52), P: at(21.12, 175.52, 333.11, 196.72), A: at(21.12, 216.72, 159.12, 260.72), NAV: at(0, 0, 640, 56) });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 640 });
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(256);
+    const view = render(home());
+    const badge = view.container.querySelector<HTMLElement>('[data-badge-place]')!;
+    expect(badge.getAttribute('data-badge-place')).toBe('side');
+    expect(badge.style.getPropertyValue('--badge-dx')).toBe('160px');
+    expect(badge.style.getPropertyValue('--badge-dy')).toBe('-10px');
+    view.unmount();
   });
 
   it('measures the place again once the fonts are in', async () => {

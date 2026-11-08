@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
-import { badgePlace, boxOf, chromeOverflows, copyAboveDarkWash, homeCopyTop, textEnlarged, type BadgePlace, type Box } from './badgePlace';
+import { badgePlace, boxOf, chromeOverflows, copyAboveDarkWash, homeCopyTop, textEnlarged, type BadgePlace, type Box, type StoryBox } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -288,7 +288,12 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
         { width: window.innerWidth, height: window.innerHeight },
         element.offsetWidth,
         boxOf(root.querySelector('[data-chrome-region="nav"]')),
-        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a, [data-chrome-panel])')].map(boxOf).filter((box): box is Box => box !== null),
+        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a, [data-chrome-panel])')]
+          .map((element): StoryBox | null => {
+            const box = boxOf(element);
+            return box && element.hasAttribute('data-chrome-panel') ? { ...box, panel: true } : box;
+          })
+          .filter((box): box is StoryBox => box !== null),
       );
       if (place === null) {
         for (const name of ['--badge-dx', '--badge-dy', '--badge-scale']) element.style.removeProperty(name);
