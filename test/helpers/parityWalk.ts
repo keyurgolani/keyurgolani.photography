@@ -435,3 +435,33 @@ export function compare(
 
 /** The gate's verdict on one comparison: the lines that fail it. */
 export const failures = (c: Comparison) => [...c.structural, ...c.styles, ...c.geometry, ...c.tokens];
+
+/**
+ * The named computed properties of the first element each selector finds, or null where it finds none: the paint of a
+ * state's new parts in the head, and of the base elements they're made from in the base (dark-parity.spec.ts's
+ * NEW_STATES). Runs in the page with its one argument (page.evaluate), so it reads nothing from this file.
+ */
+export function readPaint(entries: readonly { selector: string; properties: readonly string[] }[]): (Record<string, string> | null)[] {
+    return entries.map(({ selector, properties }) => {
+        const element = document.querySelector(selector);
+        if (element === null) return null;
+        const style = getComputedStyle(element);
+        return Object.fromEntries(properties.map((property) => [property, style.getPropertyValue(property)]));
+    });
+}
+
+/**
+ * Whether a new part, read in the head, paints each of `properties` as `model`, read in the base, does: one failing line
+ * per property that differs or wasn't read, or one for a part or a model that isn't on its page. An empty list of
+ * properties is refused, since it would pass anything.
+ */
+export function paintsAs(part: string, head: Record<string, string> | null, model: string, base: Record<string, string> | null, properties: readonly string[]): string[] {
+    if (properties.length === 0) throw new Error(`${part} as ${model}: no properties to compare.`);
+    if (head === null) return [`${part}: not in the head`];
+    if (base === null) return [`${model}: not in the base`];
+    return properties.flatMap((property) => {
+        const value = head[property];
+        if (value === base[property]) return [];
+        return [`${part} ${property}: ${value === undefined ? 'not read' : value}, where the base's ${model} has ${base[property]}`];
+    });
+}
