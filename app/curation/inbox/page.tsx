@@ -68,6 +68,7 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
                         needsJudgment={view.needsJudgment}
                         cursor={view.cursor}
                         item={view.selected ? { id: view.selected.id, version: view.selected.version } : null}
+                        library={view.library}
                     />
                     {/* A phone shows one side at a time (owner, 2026-10-25): the list, or the item the URL names. A wide screen shows both. */}
                     <main className={styles.body} data-view={item === null ? 'list' : 'item'}>

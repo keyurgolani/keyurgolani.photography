@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { WifiOff } from 'lucide-react';
 import styles from '../curator.module.css';
+import LibraryNotice from './LibraryNotice';
 import WatcherNotice from './WatcherNotice';
-import type { InboxWatcher } from '@/lib/curation/inbox-view';
+import type { InboxLibrary, InboxWatcher } from '@/lib/curation/inbox-view';
 import { createInboxWatch, fetchInboxSummary, inboxNews, ITEM_CHANGED_EVENT, OFFLINE_TEXT, type InboxPageFacts, type InboxWatchAnswer, type InboxWatchState } from '@/lib/curation/inbox-watch';
 
 interface InboxWatchProps {
@@ -16,6 +17,8 @@ interface InboxWatchProps {
     cursor: number;
     /** The item the page has open, and the version its forms carry, or null. */
     item: { id: string; version: number } | null;
+    /** #17: the open library item as the page loaded it, for its banner, or null while the library is available. */
+    library?: InboxLibrary | null;
 }
 
 /**
@@ -26,7 +29,7 @@ interface InboxWatchProps {
  * nothing is said twice. It never reloads the page, and a session that ended stops it without a word. Its pieces go
  * straight into the page, with no wrapper, so the watcher strip is where it was before the poll, as Dark parity holds.
  */
-export default function InboxWatch({ watcher, needsJudgment, cursor, item }: InboxWatchProps) {
+export default function InboxWatch({ watcher, needsJudgment, cursor, item, library = null }: InboxWatchProps) {
     const [current, setCurrent] = useState<InboxWatcher>(watcher);
     const [offline, setOffline] = useState(false);
     const [watchState, setWatchState] = useState<InboxWatchState | null>(null);
@@ -107,6 +110,8 @@ export default function InboxWatch({ watcher, needsJudgment, cursor, item }: Inb
     return (
         <>
             <WatcherNotice watcher={current} />
+            {/* #17: beside the watcher's strip, as the page loaded it. The summary the poll reads doesn't carry it. */}
+            <LibraryNotice library={library} />
             {offline ? (
                 <section className={`${styles.notice} ${styles.watcherNotice}`} data-tone="change" data-state="offline" aria-label="Offline" id="inbox-offline">
                     <WifiOff size={18} aria-hidden="true" />

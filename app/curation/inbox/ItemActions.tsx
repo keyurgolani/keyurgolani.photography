@@ -1,10 +1,10 @@
 'use client';
 
 import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
-import { Check, Save } from 'lucide-react';
+import { ArchiveRestore, Check, Save } from 'lucide-react';
 import styles from '../curator.module.css';
 import { submitGate, submitOff, useHydrated } from './useHydrated';
-import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, reopenItem, retryItem } from './actions';
+import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, releaseItem, reopenItem, restoreItem, retryItem } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
 import { itemUrl, moveOn } from './journey';
 import {
@@ -26,9 +26,12 @@ import {
     placementLabel,
     placementValue,
     PRIMARY_ACTION,
+    RELEASE_HINT,
     reopenHint,
+    restoreHint,
     seriesCaption,
     seriesName,
+    suggestedFileLabel,
     suggestionEvidence,
     type InboxActionKind,
     type InboxActionState,
@@ -47,6 +50,8 @@ const ACTIONS: Record<InboxActionKind, (previous: InboxActionState, form: FormDa
     confirm: confirmItem,
     bind: bindItem,
     archive: archiveItem,
+    restore: restoreItem,
+    release: releaseItem,
 };
 
 /** Every form's submit button names its action as `intent`, and this sends the form to that action. */
@@ -106,7 +111,10 @@ type Answered = Exclude<InboxActionState, { status: 'idle' }>;
 /** #14 (A8): each field an answer can be about, by the ID of the control to focus and the words that name it. */
 const FIELDS: Record<NonNullable<Answered['field']>, { target: (action: InboxActionKind) => string; label: (action: InboxActionKind) => string }> = {
     description: { target: () => 'item-description', label: () => 'Draft description' },
-    reason: { target: (action) => (action === 'archive' ? 'archive-reason' : 'dismiss-reason'), label: (action) => (action === 'archive' ? 'Reason for archiving' : 'Reason') },
+    reason: {
+        target: (action) => (action === 'archive' ? 'archive-reason' : action === 'release' ? 'release-reason' : 'dismiss-reason'),
+        label: (action) => (action === 'archive' ? 'Reason for archiving' : action === 'release' ? 'Reason for releasing' : 'Reason'),
+    },
     path: { target: () => 'bind-path', label: () => 'Library path' },
     bindTo: { target: () => 'bind-to-first', label: () => 'File to bind' },
 };
@@ -121,7 +129,7 @@ const failedSubmit = (state: InboxActionState): Answered | null => (state.status
 function shownByField(state: Answered, detail: InboxDetail): boolean {
     if (state.field === undefined) return false;
     if (state.field === 'reason') return state.action === 'archive';
-    if (state.field === 'bindTo') return detail.linkedFiles.length > 0;
+    if (state.field === 'bindTo') return detail.linkedFiles.length + detail.suggestedFiles.length > 0;
     return true;
 }
 
@@ -178,9 +186,9 @@ function Notice({ state, detail }: { state: InboxActionState; detail: InboxDetai
  * Where an answer shows: by the field it's about, inside Dismiss, Bind or Archive for an answer that form can still
  * take, or under the action buttons.
  */
-type AnswerSlot = 'description' | 'dismiss' | 'bind' | 'archive' | 'actions';
+type AnswerSlot = 'description' | 'dismiss' | 'bind' | 'archive' | 'release' | 'actions';
 
-function slotOf(state: InboxActionState, can: InboxDetail['can']): AnswerSlot | null {
+function slotOf(state: InboxActionState, can: InboxDetail['can'], release: boolean): AnswerSlot | null {
     if (state.status === 'idle') return null;
     // #14 (A8): a refused description shows by the field, and its error summary under the buttons that sent it.
     if (state.field === 'description') return 'actions';
@@ -189,6 +197,7 @@ function slotOf(state: InboxActionState, can: InboxDetail['can']): AnswerSlot | 
     if (state.action === 'dismiss' && can.dismiss) return 'dismiss';
     if (state.action === 'bind' && can.bind) return 'bind';
     if (state.action === 'archive' && can.archive) return 'archive';
+    if (state.action === 'release' && release) return 'release';
     return 'actions';
 }
 
@@ -244,6 +253,11 @@ interface ResolveProps {
  */
 function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submit }: ResolveProps) {
     const linked = detail.linkedFiles;
+    // #17: the files the watcher suggests, after the linked ones. Never chosen for the curator: one is only a hint,
+    // since another shoot's IMG_0001.JPG has the same name. Choosing one puts its path in Library path, which is what
+    // the form sends, as `curation bind --path` takes it.
+    const suggested = detail.suggestedFiles;
+    const choices = linked.length + suggested.length;
     // A linked file goes by its item's ID, never its path, which the page shows escaped: the server reads the path again.
     const [choice, setChoice] = useState<string | null>(linked.length === 1 ? linked[0].id : linked.length === 0 ? 'typed' : null);
     const [path, setPath] = useState('');
@@ -252,7 +266,7 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
     const refusedBind = state.status !== 'idle' && state.status !== 'done' && state.action === 'bind' ? state : null;
     const pathError = refusedBind?.field === 'path' ? refusedBind.message : null;
     // A refusal about which linked file shows by the files, while there are files to show it by.
-    const filesError = refusedBind?.field === 'bindTo' && linked.length > 0 ? refusedBind.message : null;
+    const filesError = refusedBind?.field === 'bindTo' && choices > 0 ? refusedBind.message : null;
     const answerSerial = state.status === 'idle' ? 0 : state.serial;
     useEffect(() => {
         if (pathError) pathRef.current?.focus();
@@ -263,13 +277,31 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
             <summary>Bind to the file that replaces it</summary>
             <form method="post" onSubmit={submit} aria-label="Bind" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
-                {linked.length > 0 ? (
+                {choices > 0 ? (
                     <fieldset className={styles.sequence} aria-describedby={filesError ? 'bind-to-error' : undefined}>
                         <legend>File to bind</legend>
                         {linked.map((file, index) => (
                             <label key={file.id} className={styles.slot}>
                                 <input ref={index === 0 ? firstFileRef : undefined} id={index === 0 ? 'bind-to-first' : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} />
                                 {linked.length === 1 ? `${file.path}, the new file at its last path` : file.path}
+                            </label>
+                        ))}
+                        {/* A suggestion sends its path in Library path, so its own value is the typed path's. */}
+                        {suggested.map((file, index) => (
+                            <label key={file.id} className={styles.slot}>
+                                <input
+                                    ref={linked.length === 0 && index === 0 ? firstFileRef : undefined}
+                                    id={linked.length === 0 && index === 0 ? 'bind-to-first' : undefined}
+                                    type="radio"
+                                    name="bindTo"
+                                    value="typed"
+                                    checked={choice === `suggested:${file.id}`}
+                                    onChange={() => {
+                                        setChoice(`suggested:${file.id}`);
+                                        setPath(file.libraryPath);
+                                    }}
+                                />
+                                {suggestedFileLabel(file.path, file.by)}
                             </label>
                         ))}
                         <label className={styles.slot}>
@@ -293,13 +325,13 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
                         className={styles.control}
                         name="path"
                         value={path}
-                        required={linked.length === 0}
+                        required={choices === 0}
                         autoComplete="off"
                         spellCheck={false}
                         onChange={(event) => {
                             setPath(event.target.value);
                             // Typing a path chooses it, so the file sent is the one in the field.
-                            if (linked.length > 0) setChoice('typed');
+                            if (choices > 0) setChoice('typed');
                         }}
                         aria-invalid={pathError ? true : undefined}
                         aria-describedby={pathError ? 'bind-path-error bind-path-hint' : 'bind-path-hint'}
@@ -441,6 +473,34 @@ function ArchiveForm({ detail, activeRevisionId, state, pending, ready, slot, su
             {/* A refused reason shows by its field; every other answer to Archive shows here, while Archive is still offered. */}
             <AnswerRegion show={slot === 'archive'} state={state} detail={detail} announce={missingReason ? { text: 'Archiving needs a reason.', serial: asked } : null} />
         </details>
+    );
+}
+
+/**
+ * #17: Release, on a missing item the library item holds: `curation confirm-missing`, with an optional reason. The item
+ * then counts as missing, and Bind or Archive settles it. Releasing every held item at once stays the library item's
+ * Dismiss.
+ */
+function ReleaseForm({ detail, activeRevisionId, state, pending, ready, slot, submit }: ResolveProps) {
+    return (
+        <>
+            <form method="post" onSubmit={submit} aria-label="Release" {...submitGate(ready)}>
+                <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
+                <p className={styles.hint} id="release-hint">
+                    {RELEASE_HINT}
+                </p>
+                <label className={styles.label}>
+                    Reason for releasing
+                    <input className={styles.control} id="release-reason" name="reason" maxLength={500} autoComplete="off" />
+                </label>
+                <div className={styles.actions}>
+                    <button type="submit" name="intent" value="release" className={styles.button} aria-describedby="release-hint" {...submitOff(pending)}>
+                        Release
+                    </button>
+                </div>
+            </form>
+            <AnswerRegion show={slot === 'release'} state={state} detail={detail} />
+        </>
     );
 }
 
@@ -715,6 +775,10 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     }, [detail.id]);
     const primary = PRIMARY_ACTION[detail.type];
     const { can } = detail;
+    // #17: a new photograph whose bytes are an archived one's restores it, with its own details, outside any series. So
+    // Restore takes Approve's place, and the series, position and description fields, which it can't take, aren't shown.
+    const restoring = detail.type === 'new' && can.approve && detail.restores !== null;
+    const fields = detail.type === 'new' && can.edit && !restoring;
     // A new photograph's approve is unavailable only while a pending bind merges it (#17); its hint says why. A
     // replacement's Confirm is unavailable while its new set builds or can't be used (#118), with its own short reason,
     // since the hint beside it is about Decide later.
@@ -722,13 +786,13 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
     const unavailable = primary !== undefined && ((detail.type === 'new' && detail.primaryUnavailable !== null && !can.approve) || confirmReason !== null);
     // A replacement whose Decide later the page already knows would refuse shows it disabled, with the hint as its reason.
     const deferRefuses = can.defer && detail.type === 'replacement' && decideLaterRefuses(detail.replacement);
-    const anyButton = unavailable || (detail.type === 'new' && (can.edit || can.approve)) || can.defer || can.confirm;
-    const slot = slotOf(state, can);
+    const anyButton = unavailable || fields || (detail.type === 'new' && can.approve) || can.defer || can.confirm;
+    const slot = slotOf(state, can, detail.release);
     // #118: a confirm, bind or archive that went through takes its control away once the page refreshes. Then the
     // answer under the buttons takes the focus, which would otherwise drop to the page's body.
     const answerRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
-        if (state.status !== 'done' || (state.action !== 'confirm' && state.action !== 'bind' && state.action !== 'archive') || slot !== 'actions') return;
+        if (state.status !== 'done' || (state.action !== 'confirm' && state.action !== 'bind' && state.action !== 'archive' && state.action !== 'restore' && state.action !== 'release') || slot !== 'actions') return;
         if (document.activeElement === null || document.activeElement === document.body) answerRef.current?.focus();
     }, [state, slot, detail]);
     return (
@@ -736,7 +800,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             <form method="post" onSubmit={submit} aria-label="Review" {...submitGate(ready)}>
                 <ItemFields detail={detail} activeRevisionId={activeRevisionId} />
                 {/* The form version the page showed, so a form left open across a refresh never reads as another item's. */}
-                {detail.type === 'new' && can.edit ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} answer={state} /> : null}
+                {fields ? <SuggestionFields key={detail.version} detail={detail} series={series} seriesProblem={seriesProblem} answer={state} /> : null}
                 {note}
                 {anyButton ? (
                     <div className={styles.actions}>
@@ -751,7 +815,7 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                                 {confirmReason}
                             </span>
                         ) : null}
-                        {detail.type === 'new' && can.edit ? (
+                        {fields ? (
                             <button type="submit" name="intent" value="edit" className={styles.button} {...submitOff(pending)}>
                                 Save edits
                             </button>
@@ -767,10 +831,17 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                                 {DEFER_LABEL}
                             </button>
                         ) : null}
-                        {primary && detail.type === 'new' && can.approve ? (
+                        {primary && detail.type === 'new' && can.approve && !restoring ? (
                             <button type="submit" name="intent" value="approve" className={`${styles.button} ${styles.primary}`} {...submitOff(pending)}>
                                 <Save size={16} aria-hidden="true" />
                                 {primary}
+                            </button>
+                        ) : null}
+                        {/* #17: in Approve's place. It writes the restore for the watcher's next pass, and no photo record. */}
+                        {restoring ? (
+                            <button type="submit" name="intent" value="restore" className={`${styles.button} ${styles.primary}`} aria-describedby="restore-hint" {...submitOff(pending)}>
+                                <ArchiveRestore size={16} aria-hidden="true" />
+                                Restore
                             </button>
                         ) : null}
                         {/* #118: Confirm takes the primary place, as Approve does. It writes the draft only; a publish makes it public. */}
@@ -785,6 +856,11 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
                 {detail.primaryUnavailable ? (
                     <p className={styles.hint} id="primary-unavailable">
                         {detail.primaryUnavailable}
+                    </p>
+                ) : null}
+                {restoring && detail.restores ? (
+                    <p className={styles.hint} id="restore-hint">
+                        {restoreHint(detail.restores.name)}
                     </p>
                 ) : null}
                 {detail.status === 'approved' ? <p className={styles.hint}>{reopenHint(detail)}</p> : null}
@@ -812,6 +888,9 @@ export default function ItemActions({ detail, order, open, activeRevisionId, ser
             <AnswerRegion show={slot === 'actions'} state={state} detail={detail} regionRef={answerRef} />
             {/* #14 (A8): the poll's word that the item moved, unless an action already said so. */}
             {polledFor === detail.version && state.status !== 'stale' ? <StaleAlert message={POLLED_STALE} detail={detail} /> : null}
+
+            {/* #17: on a held missing item, before Bind and Archive, which settle it once it's released. */}
+            {detail.release ? <ReleaseForm key={`release-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} ready={ready} slot={slot} submit={submit} /> : null}
 
             {/* Keyed by the version the page showed, as the suggestion is, so a form left open across a refresh never reads as another state's. */}
             {can.bind ? <BindForm key={`bind-${detail.version}`} detail={detail} activeRevisionId={activeRevisionId} state={state} pending={pending} ready={ready} slot={slot} submit={submit} /> : null}

@@ -27,7 +27,7 @@ import { EVENT_ID_RE, EVENT_STATUSES, FAILURE_TEXT, needsJudgment, shortPhotoId,
 import { placedItems } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { libraryCauseText } from './library';
-import { archiveMissing, bindAmbiguous, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems, resolveItem, suggestedNewItems } from './resolutions';
+import { archiveMissing, bindAmbiguous, bindReplacement, bindSuggestions, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems, resolveItem } from './resolutions';
 import { decisionState, pendingMergeOf, type DecisionState } from './binds';
 import { EventUnusableError, listEvents, readEvent, type EventProblem } from './repository';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
@@ -579,9 +579,9 @@ async function missingLines(root: string, event: CurationEvent, registry: Regist
         lines.push(`Linked: ${printable(item.derivedFacts.sourcePath)} holds other bytes at its last path, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). curation bind gives them to ${event.photoId}.`);
     }
     // A5: only a suggestion, since another shoot's IMG_0001.JPG has the same name. The owner picks it with --path.
-    const suggested = registry === null ? [] : await suggestedNewItems(root, event.photoId, registry).catch(() => []);
-    for (const item of suggested) {
-        const why = item.derivedFacts.suggestedBy === 'capture-time' ? 'was taken at the same moment' : 'has its file name';
+    // The Inbox's Bind offers the same files, from the same function (lib/curation/inbox.ts).
+    for (const { item, by } of await bindSuggestions(root, event.photoId, registry)) {
+        const why = by === 'capture-time' ? 'was taken at the same moment' : 'has its file name';
         lines.push(`Suggested: ${printable(item.derivedFacts.sourcePath)} ${why}, with other pixels, the new photograph ${shortPhotoId(item.photoId)} (${item.id}). If it is ${event.photoId}, curation bind --path ${printable(item.derivedFacts.sourcePath)} gives it the file.`);
     }
     lines.push(

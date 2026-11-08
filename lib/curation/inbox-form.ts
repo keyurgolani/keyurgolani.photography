@@ -7,10 +7,10 @@ import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type Ac
 import { pendingArchiveOf } from './binds';
 import { printable, scrub } from './commands';
 import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
-import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, RELEASED_ANSWER, RESTORED_TEXT, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { readDraftPlan } from './pins';
 import { readEvent } from './repository';
-import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
+import { archiveMissing, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -30,6 +30,11 @@ import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
  * (bindReplacement()) and Archive (archiveMissing()). Each writer takes its
  * locks and checks the item version and the active revision itself, and
  * writes nothing when it refuses.
+ *
+ * #17 adds Restore, an approval that only ever restores an archived
+ * photograph (approveEvent()'s `restoreOnly`), with no series, position or
+ * description, and Release, which is `curation confirm-missing` on a held
+ * missing item, with an optional reason.
  */
 
 /** Who the web curator acts as. There's no session, so there's no name: the SSH tunnel is the way in (docs/curator.md). */
@@ -185,6 +190,9 @@ const DONE: Record<InboxActionKind, string> = {
     // bindDone() words a bind by its path; this is what it says when the event doesn't name one.
     bind: bindAnswer(null, null),
     archive: DONE_ANSWER.archive,
+    // #17: the same words a restored item's system response says. The restore's own notes name IDs, so none follow.
+    restore: RESTORED_TEXT,
+    release: RELEASED_ANSWER,
 };
 
 const LINK_PATH = 'Type the library path of the file that replaces it.';
@@ -433,6 +441,14 @@ export async function runInboxAction(
                 break;
             case 'archive':
                 outcome = await archiveMissing({ ...input, reason: archiveFrom(form) });
+                break;
+            // #17: an approval that takes no series, position or description, and refuses anything but a restore.
+            case 'restore':
+                outcome = await approveEvent({ ...input, choices: {}, keepPlaced: true, restoreOnly: true });
+                break;
+            // #17: as the CLI's confirm-missing, which releases a held missing item.
+            case 'release':
+                outcome = await confirmMissing({ ...input, reason: reasonFrom(form) });
                 break;
         }
     } catch (error) {
