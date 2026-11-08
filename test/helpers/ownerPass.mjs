@@ -6,8 +6,8 @@ export const HEADING = "## The owner's screen-reader and device pass";
 export const AREAS = ['Home', 'Site navigation and the theme menu', 'The Viewer', 'Publish', 'The Inbox', 'What to do with a finding'];
 
 /**
- * #184's acceptance steps, the two the plan adds, the Viewer heading in NVDA's browse mode, and an early press on the
- * Inbox. Each is one step in its area: a step whose bold title matches every `title` pattern, and whose whole text
+ * #184's acceptance steps, the two the plan adds, the Viewer heading in NVDA's browse mode, and an early press on every
+ * curator form behind the submit gate: the Inbox's, Publish's, History's and the Series screens'. Each is one step in its area: a step whose bold title matches every `title` pattern, and whose whole text
  * matches every `body` pattern.
  */
 export const ACCEPTANCE = [
@@ -33,7 +33,25 @@ export const ACCEPTANCE = [
   { name: "one item's detail", area: 'The Inbox', title: [/detail/i], body: [/focus/, /heading/] },
   { name: "an action's error summary", area: 'The Inbox', title: [/error summary/i], body: [/focus/, /summary/] },
   { name: 'the stale role="alert"', area: 'The Inbox', title: [/stale/i, /role="alert"/], body: [/alert/, /typed|edits/] },
-  { name: 'an early Inbox press', area: 'The Inbox', title: [/early press/i], body: [/Still loading\. Try again in a moment\./, /once/, /politely/, /second press/, /submitGateScript\.ts/, /curation-inbox-gate\.spec\.ts/] },
+  {
+    name: 'an early press on a curator form',
+    area: 'The Inbox',
+    title: [/early press/i],
+    body: [
+      /Still loading\. Try again in a moment\./,
+      /once/,
+      /politely/,
+      /second press/,
+      /Validate revision/,
+      /Restore revision/,
+      /Series/,
+      /submitGateScript\.ts/,
+      /curation-inbox-gate\.spec\.ts/,
+      /curation-publish-gate\.spec\.ts/,
+      /curation-history-gate\.spec\.ts/,
+      /curation-series-gate\.spec\.ts/,
+    ],
+  },
   // #17's three Inbox pieces, ruled for the release candidate: the owner confirms each one's copy and behaviour, and may change any for the final.
   { name: 'Restore on an archived photograph', area: 'The Inbox', title: [/Restore/, /owner to confirm the copy and behaviour/], body: [/This file matches <file>, an archived photograph\. Restore brings it back with its original details, outside any series\. Add it to a series from the Series screen afterwards\./, /Approve/, /Dismiss/, /Restore recorded, and waiting for the watcher\. On its next pass, <file> comes back with its original details, outside any series\./] },
   { name: "Bind's suggested files", area: 'The Inbox', title: [/suggested files/i, /owner to confirm the copy and behaviour/], body: [/<path>: same file name, different pixels/, /<path>: taken at the same moment, different pixels/, /Another file in the library/, /No suggestion is checked/] },
