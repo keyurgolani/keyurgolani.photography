@@ -596,12 +596,12 @@ export function shippedFiles(root: string = REPO_ROOT): string[] {
     return repositorySources(root).filter((file) => exclusionOf(file) === null);
 }
 
+/** Every delete call in `text`, read as the file `file`: a shell script line by line, any other source parsed. */
+export const scanText = (file: string, text: string): DeleteCall[] => (file.endsWith('.sh') ? scanShell(file, text) : scanSource(file, text));
+
 /** Every delete call in `files`. */
 export function deleteCalls(files: readonly string[]): DeleteCall[] {
-    return files.flatMap((file) => {
-        const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
-        return file.endsWith('.sh') ? scanShell(file, text) : scanSource(file, text);
-    });
+    return files.flatMap((file) => scanText(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8')));
 }
 
 /**
