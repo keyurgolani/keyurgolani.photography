@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ACCEPTANCE, ownerPassProblems, withoutStep } from './helpers/ownerPass.mjs';
+import { ACCEPTANCE, ownerPass, ownerPassProblems, withoutStep } from './helpers/ownerPass.mjs';
 
 // The host docs never tell the owner to delete anything on or under the photo
 // library, his originals: no `rm` on a line, or in a code block, that names
@@ -189,5 +189,16 @@ describe("the accessibility contract's owner pass", () => {
     expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee PR #193.\n'))).toContain('the section names a PR: PR #193');
     expect(ownerPassProblems(contract.replace('### The Inbox\n', '### The Inbox\n\n- [ ] **Listen.** Read the page.\n'))).toContain('The Inbox: "Listen." says nothing to expect');
     expect(ownerPassProblems(contract.replace('in writing', 'later'))).toContain('a finding is never accepted in writing');
+  });
+
+  // A step pasted twice, as a rebase or a merge can leave it, fails twice over: by its title, and by its acceptance item.
+  it('fails on a step that appears twice', () => {
+    const lieFi = ownerPass(contract).steps['The Viewer'].find((step) => step.title.startsWith('Lie-fi'));
+    expect(lieFi, 'the lie-fi step was found').toBeDefined();
+    const doubled = contract.replace(`${lieFi.text}\n`, `${lieFi.text}\n${lieFi.text}\n`);
+    expect(doubled, 'the step was doubled').not.toBe(contract);
+    const problems = ownerPassProblems(doubled);
+    expect(problems).toContain(`step appears twice: ${lieFi.title}`);
+    expect(problems).toContain('the Viewer on lie-fi matches 2 steps');
   });
 });
