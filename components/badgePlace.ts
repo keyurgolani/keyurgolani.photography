@@ -39,7 +39,7 @@ const V110_SCALE = 0.85;
 const BADGE_CLEARANCE = 16;
 /** The ring around the oval. */
 const RING = 4;
-/** The smallest the badge gets above the story, and its size beside the story on a short landscape screen. */
+/** The smallest the badge gets in the first lift above the story, and its size beside the story. */
 const MIN_SCALE = 0.6;
 /** The smallest it gets above the story where beside it doesn't clear either, as on a short phone held upright. */
 const UPRIGHT_MIN_SCALE = 0.4;
@@ -172,8 +172,8 @@ export function chromeOverflows(scrollHeight: number, clientHeight: number): boo
 export const DEFAULT_REM_PX = 16;
 
 /**
- * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy only then (spec §10), so
- * at default text Dark is today's exactly.
+ * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy then (spec §10); at
+ * default text it follows only where the copy sits above its fixed wash (copyAboveDarkWash()), and is today's elsewhere.
  */
 export function textEnlarged(remPx: number): boolean {
   return Number.isFinite(remPx) && remPx > DEFAULT_REM_PX;

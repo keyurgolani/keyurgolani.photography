@@ -511,7 +511,15 @@ async function revealByKeyboard(page: Page) {
  * where it was: those rows, below, take a fixture of their own. Each row prints its numbers, and the title's and the
  * statement's tops as percentages of the stage, whether it holds or not.
  */
-type DarkStage = { name: string; viewport: { width: number; height: number }; follows: boolean; reducedMotion?: boolean; failNext?: boolean };
+type DarkStage = {
+    name: string;
+    viewport: { width: number; height: number };
+    follows: boolean;
+    reducedMotion?: boolean;
+    failNext?: boolean;
+    /** Which line the row takes the wash by: the title's above 65.5%, or the statement's alone above 74.75%. */
+    rule?: 'title' | 'statement';
+};
 
 const DARK_SHORT_STAGES: DarkStage[] = [
     { name: 'at 380 by 664, a short stage', viewport: { width: 380, height: 664 }, follows: true },
@@ -522,14 +530,19 @@ const DARK_SHORT_STAGES: DarkStage[] = [
     { name: 'at 390 by 844, with reduced motion, with the failure notice showing', viewport: { width: 390, height: 844 }, reducedMotion: true, failNext: true, follows: true },
 ];
 
-/** The rows one-line-title fixture's server serves: its title starts under the title's line, its statement above the statement's. */
+/**
+ * The rows the one-line-title fixture's server serves. At 390 by 664 the one-line title still starts above the title's
+ * line (65.33% down on CI), so that row follows the copy by the title. At 390 by 700, and at 380 by 800 with reduced
+ * motion, the title starts under it and the statement alone sits above its line, so they follow by the statement.
+ */
 const ONE_LINE_STAGES: DarkStage[] = [
-    { name: 'at 390 by 664, with a one-line title', viewport: { width: 390, height: 664 }, follows: true },
-    { name: 'at 380 by 800, with reduced motion and a one-line title', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true },
+    { name: 'at 390 by 664, with a one-line title, by the title', viewport: { width: 390, height: 664 }, follows: true, rule: 'title' },
+    { name: 'at 390 by 700, with a one-line title, by the statement alone', viewport: { width: 390, height: 700 }, follows: true, rule: 'statement' },
+    { name: 'at 380 by 800, with reduced motion and a one-line title, by the statement alone', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true, rule: 'statement' },
 ];
 
 /** One Dark stage row, on Home at `url`. */
-async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, reducedMotion = false, failNext = false }: DarkStage, url = '/') {
+async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, reducedMotion = false, failNext = false, rule }: DarkStage, url = '/') {
     runsOn(testInfo, 'mobile');
     await page.setViewportSize(viewport);
     await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
@@ -566,6 +579,12 @@ async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, re
     expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
     expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
     expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
+    // The line the row means to take the wash by (badgePlace.ts's DARK_WASH_TITLE_TOP and DARK_WASH_STATEMENT_TOP).
+    if (rule === 'title') expect.soft(Number(tops.title), "the title's top, above the title's line").toBeLessThan(65.5);
+    if (rule === 'statement') {
+        expect.soft(Number(tops.title), "the title's top, at or under the title's line").toBeGreaterThanOrEqual(65.5);
+        expect.soft(Number(tops.statement), "the statement's top, above the statement's line").toBeLessThan(74.75);
+    }
     if (!follows) await expect.soft(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
     return lines;
 }

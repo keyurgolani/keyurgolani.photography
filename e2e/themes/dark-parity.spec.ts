@@ -1096,13 +1096,14 @@ const ALLOWANCES: Allowance[] = [
     // phone wash holds the title at only about 3.2:1 over a white photograph. There Dark's wash follows the copy
     // (badgePlace.ts's copyAboveDarkWash()), an AA fix, so Home's scrim, the walk's
     // body>main:nth-of-type(1)>div:nth-of-type(1)>div:nth-of-type(3), takes the gradient that follows the copy.
-    ...(['home-failure', 'home-failure-hover'] as const).map((page): Allowance => ({
-        page,
+    // home-failure-hover is a state of home-failure (stateOf), so allowancesFor() gives it this one too.
+    {
+        page: 'home-failure',
         width: 390,
         selector: '[data-home-vignette]',
         properties: ['background-image'],
         why: "#4: with the failure notice the copy rises above Dark's fixed phone wash, so the wash follows it (AA)",
-    })),
+    },
     // #150's Series makes three screens in the header, which may wrap to a second row on a phone.
     ...(['inbox', 'publish'] as const).map((page): Allowance => ({ page, width: 390, selector: 'header nav', properties: ['flex-wrap'], why: "#150: the curator header's screens wrap on a phone" })),
     ...VIEWER_ZOOM,

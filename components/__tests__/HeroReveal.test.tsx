@@ -618,12 +618,12 @@ describe('badgePlace', () => {
   /** The sweep's most screens, so it stays a unit test's size: 14,570 now. */
   const SWEEP_LIMIT = 15_000;
   /**
-   * Where the sweep's screens put the badge under today's rule, by place: v1.1.0's, above the story, beside it, and
+   * Where the sweep's screens put the badge under this rule, by place: v1.1.0's, above the story, beside it, and
    * out of sight. A rule that hides the badge more often, or moves it off today's place beside the story, changes them.
    */
   const SWEEP_PLACES = { 'v1.1.0': 0, clear: 8060, side: 2644, none: 3866 };
 
-  it('never puts the badge on the copy of a phone held upright or sideways: it is clear of it, or it is out of sight, and hides it no more often than today', () => {
+  it('never puts the badge on the copy of a phone held upright or sideways: it is clear of it, or it is out of sight, and hides it no more often than this rule does', () => {
     // Phones held upright: the copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the
     // hint. Phones held sideways and zoomed screens, from 568 x 320 to 928 x 440.
     const upright = [320, 360, 375, 390].flatMap((width) =>
@@ -878,6 +878,14 @@ describe("Home's root and the copy's height on the stage", () => {
       if (this.tagName === 'P') return DOMRect.fromRect({ x: 16, y: statementTop, width: 258, height: 20 });
       return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
     });
+  /** A stage whose height can change: the copy keeps its distance from the bottom, the title 264 px up, the statement 184. */
+  const stageAtHeight = (height: () => number) =>
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.hasAttribute('data-home-vignette')) return DOMRect.fromRect({ x: 0, y: 0, width: 390, height: height() });
+      if (this.tagName === 'H1') return DOMRect.fromRect({ x: 16, y: height() - 264, width: 258, height: 34 });
+      if (this.tagName === 'P') return DOMRect.fromRect({ x: 16, y: height() - 184, width: 258, height: 20 });
+      return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+    });
   const copyHigh = (height: number, titleTop: number, statementTop: number) => {
     stageAt(height, titleTop, statementTop);
     const view = render(home());
@@ -910,6 +918,30 @@ describe("Home's root and the copy's height on the stage", () => {
     expect(copyHigh(844, 580, 660)).toBe(false);
     // 390 x 844 with reduced motion, Dark parity's phone: 65.69% and 75.20%, under both lines.
     expect(copyHigh(844, 554.42, 634.7)).toBe(false);
+  });
+
+  it('stops saying so when the stage grows and the copy sits under both lines again', async () => {
+    // 390 x 664, then the toolbars go and the stage is 844 tall: the copy stays as far above the bottom.
+    let height = 664;
+    stageAtHeight(() => height);
+    let fontsReady: () => void = () => undefined;
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => (fontsReady = resolve)) } });
+    try {
+      const view = render(home());
+      const root = view.getByTestId('home');
+      expect(root.hasAttribute('data-copy-high')).toBe(true);
+      height = 844;
+      // jsdom has no ResizeObserver; the fonts' measure stands in for the one the stage's resize makes in a browser.
+      await act(async () => {
+        fontsReady();
+        await Promise.resolve();
+      });
+      expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('68.72%');
+      expect(root.hasAttribute('data-copy-high')).toBe(false);
+      view.unmount();
+    } finally {
+      Reflect.deleteProperty(document, 'fonts');
+    }
   });
 
   it("says nothing where the chrome scrolls at default text with both tops under their lines, so Dark keeps today's wash", () => {
