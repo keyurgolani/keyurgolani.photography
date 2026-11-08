@@ -526,10 +526,13 @@ export interface InboxLibrary {
     itemId: string;
 }
 
-/** #17: the Inbox's banner while the library item is open. Its lead links to that item; the rest follows it. */
+/**
+ * #17: the Inbox's banner while the library item is open. Its lead links to that item; the rest follows it. With
+ * nothing held it keeps its first sentence alone.
+ */
 export const LIBRARY_BANNER = {
     lead: "The library can't be reached",
-    rest: (cause: string, held: number) => ` (${cause}), so nothing changes until it's back. ${held} missing ${held === 1 ? 'item is' : 'items are'} on hold.`,
+    rest: (cause: string, held: number) => ` (${cause}), so nothing changes until it's back.${held === 0 ? '' : ` ${held} missing ${held === 1 ? 'item is' : 'items are'} on hold.`}`,
 } as const;
 
 export type InboxView =
