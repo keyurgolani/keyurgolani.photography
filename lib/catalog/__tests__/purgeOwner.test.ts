@@ -12,7 +12,7 @@ import { BREAKS, IMAGE_UID, ownerRefusal, type WriterKind } from '../data-root-o
  * uid against the data root's owner, through a symlink, and each writer's
  * own words. process.geteuid() and getuid() are faked against the owner of
  * the test's own temp folder, which stat() reports as IMAGE_UID, uid 1001, as
- * production's data root is, or another uid where a case says so (F15).
+ * production's data root is, or another uid where a case says so.
  */
 
 afterEach(() => vi.restoreAllMocks());
@@ -106,18 +106,29 @@ describe('ownerRefusal() (#15)', () => {
         expect(ownerRefusal(link, 'photos purge --yes', 'tombstone')).toContain(`but uid ${owner} owns the data root`);
     });
 
-    it.runIf(posix)("on a data root that isn't uid 1001's, says to give it back to 1001, never to run as its owner (F15)", () => {
+    it.runIf(posix)("on a data root that isn't uid 1001's, says to give it back to 1001, never to run as its owner, and lets its own owner through", () => {
         const root = os.tmpdir();
         ownedBy([root], 0);
         runAs(IMAGE_UID);
         const asImage = ownerRefusal(root, 'photos purge --yes', 'tombstone') ?? '';
-        expect(asImage).toBe(`photos purge --yes runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid 0 owns the data root, which happens when something ran there as another user. It took no lock. Nothing was written. On the host, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/. Don't widen its permissions instead.`);
+        expect(asImage).toBe(`photos purge --yes runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid 0 owns the data root. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/. Don't widen its permissions instead.`);
         runAs(1000);
         const asHostUser = ownerRefusal(root, 'photos purge --yes', 'tombstone') ?? '';
-        expect(asHostUser).toBe(`photos purge --yes runs as uid 1000 and uid 0 owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`);
+        expect(asHostUser).toBe(`photos purge --yes runs as uid 1000 and uid 0 owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`);
         for (const said of [asImage, asHostUser]) expect(said).not.toMatch(/as uid 0[,.]|user: "0:|web runs as that owner/);
-        // A run as root on a root-owned root matches its owner, so the gate lets it through; host step 3's check covers that host.
+        // A run as root on a root-owned root matches its owner, so the gate lets it through; the release steps check on the host that uid 1001 owns the data root.
         runAs(0);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toBeNull();
+
+        // An owner that's neither root nor 1001, as a deploy user's after a skipped setup chown: the same two messages, naming it.
+        vi.restoreAllMocks();
+        ownedBy([root], 1000);
+        runAs(IMAGE_UID);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toBe(`photos purge --yes runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid 1000 owns the data root. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/. Don't widen its permissions instead.`);
+        runAs(0);
+        expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toBe(`photos purge --yes runs as uid 0 and uid 1000 owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`);
+        // Its own owner goes through, as a developer's run does on a data root of their own.
+        runAs(1000);
         expect(ownerRefusal(root, 'photos purge --yes', 'tombstone')).toBeNull();
     });
 

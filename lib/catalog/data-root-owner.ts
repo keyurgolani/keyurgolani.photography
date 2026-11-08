@@ -94,8 +94,8 @@ export function ownerRefusal(root: string, name: string, kind: WriterKind): stri
     if (owner !== IMAGE_UID) {
         const chown = `sudo chown -R ${IMAGE_UID}:${IMAGE_UID} ${HOST_ROOT}`;
         return uid === IMAGE_UID
-            ? `${name} runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid ${owner} owns the data root, which happens when something ran there as another user. It took no lock. Nothing was written. On the host, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: ${chown}. Don't widen its permissions instead.`
-            : `${name} runs as uid ${uid} and uid ${owner} owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with ${chown}, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`;
+            ? `${name} runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid ${owner} owns the data root. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: ${chown}. Don't widen its permissions instead.`
+            : `${name} runs as uid ${uid} and uid ${owner} owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with ${chown}, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`;
     }
     const user = `user: "${owner}:${gid}"`;
     const how = kind === 'watcher'
