@@ -1,8 +1,11 @@
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import sharp from 'sharp';
-import { altOf, CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER, HOME_SERIES } from './support/catalog-home';
+import type { TestCatalog } from '../lib/catalog/testing';
+import { altOf, CATALOG_ORIGIN, HOME_ONE_LINE_TITLE, HOME_OPENING, HOME_ORDER, HOME_SERIES } from './support/catalog-home';
+import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { contrast, type Rgb } from './support/contrast';
 import { expectHomeImmersive, photoPoint } from './support/home';
+import { publishHomeCopyFixture } from './support/homeFixture';
 import { waitForHydration } from './support/hydration';
 import { checkSurface, expectUniqueNames } from './support/surface';
 import { expect, test } from './support/test';
@@ -45,12 +48,12 @@ async function expectShown(page: Page, photoId: string) {
 }
 
 /** Opens Home, counting /api/photos requests, and waits until it rests on the opening photograph alone. */
-async function openHome(page: Page) {
+async function openHome(page: Page, url = '/') {
     const legacyRequests: string[] = [];
     page.on('request', (request) => {
         if (new URL(request.url()).pathname.startsWith('/api/photos')) legacyRequests.push(request.url());
     });
-    await page.goto('/');
+    await page.goto(url);
     await waitForHydration(page);
     await expectHomeImmersive(page);
     return legacyRequests;
@@ -352,11 +355,11 @@ async function worstTextContrast(page: Page, target: Locator): Promise<number> {
 
 /**
  * Where the white-photograph case below runs: two desktop widths, and on mobile Pixel 7's own screen and the narrow
- * phones under 380 px, in Dark (the suite's System) and in Black. From 360 px All bodies of work sits beside Enter the
- * series; at 320 it stays under Enter. 320 by 568 is the smallest phone, with the copy highest up its screen. Reduced
- * motion adds the controls' "Off with reduced motion" hint, which lifts the copy about 25 px. Black's 320 row is 800
- * tall: at 568 Home's badge goes beside the story, over the title, and Black raises it over the scrim, which no wash
- * can hold.
+ * phones under 380 px, in Dark (the suite's System) and in Black, and 320 by 568 in every theme. From 360 px All bodies
+ * of work sits beside Enter the series; at 320 it stays under Enter. 320 by 568 is the smallest phone, with the copy
+ * highest up its screen: there Home's badge shrinks above the story (badgePlace()), since Light, Bright and Black raise
+ * it over the scrim, where no wash can hold the title over it. Reduced motion adds the controls' "Off with reduced
+ * motion" hint, which lifts the copy about 25 px.
  */
 const WHITE_CASES = [
     { name: 'at 1440 px', project: 'desktop', viewport: { width: 1440, height: 900 } },
@@ -371,6 +374,9 @@ const WHITE_CASES = [
     { name: 'at 360 px on a phone, in Black', project: 'mobile', viewport: { width: 360, height: 800 }, theme: 'black' },
     { name: 'at 360 px on a phone, in Black, with reduced motion', project: 'mobile', viewport: { width: 360, height: 800 }, theme: 'black', reducedMotion: true },
     { name: 'at 379 px on a phone, in Black', project: 'mobile', viewport: { width: 379, height: 800 }, theme: 'black' },
+    { name: 'at 320 by 568 on a phone, in Black', project: 'mobile', viewport: { width: 320, height: 568 }, theme: 'black' },
+    { name: 'at 320 by 568 on a phone, in Light', project: 'mobile', viewport: { width: 320, height: 568 }, theme: 'light' },
+    { name: 'at 320 by 568 on a phone, in Bright', project: 'mobile', viewport: { width: 320, height: 568 }, theme: 'bright' },
 ] as const;
 
 /** Rule 8: every case keeps 4.5:1. */
@@ -420,6 +426,64 @@ for (const { name: where, project, viewport, ...rest } of WHITE_CASES) {
     });
 }
 
+/** How far apart two boxes are, negative when they overlap. */
+const gapBetween = (a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }) =>
+    Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
+
+// On a phone the badge never lies on the copy, in any theme: Light, Bright and Black raise it over the scrim, where no
+// wash can hold the title over it. 320 by 568 is the smallest phone, with the copy highest up its screen.
+for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 360, height: 640 },
+    { width: 390, height: 844 },
+]) {
+    for (const theme of ['light', 'bright', 'dark', 'black'] as const) {
+        test(`on a phone at ${viewport.width} by ${viewport.height} in ${theme}, the landed badge keeps 16 px from the series title, its statement and its links`, async ({ page }, testInfo) => {
+            runsOn(testInfo, 'mobile');
+            await page.setViewportSize(viewport);
+            await page.addInitScript((stored) => localStorage.setItem('theme', stored), theme);
+            await openHome(page);
+            await expectShown(page, HOME_OPENING);
+            await revealByKeyboard(page);
+            const badge = page.locator('[data-home-badge]');
+            await expect(badge).toHaveAttribute('data-landed', '');
+            await expect(badge).toHaveCSS('opacity', '1');
+            const measure = () =>
+                page.evaluate(() => {
+                    const box = (el: Element | null) => {
+                        if (!el) return null;
+                        const { left, top, right, bottom } = el.getBoundingClientRect();
+                        return { left, top, right, bottom };
+                    };
+                    const face = box(document.querySelector('[data-home-badge] [class*="face"]'));
+                    const story = document.querySelector('[data-chrome-region="story"]')!;
+                    return {
+                        place: document.querySelector('[data-home-badge]')!.getAttribute('data-badge-place'),
+                        visibility: getComputedStyle(document.querySelector('[data-home-badge]')!).visibility,
+                        oval: face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 },
+                        nav: box(document.querySelector('nav[aria-label="Primary"]')),
+                        title: box(story.querySelector('h1')),
+                        statement: box(story.querySelector('p')),
+                        enter: box(story.querySelector('a:not([href="/work"])')),
+                        work: box(story.querySelector('a[href="/work"]')),
+                    };
+                });
+            // Measured again a moment later, so a badge still moving to its place fails.
+            const first = await measure();
+            await page.waitForTimeout(250);
+            const around = await measure();
+            console.log(`badge on a phone at ${viewport.width}x${viewport.height} in ${theme}: ${JSON.stringify(around)}`);
+            expect(around.oval, 'the badge paints its oval').not.toBeNull();
+            for (const key of ['left', 'top', 'right', 'bottom'] as const) expect(Math.abs(around.oval![key] - first.oval![key]), `the oval's ${key} a moment later`).toBeLessThanOrEqual(1);
+            expect(around.visibility, 'the badge shows at this size').toBe('visible');
+            for (const name of ['nav', 'title', 'statement', 'enter', 'work'] as const) {
+                expect(around[name], name).not.toBeNull();
+                expect(gapBetween(around.oval!, around[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
+            }
+        });
+    }
+}
+
 const solidPhoto = (colour: string) => (format: 'avif' | 'webp') => sharp({ create: { width: 1920, height: 1280, channels: 3, background: colour } })[format]().toBuffer();
 
 /** Serves the opening photograph as one flat colour. */
@@ -436,6 +500,142 @@ async function revealByKeyboard(page: Page) {
     await expect(page.locator('main')).toHaveAttribute('data-chrome-holds', /keyboard-focus/);
     await expect(page.locator('[data-home-chrome]')).toHaveCSS('opacity', '1');
 }
+
+/**
+ * Dark from 380 px on a phone: its fixed wash is set in percentages of the stage's height, so on a short stage, or with
+ * reduced motion's hint lifting the copy about 25 px, the title can sit where the wash has thinned. 390 by 664 is an
+ * iPhone in Safari with its toolbars showing. 390 by 844 with reduced motion is a taller stage, Dark parity's phone.
+ * Dark's wash follows the copy only where the title's top sits above 65.5% of the stage or the statement's above 74.75%
+ * (badgePlace.ts's copyAboveDarkWash()), and is today's elsewhere: `follows` says which. `failNext` shows the failure
+ * notice, which lifts the copy. A one-line title starts lower, under the title's line, while its statement stays
+ * where it was: those rows, below, take a fixture of their own. Each row prints its numbers, and the title's and the
+ * statement's tops as percentages of the stage, whether it holds or not.
+ */
+type DarkStage = {
+    name: string;
+    viewport: { width: number; height: number };
+    /** Whether Dark's wash should follow the copy; left out, the row only measures and says which it does. */
+    follows?: boolean;
+    reducedMotion?: boolean;
+    failNext?: boolean;
+    /** Which line the row takes the wash by: the title's above 65.5%, or the statement's alone above 74.75%. */
+    rule?: 'title' | 'statement';
+};
+
+const DARK_SHORT_STAGES: DarkStage[] = [
+    { name: 'at 380 by 664, a short stage', viewport: { width: 380, height: 664 }, follows: true },
+    { name: 'at 390 by 664, an iPhone in Safari with its toolbars showing', viewport: { width: 390, height: 664 }, follows: true },
+    { name: 'at 380 by 800, with reduced motion', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true },
+    { name: 'at 389 by 800, with reduced motion', viewport: { width: 389, height: 800 }, reducedMotion: true, follows: true },
+    { name: "at 390 by 844, with reduced motion, a taller stage, where Dark's wash is today's", viewport: { width: 390, height: 844 }, reducedMotion: true, follows: false },
+    { name: 'at 390 by 844, with reduced motion, with the failure notice showing', viewport: { width: 390, height: 844 }, reducedMotion: true, failNext: true, follows: true },
+];
+
+/**
+ * The rows the one-line-title fixture's server serves. At 390 by 664 the one-line title still starts above the title's
+ * line (65.33% down on CI), so that row follows the copy by the title. At 390 by 700, and at 380 by 800 with reduced
+ * motion, the title starts under it and the statement alone sits above its line, so they follow by the statement.
+ */
+const ONE_LINE_STAGES: DarkStage[] = [
+    { name: 'at 390 by 664, with a one-line title, by the title', viewport: { width: 390, height: 664 }, follows: true, rule: 'title' },
+    { name: 'at 390 by 700, with a one-line title, by the statement alone', viewport: { width: 390, height: 700 }, follows: true, rule: 'statement' },
+    { name: 'at 380 by 800, with reduced motion and a one-line title, by the statement alone', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true, rule: 'statement' },
+];
+
+/** Today's Dark phone wash, `linear-gradient(0deg, … .92 0%, … .28 66%, … .12 100%)`, as Chrome serializes it. */
+const TODAYS_DARK_PHONE_WASH = 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)';
+
+/** One Dark stage row, on Home at `url`. */
+async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, reducedMotion = false, failNext = false, rule }: DarkStage, url = '/') {
+    runsOn(testInfo, 'mobile');
+    await page.setViewportSize(viewport);
+    await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
+    if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
+    await openingAs(page, '#ffffff');
+    if (failNext) await page.route(`**/media/${after(1)}/**`, (route) => route.abort());
+    await openHome(page, url);
+    await expectShown(page, HOME_OPENING);
+    await revealByKeyboard(page);
+    if (failNext) {
+        await tabTo(page, next(page));
+        await page.keyboard.press('Enter');
+        await expect(status(page)).toHaveText(`Couldn’t load photograph ${at(after(1)).replace(' / ', ' of ')}`);
+        await expectShown(page, HOME_OPENING);
+    }
+    const title = page.getByRole('heading', { level: 1 });
+    const statement = page.locator('[data-chrome-region="story"] p');
+    const scrim = page.locator('[data-home-vignette]');
+    await expect(statement).toHaveText(HOME_SERIES.shortStatement);
+    const lines = await title.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+    const titleContrast = await worstTextContrast(page, title);
+    const statementContrast = await worstTextContrast(page, statement);
+    const tops = await page.evaluate(() => {
+        const stage = document.querySelector('[data-home-vignette]')!.getBoundingClientRect();
+        const down = (el: Element | null) => (el ? (((el.getBoundingClientRect().top - stage.top) / stage.height) * 100).toFixed(2) : 'none');
+        const story = document.querySelector('[data-chrome-region="story"]')!;
+        return { title: down(story.querySelector('h1')), statement: down(story.querySelector('p')) };
+    });
+    const copyTop = await scrim.evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
+    const high = await page.locator('main').evaluate((el) => el.hasAttribute('data-copy-high'));
+    const todays = (await scrim.evaluate((el) => getComputedStyle(el).backgroundImage)) === TODAYS_DARK_PHONE_WASH;
+    const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}${failNext ? ', failure notice' : ''}, ${lines}-line title: title ${titleContrast.toFixed(3)}:1 at ${tops.title}%, statement ${statementContrast.toFixed(3)}:1 at ${tops.statement}%, copy top ${copyTop}, data-copy-high ${high ? 'set' : 'unset'}, wash ${todays ? "today's" : 'follows the copy'}`;
+    console.log(row);
+    testInfo.annotations.push({ type: 'contrast', description: row });
+    expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+    expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+    if (follows !== undefined) expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
+    // The line the row means to take the wash by (badgePlace.ts's DARK_WASH_TITLE_TOP and DARK_WASH_STATEMENT_TOP).
+    if (rule === 'title') expect.soft(Number(tops.title), "the title's top, above the title's line").toBeLessThan(65.5);
+    if (rule === 'statement') {
+        expect.soft(Number(tops.title), "the title's top, at or under the title's line").toBeGreaterThanOrEqual(65.5);
+        expect.soft(Number(tops.statement), "the statement's top, above the statement's line").toBeLessThan(74.75);
+    }
+    if (follows === false) await expect.soft(scrim).toHaveCSS('background-image', TODAYS_DARK_PHONE_WASH);
+    return lines;
+}
+
+for (const stage of DARK_SHORT_STAGES) {
+    test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${stage.name}`, async ({ page }, testInfo) => {
+        await darkStage(page, testInfo, stage);
+    });
+}
+
+// A small phone held sideways, as the 568 by 320 hidden-state shot's control: the default fixture, default text and
+// motion. It measures, says whether Dark's wash follows the copy there, and holds both to 4.5:1.
+test('in Dark, the series title and statement over a white opening photograph on a phone held sideways at 568 by 320', async ({ page }, testInfo) => {
+    await darkStage(page, testInfo, { name: 'held sideways at 568 by 320', viewport: { width: 568, height: 320 } });
+});
+
+// The one-line rows on a Home fixture of their own, whose featured series has a nine-character title
+// (HOME_ONE_LINE_TITLE), so nothing changes the page after it opens. Its own `next start`, on mobile only.
+test.describe('Dark on a phone, with a one-line title', () => {
+    test.describe.configure({ mode: 'default' });
+    let oneLine: { catalog: TestCatalog; server: CatalogServer } | undefined;
+
+    test.beforeAll(async () => {
+        const testInfo = test.info();
+        test.skip(testInfo.project.name !== 'mobile', 'Runs on mobile.');
+        test.setTimeout(READY_TIMEOUT + 60_000);
+        const { catalog } = await publishHomeCopyFixture({ title: HOME_ONE_LINE_TITLE });
+        // Above the ports the other specs with servers of their own take when E2E_CATALOG_PORT pins them.
+        const base = Number(process.env.E2E_CATALOG_PORT);
+        oneLine = { catalog, server: await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + 40 + testInfo.parallelIndex : undefined) };
+    });
+
+    // The fixture's data root stays under the OS temp folder, for whoever runs the suite to move to the Trash.
+    test.afterAll(async () => {
+        test.setTimeout(READY_TIMEOUT + 60_000);
+        await oneLine?.server.stop();
+    });
+
+    for (const stage of ONE_LINE_STAGES) {
+        test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${stage.name}`, async ({ page }, testInfo) => {
+            if (!oneLine) throw new Error("The one-line fixture's server did not start");
+            expect(await darkStage(page, testInfo, stage, `${oneLine.server.origin}/`), "the title's lines").toBe(1);
+            await expect(page.getByRole('heading', { level: 1 })).toHaveText(HOME_ONE_LINE_TITLE);
+        });
+    }
+});
 
 for (const theme of ['light', 'bright'] as const) {
     test(`in ${theme}, the copy takes a dark scrim over a dark opening photograph and keeps 4.5:1`, async ({ page }) => {
@@ -499,6 +699,8 @@ test("Dark on a phone is today's at default text, and follows the copy only when
     const root = page.locator('main');
     const scrim = page.locator('[data-home-vignette]');
     await expect(root).not.toHaveAttribute('data-text-enlarged');
+    // Pixel 7's stage is tall enough for the copy to sit under the fixed wash's line (copyAboveDarkWash()).
+    await expect(root).not.toHaveAttribute('data-copy-high');
     // v1.2.0's phone wash, `linear-gradient(0deg, … .92 0%, … .28 66%, … .12 100%)`, as Chrome serializes it.
     await expect(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
     await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });

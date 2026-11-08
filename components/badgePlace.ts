@@ -13,9 +13,17 @@ export interface Box {
   bottom: number;
 }
 
-/** Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. */
+/** One of the story's boxes: its title, statement or a link, or, flagged `panel`, the dark panel behind them. */
+export type StoryBox = Box & { panel?: true };
+
+/**
+ * Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. 'none' is where
+ * neither above the story nor beside it fits: it lands beside the story, as the intro always took it there, and stays
+ * out of sight at default text (HeroReveal.module.css). That loses nothing: it's About's portrait, and the nav reaches
+ * About.
+ */
 export interface BadgePlace {
-  kind: 'clear' | 'side';
+  kind: 'clear' | 'side' | 'none';
   dx: number;
   dy: number;
   scale: number;
@@ -24,12 +32,17 @@ export interface BadgePlace {
 /** v1.1.0's place: centered, 280 px above the bottom, at 0.85. */
 const V110_RISE = 280;
 const V110_SCALE = 0.85;
-/** The least room the painted oval keeps from the nav, from the series title, statement and link, and from the title's panel. */
+/**
+ * The least room the painted oval keeps: from the nav, the series title, its statement and links, and the title's
+ * panel in v1.1.0's place and above the story; from the title, statement and links alone beside the story.
+ */
 const BADGE_CLEARANCE = 16;
 /** The ring around the oval. */
 const RING = 4;
-/** The smallest the badge gets above the story, and its size beside the story on a short landscape screen. */
+/** The smallest the badge gets in the first lift above the story, and its size beside the story. */
 const MIN_SCALE = 0.6;
+/** The smallest it gets above the story where beside it doesn't clear either, as on a short phone held upright. */
+const UPRIGHT_MIN_SCALE = 0.4;
 /** ProfilePicture.module.css's frame: v1.1.0's 3394 x 3620 shape. */
 const FACE_HEIGHT_PER_WIDTH = 3620 / 3394;
 
@@ -62,43 +75,57 @@ const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left
 
 /**
  * The badge's place for a `view`-sized screen, from the measured boxes of the
- * nav and the story's title, statement and link, and the dark panel behind
+ * nav and the story's title, statement and links, and the dark panel behind
  * the title and statement from 640 px wide (CatalogHome's `data-chrome-panel`,
- * its fade included). Null keeps v1.1.0's exact place, wherever it clears all
- * of them by BADGE_CLEARANCE. Otherwise the
- * badge stays centered and moves the least from v1.1.0's place that clears
- * them: up above the story (or down, under a nav it reached behind), at 0.85,
- * scaled down toward 0.6 only when the room between the nav and the story is
- * too short for it. With no room even at 0.6, as on a phone held sideways, it
- * goes beside the story instead: a quarter of the width right of the center,
- * 10 px above the middle, at 0.6.
+ * its fade included, flagged `panel`). Null keeps v1.1.0's exact place,
+ * wherever it clears all of them by BADGE_CLEARANCE. Otherwise the badge stays
+ * centered and moves the least from v1.1.0's place that clears them: up above
+ * the story (or down, under a nav it reached behind), at 0.85, scaled down
+ * toward 0.6 only when the room between the nav and the story is too short for
+ * it. With no room even at 0.6, as on a phone held sideways, it goes beside the
+ * story instead, as it always has: a quarter of the width right of the center,
+ * 10 px above the middle, at 0.6, wherever that keeps BADGE_CLEARANCE from the
+ * title, the statement and the links. That place looks at the text alone, so
+ * it may sit nearer the nav, or on the panel's fade, as it always has. Where it
+ * meets the text, as on a short phone held upright, the badge shrinks further
+ * above the story, toward 0.4, and with no room even at 0.4 it is 'none'.
  */
-export function badgePlace(view: { width: number; height: number }, card: number, nav: Box | null, story: Box[]): BadgePlace | null {
+export function badgePlace(view: { width: number; height: number }, card: number, nav: Box | null, story: StoryBox[]): BadgePlace | null {
   if (card <= 0 || view.width <= 0 || view.height <= 0) return null;
   const cx = view.width / 2;
   const home = view.height - V110_RISE;
   const blockers = nav ? [nav, ...story] : story;
-  const clears = (cy: number, scale: number) => {
+  const text = story.filter((box) => !box.panel);
+  const clearOf = (boxes: Box[], x: number, cy: number, scale: number) => {
     const reach = ovalReach(card, scale);
-    const oval = { left: cx - reach.half, right: cx + reach.half, top: cy - reach.above, bottom: cy + reach.below };
-    return blockers.every((box) => !within(oval, box, BADGE_CLEARANCE - 0.01));
+    const oval = { left: x - reach.half, right: x + reach.half, top: cy - reach.above, bottom: cy + reach.below };
+    return boxes.every((box) => !within(oval, box, BADGE_CLEARANCE - 0.01));
   };
-  if (clears(home, V110_SCALE)) return null;
+  const clears = (x: number, cy: number, scale: number) => clearOf(blockers, x, cy, scale);
+  if (clears(cx, home, V110_SCALE)) return null;
   const ceiling = (nav ? nav.bottom : 0) + BADGE_CLEARANCE;
-  for (let step = 0; V110_SCALE - step / 100 >= MIN_SCALE - 1e-9; step += 1) {
-    const scale = V110_SCALE - step / 100;
-    const reach = ovalReach(card, scale);
-    // The story in the badge's column, or near it, sets how low it may sit.
-    const floor = Math.min(
-      view.height - BADGE_CLEARANCE,
-      ...story.filter((box) => box.left < cx + reach.half + BADGE_CLEARANCE && cx - reach.half < box.right + BADGE_CLEARANCE).map((box) => box.top - BADGE_CLEARANCE),
-    );
-    if (floor - ceiling < reach.above + reach.below) continue;
-    // As close to v1.1.0's center as the room allows.
-    const cy = Math.min(Math.max(home, ceiling + reach.above), floor - reach.below);
-    if (clears(cy, scale)) return { kind: 'clear', dx: 0, dy: cy - view.height / 2, scale };
-  }
-  return { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+  // Centered above the story, at the largest scale from `from` hundredths below 0.85 down to `least` that clears.
+  const above = (from: number, least: number): BadgePlace | null => {
+    for (let step = from; V110_SCALE - step / 100 >= least - 1e-9; step += 1) {
+      const scale = V110_SCALE - step / 100;
+      const reach = ovalReach(card, scale);
+      // The story in the badge's column, or near it, sets how low it may sit.
+      const floor = Math.min(
+        view.height - BADGE_CLEARANCE,
+        ...story.filter((box) => box.left < cx + reach.half + BADGE_CLEARANCE && cx - reach.half < box.right + BADGE_CLEARANCE).map((box) => box.top - BADGE_CLEARANCE),
+      );
+      if (floor - ceiling < reach.above + reach.below) continue;
+      // As close to v1.1.0's center as the room allows.
+      const cy = Math.min(Math.max(home, ceiling + reach.above), floor - reach.below);
+      if (clears(cx, cy, scale)) return { kind: 'clear', dx: 0, dy: cy - view.height / 2, scale };
+    }
+    return null;
+  };
+  const lifted = above(0, MIN_SCALE);
+  if (lifted) return lifted;
+  const side: BadgePlace = { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+  if (clearOf(text, cx + side.dx, view.height / 2 + side.dy, side.scale)) return side;
+  return above(Math.round((V110_SCALE - MIN_SCALE) * 100) + 1, UPRIGHT_MIN_SCALE) ?? { ...side, kind: 'none' };
 }
 
 /**
@@ -115,6 +142,27 @@ export function homeCopyTop(stage: Box, story: Box[]): number | null {
   return Math.round(Math.min(100, Math.max(0, (top / height) * 100)) * 100) / 100;
 }
 
+/**
+ * Where Dark's fixed phone wash stops holding its title and its statement over a white photograph, as tops in
+ * homeCopyTop()'s percentages of the stage, each with some margin. That wash (HomeChrome.module.css) is set in
+ * percentages of the stage: 0.92 at its bottom, 0.28 at 66% up it. CI measured the worst pixel under each line box at
+ * 390 x 844 with reduced motion, the title's top 65.69% down and the statement's 75.20%: 4.577 and 4.615:1. Read as the
+ * measure reads it, in whole 8-bit pixels, the title holds 4.5:1 from 65.09% down and the statement from 74.50%, so the
+ * lines are 65.5 and 74.75, both still above 390 x 844's own tops.
+ */
+export const DARK_WASH_TITLE_TOP = 65.5;
+export const DARK_WASH_STATEMENT_TOP = 74.75;
+
+/**
+ * Whether the title's top sits higher on the stage than Dark's fixed phone wash holds it, or the statement's does, as
+ * on a short stage (a phone in Safari with its toolbars showing), with reduced motion's hint lifting the copy, or under
+ * a one-line title, whose statement sits as high as a longer title's. Dark's wash then follows the copy; otherwise Dark
+ * keeps today's. Null is a top that wasn't measured.
+ */
+export function copyAboveDarkWash(titleTop: number | null, statementTop: number | null): boolean {
+  return (titleTop !== null && titleTop < DARK_WASH_TITLE_TOP) || (statementTop !== null && statementTop < DARK_WASH_STATEMENT_TOP);
+}
+
 /** Whether Home's chrome scrolls, as large text can make it: then the copy moves under a fixed scrim (M1). */
 export function chromeOverflows(scrollHeight: number, clientHeight: number): boolean {
   return scrollHeight > clientHeight + 1;
@@ -124,8 +172,8 @@ export function chromeOverflows(scrollHeight: number, clientHeight: number): boo
 export const DEFAULT_REM_PX = 16;
 
 /**
- * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy only then (spec §10), so
- * at default text Dark is today's exactly.
+ * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy then (spec §10); at
+ * default text it follows only where the copy sits above its fixed wash (copyAboveDarkWash()), and is today's elsewhere.
  */
 export function textEnlarged(remPx: number): boolean {
   return Number.isFinite(remPx) && remPx > DEFAULT_REM_PX;

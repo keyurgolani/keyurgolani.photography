@@ -30,13 +30,25 @@ import { HOME_FRAMING } from '../../test/helpers/catalogHome';
 export { HOME_FIXTURE_CATALOG, VARIETY_FIXTURE_CATALOG };
 
 /** Publishes the fixture into `root`, an empty data root outside the repository, or a temp one without it. */
-export async function publishHomeFixture(root?: string, framing = false): Promise<{ catalog: TestCatalog; revisionId: string }> {
+export async function publishHomeFixture(root?: string, framing = false, copy: HomeCopy = {}): Promise<{ catalog: TestCatalog; revisionId: string }> {
     const framed = <P extends { id: string }>(photo: P) =>
         !framing ? photo : photo.id === HOME_FRAMING.contain ? { ...photo, crop: 'contain' as const, ...HOME_FRAMING.containSize } : photo.id === HOME_FRAMING.focal.photoId ? { ...photo, focalPoint: { ...HOME_FRAMING.focal.focalPoint } } : photo;
-    const catalog = await createTestCatalog({ root, ...HOME_FIXTURE_CATALOG, photos: HOME_FIXTURE_CATALOG.photos.map(framed) });
+    const [featured, ...others] = HOME_FIXTURE_CATALOG.series;
+    const catalog = await createTestCatalog({ root, ...HOME_FIXTURE_CATALOG, photos: HOME_FIXTURE_CATALOG.photos.map(framed), series: [{ ...featured, ...copy }, ...others] });
     const result = await publish({ dataRoot: catalog.root, actor: 'e2e', reason: 'fixture', confirmLaunch: true, logger: { log: () => undefined } });
     if (result.outcome !== 'PUBLISHED' || result.revisionId === null) throw new Error(`The Home fixture didn't publish: ${result.outcome}: ${result.message} ${result.issues.map((issue) => issue.code).join(', ')}`);
     return { catalog, revisionId: result.revisionId };
+}
+
+/** The featured series' own title or statement, in place of HOME_SERIES's. */
+export interface HomeCopy {
+    title?: string;
+    shortStatement?: string;
+}
+
+/** The Home fixture with the featured series' title or statement replaced, into `root` or a temp one. */
+export function publishHomeCopyFixture(copy: HomeCopy, root?: string): Promise<{ catalog: TestCatalog; revisionId: string }> {
+    return publishHomeFixture(root, false, copy);
 }
 
 /** The Home fixture with HOME_FRAMING's contain crop and focal point (#4, v2.0.0 B7), into `root` or a temp one. */
