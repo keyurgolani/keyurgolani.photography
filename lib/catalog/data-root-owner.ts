@@ -61,6 +61,8 @@ export const BREAKS: Record<WriterKind, string> = {
     'locking-read': "It takes a lock to read, which writes a lock file in locks/, and one this uid leaves behind if it's killed, or a locks/ it makes, would stop every command of the owner's until it's removed by hand.",
 };
 
+export const IMAGE_UID = 1001;
+
 function effectiveUid(): number | null {
     if (typeof process.geteuid === 'function') return process.geteuid();
     if (typeof process.getuid === 'function') return process.getuid();

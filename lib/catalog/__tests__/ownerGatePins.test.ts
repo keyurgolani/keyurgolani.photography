@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { REPO_ROOT, runTsx, type TsxRun } from '../../../test/helpers/runTsx';
+import { IMAGE_UID } from '../data-root-owner';
 import { runPurge } from '../purge';
 import { runGc } from '../retention';
 import { readAuthoredRecord } from '../working-layer';
@@ -17,6 +18,8 @@ import { cleanupPurgeTemplates, purgeFixture, quiet, snapshot, tempLibrary, writ
  * watcher, as the npm scripts do, on its own copy of the purge fixture,
  * with test/helpers/fakeUid.cjs making the child's geteuid() answer another
  * uid than the temp root's owner, its real uid left as it is (round 4).
+ * The same preload makes the temp root's owner read as uid 1001, IMAGE_UID,
+ * as production's is, unless a case gives the root another owner (F15).
  *
  * These lists are the spec, written apart from lib/catalog/owner-gate.ts so
  * they pin what the gate does, not what its table says.
@@ -29,6 +32,7 @@ const PRELOAD = path.join(REPO_ROOT, 'test', 'helpers', 'fakeUid.cjs');
 
 interface World {
     built: PurgeFixture;
+    /** The data root's owner as the gate sees it: IMAGE_UID, through the preload. */
     owner: number;
     library: string;
     /** A file outside the data root, for --file, --import and --out. */
@@ -42,7 +46,7 @@ interface World {
 
 async function world(): Promise<World> {
     const built = await purgeFixture(413);
-    const owner = fs.statSync(built.root).uid;
+    const owner = IMAGE_UID;
     const library = tempLibrary(built.root);
     const outside = fs.mkdtempSync(path.join(path.dirname(built.root), 'outside-'));
     fs.writeFileSync(path.join(outside, 'descriptions.csv'), `photoId,alt\n${built.a},A fixture description.\n`);
@@ -65,13 +69,18 @@ async function world(): Promise<World> {
     };
 }
 
-function run(w: World, script: string, args: string[], uid: number | null): Promise<TsxRun> {
+/** The preload's env: the process's uid, and the data root's owner, IMAGE_UID unless a case says otherwise. */
+function fakeUids(w: World, uid: number | null, rootUid = w.owner): Record<string, string> {
+    return uid === null ? {} : { NODE_OPTIONS: `--require ${PRELOAD}`, PHOTOS_TEST_UID: String(uid), PHOTOS_TEST_ROOT: w.built.root, PHOTOS_TEST_ROOT_UID: String(rootUid) };
+}
+
+function run(w: World, script: string, args: string[], uid: number | null, rootUid = w.owner): Promise<TsxRun> {
     return runTsx(script, args, {
         env: {
             PHOTOGRAPHY_DATA_DIR: w.built.root,
             PHOTOGRAPHY_LIBRARY_DIR: w.library,
             PHOTOS_ACTOR: 'test',
-            ...(uid === null ? {} : { NODE_OPTIONS: `--require ${PRELOAD}`, PHOTOS_TEST_UID: String(uid) }),
+            ...fakeUids(w, uid, rootUid),
         },
     });
 }
@@ -218,7 +227,7 @@ describe.runIf(posix)('the owner gate, every writer (#15)', { timeout: 120_000 }
 });
 
 /** The curator's startup hook, instrumentation.ts's register(), as the server runs it first, with CURATION_ENABLED=true. */
-function startCurator(w: World, uid: number | null) {
+function startCurator(w: World, uid: number | null, rootUid = w.owner) {
     return new Promise<TsxRun>((resolve, reject) => {
         const child = spawn(process.execPath, ['--conditions=react-server', '--import', 'tsx', '--input-type=module', '-e', "const m = await import('./instrumentation.ts'); await m.register(); console.log('[test] register() returned');"], {
             cwd: REPO_ROOT,
@@ -229,7 +238,7 @@ function startCurator(w: World, uid: number | null) {
                 HOSTNAME: '127.0.0.1',
                 PHOTOGRAPHY_DATA_DIR: w.built.root,
                 PHOTOGRAPHY_LIBRARY_DIR: w.library,
-                ...(uid === null ? {} : { NODE_OPTIONS: `--require ${PRELOAD}`, PHOTOS_TEST_UID: String(uid) }),
+                ...fakeUids(w, uid, rootUid),
             },
         });
         let stdout = '';
@@ -284,3 +293,52 @@ describe.runIf(posix)('the owner gate, every reader and dry run (#15)', { timeou
     });
 });
 
+
+/** A data root that isn't uid 1001's: the advice is to give it back to 1001, never to run as its owner (F15). */
+const HOST_USER = 1000;
+const GIVE_BACK = `On the host, give the data root (the folder mounted at /data/portfolio) back to uid ${IMAGE_UID}: sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/. Don't widen its permissions instead.`;
+const GIVE_AND_RUN = `On the host, give the data root (the folder mounted at /data/portfolio) to uid ${IMAGE_UID} with sudo chown -R ${IMAGE_UID}:${IMAGE_UID} portfolio-data/, then run this as uid ${IMAGE_UID}, as docker-compose.prod.yml's image-watcher does with user: "${IMAGE_UID}:${IMAGE_UID}".`;
+
+const SURFACES: { name: string; refuse: (w: World, uid: number, rootUid: number) => Promise<TsxRun>; prefix: string }[] = [
+    { name: 'photos verify', refuse: (w, uid, rootUid) => run(w, 'scripts/photos.ts', ['verify'], uid, rootUid), prefix: '[photos] WRONG_OWNER: photos verify' },
+    { name: 'the watcher, --once', refuse: (w, uid, rootUid) => run(w, 'scripts/imageWatcher.ts', ['--once'], uid, rootUid), prefix: '[ImageWatcher] WRONG_OWNER: the image watcher' },
+    { name: 'the curator at its start', refuse: (w, uid, rootUid) => startCurator(w, uid, rootUid), prefix: 'WRONG_OWNER: the curator' },
+];
+
+describe.runIf(posix)('the owner gate, a data root that isn\'t uid 1001\'s (F15)', { timeout: 120_000 }, () => {
+    for (const surface of SURFACES) {
+        it(`${surface.name} as uid 1001 on a root-owned data root: give it back to 1001, not run as root`, async () => {
+            const w = await world();
+            const check = untouched(w.built.root);
+            const result = await surface.refuse(w, IMAGE_UID, 0);
+            expect(result.stderr).toContain(`${surface.prefix} runs as uid ${IMAGE_UID}, the user the image runs every service as, but uid 0 owns the data root, which happens when something ran there as another user. It took no lock. Nothing was written. ${GIVE_BACK}`);
+            expect(result.stderr).not.toMatch(/Run it as uid 0|Start it as uid 0|user: "0:|web runs as that owner/);
+            expect(result.code).not.toBe(0);
+            check();
+        });
+
+        it(`${surface.name} as a host user on a root-owned data root: give it to 1001, then run as 1001`, async () => {
+            const w = await world();
+            const check = untouched(w.built.root);
+            const result = await surface.refuse(w, HOST_USER, 0);
+            expect(result.stderr).toContain(`${surface.prefix} runs as uid ${HOST_USER} and uid 0 owns the data root, but the image runs every service as uid ${IMAGE_UID}. It took no lock. Nothing was written. ${GIVE_AND_RUN}`);
+            expect(result.stderr).not.toMatch(/Run it as uid 0|Start it as uid 0|user: "0:|web runs as that owner/);
+            expect(result.code).not.toBe(0);
+            check();
+        });
+    }
+});
+
+describe('IMAGE_UID is the uid the image and compose run as (F15)', () => {
+    it('matches the Dockerfile\'s addgroup and adduser, every user: line in docker-compose.prod.yml, and the data root mount the advice names', () => {
+        const dockerfile = fs.readFileSync(path.join(REPO_ROOT, 'Dockerfile'), 'utf8');
+        expect(dockerfile).toMatch(new RegExp(`^RUN addgroup --system --gid ${IMAGE_UID} nodejs$`, 'm'));
+        expect(dockerfile).toMatch(new RegExp(`^RUN adduser --system --uid ${IMAGE_UID} nextjs$`, 'm'));
+        expect(dockerfile).toMatch(/^USER nextjs$/m);
+        const compose = fs.readFileSync(path.join(REPO_ROOT, 'docker-compose.prod.yml'), 'utf8');
+        const users = [...compose.matchAll(/^\s*user:\s*(.+)$/gm)].map((m) => m[1].trim());
+        expect(users.length).toBeGreaterThanOrEqual(2);
+        expect(new Set(users)).toEqual(new Set([`"${IMAGE_UID}:${IMAGE_UID}"`]));
+        expect(compose).toMatch(/source: \.\/portfolio-data\n\s*target: \/data\/portfolio\n/);
+    });
+});
