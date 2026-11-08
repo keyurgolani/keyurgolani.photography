@@ -26,3 +26,18 @@ export const submitGate = (ready: boolean) => ({ 'data-submit-gate': ready ? 're
  * the guard then.
  */
 export const submitOff = (pending: boolean) => ({ 'aria-disabled': pending || undefined, 'data-off': pending ? 'true' : undefined });
+
+/** A checkbox, a radio or a select: a control whose own keys choose, where Enter has no job. */
+const isChoice = (target: EventTarget | null) => target instanceof HTMLSelectElement || (target instanceof HTMLInputElement && (target.type === 'checkbox' || target.type === 'radio'));
+
+/**
+ * Enter on a checkbox, a radio or a select sends its form in Chromium, by the form's first enabled submit button: on a
+ * ticked row box that's Decide later on selected, on Decorative it's Save edits, on a file to bind it's Bind. None of
+ * them is what the key meant, so each of those controls in an Inbox form takes this as its `onKeyDown`, which stops
+ * Enter's default there and nowhere else. Space still ticks, the arrow keys still choose, and Tab still moves on.
+ * Buttons and text fields don't take it, so Enter on a button still presses it and Enter in a text field still sends
+ * its form. It disables nothing and leaves the submit gate as it is, and without JavaScript the browser's defaults stand.
+ */
+export function keepEnterOffChoices(event: { key: string; target: EventTarget | null; preventDefault(): void }): void {
+    if (event.key === 'Enter' && isChoice(event.target)) event.preventDefault();
+}

@@ -3,7 +3,7 @@
 import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { ArchiveRestore, Check, Save } from 'lucide-react';
 import styles from '../curator.module.css';
-import { submitGate, submitOff, useHydrated } from './useHydrated';
+import { keepEnterOffChoices, submitGate, submitOff, useHydrated } from './useHydrated';
 import { approveItem, archiveItem, bindItem, confirmItem, deferItem, dismissItem, editItem, releaseItem, reopenItem, restoreItem, retryItem } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
 import { itemUrl, moveOn } from './journey';
@@ -282,7 +282,7 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
                         <legend>File to bind</legend>
                         {linked.map((file, index) => (
                             <label key={file.id} className={styles.slot}>
-                                <input ref={index === 0 ? firstFileRef : undefined} id={index === 0 ? 'bind-to-first' : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} />
+                                <input ref={index === 0 ? firstFileRef : undefined} id={index === 0 ? 'bind-to-first' : undefined} type="radio" name="bindTo" value={file.id} checked={choice === file.id} onChange={() => setChoice(file.id)} onKeyDown={keepEnterOffChoices} />
                                 {linked.length === 1 ? `${file.path}, the new file at its last path` : file.path}
                             </label>
                         ))}
@@ -300,12 +300,13 @@ function BindForm({ detail, activeRevisionId, state, pending, ready, slot, submi
                                         setChoice(`suggested:${file.id}`);
                                         setPath(file.libraryPath);
                                     }}
+                                    onKeyDown={keepEnterOffChoices}
                                 />
                                 {suggestedFileLabel(file.path, file.by)}
                             </label>
                         ))}
                         <label className={styles.slot}>
-                            <input type="radio" name="bindTo" value="typed" checked={choice === 'typed'} onChange={() => setChoice('typed')} />
+                            <input type="radio" name="bindTo" value="typed" checked={choice === 'typed'} onChange={() => setChoice('typed')} onKeyDown={keepEnterOffChoices} />
                             Another file in the library
                         </label>
                     </fieldset>
@@ -583,7 +584,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
 
             <label className={styles.label}>
                 Suggested series
-                <select className={styles.control} value={seriesValue} onChange={(event) => pickSeries(event.target.value)}>
+                <select className={styles.control} value={seriesValue} onChange={(event) => pickSeries(event.target.value)} onKeyDown={keepEnterOffChoices}>
                     {seriesValue === '' ? <option value="">Choose a series</option> : null}
                     {series.map((option) => (
                         <option key={option.id} value={option.id}>
@@ -637,7 +638,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
                 {descriptionHint(detail)}
             </p>
             <label className={styles.check}>
-                <input type="checkbox" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} />
+                <input type="checkbox" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} onKeyDown={keepEnterOffChoices} />
                 Decorative: it needs no description
             </label>
             {/* The box's state, sent every time, so unchecked means not decorative. */}
@@ -657,6 +658,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
                         setEditor(false);
                         setPlacement(event.target.value);
                     }}
+                    onKeyDown={keepEnterOffChoices}
                 >
                     {!chosen ? <option value={placementShown}>{seriesValue === 'unassigned' ? 'No position: left unassigned' : 'Choose a series first'}</option> : null}
                     {chosen
@@ -678,7 +680,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
                 <fieldset className={styles.sequence}>
                     <legend>Place it in {chosen.label}</legend>
                     <label className={styles.slot}>
-                        <input type="radio" name="sequenceSlot" value="start" checked={placementShown === 'start'} onChange={() => setPlacement('start')} />
+                        <input type="radio" name="sequenceSlot" value="start" checked={placementShown === 'start'} onChange={() => setPlacement('start')} onKeyDown={keepEnterOffChoices} />
                         At the start
                     </label>
                     {members.map((member, index) => (
@@ -693,6 +695,7 @@ function SuggestionFields({ detail, series, seriesProblem, answer }: Pick<ItemAc
                                     value={`after:${member.photoId}`}
                                     checked={placementShown === `after:${member.photoId}` || (index === members.length - 1 && placementShown === 'end')}
                                     onChange={() => setPlacement(index === members.length - 1 ? 'end' : `after:${member.photoId}`)}
+                                    onKeyDown={keepEnterOffChoices}
                                 />
                                 {index === members.length - 1 ? 'At the end' : `After photograph ${String(chosen.members.findIndex((entry) => entry.photoId === member.photoId) + 1).padStart(2, '0')}`}
                             </label>
