@@ -1014,6 +1014,10 @@ const ABOUT_FRAME: Allowance[] = (
  * scrolls. So every box, the nav's too, sits 159 px apart in the viewport: 54 px below the photo, where the shorter
  * frame takes back 105. Only this state, and only at 390: its focus twin focuses without scrolling, and at 1024 and
  * 1440 the hover passes under ABOUT_FRAME's bounds. Every paint, type and style is still compared exactly.
+ *
+ * Signed off by the coordinator, 2026-11-07: not a new departure. It's ABOUT_FRAME's sanctioned 4:3 frame, seen
+ * through Playwright's hover scrolling the link into view; in the head the link is already in view, so nothing
+ * scrolls. It applies only to the hover state at 390, and every paint, type and style is still compared exactly.
  */
 const ABOUT_LINK_SCROLL: Allowance[] = ((): Allowance[] => {
     const why = "#179: About's portrait frame, 4:3 stacked; the base's hover scrolls to the link, the head's doesn't";
