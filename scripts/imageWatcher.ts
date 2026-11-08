@@ -59,6 +59,7 @@ import { buildDerivativeSet } from '../lib/identity/derivatives';
 import { jsonLogSink } from '../lib/identity/pass';
 import { scanKind } from '../lib/identity/scan';
 import { createIdentityStep, runIdentityOnce, watchIdentity, type IdentityWatch } from '../lib/identity/watcherStep';
+import { writerGate } from '../lib/catalog/data-root-owner';
 import { dataRoot, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { attachWatcher, watchSetup, type LibraryChange } from '../utils/watcherHandlers';
 
@@ -157,6 +158,13 @@ async function requireRoots(): Promise<string> {
     } catch (error) {
         if (!(error instanceof LibraryRootConfigError)) throw error;
         console.error(`[ImageWatcher] ${error.message} Nothing was processed.`);
+        process.exit(1);
+    }
+    // #15's one-uid rule: the watcher writes the data root, so it runs only as its owner, the uid web runs as, and
+    // refuses before its first lock or write otherwise, reporting a missing library included (lib/catalog/owner-gate.ts).
+    const wrongOwner = writerGate(dataRoot(), 'the image watcher', 'watcher');
+    if (wrongOwner) {
+        console.error(`[ImageWatcher] WRONG_OWNER: ${wrongOwner}`);
         process.exit(1);
     }
     if (libraryRootState(root) === 'missing') {

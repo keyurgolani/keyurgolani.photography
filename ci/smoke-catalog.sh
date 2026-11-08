@@ -12,9 +12,10 @@
 #    308 to /work, and each legacy WebP a v1.6 watcher wrote, planted under
 #    web's public/ folder, 404s and is refused at /_next/image.
 # 2. A published catalog. ci/publish-fixture.ts publishes a small test
-#    catalog into a second data root, and web serves it with the planted
-#    legacy WebPs still in place. It names its revision at /api/ready and
-#    at the Home records endpoint, still 404s /api/photos and each legacy
+#    catalog into a second data root, twice, the second revision only
+#    retitling a series, and web serves it with the planted legacy WebPs
+#    still in place. It names revision 2 at /api/ready and at the Home
+#    records endpoint, still 404s /api/photos and each legacy
 #    WebP, serves a set the revision holds from /media with 200,
 #    `immutable`, and an ETag of its bytes, answers 304 to that ETag, and
 #    404s a set whose files exist but which no revision holds. After a
@@ -26,13 +27,30 @@
 #    served set flipped in place, its size kept, which only the digest check
 #    sees: exit 1, naming the file, and a record that fails the revision. The
 #    byte goes back, and a third run passes again.
+# 4. #15's history and rollback, in the image, on the published root:
+#    `photos history --json --revisions` lists both publishes, revision 2
+#    live and revision 1 one a rollback can return to, and `photos rollback
+#    --to 1 --yes --expect-active <revision 2>` rolls back. The running web
+#    names revision 1 at /api/ready with no restart, the same after a
+#    restart, and still serves the set, and `photos history --json` lists
+#    the rollback as live.
+# 5. #15's purge and GC, in the image, on the published root, for
+#    the fixture's photo that no series lists and no revision holds:
+#    `photos purge <photoId> --reason smoke` is a dry run that prints its
+#    "Takes down" line and writes nothing, `--yes` writes the tombstone and
+#    the running web answers 410 for the set with no restart, and `photos
+#    gc`, a dry run only, keeps the asset-revision folder as taken down less
+#    than 7 days ago and deletes nothing. They run as web's uid, 1001, on a
+#    root it owns, as production runs them. The smoke never runs `gc
+#    --apply`.
 #
 #   ci/smoke-catalog.sh <tag>
 #
 # ghcr.io/keyurgolani/keyurgolani.photography:<tag> must already exist
 # locally, since nothing pulls here. ci/publish-fixture.ts runs on this
 # machine, so it needs Node and `npm ci`, and the checks need curl and jq.
-# web publishes a random port on 127.0.0.1 only.
+# web publishes a random port on 127.0.0.1 only. The temp root goes under
+# $RUNNER_TEMP, the job's own temp folder in CI, or $TMPDIR elsewhere.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -43,7 +61,7 @@ fi
 cd "$(dirname "$0")/.."
 
 IMAGE=ghcr.io/keyurgolani/keyurgolani.photography:$1
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-catalog.XXXXXX")
 LIB=$TMP/library
 # A v1.6 host's legacy WebPs, which web gets under public/, where Next would serve them.
 LEGACY=$TMP/legacy
@@ -60,7 +78,7 @@ LEGACY_WEBPS=(/assets/photos/optimized/landscape.webp /assets/photos/optimized/p
 NO_REVISION=rev_$(printf '0%.0s' {1..64})
 
 fail() {
-  echo "::error::$1"
+  echo "::error::$1" >&2
   exit 1
 }
 
@@ -81,6 +99,14 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+
+# Hands data root <dir>, inside this run's temp root, to uid 1001, the
+# image's user, as docs/data-root.md's setup does (chown -R 1001:1001, chmod
+# 700), so the owner gate lets the image's commands write it on any runner.
+hand_to_image() {
+  docker run --rm --pull never --network none --user 0 --entrypoint sh -v "$1:/d" "$IMAGE" -c 'chown -R 1001:1001 /d && chmod 700 /d' ||
+    fail "Could not hand $1 to uid 1001."
+}
 
 # Runs a command in the image as its user, with the library and the first
 # data root where docker-compose.prod.yml mounts them for image-watcher: the
@@ -119,17 +145,104 @@ stop_web() {
   WEB_STARTED=false
 }
 
-# Runs photos verify in the image on the published root, with any further
-# arguments, as this machine's user, who owns that root here, so the run can
-# write its record. Production runs it in image-watcher, as uid 1001.
-verify_published() {
+# Runs photos.mjs in the image on the published root with <args>, as this
+# machine's user, who owns that root here, so verify can write its record and
+# rollback its activation. Production runs them in image-watcher, as uid 1001.
+photos_published() {
   docker run --rm --pull never --user "$(id -u):$(id -g)" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
-    -v "$PUBLISHED:/data/portfolio" "$IMAGE" node dist/scripts/photos.mjs verify "$@"
+    -v "$PUBLISHED:/data/portfolio" "$IMAGE" node dist/scripts/photos.mjs "$@"
+}
+
+# Runs photos verify in the image on the published root, with any further arguments.
+verify_published() {
+  photos_published verify "$@"
 }
 
 # The SHA-256 of file <file>.
 sha256_of() {
   node -e 'console.log(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$1"
+}
+
+# The uid web runs as: the image's USER, and what docker-compose.prod.yml
+# gives every container and so every run --rm photos.mjs command, so
+# nothing has to widen a mode. Step 11's commands run as it too, never as this machine's user.
+WEB_USER=1001:1001
+
+# Runs <command> in the image as <user>, with the published root at
+# /data/portfolio and no network, as image-watcher's run --rm form does.
+as_uid() {
+  local user=$1
+  shift
+  docker run --rm --pull never --network none --user "$user" -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
+    -v "$PUBLISHED:/data/portfolio" "$IMAGE" "$@"
+}
+
+# Runs <command> in the image as web's uid.
+as_web() {
+  as_uid "$WEB_USER" "$@"
+}
+
+# Runs photos.mjs as web's uid on the published root with <args>.
+photos_as_web() {
+  as_web node dist/scripts/photos.mjs "$@"
+}
+
+# Runs photos.mjs as root, uid 0, on the published root with <args>: the
+# mistake step 11 checks purge refuses.
+photos_as_root() {
+  as_uid 0 node dist/scripts/photos.mjs "$@"
+}
+
+# Hands the published root to web's uid, as hand_to_image does, so the
+# commands step 11 runs as web's uid own what they write. web reads every
+# file as its owner.
+hand_to_web() {
+  hand_to_image "$PUBLISHED"
+}
+
+# Prints locks/'s mtime, or `none` when there is no locks/, read as web's
+# uid. The listing leaves folders' mtimes out, so a lock taken and released
+# shows only here.
+locks_mtime() {
+  as_web node -e '
+    const fs = require("fs");
+    try {
+      console.log(fs.statSync("/data/portfolio/locks").mtimeMs);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      console.log("none");
+    }' || fail "Could not read locks/'s mtime."
+}
+
+# Writes every entry under the published root to <file>, sorted, read as
+# web's uid: its path and type, and for a file its size, mtime, mode and
+# SHA-256. A folder's own mtime is left out, so an entry added under one
+# shows as that one line. locks/ is listed like the rest: a command that
+# leaves a lock file behind changes the listing. Fails unless the listing
+# holds <entry>, so an empty or partial one can't pass a comparison.
+published_listing() {
+  local file=$1 entry=$2
+  # shellcheck disable=SC2016 # the ${...} are JavaScript template strings
+  as_web node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const crypto = require("crypto");
+    const root = process.argv[1];
+    const lines = [];
+    for (const name of fs.readdirSync(root, { recursive: true })) {
+      const stat = fs.lstatSync(path.join(root, name));
+      if (!stat.isFile()) {
+        lines.push(`${name} ${stat.isDirectory() ? "d" : "other"}`);
+        continue;
+      }
+      const sha = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, name))).digest("hex");
+      lines.push(`${name} f ${stat.size} ${stat.mtimeMs} ${(stat.mode & 0o7777).toString(8)} ${sha}`);
+    }
+    console.log(lines.sort().join("\n"));' /data/portfolio | LC_ALL=C sort >"$file" || fail "Could not list the published root."
+  grep -qF -- "$entry " "$file" || fail "The listing of the published root has no $entry, so comparing it would prove nothing: $(head -c 2000 "$file")"
+  if grep -q '^locks/.*\.lock ' "$file"; then
+    fail "A lock file was left in locks/: $(grep '^locks/' "$file")"
+  fi
 }
 
 # Flips the first byte of file <file> in place, keeping its size. A second call puts it back.
@@ -160,6 +273,17 @@ expect_code() {
   local endpoint=$1 expected=$2 code
   code=$(curl -sS --max-time 30 -D "$TMP/headers.txt" -o /dev/null -w '%{http_code}' "$BASE_URL$endpoint") || fail "GET $endpoint failed."
   [ "$code" = "$expected" ] || fail "GET $endpoint returned $code, expected $expected."
+}
+
+# Fails unless #6's Home records endpoint, for the featured photo, serves
+# revision <served>, naming it in X-Catalog-Revision, and answers 409
+# revision-changed for revision <gone>, so Home follows the live revision.
+expect_records_on() {
+  local served=$1 gone=$2
+  # shellcheck disable=SC2016 # $served and $featured are jq's
+  expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$served" 200 no-cache '.revisionId == $served and any(.photos[]; .id == $featured)' --arg served "$served" --arg featured "$featured"
+  [ "$(header x-catalog-revision)" = "$served" ] || fail "The #6 Home records endpoint sent X-Catalog-Revision '$(header x-catalog-revision)' for $served, expected $served."
+  expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$gone" 409 no-store '. == {reason: "revision-changed"}'
 }
 
 # What every server answers, published or not: no /api/photos, /gallery on to
@@ -200,7 +324,8 @@ check_unpublished() {
 #    checkout's fixtures mounted read-only, and an empty data root, both
 #    writable by the image's user. The watcher mounts the library read-only.
 mkdir "$LIB" "$DATA"
-chmod 777 "$LIB" "$DATA"
+chmod 777 "$LIB"
+hand_to_image "$DATA"
 docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
 
@@ -253,20 +378,25 @@ echo "Nothing published: /api/ready and the #6 Home records endpoint answered 50
 npx tsx ci/publish-fixture.ts "$PUBLISHED" >"$TMP/fixture.json" || fail "ci/publish-fixture.ts failed."
 chmod -R a+rX "$PUBLISHED"
 revision=$(jq -r .revisionId "$TMP/fixture.json")
+first=$(jq -r .firstRevisionId "$TMP/fixture.json")
 active=$(jq -r .active "$TMP/fixture.json")
 inactive=$(jq -r .inactive "$TMP/fixture.json")
 featured_series=$(jq -r .featuredSeries "$TMP/fixture.json")
 featured=$(jq -r .featured "$TMP/fixture.json")
-[[ $revision == rev_* && $active == /media/* && $inactive == /media/* && $featured_series == ser_* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
+unlisted=$(jq -r .unlisted "$TMP/fixture.json")
+unlisted_photo=$(jq -r .unlistedPhotoId "$TMP/fixture.json")
+[[ $revision == rev_* && $first == rev_* && $first != "$revision" && $active == /media/* && $inactive == /media/* && $featured_series == ser_* && $featured == ph_* ]] || fail "ci/publish-fixture.ts printed $(cat "$TMP/fixture.json")."
+[[ $unlisted == "/media/$unlisted_photo/"* && $unlisted_photo == ph_* ]] || fail "ci/publish-fixture.ts printed no photo outside every series: $(cat "$TMP/fixture.json")"
 start_web "$LEGACY" "$PUBLISHED"
 # shellcheck disable=SC2016 # $revision and $featured are jq's
-expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 1' --arg revision "$revision"
+expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $revision and .revisionNumber == 2' --arg revision "$revision"
 cp "$TMP/body.json" "$TMP/ready-before.json"
 # shellcheck disable=SC2016
 expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$revision" 200 no-cache '.revisionId == $revision and any(.photos[]; .id == $featured)' --arg revision "$revision" --arg featured "$featured"
 [ "$(header x-catalog-revision)" = "$revision" ] || fail "The #6 Home records endpoint sent X-Catalog-Revision '$(header x-catalog-revision)', expected $revision."
 expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$NO_REVISION" 409 no-store '. == {reason: "revision-changed"}'
-echo "/api/ready and the #6 Home records endpoint name $revision."
+expect_json "/api/catalog/home/series/$featured_series/photos/$featured?revision=$first" 409 no-store '. == {reason: "revision-changed"}'
+echo "/api/ready and the #6 Home records endpoint name $revision, revision 2."
 check_closed
 echo "With $revision live, /api/photos returned 404, /gallery 308, and every legacy WebP 404, and 400 through /_next/image."
 
@@ -346,4 +476,147 @@ verify_published >"$TMP/verify-again.txt" 2>&1 || verify_code=$?
 jq -e 'any(.revisions[]; .revisionId == $revision and .live and .ok)' --arg revision "$revision" "$PUBLISHED/status/verify.json" >/dev/null ||
   fail "status/verify.json doesn't pass $revision again once the byte was back: $(cat "$PUBLISHED/status/verify.json")"
 echo "photos verify passed $revision and recorded it, failed it with exit 1 for a byte flipped in ${active#/media/} with its size kept, and passed it again once the byte was back."
+
+# 10. #15's history and rollback in the image: revision 1 is one a rollback
+#     can return to, `photos rollback --to 1` takes the site back to it, and
+#     web follows without a restart and keeps it across one. This depends on
+#     step 9's last, full photos verify passing both revisions: the record
+#     it leaves is what makes revision 1 eligible, after the flipped byte
+#     failed them both.
+history_code=0
+photos_published history --json --revisions >"$TMP/history-before.json" || history_code=$?
+[ "$history_code" = 0 ] || fail "photos history --json --revisions exited $history_code, expected 0: $(cat "$TMP/history-before.json")"
+# shellcheck disable=SC2016 # $revision and $first are jq's
+jq -e '
+  .total == 2 and .pointer.revisionId == $revision
+  and ([.rows[] | [.kind, .revisionNumber, .revisionId, .live, .state]] == [["publish", 1, $first, false, "committed"], ["publish", 2, $revision, true, "committed"]])
+  and ([.revisions[] | [.revisionNumber, .revisionId, .live, .eligible]] == [[2, $revision, true, false], [1, $first, false, true]])' \
+  --arg revision "$revision" --arg first "$first" "$TMP/history-before.json" >/dev/null ||
+  fail "photos history --json --revisions should list revision 2 live and revision 1 eligible: $(cat "$TMP/history-before.json")"
+rollback_code=0
+photos_published rollback --to 1 --reason "Catalog smoke: back to revision 1." --actor ci --yes --expect-active "$revision" >"$TMP/rollback.txt" 2>&1 || rollback_code=$?
+[ "$rollback_code" = 0 ] || fail "photos rollback --to 1 exited $rollback_code, expected 0: $(cat "$TMP/rollback.txt")"
+grep -qF -- "[photos] ROLLED_BACK: Rolled back to revision 1 ($first) from revision 2 ($revision)." "$TMP/rollback.txt" ||
+  fail "photos rollback --to 1 didn't say it rolled back to $first: $(cat "$TMP/rollback.txt")"
+chmod -R a+rX "$PUBLISHED"
+# shellcheck disable=SC2016 # $first is jq's
+expect_json /api/ready 200 no-store '.mode == "catalog" and .state == "ok" and .revisionId == $first and .revisionNumber == 1' --arg first "$first"
+cp "$TMP/body.json" "$TMP/ready-rolled-back.json"
+expect_records_on "$first" "$revision"
+docker restart "$WEB" >/dev/null
+wait_for_web
+# shellcheck disable=SC2016 # $first is jq's
+expect_json /api/ready 200 no-store '.revisionId == $first and .revisionNumber == 1' --arg first "$first"
+diff -u "$TMP/ready-rolled-back.json" "$TMP/body.json" || fail "/api/ready changed when web restarted after the rollback."
+expect_records_on "$first" "$revision"
+expect_code "$active" 200
+[ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the rollback."
+history_code=0
+photos_published history --json >"$TMP/history-after.json" || history_code=$?
+[ "$history_code" = 0 ] || fail "photos history --json exited $history_code after the rollback, expected 0: $(cat "$TMP/history-after.json")"
+# shellcheck disable=SC2016 # $first is jq's
+jq -e '.total == 3 and .pointer.revisionId == $first and (.rows[-1] | .kind == "rollback" and .revisionId == $first and .revisionNumber == 1 and .live and .state == "committed")' \
+  --arg first "$first" "$TMP/history-after.json" >/dev/null ||
+  fail "photos history --json doesn't list the rollback to $first as live: $(cat "$TMP/history-after.json")"
+echo "photos history listed revision 1 as one a rollback can return to, photos rollback --to 1 rolled back to $first, and /api/ready and the #6 Home records endpoint named revision 1 before and after a restart."
+
+# 11. #15's purge and GC, in the image, on the published root, after
+#     the rollback. The target is the fixture's photo no series lists and no
+#     revision holds, since purge refuses one the live revision or a draft
+#     series shows. Every command runs as web's uid on a root that uid owns,
+#     as in production, and nothing widens a mode: purge writes its tombstone
+#     0600, as web's uid, and the 410 below is the check that web can read it
+#     (a tombstone web can't read is passed over, and the set 404s). As
+#     another uid, root here, purge --yes refuses, exit 1 and WRONG_OWNER,
+#     before any lock, and writes nothing, locks/ included, and so does gc
+#     --set-aside of the folder the purge took down, and gc's dry run, which
+#     takes its locks to read. GC runs as a dry run only, as web's uid: the
+#     smoke never deletes.
+unlisted_set=assets/${unlisted#/media/}
+unlisted_set=${unlisted_set%/*}
+unlisted_folder=${unlisted_set%/*}
+unlisted_revision=${unlisted_folder##*/}
+target=$unlisted_set/manifest.json
+hand_to_web
+expect_code "$unlisted" 404
+[ "$(header cache-control)" = no-store ] || fail "The 404 for $unlisted sent Cache-Control: $(header cache-control) before the purge."
+published_listing "$TMP/published-before-purge.txt" "$target"
+purge_code=0
+photos_as_web purge "$unlisted_photo" --reason smoke --actor ci >"$TMP/purge-dry.txt" 2>&1 || purge_code=$?
+[ "$purge_code" = 0 ] || fail "The purge dry run exited $purge_code, expected 0: $(cat "$TMP/purge-dry.txt")"
+[[ $(head -1 "$TMP/purge-dry.txt") == "Takes down $unlisted_photo: 1 asset revision, 1 set, "*" They answer 410 at once. GC can delete the bytes from "* ]] ||
+  fail "The purge dry run didn't start with its Takes down line for $unlisted_photo: $(cat "$TMP/purge-dry.txt")"
+grep -qF -- "    $unlisted_set: " "$TMP/purge-dry.txt" || fail "The purge dry run didn't list $unlisted_set: $(cat "$TMP/purge-dry.txt")"
+grep -qF -- "[photos] PLANNED: This was a dry run. Nothing was written." "$TMP/purge-dry.txt" || fail "The purge dry run didn't say it wrote nothing: $(cat "$TMP/purge-dry.txt")"
+published_listing "$TMP/published-after-dry-run.txt" "$target"
+diff -u "$TMP/published-before-purge.txt" "$TMP/published-after-dry-run.txt" || fail "The purge dry run wrote under the published root."
+expect_code "$unlisted" 404
+# As root, which doesn't own the root: refused before any lock, so not even locks/ changes.
+locks_before=$(locks_mtime)
+purge_code=0
+photos_as_root purge "$unlisted_photo" --reason smoke --actor ci --yes >"$TMP/purge-as-root.txt" 2>&1 || purge_code=$?
+[ "$purge_code" = 1 ] || fail "photos purge --yes as root exited $purge_code, expected 1: $(cat "$TMP/purge-as-root.txt")"
+grep -qF -- "[photos] WRONG_OWNER: photos purge --yes runs as uid 0, but uid ${WEB_USER%%:*} owns the data root" "$TMP/purge-as-root.txt" ||
+  fail "photos purge --yes as root didn't refuse WRONG_OWNER: $(cat "$TMP/purge-as-root.txt")"
+published_listing "$TMP/published-after-root.txt" "$target"
+diff -u "$TMP/published-before-purge.txt" "$TMP/published-after-root.txt" || fail "photos purge --yes as root wrote under the published root."
+[ "$(locks_mtime)" = "$locks_before" ] || fail "photos purge --yes as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
+expect_code "$unlisted" 404
+purge_code=0
+photos_as_web purge "$unlisted_photo" --reason smoke --actor ci --yes >"$TMP/purge.txt" 2>&1 || purge_code=$?
+[ "$purge_code" = 0 ] || fail "photos purge --yes exited $purge_code, expected 0: $(cat "$TMP/purge.txt")"
+tombstone=$(sed -n 's/^\[photos\] PURGED: Wrote catalog\/tombstones\/\(tomb_[0-9a-f-]\{36\}\)\.json\. .*/\1/p' "$TMP/purge.txt")
+[ -n "$tombstone" ] || fail "photos purge --yes didn't say it wrote a tombstone: $(cat "$TMP/purge.txt")"
+as_web cat "/data/portfolio/catalog/tombstones/$tombstone.json" >"$TMP/tombstone.json" || fail "web's uid can't read catalog/tombstones/$tombstone.json."
+# shellcheck disable=SC2016 # $tombstone, $photo and $revision are jq's
+jq -e '.tombstoneId == $tombstone and .photoId == $photo and .assetRevision == null and .assetRevisions == [$revision] and .reason == "smoke" and .actor == "ci"' \
+  --arg tombstone "$tombstone" --arg photo "$unlisted_photo" --arg revision "$unlisted_revision" "$TMP/tombstone.json" >/dev/null ||
+  fail "catalog/tombstones/$tombstone.json doesn't take down $unlisted_photo at $unlisted_revision: $(cat "$TMP/tombstone.json")"
+published_listing "$TMP/published-purged.txt" "$target"
+changed=$(LC_ALL=C comm -23 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt") || fail "comm could not compare the listings."
+[ -z "$changed" ] || fail "photos purge --yes changed or removed something under the published root: $changed"
+added=$(LC_ALL=C comm -13 "$TMP/published-before-purge.txt" "$TMP/published-purged.txt") || fail "comm could not compare the listings."
+[ "$(cut -d' ' -f1-2 <<<"$added" | paste -sd' ' -)" = "catalog/tombstones d catalog/tombstones/$tombstone.json f" ] ||
+  fail "photos purge --yes should add only its tombstone, but added: $added"
+# No chmod: web reads the tombstone as its owner, or this 410 fails.
+for variant in "$unlisted" "${unlisted%.webp}.avif"; do
+  expect_code "$variant" 410
+  [ "$(header cache-control)" = no-store ] || fail "The 410 for $variant sent Cache-Control: $(header cache-control), expected no-store."
+done
+expect_code "$active" 200
+[ "$(header cache-control)" = 'public, max-age=31536000, immutable' ] || fail "GET $active sent Cache-Control: $(header cache-control) after the purge of another photo."
+published_listing "$TMP/published-before-gc.txt" "$target"
+# The tombstoned folder is one gc --set-aside takes, so as root it must refuse too, before any lock, moving nothing into trash/.
+locks_before=$(locks_mtime)
+set_aside_code=0
+photos_as_root gc --set-aside "$unlisted_folder" >"$TMP/set-aside-as-root.txt" 2>&1 || set_aside_code=$?
+[ "$set_aside_code" = 1 ] || fail "photos gc --set-aside as root exited $set_aside_code, expected 1: $(cat "$TMP/set-aside-as-root.txt")"
+grep -qF -- "[photos] WRONG_OWNER: photos gc --set-aside runs as uid 0, but uid ${WEB_USER%%:*} owns the data root" "$TMP/set-aside-as-root.txt" ||
+  fail "photos gc --set-aside as root didn't refuse WRONG_OWNER: $(cat "$TMP/set-aside-as-root.txt")"
+published_listing "$TMP/published-after-set-aside.txt" "$target"
+diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-set-aside.txt" || fail "photos gc --set-aside as root wrote under the published root."
+[ "$(locks_mtime)" = "$locks_before" ] || fail "photos gc --set-aside as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
+# Round 3b: a dry run that takes a lock to read writes a lock file, so gc's dry run as root refuses too.
+gc_root_code=0
+photos_as_root gc >"$TMP/gc-as-root.txt" 2>&1 || gc_root_code=$?
+[ "$gc_root_code" = 1 ] || fail "photos gc's dry run as root exited $gc_root_code, expected 1: $(cat "$TMP/gc-as-root.txt")"
+grep -qF -- "[photos] WRONG_OWNER: photos gc runs as uid 0, but uid ${WEB_USER%%:*} owns the data root" "$TMP/gc-as-root.txt" ||
+  fail "photos gc's dry run as root didn't refuse WRONG_OWNER: $(cat "$TMP/gc-as-root.txt")"
+published_listing "$TMP/published-after-gc-as-root.txt" "$target"
+diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-gc-as-root.txt" || fail "photos gc's dry run as root wrote under the published root."
+[ "$(locks_mtime)" = "$locks_before" ] || fail "photos gc's dry run as root took a lock: locks/'s mtime went from $locks_before to $(locks_mtime)."
+gc_code=0
+photos_as_web gc >"$TMP/gc.txt" 2>&1 || gc_code=$?
+[ "$gc_code" = 0 ] || fail "photos gc exited $gc_code, expected 0: $(cat "$TMP/gc.txt")"
+grep -qF -- "[photos] PLANNED: " "$TMP/gc.txt" || fail "photos gc didn't plan: $(cat "$TMP/gc.txt")"
+grep -qF -- "$unlisted_folder (taken down less than 7 days ago;" "$TMP/gc.txt" || fail "photos gc didn't keep the asset-revision folder $unlisted_folder as taken down less than 7 days ago: $(cat "$TMP/gc.txt")"
+grep -q '^Every asset stays: GC deletes no asset,' "$TMP/gc.txt" || fail "photos gc didn't say every asset stays: $(cat "$TMP/gc.txt")"
+grep -q '^Bytes: deletes 0 bytes,' "$TMP/gc.txt" || fail "photos gc planned to delete bytes: $(cat "$TMP/gc.txt")"
+if grep -q '^Delete ' "$TMP/gc.txt"; then
+  fail "photos gc planned a delete: $(cat "$TMP/gc.txt")"
+fi
+published_listing "$TMP/published-after-gc.txt" "$target"
+diff -u "$TMP/published-before-gc.txt" "$TMP/published-after-gc.txt" || fail "photos gc, a dry run, changed something under the published root."
+expect_code "$unlisted" 410
+echo "As web's uid, photos purge's dry run said what it takes down of $unlisted_photo and wrote nothing, as root --yes refused and wrote nothing, locks/ included, as web's uid --yes wrote $tombstone and web answered 410 for the set with no restart, as root gc --set-aside refused too, and photos gc kept its asset-revision folder as within its 7 days and deleted nothing."
 echo "smoke-catalog passed."

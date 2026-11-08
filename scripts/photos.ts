@@ -394,6 +394,7 @@ import { historyArgs, historyStop, rollbackArgs, runHistoryCommand, runRollbackC
 import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
 import { purgeArgs, runPurgeCommand } from '../lib/catalog/purge-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
+import { ownerGate } from '../lib/catalog/owner-gate';
 import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
@@ -811,7 +812,11 @@ function ownerRoot(): string | number {
 async function statusCommand(args: string[]): Promise<number> {
     const { values } = parseFlags({ args, options: { json: { type: 'boolean' }, check: { type: 'boolean' } } });
     // status is the diagnostic command, so it reports even with no data root.
-    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check }));
+    const result = await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check });
+    if (!values.json) return printed(result);
+    // JSON goes to stdout whatever the exit code, as history --json's does, so a monitor reads one stream.
+    process.stdout.write(result.output);
+    return result.exitCode;
 }
 
 async function listCommand(args: string[]): Promise<number> {
@@ -870,6 +875,13 @@ async function orderCommand(parse: () => SequenceCommand): Promise<number> {
 
 async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
+    // #15's one-uid rule: a command that takes a lock or writes under the data root runs only as the data root's
+    // owner, the uid web runs as, and refuses before its first lock otherwise (lib/catalog/owner-gate.ts).
+    const wrongOwner = ownerGate(argv, { root: dataRoot() });
+    if (wrongOwner) {
+        console.error(`[photos] WRONG_OWNER: ${wrongOwner}`);
+        return 1;
+    }
     try {
         if (command === 'migrate') return await migrate(args);
         if (command === 'identity') return await identity(args);
