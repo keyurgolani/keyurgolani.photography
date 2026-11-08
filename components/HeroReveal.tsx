@@ -322,8 +322,8 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   // the chrome scrolls, as large text can make it, the copy moves under a fixed scrim, so the hold covers the whole
   // print instead (M1). With the text enlarged Home's root says so too, and Black's wash then follows the copy as the
   // other themes' does (spec §10); at default text it doesn't. Where the title or the statement starts higher than
-  // Dark's fixed phone wash holds it (copyAboveDarkWash()), or the chrome scrolls, Home's root says that too, and Dark's
-  // wash follows the copy there.
+  // Dark's fixed phone wash holds it (copyAboveDarkWash()), Home's root says that too, and Dark's wash follows the copy
+  // there; everywhere else, a chrome that scrolls included, Dark keeps today's wash.
   useLayoutEffect(() => {
     const story = document.querySelector('[data-chrome-region="story"]');
     const root = story?.closest('main');
@@ -350,7 +350,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
         written = value;
       }
       root.toggleAttribute('data-text-enlarged', textEnlarged(parseFloat(getComputedStyle(document.documentElement).fontSize)));
-      root.toggleAttribute('data-copy-high', overflows || copyAboveDarkWash(topOf(stage, story.querySelector(':is(h1, h2)')), topOf(stage, story.querySelector('p'))));
+      root.toggleAttribute('data-copy-high', copyAboveDarkWash(topOf(stage, story.querySelector(':is(h1, h2)')), topOf(stage, story.querySelector('p'))));
     };
     measure();
     void document.fonts?.ready.then(measure);
