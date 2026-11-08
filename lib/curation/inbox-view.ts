@@ -341,8 +341,16 @@ export type ResolvedCause =
     | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' | 'available' | 'readable' }
     | { kind: 'merged'; into: string | null };
 
-/** #17: what a restored item's system response says, and what Restore answers. */
+/** #17: what a restored item's system response says, once the watcher has applied the restore. */
 export const RESTORED_TEXT = 'This file brought the archived photograph back under its old ID, so its own item places it.';
+
+/**
+ * #17: what Restore answers. It only records the restore, which the watcher applies on its next pass, so it says it
+ * waits, as Bind's answer does (bindAnswer()). `name` is the archived photograph's file name.
+ */
+export function restoreAnswer(name: string): string {
+    return `Restore recorded, and waiting for the watcher. On its next pass, ${name} comes back with its original details, outside any series.`;
+}
 
 /** #17: the hint beside Restore, which takes Approve's place on a new photograph whose bytes are an archived one's. */
 export function restoreHint(name: string): string {

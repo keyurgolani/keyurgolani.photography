@@ -7,7 +7,7 @@ import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type Ac
 import { pendingArchiveOf } from './binds';
 import { printable, scrub } from './commands';
 import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
-import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, RELEASED_ANSWER, RESTORED_TEXT, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, fileParts, parsePlacementValue, RELEASED_ANSWER, restoreAnswer, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { readDraftPlan } from './pins';
 import { readEvent } from './repository';
 import { archiveMissing, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
@@ -190,8 +190,9 @@ const DONE: Record<InboxActionKind, string> = {
     // bindDone() words a bind by its path; this is what it says when the event doesn't name one.
     bind: bindAnswer(null, null),
     archive: DONE_ANSWER.archive,
-    // #17: the same words a restored item's system response says. The restore's own notes name IDs, so none follow.
-    restore: RESTORED_TEXT,
+    // #17: restoreDone() names the archived photograph's file; this is what it says when the registry can't. The
+    // restore's own notes name IDs, so none follow.
+    restore: restoreAnswer('the archived photograph'),
     release: RELEASED_ANSWER,
 };
 
@@ -383,6 +384,19 @@ function bindDone(event: CurationEvent, notes: readonly string[]): string {
     return bindAnswer(printable(bound.path), ownBytes);
 }
 
+/** #17: Restore's answer, naming the archived photograph by its file, as the page names files, from the registry. */
+async function restoreDone(root: string, event: CurationEvent): Promise<string> {
+    const archived = event.decisions.at(-1)?.restores;
+    if (archived === undefined) return DONE.restore;
+    try {
+        const registry = await readRegistry(root);
+        const photo = Object.hasOwn(registry.photos, archived) ? registry.photos[archived] : undefined;
+        return photo ? restoreAnswer(fileParts(printable(photo.source.path)).name) : DONE.restore;
+    } catch {
+        return DONE.restore;
+    }
+}
+
 let serial = 0;
 
 /** Run one inbox action from its form. Never throws for anything the form or the data holds; every answer is a state the page shows, with no host path in it. */
@@ -463,6 +477,7 @@ export async function runInboxAction(
         // #118: a confirm says whether it wrote the draft; a bind that it waits for the watcher; an archive what it left.
         if (kind === 'confirm') return answer('done', outcome.event.id, (outcome.event.decisions.at(-1)?.writes?.length ?? 0) > 0 ? DONE.confirm : DONE_ANSWER.confirmedAlready);
         if (kind === 'bind') return answer('done', outcome.event.id, bindDone(outcome.event, outcome.notes));
+        if (kind === 'restore') return answer('done', outcome.event.id, await restoreDone(input.root, outcome.event));
         if (kind === 'archive') return answer('done', outcome.event.id, [DONE.archive, ...(await archiveNotes(input.root, outcome.notes))].join(' '));
         // An approval's later notes say what still holds publishing back, such as a missing or unreviewed description.
         const extra = kind === 'approve' ? outcome.notes.slice(1) : [];
