@@ -268,8 +268,11 @@ export const unionOf = (boxes: Box[]): Box | null =>
         bottom: Math.max(...boxes.map((box) => box.bottom)),
       };
 
-/** Returns the pixels of `source` (natural pixels) of `image`, or null when it can't sample; a throw also means it can't. */
-export type ToneSampler = (image: HTMLImageElement, source: Source) => Promise<ArrayLike<number> | null>;
+/**
+ * Returns the pixels of `source` (natural pixels) of `image`, or null when it can't sample; a throw also means it can't.
+ * Once `signal` aborts, the measure is stale: it stops what it's doing and returns null.
+ */
+export type ToneSampler = (image: HTMLImageElement, source: Source, signal?: AbortSignal) => Promise<ArrayLike<number> | null>;
 
 /** How long the sampler waits for an idle moment before it fetches anyway. */
 export const TONE_IDLE_TIMEOUT_MS = 2000;
@@ -308,9 +311,11 @@ const idle = () =>
  * gave. Home makes no other fetch() of /media, which is how ci/perf/measure.mjs finds it. The whole photograph is
  * scaled, with no crop rectangle, so the file's pixel density can't enter; the region is then read from the small
  * copy, in natural pixels scaled by the same factor. With no createImageBitmap, no same-origin currentSrc, a fetch or
- * decode that fails, or a decode that ignored the resize, it skips (null), and the theme keeps its own scrim.
+ * decode that fails, or a decode that ignored the resize, it skips (null), and the theme keeps its own scrim. A measure
+ * aborted by `signal` fetches nothing once the browser is idle, stops a fetch it started, and decodes and reads nothing
+ * more (null).
  */
-export const canvasSampler: ToneSampler = async (image, source) => {
+export const canvasSampler: ToneSampler = async (image, source, signal) => {
   const url = image.currentSrc;
   if (!url || typeof createImageBitmap !== 'function' || typeof fetch !== 'function') return null;
   if (new URL(url, document.baseURI).origin !== window.location.origin) return null;
@@ -323,6 +328,7 @@ export const canvasSampler: ToneSampler = async (image, source) => {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return null;
   await idle();
+  if (signal?.aborted) return null;
   let bitmap: ImageBitmap;
   try {
     // Public /media is immutable for a year, so it's read from the cache only: a browser with no copy to share, as
@@ -330,14 +336,15 @@ export const canvasSampler: ToneSampler = async (image, source) => {
     // Any other same-origin file, as a curator's preview's media, served `private, no-store` under its own path, is
     // fetched again. Keyed on the file, not the page: shipped visitor code never names the preview's routes (#16).
     const cache = new URL(url, document.baseURI).pathname.startsWith('/media/') ? 'only-if-cached' : 'force-cache';
-    const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low' });
-    if (!response.ok) return null;
+    const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low', signal });
+    if (!response.ok || signal?.aborted) return null;
     bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
   } catch {
     return null;
   }
-  // A browser that ignored the resize gives the file's own size, and drawing that at 0, 0 would read its corner.
-  if (bitmap.width !== width || bitmap.height !== height) {
+  // A browser that ignored the resize gives the file's own size, and drawing that at 0, 0 would read its corner. An
+  // aborted measure reads nothing either.
+  if (signal?.aborted || bitmap.width !== width || bitmap.height !== height) {
     bitmap.close();
     return null;
   }
@@ -367,8 +374,9 @@ export const positionOf = (value: string) => {
  * - 'light', the theme's own scrim, when it can't measure at all: no canvas, no createImageBitmap, no currentSrc,
  *   or a fetch or decode that fails (canvasSampler()). Home's media is same-origin; media moved to another origin
  *   would leave the tone 'light' until the sampler fetched it with CORS.
+ * - Null, too, once `signal` aborts: a newer measure has started, or Home moved on, so this one is stale.
  */
-export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 } }: { sample?: ToneSampler; position?: { x: number; y: number } } = {}): Promise<CopyTone | null> {
+export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 }, signal }: { sample?: ToneSampler; position?: { x: number; y: number }; signal?: AbortSignal } = {}): Promise<CopyTone | null> {
   if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) return null;
   try {
     await image.decode?.();
@@ -377,12 +385,13 @@ export async function copyTone(image: HTMLImageElement, copy: Box, { sample = ca
   }
   const shown = boxOf(image);
   const source = shown && coverSource({ width: image.naturalWidth, height: image.naturalHeight }, shown, copy, position);
-  if (!source) return null;
+  if (!source || signal?.aborted) return null;
   try {
-    const pixels = await sample(image, source);
+    const pixels = await sample(image, source, signal);
+    if (signal?.aborted) return null;
     const level = pixels ? regionLevel(pixels) : null;
     return level === null ? 'light' : toneFor(level);
   } catch {
-    return 'light';
+    return signal?.aborted ? null : 'light';
   }
 }
