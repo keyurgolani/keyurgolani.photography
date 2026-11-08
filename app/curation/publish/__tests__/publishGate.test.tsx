@@ -30,8 +30,10 @@ beforeAll(async () => {
     descriptionRow = row;
 }, 60_000);
 
-// The fixture's data root is left under the system's temp folder.
-afterAll(() => restore());
+afterAll(async () => {
+    restore();
+    await fixture.cleanup();
+});
 
 const action = async (previous: PublishState) => previous;
 

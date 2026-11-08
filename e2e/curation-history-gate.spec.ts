@@ -11,7 +11,7 @@ import { expect, test } from './support/test';
 // curator's 403. Before the page hydrates, the head's script drops every press on it and the typing in its reason, and
 // the first drop says the page is still loading; once the form has mounted it says it's ready, and Restore posts and
 // restores. With no JavaScript the form is the server's markup alone, as e2e/curation-history.spec.ts's no-JavaScript
-// test has it. The data root is left under the system's temp folder.
+// test has it.
 
 test.use({ actionTimeout: 10_000 });
 
@@ -29,6 +29,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
     test.setTimeout(test.info().timeout + HOOK_TIMEOUT);
     await curator?.stop();
+    await fixture?.cleanup();
 });
 
 const data = () => {

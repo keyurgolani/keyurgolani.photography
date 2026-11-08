@@ -10,7 +10,7 @@ import { expect, test } from './support/test';
 // action, and with no referrer a plain post before hydration lands on the curator's 403. Before the page hydrates,
 // the head's script drops every press on them, and the first drop says the page is still loading; once each form has
 // mounted it says it's ready, and a press posts. With no JavaScript the forms are the server's markup alone, as
-// e2e/curation-publish.spec.ts's no-JavaScript test has them. The data root is left under the system's temp folder.
+// e2e/curation-publish.spec.ts's no-JavaScript test has them.
 
 test.use({ actionTimeout: 10_000 });
 
@@ -28,6 +28,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
     test.setTimeout(test.info().timeout + HOOK_TIMEOUT);
     await curator?.stop();
+    await fixture?.cleanup();
 });
 
 const data = () => {

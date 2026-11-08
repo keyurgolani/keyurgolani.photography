@@ -18,7 +18,7 @@ import { expect, test } from './support/test';
 // plain-post route, so a plain post before hydration lands on the curator's 403. Before the page hydrates, the head's
 // script drops every press on them and what their controls would take, and the first drop says the page is still
 // loading; once each form has mounted it says it's ready, and a press posts. With no JavaScript nothing gates, and a
-// press posts the plain way, as before. Each test makes its own data root, left under the system's temp folder.
+// press posts the plain way, as before. Each test makes its own data root, and removes it after.
 
 test.use({ actionTimeout: 10_000 });
 
@@ -29,12 +29,13 @@ const COAST = { id: 'ser_e2e-gate-coast', slug: 'gate-coast', title: 'Gate fixtu
 const ROADS = { id: 'ser_e2e-gate-roads', slug: 'gate-roads', title: 'Gate fixture roads' } as const;
 const MARSH = { id: 'ser_e2e-gate-marsh', slug: 'gate-marsh', title: 'Gate fixture marsh' } as const;
 
+let temp: string | undefined;
 let root: string | undefined;
 let curator: CuratorServer | undefined;
 
 test.beforeEach(async () => {
     test.setTimeout(test.info().timeout + HOOK_TIMEOUT);
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-series-gate-'));
+    temp = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-series-gate-'));
     root = path.join(temp, 'data');
     const library = path.join(temp, 'library');
     fs.mkdirSync(library);
@@ -61,6 +62,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
     test.setTimeout(test.info().timeout + HOOK_TIMEOUT);
     await curator?.stop();
+    if (temp) fs.rmSync(temp, { recursive: true, force: true });
 });
 
 const dataRoot = () => {
