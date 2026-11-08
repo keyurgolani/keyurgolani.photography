@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { paintsAs, readPaint } from './helpers/parityWalk';
+import { LETTER_SPACING_SLACK_EM, paintsAs, readPaint } from './helpers/parityWalk';
 
 // A state the base has no screen for (dark-parity.spec.ts's NEW_STATES): its new parts are read in the head, the base
 // elements they're made from are read in the base, and each named property must be the same. readPaint runs in the
@@ -18,6 +18,42 @@ describe('readPaint', () => {
                 { selector: '[data-missing]', properties: ['color'] },
             ]),
         ).toEqual([{ color: 'rgb(1, 2, 3)', 'border-top-color': 'rgb(4, 5, 6)' }, null]);
+    });
+
+    it('reads the font size along with letter-spacing, which paintsAs compares as a share of it', () => {
+        document.body.innerHTML = '<h1 style="font-size: 28px; letter-spacing: -0.56px">a</h1>';
+        expect(readPaint([{ selector: 'h1', properties: ['letter-spacing'] }])).toEqual([{ 'letter-spacing': '-0.56px', 'font-size': '28px' }]);
+    });
+});
+
+// Tracking is set in em, so a heading at another size than its model has other px at the same tracking (the parity
+// run: -0.56px at 28px against the header's -0.4px at 20px, both -0.02em). paintsAs holds the share of the font size.
+describe('paintsAs, letter-spacing', () => {
+    const at = (spacing: string, size: string) => ({ 'letter-spacing': spacing, 'font-size': size });
+
+    it('passes the same tracking in em on a different font size, at every gate size the parity run read', () => {
+        expect(paintsAs('h1', at('-0.56px', '28px'), 'header h1', at('-0.4px', '20px'), ['letter-spacing'])).toEqual([]);
+        expect(paintsAs('h1', at('-0.49984px', '24.992px'), 'header h1', at('-0.3904px', '19.52px'), ['letter-spacing'])).toEqual([]);
+        expect(paintsAs('h1', at('-0.4px', '20px'), 'header h1', at('-0.327px', '16.35px'), ['letter-spacing'])).toEqual([]);
+        expect(paintsAs('p', at('normal', '16px'), 'p', at('normal', '14px'), ['letter-spacing'])).toEqual([]);
+    });
+
+    it(`fails other tracking, past ${LETTER_SPACING_SLACK_EM}em, with both values and their shares`, () => {
+        expect(LETTER_SPACING_SLACK_EM).toBe(0.001);
+        expect(paintsAs('h1', at('-0.84px', '28px'), 'header h1', at('-0.4px', '20px'), ['letter-spacing'])).toEqual([
+            "h1 letter-spacing: -0.84px (-0.0300em of 28px), where the base's header h1 has -0.4px (-0.0200em of 20px)",
+        ]);
+        // Normal tracking is 0, so a heading tracked where its model isn't fails too.
+        expect(paintsAs('h1', at('-0.56px', '28px'), 'header h1', at('normal', '20px'), ['letter-spacing'])).toHaveLength(1);
+        // Just inside the slack passes; just past it fails.
+        expect(paintsAs('h1', at('-0.5876px', '28px'), 'header h1', at('-0.4px', '20px'), ['letter-spacing'])).toEqual([]);
+        expect(paintsAs('h1', at('-0.5908px', '28px'), 'header h1', at('-0.4px', '20px'), ['letter-spacing'])).toHaveLength(1);
+    });
+
+    it('fails a tracking or a font size it can\'t read as px', () => {
+        expect(paintsAs('h1', { 'letter-spacing': '-0.56px' }, 'header h1', at('-0.4px', '20px'), ['letter-spacing'])).toEqual([
+            "h1 letter-spacing: -0.56px of no font size read, where the base's header h1 has -0.4px of 20px",
+        ]);
     });
 });
 
