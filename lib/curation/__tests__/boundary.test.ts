@@ -68,6 +68,8 @@ describe('the public routes', () => {
             'app/curation/inbox/InboxWatch.tsx',
             'app/curation/inbox/ItemActions.tsx',
             'app/curation/inbox/LandOnItem.tsx',
+            // #17: the library banner, which only the Inbox page loads, beside the watcher warning.
+            'app/curation/inbox/LibraryNotice.tsx',
             'app/curation/inbox/LocalTime.tsx',
             'app/curation/inbox/ReturnToRow.tsx',
             // #14 (v2.0.0 A2): the watcher warning and its item pointer, which only the Inbox page and its item view load.

@@ -71,6 +71,7 @@ function item(n: number, overrides: Partial<InboxItem> = {}): InboxItem {
         unplacedSeries: null,
         observedAt: '2026-02-01T00:00:00.000Z',
         seriesChosen: false,
+        held: false,
         ...overrides,
     };
 }
@@ -91,11 +92,11 @@ describe('the list query', () => {
         expect(inboxQueryString({ status: null, type: 'new', page: 1 }, { item: 'evt_000000000000000000000001' })).toBe('?type=new&item=evt_000000000000000000000001');
     });
 
-    it('builds the Type filter from EVENT_TYPES, so it lists library-unavailable, and Status from EVENT_STATUSES', () => {
+    it('builds the Type filter from EVENT_TYPES, so it lists library-unavailable, and Status from EVENT_STATUSES, then Held (#17)', () => {
         expect(TYPE_FILTERS.map((option) => option.value)).toEqual([...EVENT_TYPES]);
         expect(TYPE_FILTERS.find((option) => option.value === 'library-unavailable')?.label).toBe('Library unavailable');
-        expect(STATUS_FILTERS.map((option) => option.value)).toEqual([...EVENT_STATUSES]);
-        expect(new Set(STATUS_FILTERS.map((option) => option.label)).size).toBe(EVENT_STATUSES.length);
+        expect(STATUS_FILTERS.map((option) => option.value)).toEqual([...EVENT_STATUSES, 'held']);
+        expect(new Set(STATUS_FILTERS.map((option) => option.label)).size).toBe(EVENT_STATUSES.length + 1);
     });
 });
 
