@@ -11,7 +11,7 @@ import { ACCEPTANCE, ownerPassProblems, withoutStep } from './helpers/ownerPass.
 // v1.7.0). The only delete earlier releases' steps keep is of
 // ./.next-images-cache, the old /_next/image cache, which is allowed by name.
 // Nor do they promise a GC for the legacy folders: #15 decided on none, and
-// scripts/host/legacy-move-aside.sh moves them out instead (v2.0.0, A12).
+// scripts/host/legacy-move-aside.sh moves them out instead (v2.0.0).
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -125,7 +125,7 @@ describe('the host docs', () => {
     for (const text of allowed) expect(legacyGcPromises('probe.md', text), text).toEqual([]);
   });
 
-  // #15 shipped no GC for the legacy folders (v2.0.0, A12): a host step moves them aside instead.
+  // #15 shipped no GC for the legacy folders (v2.0.0): a host step moves them aside instead.
   it.each(HOST_DOCS)('%s promises no GC for the legacy folders', (file) => {
     expect(legacyGcPromises(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
   });

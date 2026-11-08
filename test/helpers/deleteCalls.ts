@@ -1,5 +1,5 @@
 /**
- * The delete-call rail (#181's A10 review): every call in the source tree
+ * The delete-call rail (#181's review): every call in the source tree
  * that can delete a file or a folder, with the file and the named function
  * it sits in, so a test can hold them to an allowlist. It reads the source
  * with the TypeScript parser and runs nothing. It fails closed: a form it
@@ -14,7 +14,7 @@
  *   - any import, re-export, `require()`, `import()`,
  *     `process.getBuiltinModule()`, `module.require()` or `createRequire()`
  *     load of `rimraf`, `del`, `fs-extra` or `trash`, or a subpath of one;
- *   - every child_process call, however child_process is reached (#181's A10
+ *   - every child_process call, however child_process is reached (#181's
  *     review, items 39 and 43): it reads no command line, so a process call
  *     is a finding whatever it runs, named by the whole call, arguments and
  *     options included, whitespace normalised, and only an allowlist entry
