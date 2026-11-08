@@ -310,8 +310,9 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   // changes no box the observer watches (M2). New copy (`copyKey`) measures again and observes its own elements. When
   // the chrome scrolls, as large text can make it, the copy moves under a fixed scrim, so the hold covers the whole
   // print instead (M1). With the text enlarged Home's root says so too, and Black's wash then follows the copy as the
-  // other themes' does (spec §10); at default text it doesn't. Where the copy starts higher than Dark's fixed phone
-  // wash holds (copyAboveDarkWash()), Home's root says that too, and Dark's wash follows the copy there.
+  // other themes' does (spec §10); at default text it doesn't. Where the title or the statement starts higher than
+  // Dark's fixed phone wash holds it (copyAboveDarkWash()), or the chrome scrolls, Home's root says that too, and Dark's
+  // wash follows the copy there.
   useLayoutEffect(() => {
     const story = document.querySelector('[data-chrome-region="story"]');
     const root = story?.closest('main');
@@ -319,6 +320,11 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     const scrim = root.querySelector<HTMLElement>('[data-home-vignette]') ?? root;
     const chrome = story.closest('[data-home-chrome]');
     const copy = () => [...story.querySelectorAll(':is(h1, h2, p, a)')];
+    /** Where `element`'s top sits on the stage, as homeCopyTop() gives it, or null where it isn't there to measure. */
+    const topOf = (stage: Box | null, element: Element | null) => {
+      const box = boxOf(element);
+      return stage && box ? homeCopyTop(stage, [box]) : null;
+    };
     let written: string | null = null;
     let current = true;
     const measure = () => {
@@ -333,7 +339,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
         written = value;
       }
       root.toggleAttribute('data-text-enlarged', textEnlarged(parseFloat(getComputedStyle(document.documentElement).fontSize)));
-      root.toggleAttribute('data-copy-high', copyAboveDarkWash(typeof top === 'number' ? top : null));
+      root.toggleAttribute('data-copy-high', overflows || copyAboveDarkWash(topOf(stage, story.querySelector(':is(h1, h2)')), topOf(stage, story.querySelector('p'))));
     };
     measure();
     void document.fonts?.ready.then(measure);

@@ -122,9 +122,9 @@ describe("Dark's phone wash under 380 px", () => {
 });
 
 // From 380 px Dark's fixed wash is set in percentages of the stage, so on a short stage (an iPhone in Safari with its
-// toolbars showing), or with reduced motion's hint lifting the copy, the title sat where it has thinned. HeroReveal
-// says so on Home's root (data-copy-high, badgePlace.ts's copyAboveDarkWash()), and there Dark's wash follows the copy
-// at every phone width, as Black's does. A taller stage keeps today's.
+// toolbars showing), with reduced motion's hint lifting the copy, or under a one-line title, the title or the statement
+// sat where it has thinned. HeroReveal says so on Home's root (data-copy-high, badgePlace.ts's copyAboveDarkWash()),
+// and there Dark's wash follows the copy. Everywhere else Dark keeps today's wash.
 describe("Dark's phone wash on a short stage", () => {
   const phone = atRule(CHROME, 'media', '(max-width: 39.99rem)')!;
   const enlarged = declarations(phone, `${DARK} .root[data-text-enlarged] .vignette`);

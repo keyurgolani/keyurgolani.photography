@@ -133,20 +133,24 @@ export function homeCopyTop(stage: Box, story: Box[]): number | null {
 }
 
 /**
- * Where Home's copy may start on the stage, as homeCopyTop() gives it, for Dark's fixed phone wash to hold it. That
- * wash (HomeChrome.module.css) is set in percentages of the stage: 0.92 at its bottom, 0.28 at 66% up it. Over a white
- * photograph it holds Dark's title, #f5f5f5, at 4.5:1 up to 35% up the stage, so to a copy top 65% down it. The
- * title's glyphs reach about 6 px above its box, so the line is a point lower.
+ * Where Dark's fixed phone wash stops holding its title and its statement over a white photograph, as tops in
+ * homeCopyTop()'s percentages of the stage. That wash (HomeChrome.module.css) is set in percentages of the stage: 0.92
+ * at its bottom, 0.28 at 66% up it. CI measured the worst pixel under each line box at 390 x 844 with reduced motion,
+ * the title's top 65.69% down and the statement's 75.20%: 4.577 and 4.615:1. The title's line boxes reach above its box
+ * and the statement's start below its own, so from those numbers the title holds 4.5:1 from 65.5% down and the
+ * statement from 74.5% down.
  */
-export const DARK_WASH_COPY_TOP = 66;
+export const DARK_WASH_TITLE_TOP = 65.5;
+export const DARK_WASH_STATEMENT_TOP = 74.5;
 
 /**
- * Whether the copy starts higher on the stage than Dark's fixed phone wash holds, as on a short stage (a phone in
- * Safari with its toolbars showing) or with reduced motion's hint lifting it. Dark's wash then follows the copy at
- * every phone width, as Black's does; on a taller stage Dark keeps today's.
+ * Whether the title's top sits higher on the stage than Dark's fixed phone wash holds it, or the statement's does, as
+ * on a short stage (a phone in Safari with its toolbars showing), with reduced motion's hint lifting the copy, or under
+ * a one-line title, whose statement sits as high as a longer title's. Dark's wash then follows the copy; otherwise Dark
+ * keeps today's. Null is a top that wasn't measured.
  */
-export function copyAboveDarkWash(copyTop: number | null): boolean {
-  return copyTop !== null && copyTop < DARK_WASH_COPY_TOP;
+export function copyAboveDarkWash(titleTop: number | null, statementTop: number | null): boolean {
+  return (titleTop !== null && titleTop < DARK_WASH_TITLE_TOP) || (statementTop !== null && statementTop < DARK_WASH_STATEMENT_TOP);
 }
 
 /** Whether Home's chrome scrolls, as large text can make it: then the copy moves under a fixed scrim (M1). */
