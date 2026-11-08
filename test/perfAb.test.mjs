@@ -347,8 +347,8 @@ describe('the Viewer measure', () => {
     expect(seriesPathIn('<a href="/work">Work</a><a href="/about">About</a>')).toBeNull();
     const series = '<a href="/work">All work</a><figure><a href="/work/tide/photo/ph_00000000-0000-4000-8000-000000000040"><img alt=""></a></figure><ol><li><a href="/work/tide/photo/ph_00000000-0000-4000-8000-000000000041">2</a></li></ol>';
     expect(viewerPathIn(series, '/work/tide')).toBe('/work/tide/photo/ph_00000000-0000-4000-8000-000000000040');
-    // Another series' photograph, a query, or the series itself isn't its Viewer.
-    expect(viewerPathIn('<a href="/work/harbour/photo/ph_1">x</a><a href="/work/tide?photo=ph_2">y</a><a href="/work/tide">z</a>', '/work/tide')).toBeNull();
+    // Another series' photograph (one whose slug is as long, too), a query, or the series itself isn't its Viewer.
+    expect(viewerPathIn('<a href="/work/harbour/photo/ph_1">x</a><a href="/work/bays/photo/ph_4">w</a><a href="/work/tide?photo=ph_2">y</a><a href="/work/tide">z</a>', '/work/tide')).toBeNull();
     // Links in Next's own payload are escaped text, not attributes, and don't count.
     expect(viewerPathIn('<script>self.__next_f.push([1,"\\"href\\":\\"/work/tide/photo/ph_3\\""])</script>', '/work/tide')).toBeNull();
   });
