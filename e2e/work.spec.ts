@@ -27,7 +27,9 @@ import { expectSingleTapActivates } from './support/touch';
 // so the harness server stays unpublished for every other spec. Try again
 // after a missing pointer has a server of its own, which has never loaded.
 
-test.describe.configure({ mode: 'serial' });
+// In order, in one worker, on the one server beforeAll starts. Not serial: each case opens Work on its own, so a
+// failure in one doesn't skip the cases after it, and those run on in a fresh worker.
+test.describe.configure({ mode: 'default' });
 
 /** Above the catalog, the publish, and a server start, so a slow start fails in startCatalogServer, which stops its child. */
 const HOOK_TIMEOUT = READY_TIMEOUT + 60_000;
@@ -550,6 +552,10 @@ for (const theme of ['dark', 'light', 'bright', 'black'] as const) {
         // to report where the print sits and what paints the bands.
         await expect.soft(frame).toHaveAttribute('data-decoded', '');
         const image = frame.locator('img');
+        // Work's projection ships no LQIP (lib/catalog/projections/work.ts), so today there's none to drop and the check
+        // below guards a cover that carries one. Said in the report either way.
+        const shipped = await image.evaluate((img: HTMLImageElement) => img.style.backgroundImage);
+        test.info().annotations.push({ type: 'placeholder', description: shipped === '' ? `${theme}: the cover carries no LQIP` : `${theme}: the cover carries an LQIP, ${shipped.slice(0, 40)}…` });
         expect.soft(
             await image.evaluate((img) => {
                 const computed = getComputedStyle(img);
