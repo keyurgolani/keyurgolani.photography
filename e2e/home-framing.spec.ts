@@ -11,7 +11,9 @@ import { expect, test } from './support/test';
 // sits whole on the theme's mat, its LQIP inside the print. Its own `next start` on the Home fixture with
 // HOME_FRAMING's crop and focal point, so the config's catalog server, and Dark parity with it, keep centred covers.
 
-test.describe.configure({ mode: 'serial' });
+// In order, in one worker, on the one server beforeAll starts. Not serial: each case opens Home on its own, so a
+// failure in one doesn't skip the cases after it, and those run on in a fresh worker.
+test.describe.configure({ mode: 'default' });
 
 const HOOK_TIMEOUT = READY_TIMEOUT + 60_000;
 
@@ -204,13 +206,21 @@ test('on a phone held upright, a cover photograph is cut on its focal point: the
     });
     try {
         // The slide's box, the frame the visitor sees, and the photograph's shape.
-        const { box, natural } = await shownSlide(page).evaluate((slide) => {
+        const { box, image, natural } = await shownSlide(page).evaluate((slide) => {
             const { left, top, width, height } = slide.getBoundingClientRect();
             const img = slide.querySelector('img')!;
-            return { box: { left, top, width, height }, natural: { width: img.naturalWidth, height: img.naturalHeight } };
+            const drawnIn = img.getBoundingClientRect();
+            return {
+                box: { left, top, width, height },
+                image: { left: drawnIn.left, top: drawnIn.top, width: drawnIn.width, height: drawnIn.height },
+                natural: { width: img.naturalWidth, height: img.naturalHeight },
+            };
         });
         expect(box.height, 'the phone is held upright').toBeGreaterThan(box.width);
         expect(box.left + box.width, 'the slide sits inside the screen').toBeLessThanOrEqual(page.viewportSize()!.width + 0.5);
+        // The image's own box is the slide's, so cover cuts the photograph to the frame the visitor sees. The colours
+        // read below are the proof; this names a box that has drifted off the slide before they're read.
+        for (const side of ['left', 'top', 'width', 'height'] as const) expect(Math.abs(image[side] - box[side]), `the image's ${side} against the slide's`).toBeLessThanOrEqual(0.5);
         // Cover scales the photograph to the box's height and cuts its sides.
         const scale = Math.max(box.width / natural.width, box.height / natural.height);
         const drawn = { width: natural.width * scale, height: natural.height * scale };
