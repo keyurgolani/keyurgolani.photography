@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import type { Locator, Page } from '@playwright/test';
+import sharp from 'sharp';
 import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { assetDir } from '../lib/media/path';
@@ -350,6 +351,79 @@ test('each sequence thumbnail keeps its 4:3 box and shows the whole photograph',
         if (photoId === BROKEN) continue;
         expectFillsFrame(await link.locator('img').boundingBox(), box, photoId);
         expect(await link.locator('img').evaluate((image) => getComputedStyle(image).objectFit), photoId).toBe('contain');
+    }
+});
+
+/** Every device pixel of the CSS pixel at (x, y) in the viewport. */
+async function pixelsAt(page: Page, x: number, y: number): Promise<number[][]> {
+    const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 }, animations: 'disabled', caret: 'hide' });
+    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pixels: number[][] = [];
+    for (let i = 0; i < data.length; i += info.channels) pixels.push([data[i], data[i + 1], data[i + 2]]);
+    return pixels;
+}
+const rgbOf = (css: string) => (css.match(/\d+/g) ?? []).slice(0, 3).map(Number);
+const distance = (a: number[], b: number[]) => Math.hypot(...a.map((value, channel) => value - b[channel]));
+
+/**
+ * Dark and Black leave a contain thumbnail's print at the full slot size (no --gah-slot-print), so a photograph of
+ * another shape than the 4:3 slot leaves bands inside the image's own box, where an LQIP drawn as an inline
+ * `background-size: cover` would show. The tall series' 2:3 portrait is pillarboxed there. Every check is soft and the
+ * row reports what it saw in its annotations, so one run says whether the bands show anything but the mat. The
+ * sequence's entries ship no LQIP today (lib/catalog/projections/series.ts), so this guards one that would.
+ */
+test('in Dark and Black, the bands beside a contain thumbnail show the mat, and nothing of a placeholder', async ({ page }) => {
+    const portrait = P[8];
+    for (const theme of ['dark', 'black'] as const) {
+        await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
+        await page.goto(`${origin()}/work/tall`);
+        await waitForHydration(page);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        const link = entry(page, portrait);
+        await link.scrollIntoViewIfNeeded();
+        const frame = link.locator('[data-photo="contain"]');
+        const image = frame.locator('img');
+        await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+        // Two frames after the load, so the decoded print has painted.
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const seen = await image.evaluate((img: HTMLImageElement) => {
+            const slot = img.parentElement?.closest('[data-photo]') ?? img.parentElement!;
+            const box = img.getBoundingClientRect();
+            const slotBox = slot.getBoundingClientRect();
+            const ratio = Number(img.getAttribute('width')) / Number(img.getAttribute('height'));
+            const width = Math.min(box.width, box.height * ratio);
+            const height = width / ratio;
+            const centre = { x: Math.floor(box.left + box.width / 2), y: Math.floor(box.top + box.height / 2) };
+            const pillarbox = box.width - width >= box.height - height;
+            const outside = pillarbox
+                ? [box.left + (box.width - width) / 2 - 3, box.left + (box.width + width) / 2 + 3].map((x) => ({ x: Math.floor(x), y: centre.y }))
+                : [box.top + (box.height - height) / 2 - 3, box.top + (box.height + height) / 2 + 3].map((y) => ({ x: centre.x, y: Math.floor(y) }));
+            const computed = getComputedStyle(img);
+            return {
+                inline: img.style.backgroundImage,
+                computed: { image: computed.backgroundImage, size: computed.backgroundSize, repeat: computed.backgroundRepeat },
+                slot: getComputedStyle(slot).backgroundColor,
+                imageBox: { width: box.width, height: box.height },
+                slotBox: { width: slotBox.width, height: slotBox.height },
+                band: pillarbox ? box.width - width : box.height - height,
+                centre,
+                outside,
+            };
+        });
+        const mat = rgbOf(seen.slot);
+        const [print] = await pixelsAt(page, seen.centre.x, seen.centre.y);
+        const bands = [];
+        for (const point of seen.outside) bands.push(...(await pixelsAt(page, point.x, point.y)));
+        test.info().annotations.push({
+            type: 'thumbnail bands',
+            description: `${theme}: inline background-image ${seen.inline === '' ? 'none' : `${seen.inline.slice(0, 40)}…`}, computed ${seen.computed.image.slice(0, 40)} ${seen.computed.size} ${seen.computed.repeat}; image ${seen.imageBox.width}x${seen.imageBox.height} in slot ${seen.slotBox.width}x${seen.slotBox.height}, band ${seen.band}; mat ${mat}, print ${print}, beside the print ${bands.map((pixel) => `[${pixel}]`).join(' ')}`,
+        });
+        // The print fills the slot in this theme, so the bands are inside the image's box.
+        expect.soft(Math.abs(seen.imageBox.width - seen.slotBox.width) + Math.abs(seen.imageBox.height - seen.slotBox.height), `${theme}: the image's box is the slot's`).toBeLessThanOrEqual(1);
+        expect.soft(seen.band, `${theme}: the slot leaves room beside the print`).toBeGreaterThan(12);
+        expect.soft(distance(print, mat), `${theme}: the print ${print} differs from the mat ${mat}`).toBeGreaterThan(60);
+        expect.soft(seen.computed.image, `${theme}: nothing is drawn under the print`).toBe('none');
+        for (const pixel of bands) expect.soft(distance(pixel, mat), `${theme}: beside the print, ${pixel} against the mat ${mat}`).toBeLessThan(distance(pixel, print));
     }
 });
 
