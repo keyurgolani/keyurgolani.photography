@@ -16,7 +16,7 @@ const COMPUTED = 'e2e/themes/computed.ts';
 const GATE = 'e2e/themes/dark-parity.spec.ts';
 const SCANNED = ['test', 'e2e', '__tests__'];
 const SHIFT_HOME = 'test/helpers/parityShift.ts';
-const SYMBOLS = ['compare', 'walk', 'failures', 'FOLD_PAINT', 'PROPERTIES', 'GEOMETRY_SLACK', 'completeHiddenSegments'] as const;
+const SYMBOLS = ['compare', 'walk', 'failures', 'FOLD_PAINT', 'PROPERTIES', 'GEOMETRY_SLACK', 'completeHiddenSegments', 'readPaint', 'paintsAs'] as const;
 /** The parity types, each an interface or a type in parityWalk.ts. Box isn't one: specs keep boxes of their own. */
 const TYPES = ['Allowance', 'Walk', 'Walked', 'Comparison', 'WalkOptions', 'FoldedFocus', 'EvaluatingPage'] as const;
 /** The shift's helpers, which parityWalk.ts's compare() imports from parityShift.ts. */
