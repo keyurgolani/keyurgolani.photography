@@ -7,10 +7,10 @@ import { approveEvent, dismissEvent, editEvent, reopenEvent, retryEvent, type Ac
 import { pendingArchiveOf } from './binds';
 import { printable, scrub } from './commands';
 import { EVENT_ID_RE, type CurationEvent, type CuratorDescription } from './events';
-import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, parsePlacementValue, type InboxActionKind, type InboxActionState } from './inbox-view';
+import { bindAnswer, BIND_WAITING_NEXT, BLOCKED_NEXT, BLOCKED_WHY, CONFIRM_UNAVAILABLE, DONE_ANSWER, MOVED_ANSWER, fileParts, parsePlacementValue, RELEASED_ANSWER, restoreAnswer, type InboxActionKind, type InboxActionState } from './inbox-view';
 import { readDraftPlan } from './pins';
 import { readEvent } from './repository';
-import { archiveMissing, bindReplacement, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
+import { archiveMissing, bindReplacement, confirmMissing, confirmReplacement, leaveInDraft, linkedNewItems } from './resolutions';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
 
 /**
@@ -30,6 +30,11 @@ import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from './text';
  * (bindReplacement()) and Archive (archiveMissing()). Each writer takes its
  * locks and checks the item version and the active revision itself, and
  * writes nothing when it refuses.
+ *
+ * #17 adds Restore, an approval that only ever restores an archived
+ * photograph (approveEvent()'s `restoreOnly`), with no series, position or
+ * description, and Release, which is `curation confirm-missing` on a held
+ * missing item, with an optional reason.
  */
 
 /** Who the web curator acts as. There's no session, so there's no name: the SSH tunnel is the way in (docs/curator.md). */
@@ -185,6 +190,10 @@ const DONE: Record<InboxActionKind, string> = {
     // bindDone() words a bind by its path; this is what it says when the event doesn't name one.
     bind: bindAnswer(null, null),
     archive: DONE_ANSWER.archive,
+    // #17: restoreDone() names the archived photograph's file; this is what it says when the registry can't. The
+    // restore's own notes name IDs, so none follow.
+    restore: restoreAnswer('the archived photograph'),
+    release: RELEASED_ANSWER,
 };
 
 const LINK_PATH = 'Type the library path of the file that replaces it.';
@@ -375,6 +384,19 @@ function bindDone(event: CurationEvent, notes: readonly string[]): string {
     return bindAnswer(printable(bound.path), ownBytes);
 }
 
+/** #17: Restore's answer, naming the archived photograph by its file, as the page names files, from the registry. */
+async function restoreDone(root: string, event: CurationEvent): Promise<string> {
+    const archived = event.decisions.at(-1)?.restores;
+    if (archived === undefined) return DONE.restore;
+    try {
+        const registry = await readRegistry(root);
+        const photo = Object.hasOwn(registry.photos, archived) ? registry.photos[archived] : undefined;
+        return photo ? restoreAnswer(fileParts(printable(photo.source.path)).name) : DONE.restore;
+    } catch {
+        return DONE.restore;
+    }
+}
+
 let serial = 0;
 
 /** Run one inbox action from its form. Never throws for anything the form or the data holds; every answer is a state the page shows, with no host path in it. */
@@ -434,6 +456,14 @@ export async function runInboxAction(
             case 'archive':
                 outcome = await archiveMissing({ ...input, reason: archiveFrom(form) });
                 break;
+            // #17: an approval that takes no series, position or description, and refuses anything but a restore.
+            case 'restore':
+                outcome = await approveEvent({ ...input, choices: {}, keepPlaced: true, restoreOnly: true });
+                break;
+            // #17: as the CLI's confirm-missing, which releases a held missing item.
+            case 'release':
+                outcome = await confirmMissing({ ...input, reason: reasonFrom(form) });
+                break;
         }
     } catch (error) {
         if (error instanceof InboxFormError) return answer('invalid', input.eventId, error.message, error.field);
@@ -447,6 +477,7 @@ export async function runInboxAction(
         // #118: a confirm says whether it wrote the draft; a bind that it waits for the watcher; an archive what it left.
         if (kind === 'confirm') return answer('done', outcome.event.id, (outcome.event.decisions.at(-1)?.writes?.length ?? 0) > 0 ? DONE.confirm : DONE_ANSWER.confirmedAlready);
         if (kind === 'bind') return answer('done', outcome.event.id, bindDone(outcome.event, outcome.notes));
+        if (kind === 'restore') return answer('done', outcome.event.id, await restoreDone(input.root, outcome.event));
         if (kind === 'archive') return answer('done', outcome.event.id, [DONE.archive, ...(await archiveNotes(input.root, outcome.notes))].join(' '));
         // An approval's later notes say what still holds publishing back, such as a missing or unreviewed description.
         const extra = kind === 'approve' ? outcome.notes.slice(1) : [];

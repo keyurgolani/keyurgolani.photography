@@ -15,8 +15,14 @@ export const INBOX_PAGE_SIZE = 50;
 /** The highest page the URL may name. Far past any real inbox: a larger number is junk, and reads as page 1. */
 const MAX_PAGE = 9_999;
 
+/**
+ * What the Status filter takes: a stored status, or `held`, which is no stored status but the missing items the open
+ * library item holds (#17, heldMissingIds()).
+ */
+export type InboxStatusFilter = CurationEventStatus | 'held';
+
 export interface InboxQuery {
-    status: CurationEventStatus | null;
+    status: InboxStatusFilter | null;
     type: CurationEventType | null;
     page: number;
 }
@@ -33,7 +39,8 @@ const STATUS_FILTER_LABELS: Record<CurationEventStatus, string> = {
     resolved: 'Resolved',
 };
 
-export const STATUS_FILTERS: readonly { value: CurationEventStatus; label: string }[] = EVENT_STATUSES.map((value) => ({ value, label: STATUS_FILTER_LABELS[value] }));
+/** One per stored status, then Held, which lists the missing items the open library item holds. */
+export const STATUS_FILTERS: readonly { value: InboxStatusFilter; label: string }[] = [...EVENT_STATUSES.map((value) => ({ value, label: STATUS_FILTER_LABELS[value] })), { value: 'held', label: 'Held' }];
 export const TYPE_FILTERS: readonly { value: CurationEventType; label: string }[] = EVENT_TYPES.map((value) => ({ value, label: BADGE_LABELS[value] }));
 
 const one = (value: string | string[] | undefined): string | null => (typeof value === 'string' ? value : null);
@@ -47,7 +54,7 @@ export function parseInboxQuery(params: Record<string, string | string[] | undef
     const type = one(params.type);
     const page = one(params.page);
     return {
-        status: status !== null && (EVENT_STATUSES as readonly string[]).includes(status) ? (status as CurationEventStatus) : null,
+        status: status !== null && (status === 'held' || (EVENT_STATUSES as readonly string[]).includes(status)) ? (status as InboxStatusFilter) : null,
         type: type !== null && (EVENT_TYPES as readonly string[]).includes(type) ? (type as CurationEventType) : null,
         page: page !== null && /^[1-9]\d{0,3}$/.test(page) && Number(page) <= MAX_PAGE ? Number(page) : 1,
     };
@@ -64,8 +71,9 @@ export function inboxQueryString(query: InboxQuery, extra: Record<string, string
     return text ? `?${text}` : '';
 }
 
-export function matchesQuery(item: Pick<InboxItem, 'status' | 'type'>, query: Pick<InboxQuery, 'status' | 'type'>): boolean {
-    return (query.status === null || item.status === query.status) && (query.type === null || item.type === query.type);
+export function matchesQuery(item: Pick<InboxItem, 'status' | 'type' | 'held'>, query: Pick<InboxQuery, 'status' | 'type'>): boolean {
+    const status = query.status === null || (query.status === 'held' ? item.held : item.status === query.status);
+    return status && (query.type === null || item.type === query.type);
 }
 
 export interface ListPage<T> {
@@ -81,7 +89,7 @@ export interface ListPage<T> {
 }
 
 /** The items the filters keep, in the list's order, `INBOX_PAGE_SIZE` at a time. */
-export function listPage<T extends Pick<InboxItem, 'status' | 'type'>>(items: readonly T[], query: InboxQuery): ListPage<T> {
+export function listPage<T extends Pick<InboxItem, 'status' | 'type' | 'held'>>(items: readonly T[], query: InboxQuery): ListPage<T> {
     const kept = items.filter((item) => matchesQuery(item, query));
     const pages = Math.max(1, Math.ceil(kept.length / INBOX_PAGE_SIZE));
     const page = Math.min(query.page, pages);

@@ -12,6 +12,7 @@ import { photoHolderEntries, type ReferenceCache } from './holders';
 import {
     bindWaitingText,
     CONFIRM_UNAVAILABLE,
+    fileParts,
     humanDate,
     itemTitle,
     MISSING_HINT,
@@ -23,6 +24,7 @@ import {
     type HolderRef,
     type InboxDetail,
     type InboxItem,
+    type InboxLibrary,
     type InboxSummary,
     type InboxView,
     type InboxWatcher,
@@ -34,11 +36,11 @@ import {
 } from './inbox-view';
 import { cursorIssued, readArrivals } from './arrivals';
 import { ANY_QUERY, matchesQuery, type InboxQuery } from './inbox-list';
-import { libraryCauseText } from './library';
+import { heldMissingIds, LIBRARY_EVENT_ID, libraryCauseText, libraryOpen } from './library';
 import { readDraftPlan } from './pins';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
-import { linkedNewItems } from './resolutions';
+import { bindSuggestions, linkedNewItems } from './resolutions';
 
 /**
  * Reads the inbox for the curator's page (#14's 14-3): every event, grouped
@@ -70,7 +72,7 @@ function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, 
 
 const GROUP_ORDER: Record<ItemGroup, number> = { judgment: 0, unplaced: 1, waiting: 2, deferred: 3, placed: 4, settled: 5 };
 
-function itemOf(event: CurationEvent, registry: Registry | null, waiting: string | null, placed: string | null, unplaced: string | null): InboxItem {
+function itemOf(event: CurationEvent, registry: Registry | null, waiting: string | null, placed: string | null, unplaced: string | null, held: boolean): InboxItem {
     const ready = readyProfile(event, registry);
     return {
         id: event.id,
@@ -91,6 +93,7 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         observedAt: event.observedAt,
         // A saved series, not a saved "Leave unassigned", which Leave unassigned keeps.
         seriesChosen: typeof event.edits?.seriesId === 'string',
+        held,
     };
 }
 
@@ -328,6 +331,29 @@ async function linkedFilesOf(root: string, event: CurationEvent, can: InboxDetai
 }
 
 /**
+ * #17: the files the watcher suggests for an open missing source, which Bind offers after the linked ones, from
+ * bindSuggestions(), the function `curation show` lists them with. The form sends the path itself, as
+ * `curation bind --path` takes it, so `libraryPath` is the path unescaped and `path` the page's copy.
+ */
+async function suggestedFilesOf(root: string, event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): Promise<InboxDetail['suggestedFiles']> {
+    if (event.type !== 'missing' || event.photoId === null || !can.bind) return [];
+    return (await bindSuggestions(root, event.photoId, registry)).map(({ item, by }) => ({ id: item.id, path: printable(item.derivedFacts.sourcePath), libraryPath: item.derivedFacts.sourcePath, by }));
+}
+
+/**
+ * #17: the archived photograph an approval of this new photograph restores, as approveEvent() decides it: the
+ * registry says its bytes are a copy of a photograph that is archived and not merged. Its file name, as the page names
+ * files, or null for any other item and while the item can't be approved.
+ */
+function restoresOf(event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): InboxDetail['restores'] {
+    if (event.type !== 'new' || event.photoId === null || !can.approve || registry === null) return null;
+    const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
+    const archived = photo?.duplicateOf ? (Object.hasOwn(registry.photos, photo.duplicateOf) ? registry.photos[photo.duplicateOf] : undefined) : undefined;
+    if (!archived || archived.sourceHealth !== 'archived' || archived.mergedInto !== undefined) return null;
+    return { name: fileParts(printable(archived.source.path)).name };
+}
+
+/**
  * #17: a replacement's draft, and what Decide later does with it, from the plan leaveInDraft() acts on. `cache` holds
  * the references() scan photoHolderEntries() already made, whose active-revision entry says which bytes are live. Null
  * for any other item, and when the photo record or the inbox's pins can't be read: the page then claims nothing.
@@ -434,6 +460,10 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting, archiveWaiting, registry),
         confirmUnavailable,
         linkedFiles: await linkedFilesOf(root, event, can, registry),
+        suggestedFiles: await suggestedFilesOf(root, event, can, registry),
+        restores: restoresOf(event, can, registry),
+        // #17: `curation confirm-missing`, which releases a held item, takes one whose photograph is still missing.
+        release: item.held && missingSettles(event, registry).bind,
         replacement,
         resolvedBy: resolvedCauseOf(event, registry),
         bindWaiting,
@@ -467,20 +497,26 @@ async function readItems(root: string) {
     // The sequence first: an item that arrives between the two reads is counted on the next check, never skipped.
     const arrivals = await readArrivals(root);
     const { events, problems } = await listEvents(root);
+    // #17: the missing items the open library item holds, as `photos status` counts them (lib/curation/alerts.ts).
+    const library = events.find((event) => event.id === LIBRARY_EVENT_ID) ?? null;
+    const held = new Set(heldMissingIds(events, library));
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
     // The same lookup `curation list` and `show` use, so the page and the CLI count alike.
     const placements = await placedItems(root, events);
     const items = events
-        .map((event) => itemOf(event, registry, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null))
+        .map((event) => itemOf(event, registry, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null, held.has(event.id)))
         .sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]);
     const counts = {
-        needsJudgment: items.filter((item) => item.group === 'judgment').length,
+        // A held item waits for the library, so it's left out of the judgment count, here and in the summary.
+        needsJudgment: items.filter((item) => item.group === 'judgment' && !item.held).length,
         waiting: items.filter((item) => item.group === 'waiting').length,
         placed: placements.placed.size,
         unplaced: placements.unplaced.size,
     };
-    return { events, problems, registry, placements, items, counts, arrivals };
+    // The held count and the banner are the page's alone: the summary the poll reads carries neither.
+    const banner: InboxLibrary | null = libraryOpen(library) ? { cause: libraryCauseText(library.derivedFacts.library), held: held.size, itemId: library.id } : null;
+    return { events, problems, registry, placements, items, counts, arrivals, held: held.size, banner };
 }
 
 export interface LoadInboxOptions {
@@ -505,7 +541,7 @@ export async function loadInbox(selectedId: string | null, options: LoadInboxOpt
     const root = status.root;
     const readAt = new Date((options.now ?? Date.now)()).toISOString();
     const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
-    const { events, problems, registry, placements, items, counts, arrivals } = await readItems(root);
+    const { events, problems, registry, placements, items, counts, arrivals, held, banner } = await readItems(root);
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const { series, problem } = await seriesOptions(root);
 
@@ -522,6 +558,8 @@ export async function loadInbox(selectedId: string | null, options: LoadInboxOpt
         cursor: arrivals.cursor,
         activeRevisionId: active,
         ...counts,
+        held,
+        library: banner,
         placementUnknown: placements.unknown !== null,
         items,
         problems: problems.map((entry) => ({ id: entry.id, message: scrubbed(printable(`${entry.reason}: ${entry.message}`)) })),
@@ -547,7 +585,7 @@ export async function loadInboxSummary(itemId: string | null, options: Pick<Load
     const since = options.since ?? null;
     // A8 review, 4a: only a cursor this server issued, so a forged or future one is refused, not read as zero arrivals.
     if (since !== null && !cursorIssued(since, arrivals)) return { state: 'bad-cursor' };
-    const arrived = since === null ? null : items.filter((item) => item.group === 'judgment' && (arrivals.seqOf.get(item.id) ?? 0) > since).length;
+    const arrived = since === null ? null : items.filter((item) => item.group === 'judgment' && !item.held && (arrivals.seqOf.get(item.id) ?? 0) > since).length;
     const open = itemId !== null && EVENT_ID_RE.test(itemId) ? events.find((event) => event.id === itemId) : undefined;
     return {
         state: 'ready',

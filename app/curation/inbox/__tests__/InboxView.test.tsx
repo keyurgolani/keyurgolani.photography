@@ -48,6 +48,8 @@ vi.mock('../actions', () => {
         confirmItem: make('confirm'),
         bindItem: make('bind'),
         archiveItem: make('archive'),
+        restoreItem: make('restore'),
+        releaseItem: make('release'),
         // #14's A8: the list's bulk form. InboxScreen.test.tsx checks what it sends.
         bulkItems: async () => ({ status: 'idle' }),
     };
@@ -86,7 +88,7 @@ const SERIES: SeriesOption[] = [
 ];
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, ...overrides };
+    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, held: false, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -122,12 +124,15 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         replacement: null,
         resolvedBy: null,
         bindWaiting: null,
+        suggestedFiles: [],
+        restores: null,
+        release: false,
         ...overrides,
     };
 }
 
 function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): Extract<InboxView, { state: 'ready' }> {
-    return { state: 'ready', watcher: { state: 'running' }, readAt: '2026-02-01T00:00:00.000Z', cursor: 0, activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, readAt: '2026-02-01T00:00:00.000Z', cursor: 0, activeRevisionId: ACTIVE, needsJudgment: 1, held: 0, library: null, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const tree = (v: ReturnType<typeof view>, listView = false) => (

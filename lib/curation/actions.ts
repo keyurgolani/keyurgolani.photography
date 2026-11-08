@@ -399,6 +399,12 @@ export function approveEvent(
          * unassigned would otherwise drop. Checked under the lock, so a series saved after the page loaded counts.
          */
         keepSavedSeries?: boolean;
+        /**
+         * The inbox's Restore: go through only as the archived restore below, never as a plain approval. Checked
+         * under the lock against the registry, so a photograph whose bytes are no archived photograph's by then,
+         * which a page loaded earlier offered Restore for, is stale and nothing is written.
+         */
+        restoreOnly?: boolean;
     },
 ): Promise<ActionOutcome> {
     return act(input, async (step) => {
@@ -440,6 +446,7 @@ export function approveEvent(
         if (original !== undefined && original.sourceHealth === 'archived' && original.mergedInto === undefined) {
             return restoreArchived(step, input, root, photoId, original.photoId, photo.source.path);
         }
+        if (input.restoreOnly) fail('stale', `${photoId}'s bytes are no archived photograph's now, so there is nothing to restore. Nothing was written.`);
 
         const writes: WrittenRecord[] = [];
         const notes: string[] = [];

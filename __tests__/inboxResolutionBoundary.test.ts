@@ -6,6 +6,8 @@ import { makeCuratorSecrets, type TestCuratorSecrets } from '../test/helpers/cur
 import { resetLoginForTests } from '../lib/curation/auth/login';
 import { resetSessionsForTests } from '../lib/curation/auth/sessions';
 import type { CurationEvent } from '../lib/curation/events';
+import { listEvents } from '../lib/curation/repository';
+import { archiveMissing } from '../lib/curation/resolutions';
 import { IDLE, type InboxActionState } from '../lib/curation/inbox-view';
 import { createMissingWorld, removeMissingTemplate } from '../lib/curation/__tests__/missingWorld';
 import { createWorld, makeImages, P_PATH, removeTemplate, treeBytes, type Images } from '../lib/curation/__tests__/replacementWorld';
@@ -18,13 +20,15 @@ import { proxy } from '../proxy';
 // for a real item that every other check would let through, and nothing is written. With both gates passing, the
 // same form writes, so each refusal is the gate's. __tests__/routeInventory.test.ts calls every curator action, these
 // included, with each of the boundary's checks failing; this is the same refusal with a form that would work.
+// #17's Restore and Release are held to the same two gates: Restore writes a restore decision for the watcher, and
+// Release a confirm-missing on the item.
 
 /** The request headers requireCurator() reads through next/headers. */
 let requestHeaders = new Headers();
 vi.mock('next/headers', () => ({ headers: async () => requestHeaders }));
 // A finished action refreshes the page, which needs a Next request; there is none here.
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
-const { archiveItem, confirmItem } = await import('../app/curation/inbox/actions');
+const { archiveItem, confirmItem, releaseItem, restoreItem } = await import('../app/curation/inbox/actions');
 
 const CURATOR_HOST = '127.0.0.1:3001';
 const CURATOR_ORIGIN = `http://${CURATOR_HOST}`;
@@ -92,7 +96,7 @@ function pageForm(event: CurationEvent, base: string, extra: Record<string, stri
     return form;
 }
 
-describe('Confirm and Archive at the curator boundary (#118)', { timeout: 60_000 }, () => {
+describe('Confirm, Archive, Restore and Release at the curator boundary (#118, #17)', { timeout: 60_000 }, () => {
     /** A replacement whose new derivatives are built, so Confirm would go through. */
     async function confirmable() {
         const w = await createWorld(images);
@@ -112,7 +116,36 @@ describe('Confirm and Archive at the curator boundary (#118)', { timeout: 60_000
         return { root: w.root, form: () => pageForm(event, w.revisionId, { intent: 'archive', reason: 'Gone for good.', confirmed: 'yes' }), action: archiveItem };
     }
 
-    const ITEMS = { Confirm: confirmable, Archive: archivable } as const;
+    /** P's file out of the world's own temp library, as archivable() takes it. */
+    const takeP = (w: Awaited<ReturnType<typeof createMissingWorld>>) => fs.rmSync(w.lib.file(P_PATH));
+
+    /** #17: P archived, then its bytes back at another path, so Restore on that new photograph would go through. */
+    async function restorable() {
+        const w = await createMissingWorld(images);
+        cleanups.push(() => w.cleanup());
+        takeP(w);
+        await w.pass();
+        const missing = await w.event(w.missingId);
+        expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: 'curator:test' })).toMatchObject({ ok: true });
+        await w.pass();
+        fs.mkdirSync(w.lib.file('returned'));
+        fs.writeFileSync(w.lib.file('returned/landscape.jpg'), images.original);
+        await w.pass();
+        const event = (await listEvents(w.root)).events.find((entry) => entry.type === 'new' && entry.derivedFacts.sourcePath === 'returned/landscape.jpg') as CurationEvent;
+        return { root: w.root, form: () => pageForm(event, w.revisionId, { intent: 'restore' }), action: restoreItem };
+    }
+
+    /** #17: a missing source, so Release, confirm-missing, would go through. */
+    async function releasable() {
+        const w = await createMissingWorld(images);
+        cleanups.push(() => w.cleanup());
+        takeP(w);
+        await w.pass();
+        const event = await w.event(w.missingId);
+        return { root: w.root, form: () => pageForm(event, w.revisionId, { intent: 'release', reason: 'Gone for good.' }), action: releaseItem };
+    }
+
+    const ITEMS = { Confirm: confirmable, Archive: archivable, Restore: restorable, Release: releasable } as const;
 
     for (const [label, make] of Object.entries(ITEMS)) {
         it(`refuses ${label} from a request with no session, in proxy() with a 401 and in requireCurator(), writing nothing`, async () => {

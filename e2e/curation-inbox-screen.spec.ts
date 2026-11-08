@@ -159,7 +159,10 @@ test('lists the library-unavailable item under its Type filter, and opens it', a
     await waitForHydration(page);
     await expect(page).toHaveURL(new RegExp(`type=library-unavailable&item=${LIBRARY_EVENT_ID}#item$`));
     await expect(page.getByRole('heading', { level: 2, name: 'The photo library' })).toBeVisible();
-    await expect(page.getByText('The library root is missing')).toBeVisible();
+    // The item's own Cause fact. The banner above both sides says the cause too, inside its sentence, and with nothing
+    // held its first sentence alone (#17), so each is read in its own place.
+    await expect(page.locator('#item').getByText('The library root is missing')).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Library', exact: true })).toHaveText("The library can't be reached (the library root is missing), so nothing changes until it's back.");
 });
 
 test('Decide later on two selected items sends one version each, and lists the one that moved in an error summary that has focus', async ({ page }) => {

@@ -32,6 +32,8 @@ vi.mock('../actions', () => {
         confirmItem: make('confirm'),
         bindItem: make('bind'),
         archiveItem: make('archive'),
+        restoreItem: make('restore'),
+        releaseItem: make('release'),
         bulkItems: async (_previous: InboxBulkState, form: FormData): Promise<InboxBulkState> => {
             sent.forms.push({ action: 'bulk', fields: [...form.entries()].map(([name, value]) => [name, String(value)]) });
             if (sent.hold) await sent.hold;
@@ -64,7 +66,7 @@ const READ_AT = '2026-02-01T03:00:00.000Z';
 const SERIES: SeriesOption[] = [{ id: 'ser_harbor', label: 'Harbor', visibility: 'published', members: [] }];
 
 function item(n: number, overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(n), version: 2, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(n), shortId: `ph_0000…${String(n).padStart(4, '0')}`, sourcePath: `trips/photo-${n}.jpg`, thumbnailUrl: null, waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, ...overrides };
+    return { id: EVT(n), version: 2, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(n), shortId: `ph_0000…${String(n).padStart(4, '0')}`, sourcePath: `trips/photo-${n}.jpg`, thumbnailUrl: null, waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, held: false, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -96,6 +98,9 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         replacement: null,
         resolvedBy: null,
         bindWaiting: null,
+        suggestedFiles: [],
+        restores: null,
+        release: false,
         ...overrides,
     };
 }
@@ -103,7 +108,7 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
 type Ready = Extract<InboxView, { state: 'ready' }>;
 function view(overrides: Partial<Ready> = {}): Ready {
     const items = overrides.items ?? [item(1), item(2)];
-    return { state: 'ready', watcher: { state: 'running' }, readAt: READ_AT, cursor: 0, activeRevisionId: ACTIVE, needsJudgment: items.length, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items, problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, readAt: READ_AT, cursor: 0, activeRevisionId: ACTIVE, needsJudgment: items.length, held: 0, library: null, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items, problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const ANY = { status: null, type: null, page: 1 } as const;
@@ -130,7 +135,8 @@ describe('the filters, paging and age labels', () => {
         const types = within(type).getAllByRole('option').map((option) => option.textContent);
         expect(types).toEqual(['Any type', 'New photograph', 'Replacement', 'Missing source', 'Source reappeared', 'Ambiguous match', 'Processing failure', 'Library unavailable']);
         const status = within(form).getByRole('combobox', { name: 'Status' });
-        expect(within(status).getAllByRole('option')).toHaveLength(7);
+        // Any status, the six stored ones, and #17's Held.
+        expect(within(status).getAllByRole('option')).toHaveLength(8);
         expect(within(form).getByRole('button', { name: 'Apply filters' })).toHaveAttribute('type', 'submit');
         expect(screen.queryByRole('link', { name: 'Clear filters' })).toBeNull();
     });

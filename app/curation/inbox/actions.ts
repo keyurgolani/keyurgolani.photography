@@ -7,8 +7,8 @@ import { runInboxAction } from '@/lib/curation/inbox-form';
 import type { BulkKind, InboxActionKind, InboxActionState, InboxBulkState } from '@/lib/curation/inbox-view';
 
 /**
- * The inbox's server actions, one per 14-1 action, and #118's three for #17's
- * resolutions: Confirm, Bind and Archive. Each calls
+ * The inbox's server actions, one per 14-1 action, #118's three for #17's
+ * resolutions: Confirm, Bind and Archive, and #17's Restore and Release. Each calls
  * requireCurator() first, before it reads its arguments, so a request the
  * boundary refuses (the flag, the bind, the `Host`, or the `Origin`) gets a
  * 404 and writes nothing, however it was posted. Then the form goes to
@@ -66,6 +66,18 @@ export async function bindItem(_previous: InboxActionState, form: FormData): Pro
 export async function archiveItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
     await requireCurator();
     return settle('archive', form);
+}
+
+/** #17: Restore, in Approve's place on a new photograph whose bytes are an archived one's. It only ever restores. */
+export async function restoreItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
+    await requireCurator();
+    return settle('restore', form);
+}
+
+/** #17: Release, `curation confirm-missing` on a missing item the library item holds. */
+export async function releaseItem(_previous: InboxActionState, form: FormData): Promise<InboxActionState> {
+    await requireCurator();
+    return settle('release', form);
 }
 
 /**

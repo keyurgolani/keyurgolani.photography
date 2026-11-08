@@ -366,6 +366,26 @@ export function suggestedNewItems(root: string, photoId: string, registry: Regis
     return newItemsFor(root, photoId, registry, (facts) => facts.suggestedFor === photoId && facts.samePathAs !== photoId);
 }
 
+/** #17: one file the watcher suggests for a missing photograph, and why: its file name, or its capture time. */
+export interface BindSuggestion {
+    item: CurationEvent;
+    by: 'basename' | 'capture-time';
+}
+
+/**
+ * #17: the files `curation show` lists as "Suggested" for a missing photograph, and that the Inbox's Bind offers, from
+ * suggestedNewItems(), each with why. Both read them here, so they list the same files. Empty when the registry can't
+ * be read (null) or the items can't, since a suggestion is only ever a hint.
+ */
+export async function bindSuggestions(root: string, photoId: string, registry: Registry | null): Promise<BindSuggestion[]> {
+    if (registry === null) return [];
+    try {
+        return (await suggestedNewItems(root, photoId, registry)).map((item) => ({ item, by: item.derivedFacts.suggestedBy === 'capture-time' ? 'capture-time' : 'basename' }));
+    } catch {
+        return [];
+    }
+}
+
 async function newItemsFor(root: string, photoId: string, registry: Registry, linked: (facts: CurationEvent['derivedFacts']) => boolean): Promise<CurationEvent[]> {
     const { events } = await listEvents(root);
     return events.filter((event) => {
