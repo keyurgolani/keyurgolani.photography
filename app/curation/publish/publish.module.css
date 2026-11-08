@@ -504,6 +504,53 @@
   cursor: not-allowed;
 }
 
+/* What the last check found that never blocks a publish: the change tone, never the alert's red, so it reads as a
+   warning. The words are the body ink and its soft step on the change ground, both past 4.5:1 in Dark and Light;
+   the icon takes the change ink. */
+.warnings {
+  margin-top: 1.25rem;
+}
+
+.warningsHeading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem !important;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-ui) !important;
+  font-weight: 500;
+}
+
+.warningsHeading svg {
+  flex: none;
+  margin-top: 0.2em;
+  color: var(--curator-tone-change-ink);
+}
+
+.warningList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.warningList li {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--curator-rule);
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+}
+
+.warningList strong {
+  font-weight: 500;
+  font-size: var(--gah-type-ui);
+}
+
+.warningHint {
+  color: var(--gah-ink-soft);
+}
+
 /* The result slot, between the ledger and the bar: every answer to Validate or Publish. */
 
 .result {

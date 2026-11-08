@@ -2,6 +2,7 @@ import 'server-only';
 import { compileCandidate, type CompileResult } from '@/lib/catalog/compile';
 import { diffCatalog, type CatalogDiff } from '@/lib/catalog/diff';
 import { previewBasePath, previewFrameHref, previewRoutes } from '@/lib/catalog/preview-reader';
+import { checkDraft } from '@/lib/catalog/publish';
 import { listActivations, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
 import { readReviewContext } from '@/lib/catalog/review-context';
 import { createRouteBuilder } from '@/lib/catalog/routes';
@@ -12,7 +13,7 @@ import type { ReviewContext } from '@/lib/catalog/review';
 import { readRegistry } from '@/lib/identity/registry';
 import type { Registry } from '@/lib/identity/types';
 import { dataRootStatus } from '@/lib/storage/config';
-import type { Blocker, Ledger, RevisionFacts, RollbackReadiness, ScreenView } from '@/lib/curation/publish-facts';
+import type { Blocker, Ledger, PublishWarning, RevisionFacts, RollbackReadiness, ScreenView } from '@/lib/curation/publish-facts';
 import { buildLedger, Names, panelLines, panelTarget } from '@/lib/curation/publish-view';
 import type { HistoryView } from '@/lib/curation/publish-history';
 import { loadHistoryView, type HistoryLoadOptions } from './history-load';
@@ -76,8 +77,11 @@ export async function readSnapshot(): Promise<Snapshot | null> {
     return { root, pointer, layer, registry, active, activations, compiled, review, diff };
 }
 
-/** The ledger and its blockers for a snapshot: predicted on a page load (`issues` null), or from an answer's diagnostics. */
-export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): { ledger: Ledger; blockers: Blocker[] } {
+/**
+ * The ledger, its blockers and its warnings for a snapshot: the blockers predicted on a page load (`issues` null),
+ * with the warnings from `checked`, the load's own check of the draft; or both from an answer's diagnostics.
+ */
+export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null, checked: readonly Issue[] | null = null): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const routes = previewRoutes(snapshot.compiled.candidateId);
     return buildLedger({
         diff: snapshot.diff,
@@ -88,6 +92,7 @@ export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): {
         review: snapshot.review,
         activations: snapshot.activations,
         issues,
+        diagnostics: checked,
         media: { draft: (url) => routes.mediaHref(url), live: (url) => url },
     });
 }
@@ -102,6 +107,19 @@ export async function readinessOf(root: string, revisionId: string, registry?: R
     const readiness = await rollbackReadiness(root, { revisionId, ...(registry ? { registry } : {}) });
     if (readiness.state === 'failed') return { state: 'failed', reason: readiness.reason };
     return { state: readiness.state === 'none' ? 'unknown' : readiness.state };
+}
+
+/**
+ * The load's own check of the draft, or null when it throws: the warnings it lists never block, so a check that fails
+ * lists none and leaves the page, its ledger, History and Restore, as they are. The log names why.
+ */
+function checkedOrNull(snapshot: Snapshot): Issue[] | null {
+    try {
+        return checkDraft(snapshot.root, snapshot);
+    } catch (error) {
+        console.error('[curation] The Publish screen could not check the draft for warnings:', error);
+        return null;
+    }
 }
 
 /** The view for a snapshot, as a page load shows it, with what readinessOf() said of its active revision. */
@@ -122,7 +140,9 @@ export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { 
     // The Nothing states show the live site as it is: its own series, at the top.
     const liveSeries = kind === 'ledger' ? series : active.content.series[0];
     const lines = kind === 'ledger' ? panelLines(diff, compiled.content, active.content, target.seriesId, names) : liveLines(active, names);
-    const { ledger, blockers } = kind === 'ledger' ? ledgerOf(snapshot, null) : { ledger: { authored: [], derived: [], health: [] }, blockers: [] };
+    // The warnings come from the same rules `photos validate` runs, on the draft this load compiled, so they're current
+    // with the registry's source health too, which the draft's ID doesn't cover. About a third of the read's own time.
+    const { ledger, blockers, warnings } = kind === 'ledger' ? ledgerOf(snapshot, null, checkedOrNull(snapshot)) : { ledger: { authored: [], derived: [], health: [] }, blockers: [], warnings: [] };
     return {
         draftId,
         draftNumber: revisionNumberFor(activations, draftId),
@@ -132,6 +152,7 @@ export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { 
         kind,
         ledger,
         blockers,
+        warnings,
         panel: {
             ...lines,
             draftSrc: kind === 'ledger' ? at(preview) : null,

@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useActionState, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from 'react';
-import { Check, ChevronDown, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, Sparkles, Undo2, UploadCloud, type LucideIcon } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, Sparkles, TriangleAlert, Undo2, UploadCloud, type LucideIcon } from 'lucide-react';
 import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
 import PreviewFrame from '@/components/curation/PreviewFrame';
@@ -23,6 +23,7 @@ import {
     type LedgerRow,
     type OrderCompare,
     type PublishState,
+    type PublishWarning,
     type ReviewLabel,
     type RevisionFacts,
     type ScreenView,
@@ -571,6 +572,63 @@ function bringClearOfBar(box: HTMLElement) {
 
 const ICON: Record<'done' | 'change' | 'alert', LucideIcon> = { done: Check, change: RefreshCw, alert: CircleAlert };
 
+/**
+ * What the last check of the draft found that never blocks a publish, in each rule's own words, as `photos validate`
+ * prints them. A warning, not an error: the change tone and an icon beside the words, never the alert's red, and a
+ * heading that says Publish isn't held. Nothing at all when there are none.
+ */
+function WarningList({ warnings, ctx }: { warnings: readonly PublishWarning[]; ctx: FixContext }) {
+    if (warnings.length === 0) return null;
+    const n = warnings.length;
+    const heading = n === 1 ? "1 warning, which doesn't block publishing" : `${n} warnings, which don't block publishing`;
+    return (
+        <section className={`${curator.notice} ${styles.warnings}`} data-tone="change" aria-labelledby="warnings-heading">
+            <h3 id="warnings-heading" className={styles.warningsHeading}>
+                <TriangleAlert size={16} aria-hidden="true" />
+                {heading}
+            </h3>
+            <ul className={styles.warningList}>
+                {warnings.map((warning) => (
+                    <li key={warning.key}>
+                        <strong>
+                            {warning.record} · {warning.field}
+                        </strong>
+                        <span>{warning.message}</span>
+                        {warning.hint ? <span className={styles.warningHint}>{warning.hint}</span> : null}
+                        {warning.link ? (
+                            <span className={styles.errorActions}>
+                                <WarningLinkTo warning={warning} ctx={ctx} />
+                            </span>
+                        ) : null}
+                    </li>
+                ))}
+            </ul>
+        </section>
+    );
+}
+
+/** A warning's link: the series' own page, or the photograph's fix as its ledger row offers it, through BlockerLink. */
+function WarningLinkTo({ warning, ctx }: { warning: PublishWarning; ctx: FixContext }) {
+    const { link } = warning;
+    if (!link) return null;
+    if (link.type === 'series') {
+        return (
+            <a className={curator.linkButton} href={link.href}>
+                Edit the series: {link.name}
+            </a>
+        );
+    }
+    const blocker: Blocker = {
+        key: warning.key,
+        rowId: link.type === 'description' ? link.rowId : null,
+        record: warning.record,
+        field: warning.field,
+        message: warning.message,
+        link: link.type === 'description' ? { type: 'description', name: link.name } : { type: 'inbox', record: link.name, eventId: link.eventId },
+    };
+    return <BlockerLink blocker={blocker} ctx={ctx} />;
+}
+
 /** The one result slot, above the bar: every answer to Validate or Publish, its heading the focus target. */
 function ResultSlot({ answer, view, facts, ctx, zone }: { answer: Answer | null; view: ScreenView; facts: DisplayFacts; ctx: FixContext; zone: string }) {
     if (!answer) return null;
@@ -941,6 +999,7 @@ export default function PublishScreen({ view, previewHref, openFix, action, hist
                         <Group heading={facts.groups.authored} rows={ledger.authored} tone="authored" facts={facts} ctx={ctx} />
                         <Group heading={facts.groups.derived} rows={ledger.derived} tone="derived" facts={facts} ctx={ctx} />
                         <Group heading="Source health" rows={ledger.health} tone="health" facts={facts} ctx={ctx} />
+                        <WarningList warnings={facts.warnings} ctx={ctx} />
                         <ResultSlot answer={state.result} view={view} facts={facts} ctx={ctx} zone={zone} />
                         <ActionBar view={view} facts={facts} pending={pending} sent={sent} ctx={ctx} historyParams={historyParams} />
                     </section>

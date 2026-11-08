@@ -114,6 +114,33 @@ export interface Blocker {
     link: BlockerLink;
 }
 
+/**
+ * Where a warning takes the curator: a series' own page, or for a photograph the fix its ledger row already offers,
+ * its description review on this screen or its Inbox item.
+ */
+export type WarningLink = { type: 'series'; href: string; name: string } | { type: 'description'; rowId: string; name: string } | { type: 'inbox'; eventId: string; name: string };
+
+/**
+ * A warning a check of the draft found: a rule of severity warning, which never blocks a publish. Its message and
+ * hint are the rule's own, as `photos validate` prints them; `record` names the series, with its slug, so two of one
+ * title read apart, or the photograph; `link` is where to fix it, where there's one.
+ */
+export interface PublishWarning {
+    key: string;
+    record: string;
+    field: string;
+    message: string;
+    hint: string | null;
+    link: WarningLink | null;
+}
+
+/** The answer's line about the warnings listed above it, where the focus lands, or none. */
+export function warningsLine(warnings: readonly PublishWarning[] | undefined): string[] {
+    const n = warnings?.length ?? 0;
+    if (n === 0) return [];
+    return [n === 1 ? "1 warning, listed above, which doesn't block publishing." : `${n} warnings, listed above, which don't block publishing.`];
+}
+
 /** A revision as the page names it. */
 export interface RevisionFacts {
     revisionId: string;
@@ -162,15 +189,18 @@ export interface ScreenView {
     ledger: Ledger;
     /** The blockers the review context shows on load, before any Validate. */
     blockers: Blocker[];
+    /** The warnings this load's own check of the draft found, current with the draft and the registry's source health. */
+    warnings?: PublishWarning[];
     panel: PanelView;
     /** Whether the active revision is rollback-ready (#117), which the line while a draft is pending says. */
     rollbackReady: RollbackReadiness;
 }
 
 export type Answer =
-    | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger }
-    | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger }
-    | { kind: 'valid'; stakes: string }
+    | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger; warnings?: PublishWarning[] }
+    | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger; warnings?: PublishWarning[] }
+    /** `warnings`: what this check found that never blocks, in the rules' own words. */
+    | { kind: 'valid'; stakes: string; warnings?: PublishWarning[] }
     /** 15-4: `history` is History read again, on every answer that moved the pointer or found it moved. */
     | { kind: 'published'; live: RevisionFacts; previous: RevisionFacts | null; history?: HistoryView }
     | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null; history?: HistoryView }
@@ -259,6 +289,8 @@ export interface DisplayFacts {
     /** The ledger and blockers to show: the latest answer's when it carries a fresh join, else the page's. */
     ledger: Ledger;
     blockers: Blocker[];
+    /** The warnings to list while a draft is pending: the latest check's on this page, else the page load's own. None otherwise. */
+    warnings: PublishWarning[];
     /** True while Publish may go: a validation of this candidate passed on this page and still holds. */
     validated: boolean;
 }
@@ -405,6 +437,8 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
     const cleared = (ledger: Ledger): Ledger => ({ authored: ledger.authored.map((row) => ({ ...row, blocks: false })), derived: ledger.derived.map((row) => ({ ...row, blocks: false })), health: ledger.health });
     const ledger = fresh?.ledger ?? (answer?.kind === 'valid' ? cleared(view.ledger) : view.ledger);
     const blockers = fresh?.blockers ?? (answer?.kind === 'valid' ? [] : view.blockers);
+    // A warning never blocks: the latest check's, when it carries them, else what the last check of this draft found.
+    const warnings = (fresh ?? (answer?.kind === 'valid' ? answer : null))?.warnings ?? view.warnings ?? [];
     const draftGroups = { authored: 'Authored · requires judgment', derived: 'Derived · recalculated automatically' };
     const liveGroups = { authored: 'Authored', derived: 'Derived' };
     const draftLabels = { before: 'Published', after: 'This draft' };
@@ -437,6 +471,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             bar: null,
             ledger,
             blockers: [],
+            warnings: [],
             validated: false,
         };
     }
@@ -467,6 +502,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         bar,
         ledger,
         blockers: [],
+        warnings: [],
         validated: alert,
     });
 
@@ -511,6 +547,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             bar: { validate: 'hidden', publish: 'hidden', loadUpdated: true },
             ledger,
             blockers: [],
+            warnings: [],
             validated: false,
         };
     }
@@ -549,6 +586,7 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         bar: { validate: 'available', publish: validated ? 'available' : 'unavailable', ...(reason ? { reason } : {}), loadUpdated: false },
         ledger,
         blockers,
+        warnings,
         validated,
     };
 }
@@ -558,11 +596,11 @@ export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): 
     const n = view.draftNumber;
     switch (answer.kind) {
         case 'blocked':
-            return { tone: 'alert', heading: 'Publication blocked', body: [answer.lead] };
+            return { tone: 'alert', heading: 'Publication blocked', body: [answer.lead, ...warningsLine(answer.warnings)] };
         case 'blocked-at-publish':
-            return { tone: 'alert', heading: 'Nothing was published', body: [answer.lead] };
+            return { tone: 'alert', heading: 'Nothing was published', body: [answer.lead, ...warningsLine(answer.warnings)] };
         case 'valid':
-            return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes] };
+            return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes, ...warningsLine(answer.warnings)] };
         case 'published':
             // The owner's words (v1.2.1), in place of the mockup's "published atomically" and its ETag line.
             return { tone: 'done', heading: `Revision ${answer.live.number} is live`, body: ['Visitors get it on their next page load.'] };

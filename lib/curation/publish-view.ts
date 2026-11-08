@@ -1,10 +1,11 @@
 import { positionsPhrase, type CatalogChange, type CatalogDiff } from '../catalog/diff';
 import { hashValue, inboxReviewOf, publishedIndexes, type FieldReviewState, type InboxItem, type PublishedIndex, type ReviewContext } from '../catalog/review';
+import { SERIES_ID_RE } from '../catalog/schema';
 import { USE_PUBLISHED_REASONS, publishedValueOffer } from '../catalog/use-published-rules';
 import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-reasons';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
-import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget, type UsePublishedFix } from './publish-facts';
+import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type PublishWarning, type ReviewLabel, type ReviewTarget, type UsePublishedFix } from './publish-facts';
 import { textDiff } from './text-diff';
 import { fileParts, shortIdOf } from './inbox-view';
 import { dayToken } from './publish-history';
@@ -28,6 +29,11 @@ export interface LedgerInput {
     activations: readonly Activation[];
     /** The answer's errors, or null on a page load, where the review state predicts them. */
     issues: readonly Issue[] | null;
+    /**
+     * On a page load, the issues the load's own check of the draft found, or null when it ran none. Only their
+     * warnings are read: the review state predicts the errors.
+     */
+    diagnostics?: readonly Issue[] | null;
     /** A `/media` URL for an image of the candidate (the preview's mirror) and of the active revision. */
     media: { draft: (url: string) => string; live: (url: string) => string };
 }
@@ -612,15 +618,45 @@ function blockerMessage(change: CatalogChange, entry: FieldReviewState | undefin
 }
 
 /**
+ * What a warning names and where it takes the curator. A series by its title and slug, so two of one title read
+ * apart, linked to its page only from an ID a series could have. A photograph by its title: its description review
+ * only from a row that shows one, marked with that fix, since the review panel renders for nothing else; else its
+ * Inbox item, which opens from anywhere; else nothing.
+ */
+function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, built: Built): Pick<PublishWarning, 'record' | 'link'> {
+    if (record.kind === 'series') {
+        const slug = [...input.candidate.series, ...input.active.series].find((series) => series.id === record.id)?.slug ?? (input.layer.series.find((series) => series.id === record.id) as { slug?: string } | undefined)?.slug;
+        const name = slug ? `${names.series(record.id)} (${slug})` : names.series(record.id);
+        return { record: name, link: SERIES_ID_RE.test(record.id) ? { type: 'series', href: `/curation/series/${encodeURIComponent(record.id)}`, name } : null };
+    }
+    const name = names.record(record);
+    if (record.kind !== 'photo') return { record: name, link: null };
+    let inbox: PublishWarning['link'] = null;
+    for (const [rowId, change] of built.change) {
+        if (change.record.kind !== 'photo' || change.record.id !== record.id) continue;
+        const shown = built.rows.get(rowId)?.fix;
+        if (shown?.type === 'description') return { record: name, link: { type: 'description', rowId, name: shown.record } };
+        const fix = shown ?? fixOf(change, input, names);
+        if (fix?.type === 'inbox') inbox ??= { type: 'inbox', eventId: fix.eventId, name: fix.record };
+        else if (fix?.type === 'description' && fix.inboxItem) inbox ??= { type: 'inbox', eventId: fix.inboxItem, name: fix.record };
+    }
+    return { record: name, link: inbox };
+}
+
+/**
  * The join: the ledger's rows and the blocker list, from the diff, the review
  * context and the answer's diagnostics (or, on a page load, what the review
  * state predicts the gate refuses). Every blocker that names a changed
  * record and field marks exactly that row, with its label, the badge and its
- * fix; a diagnostic with no row is listed on its own, with no link.
+ * fix; a diagnostic with no row is listed on its own, with no link. A
+ * warning never blocks: it is listed apart, in its rule's own words.
  */
-export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blocker[] } {
+export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const names = new Names(input);
     const built = rowsOf(input, names);
+    // The warnings, named and linked once every row is marked, since a link to a row's review needs its mark.
+    const warned: Issue[] = [];
+    const warn = (issue: Issue) => warned.push(issue);
     const blockers: Blocker[] = [];
     const marked = new Set<string>();
     const conflicts = conflictFields(input.layer);
@@ -663,9 +699,14 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
             // A rebase conflict blocks too (working.conflicts), and the load predicts it from the layer, not the rules.
             if (entry || conflictOf(change)) mark(rowId, entry, null);
         }
+        for (const issue of input.diagnostics ?? []) if (issue.severity === 'warning') warn(issue);
     } else {
         for (const issue of input.issues) {
-            if (issue.severity !== 'error') continue;
+            // A warning is listed on its own and never marks a row.
+            if (issue.severity !== 'error') {
+                warn(issue);
+                continue;
+            }
             const issueKey = keyOf(issue.record, issue.field);
             let hit = false;
             for (const [rowId, change] of built.change) {
@@ -690,7 +731,13 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
     const order = [...ledger.authored, ...ledger.derived, ...ledger.health].map((row) => row.id);
     const rank = (blocker: Blocker) => (blocker.rowId === null ? order.length : order.indexOf(blocker.rowId));
     blockers.sort((a, b) => rank(a) - rank(b));
-    return { ledger, blockers };
+    const warnings = warned.map((issue): PublishWarning => {
+        // "alt.text" is the description, as the ledger names it.
+        const field = fieldName({ record: issue.record, field: issue.field.split(/[.[]/)[0] });
+        const { record, link } = warningTarget(issue.record, input, names, built);
+        return { key: `${issue.code} ${issue.record.kind} ${issue.record.id} ${issue.field}`, record, field, message: issue.message, hint: issue.hint ?? null, link };
+    });
+    return { ledger, blockers, warnings };
 }
 
 /** The series the panel opens: the one with the most authored rows, and its first changed photograph in series order. */

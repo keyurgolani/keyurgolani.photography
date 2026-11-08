@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { LedgerRow, PublishState, ScreenView, WatchAnswer } from '@/lib/curation/publish-facts';
+import type { Answer, LedgerRow, PublishState, PublishWarning, ScreenView, WatchAnswer } from '@/lib/curation/publish-facts';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
 import { BREAKWATER_TITLE, createPublishFixture, type PublishFixture } from '@/test/helpers/publishFixture';
 
@@ -148,5 +148,67 @@ describe('PublishScreen', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('the warnings on the Publish screen', () => {
+    // In the rules' own words, as the CLI prints them. A series is named with its slug and links to its page.
+    const warnings: PublishWarning[] = [
+        { key: 'description.camera-tokens photo a alt.text', record: BREAKWATER_TITLE, field: 'description', message: 'The description mentions camera details.', hint: 'Screen readers read the description aloud. The camera details are stored separately.', link: null },
+        { key: 'description.length photo a alt.text', record: BREAKWATER_TITLE, field: 'description', message: 'The description runs 301 characters, past 250.', hint: 'Keep it to what the photograph shows.', link: null },
+        { key: 'series.duplicate-title series b title', record: 'Low Tide Hours (low-tide-hours)', field: 'title', message: 'The series low-tide-hours and salt-roads share this title, so Work shows 2 links with the same name.', hint: 'Give each series its own title. This is a warning only; nothing is blocked.', link: { type: 'series', href: '/curation/series/ser_low-tide', name: 'Low Tide Hours (low-tide-hours)' } },
+    ];
+    const validated = (list: PublishWarning[]) => {
+        const valid: Answer = { kind: 'valid', stakes: 'Publishing makes these changes live on every page.', warnings: list };
+        return async (previous: PublishState): Promise<PublishState> => ({ serial: previous.serial + 1, intent: 'validate', answer: valid, result: valid });
+    };
+
+    it("lists all three under a heading that says they don't block, in the change tone with an icon, and Publish opens after Validate as ever", async () => {
+        const { default: PublishScreen } = await import('../PublishScreen');
+        render(<PublishScreen view={{ ...view, blockers: [] }} previewHref="/curation/preview/x" openFix={null} action={validated(warnings)} />);
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Validate revision' }));
+        });
+        const section = screen.getByRole('region', { name: "3 warnings, which don't block publishing" });
+        // A warning, not an error: the change tone, never the alert's, and an icon with the words, never colour alone.
+        expect(section).toHaveAttribute('data-tone', 'change');
+        expect(section.closest('[data-tone="alert"]')).toBeNull();
+        expect(within(section).getByRole('heading', { name: "3 warnings, which don't block publishing" }).querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+        const items = within(section).getAllByRole('listitem');
+        expect(items).toHaveLength(3);
+        warnings.forEach((warning, index) => {
+            expect(items[index]).toHaveTextContent(`${warning.record} · ${warning.field}`);
+            expect(items[index]).toHaveTextContent(warning.message);
+            expect(items[index]).toHaveTextContent(warning.hint ?? '');
+        });
+        expect(within(items[2]).getByRole('link', { name: 'Edit the series: Low Tide Hours (low-tide-hours)' })).toHaveAttribute('href', '/curation/series/ser_low-tide');
+        expect(within(items[0]).queryByRole('link')).toBeNull();
+        // The focus lands on the answer, below the list, which says the list is there.
+        const result = screen.getByRole('region', { name: 'Catalog revision is valid' });
+        expect(within(result).getByText("3 warnings, listed above, which don't block publishing.")).toBeInTheDocument();
+        // Publish stays open, with no confirm and nothing more to press.
+        const publishButton = screen.getByRole('button', { name: /^Publish revision \d+$/ });
+        expect(publishButton).not.toHaveAttribute('aria-disabled');
+        expect(publishButton).not.toHaveAttribute('data-off');
+    });
+
+    it('says one warning in the singular, in the heading and in the answer', async () => {
+        const { default: PublishScreen } = await import('../PublishScreen');
+        render(<PublishScreen view={{ ...view, blockers: [] }} previewHref="/curation/preview/x" openFix={null} action={validated([warnings[2]])} />);
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Validate revision' }));
+        });
+        expect(screen.getByRole('heading', { name: "1 warning, which doesn't block publishing" })).toBeInTheDocument();
+        expect(screen.getByText("1 warning, listed above, which doesn't block publishing.")).toBeInTheDocument();
+    });
+
+    it("lists the page's warnings on load, and renders nothing for them when there are none", async () => {
+        const { default: PublishScreen } = await import('../PublishScreen');
+        const { unmount } = render(<PublishScreen view={{ ...view, warnings }} previewHref="/curation/preview/x" openFix={null} action={action} />);
+        expect(within(screen.getByRole('region', { name: "3 warnings, which don't block publishing" })).getAllByRole('listitem')).toHaveLength(3);
+        unmount();
+        render(<PublishScreen view={{ ...view, warnings: [] }} previewHref="/curation/preview/x" openFix={null} action={action} />);
+        expect(screen.queryByRole('region', { name: /warnings?, which/ })).toBeNull();
+        expect(screen.queryByText(/which (?:don't|doesn't) block publishing/)).toBeNull();
     });
 });
