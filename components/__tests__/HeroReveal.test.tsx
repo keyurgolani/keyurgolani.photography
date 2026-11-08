@@ -1,4 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { act, render } from '@testing-library/react';
+import postcss from 'postcss';
 import { Activity, StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -564,6 +567,85 @@ describe('badgePlace', () => {
 
   it('leaves the place alone before there is a card to measure', () => {
     expect(badgePlace({ width: 390, height: 844 }, 0, nav(390), [])).toBeNull();
+  });
+
+  // A short phone held upright: the story spans the screen, so there is no room beside it. 320 x 568 in Dark, from
+  // CatalogHome.module.css: a two-line title, the statement, then Enter the series with All bodies of work under it
+  // (below 360 px), above the slideshow's controls. 164 px between the nav's and the title's 16 px is too short for the
+  // badge at 0.6, and beside the story, a quarter of the width right of the center, the oval lies on the title.
+  const short = { width: 320, height: 568 };
+  const shortStory = (lift = 0) =>
+    [box(16, 252, 274, 320), box(16, 332, 266, 352), box(16, 372, 155, 416), box(16, 424, 169, 468)].map((b) => ({ ...b, top: b.top - lift, bottom: b.bottom - lift }));
+  /** The painted oval's height at `scale` on the 256 px card, ring included. */
+  const ovalHeight = (scale: number) => oval(short, 256, { kind: 'clear', dx: 0, dy: 0, scale }).bottom - oval(short, 256, { kind: 'clear', dx: 0, dy: 0, scale }).top;
+
+  it('on a short phone held upright, shrinks the badge above the story rather than put it on the title', () => {
+    const place = badgePlace(short, 256, nav(320), shortStory())!;
+    expect(place).toMatchObject({ kind: 'clear', dx: 0 });
+    expect(place.scale).toBeLessThan(0.6);
+    const painted = oval(short, 256, place);
+    for (const blocker of [nav(320), ...shortStory()]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
+    // The largest that fits, to the hundredth: a hundredth more no longer fits between the nav and the title.
+    expect(ovalHeight(place.scale)).toBeLessThanOrEqual(252 - 16 - (56 + 16) + 0.01);
+    expect(ovalHeight(place.scale + 0.01)).toBeGreaterThan(252 - 16 - (56 + 16));
+    // Reduced motion's hint under the controls lifts the copy about 25 px: the badge gets smaller, still clear.
+    const lifted = badgePlace(short, 256, nav(320), shortStory(25))!;
+    expect(lifted.kind).toBe('clear');
+    expect(lifted.scale).toBeLessThan(place.scale);
+    for (const blocker of [nav(320), ...shortStory(25)]) expect(gap(oval(short, 256, lifted), blocker)).toBeGreaterThanOrEqual(16 - 0.01);
+  });
+
+  it('never puts the badge on the copy of a phone held upright: it is clear of it, or it is out of sight', () => {
+    for (const width of [320, 360, 375, 390]) {
+      for (let height = 480; height <= 900; height += 4) {
+        for (let lift = 0; lift <= 240; lift += 8) {
+          // The copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the hint.
+          const story = shortStory(568 - height + lift).map((b) => ({ ...b, right: Math.min(b.right, width - 16) }));
+          const place = badgePlace({ width, height }, 256, nav(width), story);
+          // Out of sight: neither clear above the story nor beside it.
+          if (place && place.kind !== 'clear' && place.kind !== 'side') continue;
+          const painted = oval({ width, height }, 256, place);
+          for (const blocker of [nav(width), ...story]) expect(gap(painted, blocker), `${width} x ${height}, lifted ${lift}`).toBeGreaterThanOrEqual(16 - 0.01);
+        }
+      }
+    }
+  });
+
+  it("stays out of sight only where no badge fits even at 0.4, and lands where the intro took it before", () => {
+    // A 0.4 badge needs 119 px between the nav's and the title's 16 px.
+    const fits = 252 - 16 - (56 + 16) - Math.ceil(ovalHeight(0.4));
+    const smallest = badgePlace(short, 256, nav(320), shortStory(fits))!;
+    expect(smallest.kind).toBe('clear');
+    expect(smallest.scale).toBeCloseTo(0.4, 9);
+    const none = badgePlace(short, 256, nav(320), shortStory(fits + 1))!;
+    expect(none).toEqual({ kind: 'none', dx: 320 / 4, dy: -10, scale: 0.6 });
+  });
+
+  it('goes beside the story only where that clears it, as on a phone held sideways', () => {
+    const sideways = badgePlace({ width: 844, height: 390 }, 320, nav(844), [...screens[7].story])!;
+    expect(sideways).toEqual({ kind: 'side', dx: 844 / 4, dy: -10, scale: 0.6 });
+    // The same screen with the copy reaching under the oval beside it: that place no longer clears.
+    const reaching = [...screens[7].story, box(28, 100, 700, 200)];
+    expect(badgePlace({ width: 844, height: 390 }, 320, nav(844), reaching)!.kind).not.toBe('side');
+  });
+});
+
+describe("the badge with no clear place (HeroReveal.module.css)", () => {
+  const sheet = postcss.parse(fs.readFileSync(path.join(process.cwd(), 'components/HeroReveal.module.css'), 'utf8'));
+  const rules = (selector: string) => {
+    const found: Record<string, string> = {};
+    sheet.walkRules((rule) => {
+      if (rule.parent?.type === 'root' && rule.selectors.includes(selector)) rule.walkDecls((decl) => void (found[decl.prop] = decl.value));
+    });
+    return found;
+  };
+
+  it('stays out of sight at default text, so it never lies on the copy', () => {
+    expect(rules("main:not([data-text-enlarged]) .badge[data-badge-place='none']")).toEqual({ visibility: 'hidden' });
+  });
+
+  it('with the text enlarged, sits beside the story under the scrim, as beside the story does', () => {
+    expect(rules("main[data-text-enlarged] .badge:is([data-badge-place='side'], [data-badge-place='none'])")).toEqual({ 'z-index': '42' });
   });
 });
 

@@ -371,6 +371,9 @@ const WHITE_CASES = [
     { name: 'at 360 px on a phone, in Black', project: 'mobile', viewport: { width: 360, height: 800 }, theme: 'black' },
     { name: 'at 360 px on a phone, in Black, with reduced motion', project: 'mobile', viewport: { width: 360, height: 800 }, theme: 'black', reducedMotion: true },
     { name: 'at 379 px on a phone, in Black', project: 'mobile', viewport: { width: 379, height: 800 }, theme: 'black' },
+    { name: 'at 320 by 568 on a phone, in Black', project: 'mobile', viewport: { width: 320, height: 568 }, theme: 'black' },
+    { name: 'at 320 by 568 on a phone, in Light', project: 'mobile', viewport: { width: 320, height: 568 }, theme: 'light' },
+    { name: 'at 320 by 568 on a phone, in Bright', project: 'mobile', viewport: { width: 320, height: 568 }, theme: 'bright' },
 ] as const;
 
 /** Rule 8: every case keeps 4.5:1. */
@@ -418,6 +421,64 @@ for (const { name: where, project, viewport, ...rest } of WHITE_CASES) {
         expect(await titleTop(), "the title's top without the link").toBeCloseTo(withLink, 1);
         await hidden.evaluate((node) => node.parentNode?.removeChild(node));
     });
+}
+
+/** How far apart two boxes are, negative when they overlap. */
+const gapBetween = (a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }) =>
+    Math.max(b.left - a.right, a.left - b.right, b.top - a.bottom, a.top - b.bottom);
+
+// On a phone the badge never lies on the copy, in any theme: Light, Bright and Black raise it over the scrim, where no
+// wash can hold the title over it. 320 by 568 is the smallest phone, with the copy highest up its screen.
+for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 360, height: 640 },
+    { width: 390, height: 844 },
+]) {
+    for (const theme of ['light', 'bright', 'dark', 'black'] as const) {
+        test(`on a phone at ${viewport.width} by ${viewport.height} in ${theme}, the landed badge keeps 16 px from the series title, its statement and its links`, async ({ page }, testInfo) => {
+            runsOn(testInfo, 'mobile');
+            await page.setViewportSize(viewport);
+            await page.addInitScript((stored) => localStorage.setItem('theme', stored), theme);
+            await openHome(page);
+            await expectShown(page, HOME_OPENING);
+            await revealByKeyboard(page);
+            const badge = page.locator('[data-home-badge]');
+            await expect(badge).toHaveAttribute('data-landed', '');
+            await expect(badge).toHaveCSS('opacity', '1');
+            const measure = () =>
+                page.evaluate(() => {
+                    const box = (el: Element | null) => {
+                        if (!el) return null;
+                        const { left, top, right, bottom } = el.getBoundingClientRect();
+                        return { left, top, right, bottom };
+                    };
+                    const face = box(document.querySelector('[data-home-badge] [class*="face"]'));
+                    const story = document.querySelector('[data-chrome-region="story"]')!;
+                    return {
+                        place: document.querySelector('[data-home-badge]')!.getAttribute('data-badge-place'),
+                        visibility: getComputedStyle(document.querySelector('[data-home-badge]')!).visibility,
+                        oval: face && { left: face.left - 4, top: face.top - 4, right: face.right + 4, bottom: face.bottom + 4 },
+                        nav: box(document.querySelector('nav[aria-label="Primary"]')),
+                        title: box(story.querySelector('h1')),
+                        statement: box(story.querySelector('p')),
+                        enter: box(story.querySelector('a:not([href="/work"])')),
+                        work: box(story.querySelector('a[href="/work"]')),
+                    };
+                });
+            // Measured again a moment later, so a badge still moving to its place fails.
+            const first = await measure();
+            await page.waitForTimeout(250);
+            const around = await measure();
+            console.log(`badge on a phone at ${viewport.width}x${viewport.height} in ${theme}: ${JSON.stringify(around)}`);
+            expect(around.oval, 'the badge paints its oval').not.toBeNull();
+            for (const key of ['left', 'top', 'right', 'bottom'] as const) expect(Math.abs(around.oval![key] - first.oval![key]), `the oval's ${key} a moment later`).toBeLessThanOrEqual(1);
+            expect(around.visibility, 'the badge shows at this size').toBe('visible');
+            for (const name of ['nav', 'title', 'statement', 'enter', 'work'] as const) {
+                expect(around[name], name).not.toBeNull();
+                expect(gapBetween(around.oval!, around[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
+            }
+        });
+    }
 }
 
 const solidPhoto = (colour: string) => (format: 'avif' | 'webp') => sharp({ create: { width: 1920, height: 1280, channels: 3, background: colour } })[format]().toBuffer();
