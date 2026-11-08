@@ -1015,8 +1015,9 @@ async function newState(state: NewState, origins: { base: string; head: string }
  * b. The note must be there, or the cell fails, so the allowance can't outlive it.
  * c. It paints as Publish's own no-JavaScript line (publish.module.css's .reason) does on Publish's no-JavaScript
  *    screen in the head: NOTE_HOLD, each exactly. Three departures are sanctioned by name, each pinned to what it
- *    follows and listed (the coordinator's ruling B, no product change): text-align, centred against Publish's right;
- *    margin-inline, each side the head's --site-gutter at that width, read live in the same load; and line-height,
+ *    follows and listed (the coordinator's ruling B, no product change): text-align, center at every width, with
+ *    Publish's own alignment not held, since .reason is right-aligned on a wide screen and left on a phone
+ *    (publish.module.css's max-width: 767px blocks); margin-inline, each side the head's --site-gutter at that width, read live in the same load; and line-height,
  *    the loading label's, read in the same load. Anything else they take fails.
  * At 1440 and 1024 too the body must grow by exactly the note, never by 0. #145's one-screen layout is
  * `.page:has(> .body)`, and without JavaScript the whole page waits in React's hidden segment (display: none), so the
@@ -1243,8 +1244,8 @@ async function publishNoJsLine(origin: string, viewport: { width: number; height
 
 /**
  * The style hold (c): each of NOTE_HOLD that differs from Publish's line is a failing line. The three sanctioned
- * departures are each listed where they're what they follow, and fail where they aren't: text-align centre against
- * right; margin-left and margin-right each the gutter, read live (`gutter`); line-height the loading label's (`label`).
+ * departures are each listed where they're what they follow, and fail where they aren't: text-align center at every
+ * width, whatever Publish's is; margin-left and margin-right each the gutter, read live (`gutter`); line-height the loading label's (`label`).
  */
 function holdNote(note: NoteRead, model: Record<string, string>): { failing: string[]; sanctioned: string[] } {
     const paint = note.paint;
@@ -1261,9 +1262,9 @@ function holdNote(note: NoteRead, model: Record<string, string>): { failing: str
     else if (paint['line-height'] === note.labelLineHeight) {
         sanctioned.push(`F12's note's line-height, sanctioned: ${paint['line-height']}, the loading label's, where ${PUBLISH_LINE} has ${model['line-height']}`);
     } else failing.push(`F12's note line-height: ${paint['line-height']}, where the loading label it sits under has ${note.labelLineHeight}`);
-    if (paint['text-align'] === 'center' && model['text-align'] === 'right') {
-        sanctioned.push(`F12's note text-align: center, where ${PUBLISH_LINE} has right: sanctioned, the note is centred under the loading label`);
-    } else failing.push(`F12's note text-align: ${paint['text-align']}, where ${PUBLISH_LINE} has ${model['text-align']}: only centre against right is sanctioned`);
+    // Pinned to center, and Publish's alignment isn't held: .reason's follows the width (right, then left on a phone).
+    if (paint['text-align'] === 'center') sanctioned.push("F12's note's text-align, sanctioned: center, centred under the loading label; Publish's line's alignment isn't held");
+    else failing.push(`F12's note text-align must be center, at every width: it's ${paint['text-align']}`);
     return { failing, sanctioned };
 }
 
@@ -2224,20 +2225,23 @@ test.describe('the curator and its 503', () => {
     // the gate's no-JavaScript cell, seen as itself, on loads that settled, with Publish's line there to hold the note
     // to. The colour is Dark's --gah-ink-muted (styles/tokens.css), +1 on blue. A change to the note's own box moves the
     // body with it, so the measured allowance still holds there, and only the hold sees it. The margin goes on the
-    // loading state's status region, under its label, so no walked box moves, and only the body's allowance can see it.
+    // loading state's status region, under its label, so no walked box moves, and only the body's allowance can see it:
+    // 0.5rem + 1 px, since it collapses with the note's 0.5rem margin-top, and so adds exactly 1 px.
     // The missing note is taken out of the DOM, since the hold doesn't read display, at every size, as the gate holds it.
     // The two pinned departures are off their pins at every size, where the gutter and the label are read live: the
     // margin-inline 1 px past the gutter on each side, and the line-height 0.1 px past the label's (1.6em, at the note's
-    // and the label's one size). Neither changes what the body allows, which follows the note's own box.
+    // and the label's one size). Neither changes what the body allows, which follows the note's own box. The note
+    // left-aligned fails its pin to center, at 390, where Publish's line is left-aligned too, and at 1440.
     const inboxAtRest = CURATOR.find((candidate) => candidate.name === 'inbox')!;
     const removeNote = (page: Page) => page.evaluate((selector) => document.querySelector(selector)?.remove(), INBOX_NOTE);
     for (const [name, change, seen, sizes, bodyHolds] of [
         ["1 px of padding on F12's note", { headStyle: `${INBOX_NOTE}{padding-top:1px!important}` }, "F12's note padding-top: 1px,", [VIEWPORTS.phone], true],
-        ["1 px more margin under the Inbox's loading label", { headStyle: 'body [role="status"]:has(+ noscript){margin-bottom:1px!important}' }, "where F12's note's margin box is", [VIEWPORTS.phone], false],
+        ["1 px more margin under the Inbox's loading label", { headStyle: 'body [role="status"]:has(+ noscript){margin-bottom:calc(0.5rem + 1px)!important}' }, "where F12's note's margin box is", [VIEWPORTS.phone], false],
         ["F12's note's colour 1/255 off", { headStyle: `${INBOX_NOTE}{color:rgba(244, 246, 246, 0.62)!important}` }, "F12's note color: rgba(244, 246, 246, 0.62),", [VIEWPORTS.phone], true],
         ["no F12 note", { headNoJsAct: removeNote }, `F12's note (${INBOX_NOTE}): not in the head`, Object.values(GATE_VIEWPORTS), false],
         ["F12's note's margin-inline 1 px off the gutter", { headStyle: `${INBOX_NOTE}{margin-inline:calc(var(--site-gutter) + 1px)!important}` }, "F12's note margin-inline:", Object.values(GATE_VIEWPORTS), true],
         ["F12's note's line-height 0.1 px off the loading label's", { headStyle: `${INBOX_NOTE}{line-height:calc(1.6em + 0.1px)!important}` }, "F12's note line-height:", Object.values(GATE_VIEWPORTS), true],
+        ["F12's note left-aligned", { headStyle: `${INBOX_NOTE}{text-align:left!important}` }, "F12's note text-align must be center", [VIEWPORTS.phone, VIEWPORTS.desktop], true],
     ] as const) {
         test(`self-test: ${name} in the head's no-JavaScript Inbox fails the gate`, async () => {
             // The Inbox pair under its own allowances, as the gate's rows are, so only the change can fail it.
