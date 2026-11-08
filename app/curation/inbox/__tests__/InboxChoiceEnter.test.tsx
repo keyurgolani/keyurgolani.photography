@@ -37,6 +37,7 @@ vi.mock('../actions', () => {
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
+const { keepEnterOffChoices } = await import('../useHydrated');
 
 if (typeof Element.prototype.scrollIntoView !== 'function') Element.prototype.scrollIntoView = () => undefined;
 window.scrollTo = (() => undefined) as typeof window.scrollTo;
@@ -181,6 +182,18 @@ describe('Enter on a choice in an Inbox form', () => {
         expect(sent.forms.map((form) => form.fields.intent)).toEqual(['edit']);
     });
 
+    it('does nothing on any of the sequence radios, the start, after a photograph and the end', () => {
+        const members = [P(7), P(8), P(9)].map((photoId, index) => ({ photoId, shortId: `ph_0000…000${index + 7}` }));
+        render(<InboxDetailView view={view({ series: [{ ...SERIES[0], members }] })} />);
+        const review = screen.getByRole('form', { name: 'Review' });
+        fireEvent.change(within(review).getByRole('combobox', { name: 'Suggested series' }), { target: { value: 'ser_harbor' } });
+        fireEvent.change(within(review).getByRole('combobox', { name: 'Proposed sequence position' }), { target: { value: 'editor' } });
+        const slots = within(within(review).getByRole('group', { name: 'Place it in Harbor' })).getAllByRole('radio');
+        expect(slots.map((slot) => slot.closest('label')?.textContent)).toEqual(['At the start', 'After photograph 01', 'After photograph 02', 'At the end']);
+        for (const slot of slots) expect(stopped(slot, 'Enter'), `Enter on ${slot.closest('label')?.textContent}`).toBe(true);
+        expect(sent.forms).toEqual([]);
+    });
+
     it("leaves Enter in the description to its own handler, which adds no line break, and Enter on Restore's button alone", () => {
         const { unmount } = render(<InboxDetailView view={view()} />);
         // The description's own handler already stops Enter: a description is one line, as the server stores it.
@@ -229,5 +242,32 @@ describe('Enter on a choice in an Inbox form', () => {
         expect(stopped(reason, 'Enter')).toBe(true);
         expect(screen.getByRole('button', { name: 'Yes, archive it' })).toBeInTheDocument();
         expect(sent.forms).toEqual([]);
+    });
+});
+
+describe('keepEnterOffChoices()', () => {
+    // What each control does with it, should one take it: a choice stops Enter, and nothing else stops anything.
+    const control = (html: string) => {
+        const holder = document.createElement('form');
+        holder.innerHTML = html;
+        return holder.firstElementChild as HTMLElement;
+    };
+    const stops = (element: HTMLElement, key: string) => {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        element.addEventListener('keydown', keepEnterOffChoices, { once: true });
+        element.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+
+    it('stops Enter on a checkbox, a radio and a select', () => {
+        for (const html of ['<input type="checkbox">', '<input type="radio" name="r">', '<select><option>a</option></select>', '<select multiple><option>a</option></select>']) expect(stops(control(html), 'Enter'), html).toBe(true);
+    });
+
+    it('leaves every other key on them alone', () => {
+        for (const html of ['<input type="checkbox">', '<input type="radio" name="r">', '<select><option>a</option></select>']) for (const key of [' ', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Tab', 'Escape']) expect(stops(control(html), key), `${key} on ${html}`).toBe(false);
+    });
+
+    it('leaves Enter in a text field, a text area and on a button alone', () => {
+        for (const html of ['<input>', '<input type="text">', '<input type="search">', '<input type="number">', '<textarea></textarea>', '<button type="submit">Send</button>', '<button type="button">Open</button>', '<input type="submit">']) expect(stops(control(html), 'Enter'), html).toBe(false);
     });
 });
