@@ -67,8 +67,8 @@
    Light, Bright and Black it sits above the scrim (--gah-badge-layer, 50, from
    HomeChrome.module.css), so no theme's wash fogs it; it comes before the
    chrome in the DOM, so the chrome still paints over it, and badgePlace()
-   keeps it clear of the chrome's text and panel (P1-1). Dark is today's
-   site, where it sits under the scrim. */
+   keeps it clear of the chrome's text, and of its panel above the story
+   (P1-1). Dark is today's site, where it sits under the scrim. */
 .badge {
   z-index: var(--gah-badge-layer, 42);
   opacity: 0;
