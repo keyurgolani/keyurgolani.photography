@@ -7,7 +7,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, chromeOverflows, copyAboveDarkWash, copyTone, coverSource, DARK_WASH_STATEMENT_TOP, DARK_WASH_TITLE_TOP, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyAboveDarkWash, copyTone, coverSource, DARK_WASH_STATEMENT_TOP, DARK_WASH_TITLE_TOP, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box, type StoryBox } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -599,27 +599,59 @@ describe('badgePlace', () => {
   const range = (from: number, to: number, step: number) => Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i) => from + i * step);
   /** The least room the painted oval keeps from the screen's edges. */
   const edgeRoom = (view: { width: number; height: number }, painted: Box) => Math.min(painted.left, painted.top, view.width - painted.right, view.height - painted.bottom);
-  /** The sweep's most phones, so it stays a unit test's size: 13,144 now. */
+  // Phones held sideways and screens zoomed to 200%, scaled from CI's 844 x 390 boxes: the title's type is 1.5rem +
+  // 3.5vw, so its two lines and its width follow the width; the statement's 0.9rem + 0.4vw; the gutter 3.3vw. Where the
+  // copy fits the screen it sits 115 px above the bottom, and where it doesn't, as at 360 px tall, the title sits 24 px
+  // under the nav. 863 x 360 is Pixel 7 held sideways; 640 x 400 is 1280 x 800 at 200%; 683 x 384, 720 x 450 and 768 x
+  // 432 are 1366 x 768, 1440 x 900 and 1536 x 864 at 200%. The card is 320 px from 768 px wide, the panel drawn from 640.
+  const sidewaysStage = (width: number, height: number) => {
+    const type = Math.min(76, Math.max(38, 24 + 0.035 * width));
+    const statementType = Math.min(19, Math.max(16, 14.4 + 0.004 * width));
+    const gutter = Math.min(48, Math.max(16, 0.033 * width));
+    const right = gutter + (360 * type) / 53.54;
+    const linkBottom = Math.max(80 + 1.8 * type + 12 + 1.25 * statementType + 20 + 44, height - 115.41);
+    const link = box(gutter, linkBottom - 44, gutter + 138, linkBottom);
+    const statement = box(gutter, link.top - 20 - 1.25 * statementType, right, link.top - 20);
+    const title = box(gutter, statement.top - 12 - 1.8 * type, right, statement.top - 12);
+    return { view: { width, height }, card: width >= 768 ? 320 : 256, story: story(title, statement, link, width >= 640) };
+  };
+  /** The sweep's most screens, so it stays a unit test's size: 14,570 now. */
   const SWEEP_LIMIT = 15_000;
+  /**
+   * Where the sweep's screens put the badge under today's rule, by place: v1.1.0's, above the story, beside it, and
+   * out of sight. A rule that hides the badge more often, or moves it off today's place beside the story, changes them.
+   */
+  const SWEEP_PLACES = { 'v1.1.0': 0, clear: 8060, side: 2644, none: 3866 };
 
-  it('never puts the badge on the copy of a phone held upright: it is clear of it, or it is out of sight', () => {
-    const phones = [320, 360, 375, 390].flatMap((width) => range(480, 900, 4).flatMap((height) => range(0, 240, 8).map((lift) => ({ width, height, lift }))));
-    expect(phones.length).toBeGreaterThan(0);
-    expect(phones.length).toBeLessThanOrEqual(SWEEP_LIMIT);
-    for (const { width, height, lift } of phones) {
-      // The copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the hint.
-      const story = shortStory(568 - height + lift).map((b) => ({ ...b, right: Math.min(b.right, width - 16) }));
-      const place = badgePlace({ width, height }, 256, nav(width), story);
+  it('never puts the badge on the copy of a phone held upright or sideways: it is clear of it, or it is out of sight, and hides it no more often than today', () => {
+    // Phones held upright: the copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the
+    // hint. Phones held sideways and zoomed screens, from 568 x 320 to 928 x 440.
+    const upright = [320, 360, 375, 390].flatMap((width) =>
+      range(480, 900, 4).flatMap((height) =>
+        range(0, 240, 8).map((lift) => ({ view: { width, height }, card: 256, story: shortStory(568 - height + lift).map((b) => ({ ...b, right: Math.min(b.right, width - 16) })) as StoryBox[] })),
+      ),
+    );
+    const sideways = range(568, 928, 8).flatMap((width) => range(320, 440, 4).map((height) => sidewaysStage(width, height)));
+    const screens = [...upright, ...sideways];
+    expect(screens.length).toBeGreaterThan(0);
+    expect(screens.length).toBeLessThanOrEqual(SWEEP_LIMIT);
+    const places = { 'v1.1.0': 0, clear: 0, side: 0, none: 0 };
+    for (const { view, card, story } of screens) {
+      const place = badgePlace(view, card, nav(view.width), [...story]);
+      places[place?.kind ?? 'v1.1.0'] += 1;
       // Out of sight: neither clear above the story nor beside it.
-      if (place && place.kind !== 'clear' && place.kind !== 'side') continue;
-      const painted = oval({ width, height }, 256, place);
-      const where = `${width} x ${height}, lifted ${lift}`;
-      for (const blocker of story) expect(gap(painted, blocker), where).toBeGreaterThanOrEqual(16 - 0.01);
-      // Beside the story keeps clear of the text alone, as it always has; above it keeps clear of the nav and the edges too.
+      if (place?.kind === 'none') continue;
+      const painted = oval(view, card, place);
+      const where = `${view.width} x ${view.height}`;
+      const text = story.filter((b) => !('panel' in b));
+      for (const blocker of text) expect(gap(painted, blocker), where).toBeGreaterThanOrEqual(16 - 0.01);
+      // Beside the story keeps clear of the text alone, as it always has; above it keeps clear of the nav, the panel
+      // and the edges too.
       if (place?.kind === 'side') continue;
-      expect(gap(painted, nav(width)), `${where}: the nav`).toBeGreaterThanOrEqual(16 - 0.01);
-      expect(edgeRoom({ width, height }, painted), `${where}: the edges`).toBeGreaterThanOrEqual(16 - 0.01);
+      for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker), `${where}: the nav and the panel`).toBeGreaterThanOrEqual(16 - 0.01);
+      expect(edgeRoom(view, painted), `${where}: the edges`).toBeGreaterThanOrEqual(16 - 0.01);
     }
+    expect(places).toEqual(SWEEP_PLACES);
   });
 
   it("stays out of sight only where no badge fits even at 0.4, and lands where the intro took it before", () => {
@@ -640,22 +672,6 @@ describe('badgePlace', () => {
     expect(badgePlace({ width: 844, height: 390 }, 320, nav(844), reaching)!.kind).not.toBe('side');
   });
 
-  // Phones held sideways and screens zoomed to 200%, scaled from CI's 844 x 390 boxes: the title's type is 1.5rem +
-  // 3.5vw, so its two lines and its width follow the width; the statement's 0.9rem + 0.4vw; the gutter 3.3vw. Where the
-  // copy fits the screen it sits 115 px above the bottom, and where it doesn't, as at 360 px tall, the title sits 24 px
-  // under the nav. 863 x 360 is Pixel 7 held sideways; 640 x 400 is 1280 x 800 at 200%; 683 x 384, 720 x 450 and 768 x
-  // 432 are 1366 x 768, 1440 x 900 and 1536 x 864 at 200%. The card is 320 px from 768 px wide, the panel drawn from 640.
-  const sidewaysStage = (width: number, height: number) => {
-    const type = Math.min(76, Math.max(38, 24 + 0.035 * width));
-    const statementType = Math.min(19, Math.max(16, 14.4 + 0.004 * width));
-    const gutter = Math.min(48, Math.max(16, 0.033 * width));
-    const right = gutter + (360 * type) / 53.54;
-    const linkBottom = Math.max(80 + 1.8 * type + 12 + 1.25 * statementType + 20 + 44, height - 115.41);
-    const link = box(gutter, linkBottom - 44, gutter + 138, linkBottom);
-    const statement = box(gutter, link.top - 20 - 1.25 * statementType, right, link.top - 20);
-    const title = box(gutter, statement.top - 12 - 1.8 * type, right, statement.top - 12);
-    return { view: { width, height }, card: width >= 768 ? 320 : 256, story: story(title, statement, link, width >= 640) };
-  };
   const SIDEWAYS = [
     [863, 360],
     [640, 360],

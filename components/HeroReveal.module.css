@@ -77,10 +77,11 @@
 
 /* Beside the story is badgePlace()'s place where nothing above the story clears, as on a phone held sideways: today's
    place, a quarter of the width right of the center, taken wherever it keeps 16 px from the series title, its
-   statement and its links. Where it meets them the badge goes above the story, and where nothing fits ('none') it
-   sits beside the story anyway: the intro lands it there. With the text enlarged (HeroReveal's data-text-enlarged on Home's root) the chrome scrolls, so the copy can
-   move under it in either place, and above the scrim the title's ink would lie on the portrait, so it goes back under
-   the scrim, as Dark's always is, and the scrim carries the copy over it. */
+   statement and both links, whatever the nav, the panel's fade or the edges. Where it meets them the badge goes above
+   the story, and where neither fits ('none') it sits beside the story anyway: the intro lands it there. With the text
+   enlarged (HeroReveal's data-text-enlarged on Home's root) the chrome scrolls, so the copy can move under it in either
+   place, and above the scrim the title's ink would lie on the portrait, so it goes back under the scrim, as Dark's
+   always is, and the scrim carries the copy over it. */
 main[data-text-enlarged] .badge:is([data-badge-place='side'], [data-badge-place='none']) {
   z-index: 42;
 }

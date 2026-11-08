@@ -32,7 +32,10 @@ export interface BadgePlace {
 /** v1.1.0's place: centered, 280 px above the bottom, at 0.85. */
 const V110_RISE = 280;
 const V110_SCALE = 0.85;
-/** The least room the painted oval keeps from the nav, from the series title, statement and link, and from the title's panel. */
+/**
+ * The least room the painted oval keeps: from the nav, the series title, its statement and links, and the title's
+ * panel in v1.1.0's place and above the story; from the title, statement and links alone beside the story.
+ */
 const BADGE_CLEARANCE = 16;
 /** The ring around the oval. */
 const RING = 4;
