@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
+import { decodeThen } from '@/components/decodeThen';
 import type { HomePhoto as CatalogPhoto } from '@/lib/catalog/projections/home';
 import type { PlaybackState } from './homePlayback';
 import styles from './HomeSequence.module.css';
@@ -220,29 +221,6 @@ interface SlideImageProps {
   /** It unmounted, so its decode no longer counts. */
   onGone: (photoId: string) => void;
   onFailed: (photoId: string) => void;
-}
-
-/**
- * Decodes a loaded image, then reports it. A decode that rejects for an image
- * that did load (its source changed under it, as a wider window picks a larger
- * candidate) still counts: the next load decodes again. Without decode(), as
- * in jsdom, the load is the commit.
- */
-function decodeThen(element: HTMLImageElement, live: () => boolean, onDecoded: () => void, onFailed: () => void) {
-  if (typeof element.decode !== 'function') {
-    onDecoded();
-    return;
-  }
-  element.decode().then(
-    () => {
-      if (live()) onDecoded();
-    },
-    () => {
-      if (!live()) return;
-      if (element.complete && element.naturalWidth > 0) onDecoded();
-      else onFailed();
-    },
-  );
 }
 
 /** One attempt at a photograph's image. Retry remounts it with a new key, since a failed image's decode() doesn't fetch again. */

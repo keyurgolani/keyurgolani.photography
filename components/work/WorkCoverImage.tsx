@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
+import { decodeThen } from '@/components/decodeThen';
 // Types only: the projection modules pull node:crypto in through lib/media/url.ts, which must stay out of the client bundle.
 import type { WorkCover } from '@/lib/catalog/projections/work';
 import { coverSizes, type CoverSpan } from './coverSizes';
@@ -25,9 +26,28 @@ export interface WorkCoverImageProps {
  * cover, or the image fails, the box holds a plain text fallback instead of a
  * broken image. ResponsivePhoto reports the failure, once a failed AVIF
  * file's WebP retry fails too, and catches one that failed before hydration.
+ * The frame is marked `data-decoded` once the image has decoded, which is when
+ * a contain cover drops its LQIP (SeriesCatalog.module.css).
  */
 export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' }: WorkCoverImageProps) {
     const [failed, setFailed] = useState(false);
+    const [decoded, setDecoded] = useState(false);
+    const image = useRef<HTMLImageElement>(null);
+    const mounted = useRef(false);
+    // A failed decode is the image's failure, which ResponsivePhoto reports through onError, so only success marks it.
+    const settle = useCallback(() => {
+        const element = image.current;
+        if (element) decodeThen(element, () => mounted.current && image.current === element, () => setDecoded(true), () => undefined);
+    }, []);
+    // A server-rendered image can load before hydration attaches onLoad, so check it once at mount.
+    useEffect(() => {
+        mounted.current = true;
+        const element = image.current;
+        if (element?.complete && element.naturalWidth > 0) settle();
+        return () => {
+            mounted.current = false;
+        };
+    }, [settle]);
 
     if (cover === null || failed) {
         return (
@@ -42,14 +62,16 @@ export default function WorkCoverImage({ cover, loading = 'lazy', span = 'wide' 
 
     const focal = { '--focal-x': `${cover.focalPoint.x * 100}%`, '--focal-y': `${cover.focalPoint.y * 100}%` } as CSSProperties;
     return (
-        <div className={styles.frame} style={focal} data-cover={cover.crop}>
+        <div className={styles.frame} style={focal} data-cover={cover.crop} data-decoded={decoded ? '' : undefined}>
             <ResponsivePhoto
+                ref={image}
                 asset={cover}
                 alt=""
                 sizes={coverSizes(cover, span)}
                 loading={loading === 'lazy' ? 'lazy' : 'eager'}
                 fetchPriority={loading === 'lead' ? 'high' : loading === 'eager' ? 'low' : undefined}
                 preload={loading === 'lead'}
+                onLoad={settle}
                 onError={() => setFailed(true)}
                 className={styles.cover}
             />
