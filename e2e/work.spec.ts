@@ -535,7 +535,7 @@ const rgbOf = (css: string) => (css.match(/\d+/g) ?? []).slice(0, 3).map(Number)
 const distance = (a: number[], b: number[]) => Math.hypot(...a.map((value, channel) => value - b[channel]));
 
 for (const theme of ['dark', 'light', 'bright', 'black'] as const) {
-    test(`in ${theme}, a contain cover sits whole and centred in its frame whatever its focal point, on the frame's surface with no LQIP once it decodes`, async ({ page }) => {
+    test(`in ${theme}, a contain cover sits whole and centred in its frame whatever its focal point, on the frame's surface`, async ({ page }) => {
         await page.addInitScript((value) => localStorage.setItem('theme', value), theme);
         await openWork(page);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -548,28 +548,11 @@ for (const theme of ['dark', 'light', 'bright', 'black'] as const) {
             `${CONTAIN_FOCAL.y * 100}%`,
         ]);
         await expect.poll(() => coverLoaded(ridge)).toBe(true);
-        // Its decode, not its load, is what drops the LQIP. Soft, as is the style check below, so a failure still goes on
-        // to report where the print sits and what paints the bands.
-        await expect.soft(frame).toHaveAttribute('data-decoded', '');
         const image = frame.locator('img');
-        // Work's projection ships no LQIP (lib/catalog/projections/work.ts), so today there's none to drop and the check
-        // below guards a cover that carries one. Said in the report either way.
-        const shipped = await image.evaluate((img: HTMLImageElement) => img.style.backgroundImage);
-        test.info().annotations.push({ type: 'placeholder', description: shipped === '' ? `${theme}: the cover carries no LQIP` : `${theme}: the cover carries an LQIP, ${shipped.slice(0, 40)}…` });
-        expect.soft(
-            await image.evaluate((img) => {
-                const computed = getComputedStyle(img);
-                return Object.fromEntries(['object-fit', 'object-position', 'background-size', 'background-repeat', 'background-image'].map((name) => [name, computed.getPropertyValue(name)]));
-            }),
-        ).toEqual({
-            'object-fit': 'contain',
-            'object-position': '50% 50%',
-            // While it loads, the LQIP fills the print's box, not the bands beside it.
-            'background-size': 'contain',
-            'background-repeat': 'no-repeat',
-            // Once the print has decoded the LQIP goes, since its own shape drifts from the photograph's.
-            'background-image': 'none',
-        });
+        // Decoded and two frames on, so the pixels below read the painted print.
+        await image.evaluate((img: HTMLImageElement) => img.decode().then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+        // Soft, so a failure still goes on to report where the print sits.
+        expect.soft(await image.evaluate((img) => ({ fit: getComputedStyle(img).objectFit, position: getComputedStyle(img).objectPosition }))).toEqual({ fit: 'contain', position: '50% 50%' });
 
         // Where a centred print's edges fall, from the image's box and the photograph's own ratio. The fixture's 3:2
         // photograph leaves bands above and below it in Work's 4:3 and 4:5 frames.
@@ -590,8 +573,8 @@ for (const theme of ['dark', 'light', 'bright', 'black'] as const) {
         const surface = rgbOf(await frame.evaluate((el) => getComputedStyle(el).backgroundColor));
         const [print] = await pixelsAt(page, at.centre.x, at.centre.y);
         expect(distance(print, surface), `the print ${print} differs from the surface ${surface}`).toBeGreaterThan(60);
-        // Just outside the centred print, on both sides, is the frame's surface, with nothing of the LQIP; just inside it is
-        // the print. A print placed on its focal point instead sits off one of those edges.
+        // Just outside the centred print, on both sides, is the frame's surface; just inside it is the print. A print placed
+        // on its focal point instead sits off one of those edges.
         for (const point of at.outside) for (const pixel of await pixelsAt(page, point.x, point.y)) expect(distance(pixel, surface), `outside the print at ${point.x},${point.y}: ${pixel} against the surface ${surface}`).toBeLessThan(distance(pixel, print));
         for (const point of at.inside) for (const pixel of await pixelsAt(page, point.x, point.y)) expect(distance(pixel, print), `inside the print at ${point.x},${point.y}: ${pixel} against the print ${print}`).toBeLessThan(distance(pixel, surface));
     });
