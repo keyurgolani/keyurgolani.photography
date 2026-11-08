@@ -64,6 +64,63 @@ All four fields are required. `id` is the advisory's GHSA ID, or `npm:<number>` 
 
 Dependabot opens grouped weekly version updates against `next`, as `.github/dependabot.yml` sets up, and they go through the same CI and promotion as any other PR. Security updates, once they're turned on in Code security settings, always open against `main`, and the groups and ignores in `dependabot.yml` don't apply to them. Since `main` only moves by promotion, land a security PR's change through a PR into `next` and close it, and if one does get merged on `main`, merge `main` back into `next` before the next promotion.
 
+### The no-JavaScript 404 on each Next.js bump
+
+With JavaScript off, a series or Viewer address that doesn't resolve answers 404 with the not-found title and `noindex`, but an empty page ([#177](https://github.com/keyurgolani/keyurgolani.photography/issues/177)). The page throws `notFound()`, which Next catches only in a client error boundary, and React's server renderer never runs error boundaries. So Next sends its fixed error shell, `<html id="__next_error__">` with an empty `<body>`, and the not-found page arrives only in its payload, for the browser's JavaScript to draw. An address no route matches, such as `/no-such-page`, renders in full, since nothing throws. Next 16.4.2, which `v2.0.0` ships, 16.4.5 and 16.5.0-canary.44 all still do this, so it's a known limit. `proxy.ts` can't work around it: it reads nothing from the data root, so it can't tell which addresses exist, and Next hides the RSC headers from it, so it can't tell a page load from a soft navigation.
+
+Recheck it on every PR that bumps `next`, which Dependabot opens in its `next-react` group. On the PR's branch, after `npm ci`:
+
+```bash
+grep -c getDerivedStateFromError node_modules/next/dist/compiled/react-dom/cjs/react-dom-server.node.production.js
+grep -n -A8 "id: '__next_error__'" node_modules/next/dist/server/app-render/app-render.js
+```
+
+On Next 16.4.2 this prints the lines below. The line numbers move from one release to the next; what counts is the `0` and the empty `body`.
+
+```text
+0
+1322:        id: '__next_error__'
+1323-    }, createElement('head', null), createElement('body', null, process.env.__NEXT_DEV_SERVER && err ? createElement('template', {
+1324-        'data-next-error-message': err.message,
+1325-        'data-next-error-digest': 'digest' in err ? err.digest : '',
+1326-        'data-next-error-stack': err.stack
+1327-    }) : null));
+1328-    const partialPrefetching = Boolean(ctx.renderOpts.partialPrefetching) || await (0, _instantconfig.anySegmentHasPartialPrefetchingEnabled)(tree);
+1329-    const initialTree = await (0, _createtransporttreefromloadertree.createFullTransportTreeFromLoaderTree)(tree, errorHints, errorPrefetchInliningEnabled, ctx.missingPrefetchHintPolicy, partialPrefetching, getDynamicParamFromSegment, ctx.renderOpts.notFoundParams);
+1330-    // Attach the error shell as the root's render output. Vary params are not
+```
+
+`0` from the first means React's server renderer still runs no error boundary. The second shows the shell: a `body` that holds nothing but a development-only error `template` is still empty. With both unchanged, the limit stands, and the bump goes through like any other. To check a Next release before any PR names it, read the same two files from Next's repository at its tag, with nothing installed. Set `V` to the version:
+
+```bash
+V=16.4.5
+gh api -H 'Accept: application/vnd.github.raw' "repos/vercel/next.js/contents/packages/next/src/compiled/react-dom/cjs/react-dom-server.node.production.js?ref=v${V}" | grep -c getDerivedStateFromError
+gh api -H 'Accept: application/vnd.github.raw' "repos/vercel/next.js/contents/packages/next/src/server/app-render/app-render.tsx?ref=v${V}" | grep -n -A8 "id: '__next_error__'"
+```
+
+With `V=16.4.2`, the version `v2.0.0` ships, this prints:
+
+```text
+0
+2302:      id: '__next_error__',
+2303-    },
+2304-    createElement('head', null),
+2305-    createElement(
+2306-      'body',
+2307-      null,
+2308-      process.env.__NEXT_DEV_SERVER && err
+2309-        ? createElement('template', {
+2310-            'data-next-error-message': err.message,
+```
+
+If either answer changes, Next may now render the not-found page on the server. Then the bump goes in a PR of its own, through the full gate, and that PR shows the fix. On a server for `e2e/series.spec.ts`'s catalog, whose `sentinel-draft` series is a draft, this prints `0` today and `1` once it's fixed:
+
+```bash
+curl -s http://127.0.0.1:<port>/work/sentinel-draft | grep -c '>Browse the work<'
+```
+
+In the same PR, `e2e/series.spec.ts`'s "every not-found case answers the same status, title, and page" and `e2e/viewer.spec.ts`'s "a former series slug answers 308 to the canonical URL…", which today check only the title in the raw HTML, switch to asserting the not-found page there: its `<main>`, its heading and its "Browse the work" link. The known limit then comes out of the release notes.
+
 ## Rulesets
 
 These live under Settings > Rules > Rulesets. `CI result` only shows up in the status check suggestions after it has run once.
@@ -140,7 +197,7 @@ Releases run one at a time, and waiting ones queue. The job summary shows the ve
 
 Start from the tag the host runs now. It's the `PHOTOGRAPHY_IMAGE_TAG` line in the `.env` next to `docker-compose.prod.yml`, and `docker inspect --format '{{.Config.Image}}' <web container>` shows the image `web` really runs. Note it, since [Rollback](#rollback) goes back to it.
 
-A release's notes describe what changed since the release before it, so a host that skipped a release also takes every step the skipped ones listed. When any release between the running one and the new one changed `docker-compose.prod.yml`, install the new file first, the way the slice C block of #10 below does: fetch it, check it with your override, keep the old copy as `docker-compose.prod.yml.before-vX.Y.Z`, then move it in. `v1.2.1` changed it, giving `curator` the read-only `./site-config` mount, so a host on `v1.2.0` installs the new file on the way to any later release.
+A release's notes describe what changed since the release before it, so a host that skipped a release also takes every step the skipped ones listed. When any release between the running one and the new one changed a setting in `docker-compose.prod.yml`, install the new file first, the way the slice C block of #10 below does: fetch it, check it with your override, keep the old copy as `docker-compose.prod.yml.before-vX.Y.Z`, then move it in. A release whose file changes only a comment, such as `v2.0.0`, runs on the older file, and its section says so. `v1.2.1` changed it, giving `curator` the read-only `./site-config` mount, so a host on `v1.2.0` installs the new file on the way to any later release.
 
 When the host has an override, as the override rules further down this section describe, every command here names both files, `-f docker-compose.prod.yml -f <override>`, or runs as plain `docker compose` with the symlink layout below. `-f docker-compose.prod.yml` alone leaves the override out, so its photos path, networks, and services, a tunnel or proxy included, drop out of the project. The commands below write the two-file form.
 
@@ -496,6 +553,93 @@ The `jq` line prints the folder the older file binds as the library, with the ov
 
 The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`'s heartbeat simply drops `legacyDerivatives`.
 
+### v2.0.0: one owner for the data root
+
+`v2.0.0` closes [#117](https://github.com/keyurgolani/keyurgolani.photography/issues/117) and the follow-ups in its milestone. Its [release notes](https://github.com/keyurgolani/keyurgolani.photography/releases/tag/v2.0.0) list what changes for a visitor, for the curator, and for a script or monitor that calls the CLI, including every command that now exits 1 where it didn't. This section is the host's part. `v2.0.0-rc.1` ran the same steps on the host before it.
+
+- **One owner for the data root.** Every `photos` command that takes a lock or writes under the data root, a dry run that takes a lock included, runs only as the data root's owner. So do the watcher, at its start and with `--once`, and the curator. As any other uid, each refuses before its first lock, exits 1 with `WRONG_OWNER`, and writes nothing. In production the owner is uid 1001, the uid every container runs as: `image-watcher` and `curator` by their `user: "1001:1001"`, and `web` as the image's own user. Lock-free reads, such as `status`, `history` and `identity status`, still run as any uid. [Who owns the data root](data-root.md#who-owns-the-data-root) has the table. `v1.7.x` checked nothing, so a past run as root, or as your own user, may have left the data root or files in it owned by another uid. Step 2 finds them before the pull. If a `WRONG_OWNER` line names an owner other than uid 1001, the data root is what's wrong. Never change a `user:` line in `docker-compose.prod.yml`, or run the command as root, to match it. Take step 2's `chown` instead.
+- **`docker-compose.prod.yml` changes by one comment**, above `image-watcher`, which states the rule. No setting changes, so the file the host runs works as it is.
+- **No new environment variable.**
+- **`photos verify` is new.** It checks every revision, every `/media` set's files against its manifest, and the activation chain, and records its result in `status/verify.json`. `photos rollback` reads that record, and refuses a revision it failed unless you add `--accept verify.failed`. Verify reads the data root only, never the library, and takes no catalog lock, only a short one of its own while it writes the record. It writes, so it runs only as the data root's owner, through `image-watcher`. Run it once after the deploy, in step 4, and again before any `photos rollback`. It reads every set, so it takes a while on a large library. The README's [Verify](../README.md#verify) has the details.
+
+The host takes four steps. With an override, add `-f <override>` after each `-f docker-compose.prod.yml`, and add `curator` to the `pull` and `up -d` lines when it runs. A host on `v1.6.x` or older takes `v1.7.0`'s steps on the way.
+
+1. **Note the running tag and revision, and back up the data root.** The `grep` prints the line [Rolling back](#rolling-back-from-v200) below returns to, `docker inspect` checks that `web` runs it, as [Deploying](#deploying) says, and `/api/ready` names the revision step 4 compares. On a host that runs `v2.0.0-rc.1`, the `grep` prints the candidate's `sha-` line instead, which is no rollback target: Rolling back goes to the line the candidate replaced, `PHOTOGRAPHY_IMAGE_TAG=v1.7.0@sha256:77f5cfcdc713828e280419d459741e7e139c18e2b5a50f3aa9fcf278aed6c40d`. Then back up with the block in [Backing up](data-root.md#backing-up), whose archive is the one [Restoring](data-root.md#restoring) takes. Keep the last backup made on `v1.7.x`, which on that host is the one from before the candidate: it's the last data root `v1.7.x` reads in full.
+
+   ```bash
+   grep '^PHOTOGRAPHY_IMAGE_TAG=' .env
+   docker inspect --format '{{.Config.Image}}' "$(docker compose -f docker-compose.prod.yml ps -q web)"
+   curl -s http://127.0.0.1:3000/api/ready
+   ```
+
+2. **Check who owns the data root, before the pull.** Stop the watcher, and the curator if it runs, so nothing writes while you look. `web` keeps serving:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml stop image-watcher
+   # only if curator runs:
+   docker compose -f docker-compose.prod.yml stop curator
+   sudo stat -L -c '%u:%g %a' portfolio-data
+   sudo find portfolio-data/ ! -uid 1001 -print
+   ```
+
+   The `stat` line should print `1001:1001 700`, and `find` nothing. On macOS, use `stat -L -f '%u:%g %Lp'`. The `-L` and the trailing `/` follow a symlinked data root to its folder, as the check does. If `stat` names another owner, or `find` lists files, a run as root or as your own user left them. Hand them back to uid 1001. `v1.7.x` runs as uid 1001 too, so a rollback needs nothing undone:
+
+   ```bash
+   sudo chown -R 1001:1001 portfolio-data/
+   ```
+
+   Don't widen the modes instead. If `stat` prints a mode other than `700`, `sudo chmod 700 portfolio-data/` puts it back, as [Setting it up](data-root.md#setting-it-up) has it. If you stop here, start them again with `docker compose -f docker-compose.prod.yml start image-watcher`, and `--profile curator start curator` if it ran. `web` never stopped, and the `chown` needs nothing undone.
+
+3. **Switch the image.** `up -d` recreates `web` and starts the watcher again, on the new image. Add `curator` to both lines if it ran before step 2. If the pull fails, put the old line back in `.env` and start them as step 2 says:
+
+   ```bash
+   # set PHOTOGRAPHY_IMAGE_TAG=v2.0.0@sha256:<digest> in .env, the digest from the release's job summary
+   docker compose -f docker-compose.prod.yml pull web image-watcher
+   docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
+   ```
+
+   A data root folder that step 2 left with another owner shows here, since the check reads that folder's own owner and nothing below it. The watcher logs `[ImageWatcher] WRONG_OWNER: the image watcher runs as uid 1001, the user the image runs every service as, but uid <owner> owns the data root. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) back to uid 1001: sudo chown -R 1001:1001 portfolio-data/. Don't widen its permissions instead.` and exits 1, and `restart: always` keeps starting it again. The curator logs `WRONG_OWNER: the curator runs as uid 1001, the user the image runs every service as, but uid <owner> owns the data root. It took no lock. Nothing was written. On the host, in the folder that holds docker-compose.prod.yml, give the data root (the folder mounted at /data/portfolio) back to uid 1001: sudo chown -R 1001:1001 portfolio-data/. Don't widen its permissions instead. Stopping.` and stays stopped. Each refuses before its first lock and writes nothing. Keep both `user:` lines at "1001:1001" and run nothing as root. Hand the data root back to uid 1001, as the line says, and start them again:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml logs image-watcher | grep WRONG_OWNER
+   sudo chown -R 1001:1001 portfolio-data/
+   docker compose -f docker-compose.prod.yml restart image-watcher
+   # only if curator runs:
+   docker compose -f docker-compose.prod.yml --profile curator start curator
+   ```
+
+   A file or folder inside the data root that step 2 missed passes this check. It shows later, as a permission error (`EACCES`) in the watcher's log or as an unhealthy watcher. Run step 2's `find` again: the same `chown` fixes what it lists.
+
+4. **Check it, then run `photos verify` once.** `/api/ready` names the same revision with `"state":"ok"`, on `PHOTOGRAPHY_PORT` if you set one. `status --check` ends `Check: passed.`, or lists each problem and exits 1. `verify` exits 0 when the live revision and the activation chain pass, even if an older revision fails, and 1 when either fails, and names what to put back, such as a set folder from your archive. Only `verify` writes, its record in `status/verify.json`. None of them touches the library:
+
+   ```bash
+   curl -s http://127.0.0.1:3000/api/ready
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs status --check
+   docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs verify
+   ```
+
+   Run every `photos` command this way, through `image-watcher`, as the docs always have. As root on the host, or as your own user, a command that locks or writes now stops with a line starting `[photos] WRONG_OWNER: photos <command> runs as uid <uid>, but uid 1001 owns the data root, and web runs as that owner.`, says what its files would have broken, and names the `image-watcher` command to run instead. Before, it went through and left files uid 1001 can't read.
+
+#### Rolling back from v2.0.0
+
+Rolling back goes to `v1.7.x` with the same compose file, since its only change is a comment. Set the `v1.7.x` line from step 1: the one it printed, or on a host that ran `v2.0.0-rc.1`, the `v1.7.0` line it gives, never the candidate's `sha-` line. Then run the scoped commands, with `-f <override>` and `curator` as above:
+
+```bash
+# set PHOTOGRAPHY_IMAGE_TAG in .env back to the v1.7.x line from step 1
+docker compose -f docker-compose.prod.yml pull web image-watcher
+docker compose -f docker-compose.prod.yml up -d --no-deps web image-watcher
+```
+
+The site keeps serving, and the library isn't touched. Step 2's `chown` needs nothing undone, and legacy derivative folders need nothing, moved aside or not. Until `v2.0.0` is back, this is what `v1.7.x` makes of what `v2.0.0` wrote:
+
+- **Inbox items stamped 2 read as unreadable.** An item is stamped 2 when it holds anything `v1.7.x` can't read: a resolution, a `resolve` or `confirm-missing`, a restore, a before-and-after, and also the `library-unavailable` item, each `io-error` item, and each item whose build failed with `io-error`, `decode-error`, `unsupported-format`, `too-large` or `retries-exhausted`. `curation list` exits 4 while one is there, `curation show` on one exits 4, and the watcher skips its facts. A field review that settled one goes stale, so a publish refuses that field. A `restore` decision still waiting is rejected; once `v2.0.0` is back, its item opens again and says why. A `missing` item, held or not, and every item stamped 1 read as before. They read again once `v2.0.0` is back. A restore doesn't make them readable, it drops them. Restoring the last backup made on `v1.7.x`, which step 1 names, with the data-root-only block in [Restoring](data-root.md#restoring), "If only the data root was lost", keeps the library as it is and gives `v1.7.x` a data root it reads in full, but loses everything written since. That block stops `web` while it runs. On `v1.7.x` its `verify` line fails with a usage error, so the message after it means nothing there.
+- **Takedowns stop being enforced.** `v1.7.x` doesn't read `catalog/tombstones/`, so nothing stops a `photos rollback` or a publish that shows a set `photos purge` took down, and `/media` then serves it. The live revision shows none, so nothing changes at once. On `v1.7.x`, don't roll back to or publish a revision that shows a taken-down photograph. A set `photos gc --apply` already deleted stays gone, and only a backup of the data root brings it back. `v1.7.x` leaves `catalog/tombstones/`, `trash/` and any `.gc-` folder as they are.
+- **The new checks are off.** `v1.7.x` has no `photos verify` and doesn't read `status/verify.json`, so `photos rollback` doesn't refuse a revision verify failed. Nothing stops a publish that drops a series' live address. No command checks who runs it, so a run as root writes root-owned files again: take step 2 again before rolling forward. Activations that recorded `v2.0.0`'s accepts stay readable, since `v1.7.x`'s `acceptedRules` takes any non-empty string.
+- **The watcher.** `v1.7.x` ignores the registry's `retries`, `retryAt` and `requeuedFor`, and its first start puts every failed build back to pending once and tries it. For up to 30 s after it starts, its healthcheck doesn't flag a `library-unavailable` heartbeat `v2.0.0` left.
+- **The new commands are gone**: `verify`, `purge`, `gc --set-aside`, `status --check` and the rest the release notes list. A monitor that runs `photos status --check` gets exit 2, `v1.7.x`'s usage error.
+
+Rolling forward again is steps 1 to 4: `v1.7.x` wrote the data root meanwhile, and a restore brings back the owners its backup had before step 2's `chown`.
+
 ## About's portrait
 
 About reads its portrait from the host. It's one file in `./site-config`, next to `docker-compose.prod.yml`, which `web` mounts read-only at `/config/site` (`PHOTOGRAPHY_SITE_CONFIG_DIR`). From `v1.2.1`, `curator` mounts it the same way, so the draft preview's About shows the same portrait ([curator.md](curator.md#preview-and-publish)):
@@ -583,7 +727,7 @@ A revision with carried-over photos names them by their place, which no release 
 
 ## Rollback
 
-After the launch, an image older than v1.2.1 can't read the catalog. Take the site back to legacy mode first (Rollback C), then change the tag. Legacy mode comes back only from a data-root backup made before the launch publish, as [After the catalog launch](#after-the-catalog-launch) says. Rolling back past `v1.6.0` needs its compose file back too, and `./.next-images-cache` in place, as [v1.6.0](#v160-the-cutover-cleanup) says, and rolling back past `v1.7.0` needs its compose file back, as [v1.7.0](#v170-the-library-at-datalibrary) says.
+After the launch, an image older than v1.2.1 can't read the catalog. Take the site back to legacy mode first (Rollback C), then change the tag. Legacy mode comes back only from a data-root backup made before the launch publish, as [After the catalog launch](#after-the-catalog-launch) says. Rolling back past `v1.6.0` needs its compose file back too, and `./.next-images-cache` in place, as [v1.6.0](#v160-the-cutover-cleanup) says, and rolling back past `v1.7.0` needs its compose file back, as [v1.7.0](#v170-the-library-at-datalibrary) says. Rolling back from `v2.0.0` needs only the tag, as [v2.0.0](#rolling-back-from-v200) says.
 
 Before changing `.env`, note the tag the host runs now, as Deploying says. To roll back, set `PHOTOGRAPHY_IMAGE_TAG` back to that tag and run the same scoped `pull` and `up -d --no-deps` as Deploying, with the same files. Once the catalog has launched, `v1.2.1` is the floor, as above. That swaps the code, not the photo library. A release before `v1.2.0` ignores `./site-config` and shows the portrait built into its image. Rolling back to a release before Phase 0 of #17 brings back the watcher's startup cleanup, which deletes the derivative sets this release keeps for removed photos. That older release also refills `./.next-images-cache` under its year-long headers and writes new `cache/dynamic` files, so roll forward again the way Deploying describes for `v1.1.0`.
 
@@ -610,7 +754,7 @@ An image older than the first release with slice A of #10 serves photos the way 
 
 Rolling the image back past the first release with #16's review stamps keeps the site serving, since the active revision and `/media` don't read the authored records, and `photos rollback` still works. The older image can't read an authored record this release has written, which is every record after its first publish or rollback. So its `validate`, `publish`, `edit`, `sequence`, `series`, `describe --import`, `curation` decisions, and `gc` refuse until you roll forward again. To edit or publish from the older image, restore `authored/` from the data-root backup taken before the upgrade. Edits made since are lost.
 
-Rolling the image back from v2.0.0 to v1.7.x keeps the site serving and the library untouched. The inbox items v2.0.0 adds are stamped 2, so v1.7.x lists them as items it can't read: the `library-unavailable` item, each `io-error` item, and each item whose build failed with `io-error`, `decode-error`, `unsupported-format`, `too-large` or `retries-exhausted`. Missing items, held or not, read as before. v1.7.x ignores the registry's `retries`, `retryAt` and `requeuedFor`, and its first start puts every failed build back to pending once and tries it, codes included. v1.7.x doesn't know a heartbeat's `library-unavailable` result, so until its watcher writes its first heartbeat, up to 30 s after it starts, it reads a v2.0.0 heartbeat with that result as one with no result it knows, and its healthcheck doesn't flag the library for that time.
+Rolling the image back from `v2.0.0` to `v1.7.x` keeps the site serving and the library untouched, and needs no compose file put back. `v1.7.x` reads some Inbox items `v2.0.0` wrote as unreadable, enforces no takedown, and checks neither `photos verify`'s record nor who runs a command, as [Rolling back from v2.0.0](#rolling-back-from-v200) lists.
 
 Never roll back to `v1.0.0`. That image, on GHCR and on Docker Hub, is the initial commit and can't run under this compose file.
 
