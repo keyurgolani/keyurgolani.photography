@@ -5,6 +5,7 @@ import {
   compareMetric,
   INFO_METRICS,
   informational,
+  loadKey,
   loopbackListeners,
   offLoopbackCounts,
   offLoopbackRequests,
@@ -19,9 +20,12 @@ import {
   parseRounds,
   reduceLoad,
   roundOrder,
+  samePath,
+  seriesPathIn,
   summarize,
   summaryMarkdown,
   treeFor,
+  viewerPathIn,
 } from '../ci/perf/stats.mjs';
 
 describe('median and summarize', () => {
@@ -311,6 +315,77 @@ describe('informational and its table', () => {
     expect(markdown).toContain('**1 load asked for something off 127.0.0.1.**');
     expect(markdown).toContain('- one round 3 B phone load 1: https://fonts.example/a.woff2');
     expect(analyse(raw).regressions).toEqual([]);
+  });
+});
+
+describe('the Viewer measure', () => {
+  /** rawWith(), with the Viewer's loads beside Home's on `one`: its phone LCP per server and round from `viewer`. */
+  function rawWithViewer(home, viewer) {
+    const raw = rawWith(home);
+    raw.meta.viewer = { one: '/work/tide/photo/ph_00000000-0000-4000-8000-000000000040' };
+    raw.fixtures.one.rounds.forEach((round, index) => {
+      for (const server of ['A1', 'A2', 'B']) {
+        round.servers[server]['viewer phone'] = [{ lcp: viewer[server][index], tbt: 0, bytes: 300_000, toneFetchAfterLcp: null, toneFetchBytes: null }];
+        round.servers[server]['viewer desktop'] = [{ lcp: 400, tbt: 0, bytes: 200_000, toneFetchAfterLcp: null, toneFetchBytes: null }];
+      }
+    });
+    return raw;
+  }
+  const flat = [1000, 1000, 1000, 1000, 1000];
+
+  it("keys Home's loads by the profile alone, as before, and the Viewer's as `viewer <profile>`", () => {
+    expect(loadKey('home', 'phone')).toBe('phone');
+    expect(loadKey('home', 'desktop')).toBe('desktop');
+    expect(loadKey('viewer', 'phone')).toBe('viewer phone');
+    expect(loadKey('viewer', 'desktop')).toBe('viewer desktop');
+    expect(() => loadKey('about', 'phone')).toThrow(/No page about/);
+  });
+
+  it("finds the first series Work links to, and that series' first photograph's Viewer, from their HTML", () => {
+    const work = '<nav><a href="/work">Work</a><a href="/about">About</a></nav><main><ul><li><h2><a href="/work/tide">Tide</a></h2></li><li><h2><a href="/work/harbour">Harbour</a></h2></li></ul></main>';
+    expect(seriesPathIn(work)).toBe('/work/tide');
+    expect(seriesPathIn('<a href="/work">Work</a><a href="/about">About</a>')).toBeNull();
+    const series = '<a href="/work">All work</a><figure><a href="/work/tide/photo/ph_00000000-0000-4000-8000-000000000040"><img alt=""></a></figure><ol><li><a href="/work/tide/photo/ph_00000000-0000-4000-8000-000000000041">2</a></li></ol>';
+    expect(viewerPathIn(series, '/work/tide')).toBe('/work/tide/photo/ph_00000000-0000-4000-8000-000000000040');
+    // Another series' photograph, a query, or the series itself isn't its Viewer.
+    expect(viewerPathIn('<a href="/work/harbour/photo/ph_1">x</a><a href="/work/tide?photo=ph_2">y</a><a href="/work/tide">z</a>', '/work/tide')).toBeNull();
+    // Links in Next's own payload are escaped text, not attributes, and don't count.
+    expect(viewerPathIn('<script>self.__next_f.push([1,"\\"href\\":\\"/work/tide/photo/ph_3\\""])</script>', '/work/tide')).toBeNull();
+  });
+
+  it('measures the same Viewer page on every server, or refuses with each one named', () => {
+    const path = '/work/tide/photo/ph_00000000-0000-4000-8000-000000000040';
+    expect(samePath({ A1: path, A2: path, B: path })).toBe(path);
+    expect(() => samePath({ A1: path, A2: path, B: '/work/tide/photo/ph_00000000-0000-4000-8000-000000000041' })).toThrow(/A1 .*040.*B .*041/);
+    expect(() => samePath({ A1: path, A2: null, B: path })).toThrow(/A2 none/);
+  });
+
+  it("compares the Viewer's LCP and TBT beside Home's, and a Viewer regression past its floor fails the job", () => {
+    const raw = rawWithViewer({ A1: flat, A2: flat, B: flat }, { A1: flat, A2: flat, B: [1100, 1100, 1100, 1100, 1100] });
+    const { rows, regressions } = analyse(raw);
+    expect(rows.map((row) => row.metric)).toEqual([
+      'one phone lcp', 'one phone tbt', 'one desktop lcp', 'one desktop tbt',
+      'one viewer phone lcp', 'one viewer phone tbt', 'one viewer desktop lcp', 'one viewer desktop tbt',
+    ]);
+    expect(regressions.map((row) => row.metric)).toEqual(['one viewer phone lcp']);
+    expect(rows[4]).toMatchObject({ floor: 50, floorSource: 'minimum', delta: 100, verdict: 'regression' });
+  });
+
+  it("reports the Viewer's bytes for reference, but not Home's tone fetch, which the Viewer never makes", () => {
+    const raw = rawWithViewer({ A1: flat, A2: flat, B: flat }, { A1: flat, A2: flat, B: flat });
+    const metrics = informational(raw).map((row) => row.metric);
+    expect(metrics.filter((metric) => metric.startsWith('one viewer'))).toEqual(['one viewer phone bytes', 'one viewer desktop bytes']);
+    // Home's rows are as they were.
+    expect(metrics.filter((metric) => !metric.startsWith('one viewer'))).toEqual(['one phone bytes', 'one phone toneFetchAfterLcp', 'one phone toneFetchBytes', 'one desktop bytes', 'one desktop toneFetchAfterLcp', 'one desktop toneFetchBytes']);
+  });
+
+  it('says in the summary which Viewer page it loaded, on which fixture, and still reads as Home alone for a run without it', () => {
+    const raw = rawWithViewer({ A1: flat, A2: flat, B: flat }, { A1: flat, A2: flat, B: flat });
+    const markdown = summaryMarkdown(raw, analyse(raw));
+    expect(markdown).toContain('1 cold loads per server, profile and round of Home, and on `one` of the Viewer, `/work/tide/photo/ph_00000000-0000-4000-8000-000000000040` loaded directly, the first photograph of the first series Work lists');
+    expect(markdown).toContain('| one viewer phone lcp | 1000 (1000–1000) | 1000 (1000–1000) | 0 | 50 ms (minimum) | within noise |');
+    const before = rawWith({ A1: flat, A2: flat, B: flat });
+    expect(summaryMarkdown(before, analyse(before))).toContain('1 cold loads per server, profile and round of Home, in Chrome 150.');
   });
 });
 
