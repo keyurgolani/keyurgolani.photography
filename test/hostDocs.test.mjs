@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ACCEPTANCE, ownerPassProblems, withoutStep } from './helpers/ownerPass.mjs';
 
 // The host docs never tell the owner to delete anything on or under the photo
 // library, his originals: no `rm` on a line, or in a code block, that names
@@ -126,5 +127,29 @@ describe("the README's screenshots", () => {
   // #12: the alt says what the shot shows, not only which page it is.
   it('describe About with its portrait and statement', () => {
     expect(alts['docs/screenshots/about.png']).toBe('About page with portrait and artist statement');
+  });
+});
+
+// #184: the owner's screen-reader and device pass is a checklist in the accessibility contract, one part per area,
+// with one step for each of #184's acceptance steps, and what to do with a finding (test/helpers/ownerPass.mjs).
+describe("the accessibility contract's owner pass", () => {
+  const contract = fs.readFileSync(path.join(REPO_ROOT, 'docs/accessibility-contract.md'), 'utf8');
+
+  it('holds every part and acceptance step, says what each step expects, and names no PR', () => {
+    expect(ownerPassProblems(contract)).toEqual([]);
+  });
+
+  // The check can fail: the contract with any one acceptance step taken out fails it, for that step.
+  it.each(ACCEPTANCE.map((item) => [item.name, item]))('fails without the step for %s', (name, item) => {
+    const without = withoutStep(contract, item);
+    expect(without, 'the step was found and taken out').not.toBe(contract);
+    expect(ownerPassProblems(without)).toContain(`no step for ${name}`);
+  });
+
+  it('fails on a PR label, a step with nothing to expect, and a missing finding rule', () => {
+    expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee B6.\n'))).toContain('the section names a PR: B6');
+    expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee PR #193.\n'))).toContain('the section names a PR: PR #193');
+    expect(ownerPassProblems(contract.replace('### The Inbox\n', '### The Inbox\n\n- [ ] **Listen.** Read the page.\n'))).toContain('The Inbox: "Listen." says nothing to expect');
+    expect(ownerPassProblems(contract.replace('in writing', 'later'))).toContain('a finding is never accepted in writing');
   });
 });
