@@ -514,7 +514,8 @@ async function revealByKeyboard(page: Page) {
 type DarkStage = {
     name: string;
     viewport: { width: number; height: number };
-    follows: boolean;
+    /** Whether Dark's wash should follow the copy; left out, the row only measures and says which it does. */
+    follows?: boolean;
     reducedMotion?: boolean;
     failNext?: boolean;
     /** Which line the row takes the wash by: the title's above 65.5%, or the statement's alone above 74.75%. */
@@ -540,6 +541,9 @@ const ONE_LINE_STAGES: DarkStage[] = [
     { name: 'at 390 by 700, with a one-line title, by the statement alone', viewport: { width: 390, height: 700 }, follows: true, rule: 'statement' },
     { name: 'at 380 by 800, with reduced motion and a one-line title, by the statement alone', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true, rule: 'statement' },
 ];
+
+/** Today's Dark phone wash, `linear-gradient(0deg, … .92 0%, … .28 66%, … .12 100%)`, as Chrome serializes it. */
+const TODAYS_DARK_PHONE_WASH = 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)';
 
 /** One Dark stage row, on Home at `url`. */
 async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, reducedMotion = false, failNext = false, rule }: DarkStage, url = '/') {
@@ -573,19 +577,20 @@ async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, re
     });
     const copyTop = await scrim.evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
     const high = await page.locator('main').evaluate((el) => el.hasAttribute('data-copy-high'));
-    const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}${failNext ? ', failure notice' : ''}, ${lines}-line title: title ${titleContrast.toFixed(3)}:1 at ${tops.title}%, statement ${statementContrast.toFixed(3)}:1 at ${tops.statement}%, copy top ${copyTop}, wash ${high ? 'follows the copy' : "today's"}`;
+    const todays = (await scrim.evaluate((el) => getComputedStyle(el).backgroundImage)) === TODAYS_DARK_PHONE_WASH;
+    const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}${failNext ? ', failure notice' : ''}, ${lines}-line title: title ${titleContrast.toFixed(3)}:1 at ${tops.title}%, statement ${statementContrast.toFixed(3)}:1 at ${tops.statement}%, copy top ${copyTop}, data-copy-high ${high ? 'set' : 'unset'}, wash ${todays ? "today's" : 'follows the copy'}`;
     console.log(row);
     testInfo.annotations.push({ type: 'contrast', description: row });
     expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
     expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
-    expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
+    if (follows !== undefined) expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
     // The line the row means to take the wash by (badgePlace.ts's DARK_WASH_TITLE_TOP and DARK_WASH_STATEMENT_TOP).
     if (rule === 'title') expect.soft(Number(tops.title), "the title's top, above the title's line").toBeLessThan(65.5);
     if (rule === 'statement') {
         expect.soft(Number(tops.title), "the title's top, at or under the title's line").toBeGreaterThanOrEqual(65.5);
         expect.soft(Number(tops.statement), "the statement's top, above the statement's line").toBeLessThan(74.75);
     }
-    if (!follows) await expect.soft(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
+    if (follows === false) await expect.soft(scrim).toHaveCSS('background-image', TODAYS_DARK_PHONE_WASH);
     return lines;
 }
 
@@ -594,6 +599,12 @@ for (const stage of DARK_SHORT_STAGES) {
         await darkStage(page, testInfo, stage);
     });
 }
+
+// A small phone held sideways, as the 568 by 320 hidden-state shot's control: the default fixture, default text and
+// motion. It measures, says whether Dark's wash follows the copy there, and holds both to 4.5:1.
+test('in Dark, the series title and statement over a white opening photograph on a phone held sideways at 568 by 320', async ({ page }, testInfo) => {
+    await darkStage(page, testInfo, { name: 'held sideways at 568 by 320', viewport: { width: 568, height: 320 } });
+});
 
 // The one-line rows on a Home fixture of their own, whose featured series has a nine-character title
 // (HOME_ONE_LINE_TITLE), so nothing changes the page after it opens. Its own `next start`, on mobile only.
