@@ -473,7 +473,7 @@ describe('badgePlace', () => {
    * The title's panel, as CatalogHome.module.css draws it from 640 px wide: from the screen's left edge, 3rem above
    * the title, 6rem right of the longer of the title and statement (its fade included), and 1.5rem below the statement.
    */
-  const panel = (title: Box, statement: Box) => box(0, title.top - 48, Math.max(title.right, statement.right) + 96, statement.bottom + 24);
+  const panel = (title: Box, statement: Box) => ({ ...box(0, title.top - 48, Math.max(title.right, statement.right) + 96, statement.bottom + 24), panel: true as const });
   const story = (title: Box, statement: Box, link: Box, wide: boolean) => (wide ? [title, statement, link, panel(title, statement)] : [title, statement, link]);
   /** The oval's box, ring included, for a place, as the browser paints it. */
   const oval = (view: { width: number; height: number }, card: number, place: ReturnType<typeof badgePlace>) => {
@@ -613,8 +613,12 @@ describe('badgePlace', () => {
       // Out of sight: neither clear above the story nor beside it.
       if (place && place.kind !== 'clear' && place.kind !== 'side') continue;
       const painted = oval({ width, height }, 256, place);
-      for (const blocker of [nav(width), ...story]) expect(gap(painted, blocker), `${width} x ${height}, lifted ${lift}`).toBeGreaterThanOrEqual(16 - 0.01);
-      expect(edgeRoom({ width, height }, painted), `${width} x ${height}, lifted ${lift}: the edges`).toBeGreaterThanOrEqual(16 - 0.01);
+      const where = `${width} x ${height}, lifted ${lift}`;
+      for (const blocker of story) expect(gap(painted, blocker), where).toBeGreaterThanOrEqual(16 - 0.01);
+      // Beside the story keeps clear of the text alone, as it always has; above it keeps clear of the nav and the edges too.
+      if (place?.kind === 'side') continue;
+      expect(gap(painted, nav(width)), `${where}: the nav`).toBeGreaterThanOrEqual(16 - 0.01);
+      expect(edgeRoom({ width, height }, painted), `${where}: the edges`).toBeGreaterThanOrEqual(16 - 0.01);
     }
   });
 
@@ -636,49 +640,53 @@ describe('badgePlace', () => {
     expect(badgePlace({ width: 844, height: 390 }, 320, nav(844), reaching)!.kind).not.toBe('side');
   });
 
-  // Phones held sideways, scaled from CI's 844 x 390 measure (the title's type is 1.5rem + 3.5vw, the gutter 3.3vw):
-  // 863 x 360 is Pixel 7 held sideways, on the 320 px card; 640 x 360 is on the 256 px card, its panel drawn. At 360 px
-  // tall the chrome runs past the screen, as at 390, so the title sits 24 px under the nav.
-  const sideways = [
-    { view: { width: 863, height: 360 }, card: 320, story: story(box(28.48, 80, 393, 177.6), box(28.48, 189.6, 393, 211.9), box(28.48, 231.9, 166.48, 275.9), true) },
-    { view: { width: 640, height: 360 }, card: 256, story: story(box(21.12, 80, 333, 163.5), box(21.12, 175.5, 333, 196.7), box(21.12, 216.7, 159.12, 260.7), true) },
+  // Phones held sideways and screens zoomed to 200%, scaled from CI's 844 x 390 boxes: the title's type is 1.5rem +
+  // 3.5vw, so its two lines and its width follow the width; the statement's 0.9rem + 0.4vw; the gutter 3.3vw. Where the
+  // copy fits the screen it sits 115 px above the bottom, and where it doesn't, as at 360 px tall, the title sits 24 px
+  // under the nav. 863 x 360 is Pixel 7 held sideways; 640 x 400 is 1280 x 800 at 200%; 683 x 384, 720 x 450 and 768 x
+  // 432 are 1366 x 768, 1440 x 900 and 1536 x 864 at 200%. The card is 320 px from 768 px wide, the panel drawn from 640.
+  const sidewaysStage = (width: number, height: number) => {
+    const type = Math.min(76, Math.max(38, 24 + 0.035 * width));
+    const statementType = Math.min(19, Math.max(16, 14.4 + 0.004 * width));
+    const gutter = Math.min(48, Math.max(16, 0.033 * width));
+    const right = gutter + (360 * type) / 53.54;
+    const linkBottom = Math.max(80 + 1.8 * type + 12 + 1.25 * statementType + 20 + 44, height - 115.41);
+    const link = box(gutter, linkBottom - 44, gutter + 138, linkBottom);
+    const statement = box(gutter, link.top - 20 - 1.25 * statementType, right, link.top - 20);
+    const title = box(gutter, statement.top - 12 - 1.8 * type, right, statement.top - 12);
+    return { view: { width, height }, card: width >= 768 ? 320 : 256, story: story(title, statement, link, width >= 640) };
+  };
+  const SIDEWAYS = [
+    [863, 360],
+    [640, 360],
+    [640, 400],
+    [683, 384],
+    [720, 450],
+    [768, 432],
   ] as const;
 
-  it.each(sideways)('on a phone held sideways at $view.width x $view.height, keeps the badge beside the story, 16 px from the nav, the copy, its panel and the edges', ({ view, card, story }) => {
-    const place = badgePlace(view, card, nav(view.width), [...story])!;
-    expect(place).toMatchObject({ kind: 'side', scale: 0.6 });
+  it.each(SIDEWAYS)("keeps today's place beside the story at %i x %i, clear of the title, the statement and the link", (width, height) => {
+    const { view, card, story } = sidewaysStage(width, height);
+    const place = badgePlace(view, card, nav(width), [...story]);
+    expect(place).toEqual({ kind: 'side', dx: width / 4, dy: -10, scale: 0.6 });
     const painted = oval(view, card, place);
-    for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
-    expect(edgeRoom(view, painted)).toBeGreaterThanOrEqual(16 - 0.01);
+    for (const text of story.slice(0, 3)) expect(gap(painted, text)).toBeGreaterThanOrEqual(16 - 0.01);
   });
 
-  it("at 640 x 360 moves the badge right off the panel's fade, only as far as its 16 px, inside the right edge's", () => {
-    const { view, card, story } = sideways[1];
-    const place = badgePlace(view, card, nav(640), [...story])!;
-    expect(place).toMatchObject({ kind: 'side', dy: -10, scale: 0.6 });
-    const painted = oval(view, card, place);
-    expect(painted.left).toBeCloseTo(story[3].right + 16, 9);
-    expect(painted.right).toBeLessThanOrEqual(640 - 16);
-  });
-
-  it('where the nav rejects the place beside the story, moves the badge down under it, and with no room there, hides it', () => {
-    const { view, card, story } = sideways[0];
-    // With no nav, the place beside the story clears as it is.
-    expect(badgePlace(view, card, null, [...story])).toEqual({ kind: 'side', dx: 863 / 4, dy: -10, scale: 0.6 });
-    // The nav's 16 px reach 3.2 px into the oval there, so it moves down that far and no further.
-    const moved = badgePlace(view, card, nav(863), [...story])!;
-    expect(moved).toMatchObject({ kind: 'side', dx: 863 / 4, scale: 0.6 });
-    expect(moved.dy).toBeCloseTo(-10 + 3.2, 9);
-    expect(oval(view, card, moved).top).toBeCloseTo(56 + 16, 9);
-    // A nav 120 px tall leaves 208 px down to the bottom edge's 16 px, short of the oval's 215: nowhere clears.
-    expect(badgePlace(view, card, box(0, 0, 863, 120), [...story])).toEqual({ kind: 'none', dx: 863 / 4, dy: -10, scale: 0.6 });
-  });
-
-  it("hides the badge on a phone held sideways where clearing the panel's fade would cross the right edge's 16 px", () => {
-    const { view, card, story } = sideways[1];
-    // The panel 27 px wider: beside it, the oval would end 12 px from the right edge.
-    const wider = [story[0], story[1], story[2], { ...story[3], right: story[3].right + 27 }];
-    expect(badgePlace(view, card, nav(640), wider)).toEqual({ kind: 'none', dx: 640 / 4, dy: -10, scale: 0.6 });
+  it("keeps the place beside the story near the nav and on the panel's fade, as today, and leaves it only where it meets the text", () => {
+    // 863 x 360: the oval's top is 12.8 px under the nav, and at 640 x 360 it lies on the panel's fade. Both are today's.
+    const pixel = sidewaysStage(863, 360);
+    expect(gap(oval(pixel.view, 320, badgePlace(pixel.view, 320, nav(863), [...pixel.story])), nav(863))).toBeCloseTo(12.8, 9);
+    const narrow = sidewaysStage(640, 360);
+    expect(gap(oval(narrow.view, 256, badgePlace(narrow.view, 256, nav(640), [...narrow.story])), narrow.story[3])).toBeLessThan(0);
+    // A nav that reaches into the place, or none at all, leaves it where it is.
+    for (const tall of [null, box(0, 0, 863, 120)]) expect(badgePlace(pixel.view, 320, tall, [...pixel.story])).toEqual({ kind: 'side', dx: 863 / 4, dy: -10, scale: 0.6 });
+    // A statement that reaches under it: beside the story meets the text, and nothing above the story fits under the
+    // panel there, so the badge is out of sight.
+    const reaching = [...pixel.story.slice(0, 3), { ...pixel.story[1], right: 863 * 0.75 - 101.2 - 15 }, pixel.story[3]];
+    expect(badgePlace(pixel.view, 320, nav(863), reaching)!.kind).toBe('none');
+    // On a short phone held upright the place beside the story meets the title, so the badge goes above the story.
+    expect(badgePlace(short, 256, nav(320), shortStory())!).toMatchObject({ kind: 'clear', dx: 0 });
   });
 });
 
