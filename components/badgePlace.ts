@@ -15,8 +15,8 @@ export interface Box {
 
 /**
  * Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. 'none' is where no
- * place clears the chrome: it lands beside the story, as the intro always took it there, and stays out of sight at
- * default text (HeroReveal.module.css).
+ * place clears the chrome: it lands where beside the story starts, as the intro always took it there, and stays out of
+ * sight at default text (HeroReveal.module.css). That loses nothing: it's About's portrait, and the nav reaches About.
  */
 export interface BadgePlace {
   kind: 'clear' | 'side' | 'none';
@@ -76,11 +76,12 @@ const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left
  * them: up above the story (or down, under a nav it reached behind), at 0.85,
  * scaled down toward 0.6 only when the room between the nav and the story is
  * too short for it. With no room even at 0.6, as on a phone held sideways, it
- * goes beside the story instead: a quarter of the width right of the center,
- * 10 px above the middle, at 0.6, where that clears. On a short phone held
- * upright the story spans the screen, so beside it lies on the title: there it
- * shrinks further above the story, toward 0.4, and with no room even at 0.4 it
- * is 'none'.
+ * goes beside the story instead, at 0.6: a quarter of the width right of the
+ * center, 10 px above the middle, moved the least that keeps it
+ * BADGE_CLEARANCE from the nav, the story and its panel, and the screen's
+ * edges. On a short phone held upright the story spans the screen, so there is
+ * no such place: there it shrinks further above the story, toward 0.4, and
+ * with no room even at 0.4 it is 'none'.
  */
 export function badgePlace(view: { width: number; height: number }, card: number, nav: Box | null, story: Box[]): BadgePlace | null {
   if (card <= 0 || view.width <= 0 || view.height <= 0) return null;
@@ -113,9 +114,33 @@ export function badgePlace(view: { width: number; height: number }, card: number
   };
   const lifted = above(0, MIN_SCALE);
   if (lifted) return lifted;
-  const side: BadgePlace = { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
-  if (clears(cx + side.dx, view.height / 2 + side.dy, side.scale)) return side;
-  return above(Math.round((V110_SCALE - MIN_SCALE) * 100) + 1, UPRIGHT_MIN_SCALE) ?? { ...side, kind: 'none' };
+  const side = besideStory(view, ovalReach(card, MIN_SCALE), blockers, (x, cy) => clears(x, cy, MIN_SCALE));
+  if (side) return side;
+  return above(Math.round((V110_SCALE - MIN_SCALE) * 100) + 1, UPRIGHT_MIN_SCALE) ?? { kind: 'none', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+}
+
+/**
+ * The place beside the story, a quarter of the width right of the center and 10 px above the middle, at 0.6, moved
+ * the least distance that keeps the oval (`reach` from its center) BADGE_CLEARANCE from every blocker and from the
+ * screen's edges. Null where no such place exists. The nearest such place is the start itself, or touches a blocker's
+ * or an edge's clearance on one side or two, so only those lines are tried: a few hundred places at most.
+ */
+function besideStory(view: { width: number; height: number }, reach: ReturnType<typeof ovalReach>, blockers: Box[], clears: (x: number, cy: number) => boolean): BadgePlace | null {
+  const fromX = view.width / 2 + view.width / 4;
+  const fromY = view.height / 2 - 10;
+  const gap = BADGE_CLEARANCE;
+  const xs = [fromX, gap + reach.half, view.width - gap - reach.half, ...blockers.flatMap((box) => [box.left - gap - reach.half, box.right + gap + reach.half])];
+  const ys = [fromY, gap + reach.above, view.height - gap - reach.below, ...blockers.flatMap((box) => [box.top - gap - reach.below, box.bottom + gap + reach.above])];
+  const onScreen = (x: number, cy: number) =>
+    x - reach.half >= gap - 0.01 && x + reach.half <= view.width - gap + 0.01 && cy - reach.above >= gap - 0.01 && cy + reach.below <= view.height - gap + 0.01;
+  let best: { x: number; y: number; distance: number } | null = null;
+  for (const x of xs) {
+    for (const y of ys) {
+      const distance = Math.hypot(x - fromX, y - fromY);
+      if ((best === null || distance < best.distance - 1e-9) && onScreen(x, y) && clears(x, y)) best = { x, y, distance };
+    }
+  }
+  return best && { kind: 'side', dx: view.width / 4 + (best.x - fromX), dy: -10 + (best.y - fromY), scale: MIN_SCALE };
 }
 
 /**

@@ -272,7 +272,8 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   const handleUnusable = useCallback(() => setPortraitFailed(true), []);
 
   // The badge's place, from the chrome's own boxes, measured before the first paint and again whenever Home, the
-  // nav or the story changes size, or the story's copy changes (`copyKey`). The chrome is in the document while it's
+  // nav or the story changes size, or the story's copy changes (`copyKey`), and once the fonts are in, since a title
+  // that re-wraps in its own face can change no box the observer watches. The chrome is in the document while it's
   // hidden, so its boxes are there to measure.
   const portraitRef = useRef<HTMLDivElement>(null);
   const [placeKind, setPlaceKind] = useState<BadgePlace['kind'] | null>(null);
@@ -280,7 +281,9 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     const element = portraitRef.current;
     if (!element || !showPortrait) return;
     const root = element.closest('main') ?? document.body;
+    let current = true;
     const measure = () => {
+      if (!current) return;
       const place = badgePlace(
         { width: window.innerWidth, height: window.innerHeight },
         element.offsetWidth,
@@ -297,11 +300,14 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       setPlaceKind(place?.kind ?? null);
     };
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
-    return () => observer.disconnect();
+    void document.fonts?.ready.then(measure);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(root);
+    for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer?.observe(region);
+    return () => {
+      current = false;
+      observer?.disconnect();
+    };
   }, [showPortrait, copyKey]);
 
   // The copy's top, for the phone wash (HomeChrome.module.css), with or without a portrait. It's measured against the
