@@ -12,6 +12,23 @@ test.use({ actionTimeout: 10_000 });
 const world = useGateWorld();
 
 test.describe('without JavaScript', () => {
+    test('the loading state says the Inbox and its header need JavaScript', async ({ page: signed, isMobile }) => {
+        const context = await world.signedInContext(signed, { javaScriptEnabled: false, isMobile });
+        const page = await context.newPage();
+        try {
+            await page.goto(world.urlOf(null));
+            const status = page.locator('[role="status"]', { has: page.getByText('Loading the inbox', { exact: true }) });
+            await expect(status).toBeVisible();
+            await expect(status).toHaveText('Loading the inbox');
+            // Playwright turns scripts off without telling the parser, which then keeps <noscript> as raw text, so this reads the line from it.
+            const note = status.locator('xpath=following-sibling::*[1][self::noscript]');
+            await expect(note).toHaveCount(1);
+            expect(await note.textContent()).toContain('The Inbox and its header, with Sign out, need JavaScript. Nothing is written without it.');
+        } finally {
+            await context.close();
+        }
+    });
+
     test("each bulk and item form is out of sight, and a post made anyway is refused at the boundary, with nothing written", async ({ page: signed, isMobile }) => {
         test.setTimeout(10 * 60_000);
         const context = await world.signedInContext(signed, { javaScriptEnabled: false, isMobile });
