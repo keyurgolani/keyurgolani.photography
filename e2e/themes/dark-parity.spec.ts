@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +8,10 @@ import sharp from 'sharp';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../../test/helpers/curatorSecrets';
 import { retryOnAddrInUse } from '../../test/helpers/ports';
 import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../support/catalog-home';
-import { createInboxFixture, OPENED_INBOX_ITEMS, openInboxItems, type InboxFixture } from '../support/curation-inbox';
+import { authoredRecordDir, readAuthoredRecord } from '../../lib/catalog/working-layer';
+import { writeAuthoredRecord } from '../../lib/catalog/working-layer-writer';
+import { watcherStatusFile } from '../../lib/identity/heartbeat';
+import { createInboxFixture, INBOX_SERIES, OPENED_INBOX_ITEMS, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
 import { compare, completeHiddenSegments, failures, paintsAs, readPaint, walk, type Allowance, type Comparison, type Walk } from './computed';
@@ -1093,15 +1097,144 @@ async function readNote(page: Page): Promise<NoteRead | null> {
     return box && { ...box, paint };
 }
 
-/** Publish's no-JavaScript line in the head, on its no-JavaScript screen, signed in: never with a pair's headStyle, so a self-test's change to the note can't change its model with it. */
-async function publishNoJsLine(origin: string, viewport: { width: number; height: number }, session?: string) {
-    const { context, page, timedOut } = await open(origin, '', PUBLISH_PAIR, viewport, 1, '', { js: false, session, pin: true, head: true });
-    try {
-        const [paint] = await page.evaluate(readPaint, [{ selector: PUBLISH_NO_JS_LINE, properties: NOTE_PAINT }]);
-        return { paint, timedOut, theme: await page.evaluate(() => document.documentElement.getAttribute('data-theme')) };
-    } finally {
-        await context.close();
+/**
+ * The Inbox fixture publishes its catalog, so Publish has nothing pending, shows the live site, and renders no action
+ * bar and so no no-JavaScript line (publish-facts.ts's `bar: null`, PublishScreen.tsx's ActionBar). The coordinator's
+ * ruling A: for the one Publish load that reads the line, the working layer holds one pending edit, a title change on
+ * REFERENCE_SERIES, made through the working layer's own writer, as a curator's save is. Nothing is published, and
+ * nothing on the page is pressed. Around it, the data root is held to the fixture as the run built it (inboxBuilt):
+ * - before the edit, it must be byte-identical to it, or nothing is edited, and the line says an earlier run may have
+ *   left an edit behind;
+ * - after the load, in a `finally`, the record is put back through the same writer, and then its folder is restored
+ *   exactly. The writer only adds versions: each write links a new v<N>.json, and keeps the newest KEEP_VERSIONS (2),
+ *   unlinking older ones (lib/storage/document.ts's pruneVersions). So the put-back leaves two new version files and
+ *   unlinks the fixture's own. The new ones are moved out to a scratch folder, and any the writer pruned is copied
+ *   back from a byte copy taken before the edit, so the folder is the fixture's again, file for file. Then the whole
+ *   data root must be byte-identical to the fixture as built again: anything else new, changed or gone fails.
+ * Every file is compared by its SHA-256, and every folder by its name, except the watcher heartbeat that
+ * keepWatcherAlive() rewrites every 30 s, with its staging temps (HEARTBEAT_NAMES).
+ * The edit is visible to every reader of the data root while it stands, the base's server's too, which shares it, so
+ * the run must have one worker and run in order: a parallel run fails at once.
+ */
+const REFERENCE_SERIES = INBOX_SERIES.draft;
+const REFERENCE_TITLE = `${REFERENCE_SERIES.title}, edited for F12's reference`;
+/** Publish's action bar, which must be the form that holds the line. */
+const PUBLISH_BAR = '[data-sticky-bar]';
+/** The heartbeat, relative to the data root, and its atomic write's `.<name>.<pid>.<uuid>.tmp` (lib/storage/atomicWrite.ts). */
+const HEARTBEAT_NAMES = (relative: string, heartbeat: string) =>
+    relative === heartbeat || (path.posix.dirname(relative) === path.posix.dirname(heartbeat) && relative.startsWith(`${path.posix.dirname(heartbeat)}/.${path.posix.basename(heartbeat)}.`) && relative.endsWith('.tmp'));
+/** The Inbox fixture's data root as the run built it, at the end of the curator's beforeAll: every path to its folder mark or its bytes' SHA-256. */
+let inboxBuilt: Map<string, string> | undefined;
+
+/** Every folder and file under `root`, by its path relative to it, but the heartbeat's. */
+function snapshotTree(root: string): Map<string, string> {
+    const heartbeat = path.relative(root, watcherStatusFile(root)).split(path.sep).join('/');
+    const tree = new Map<string, string>();
+    const visit = (dir: string, relative: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+            const at = relative ? `${relative}/${entry.name}` : entry.name;
+            if (HEARTBEAT_NAMES(at, heartbeat)) continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isSymbolicLink()) tree.set(at, `symlink to ${fs.readlinkSync(full)}`);
+            else if (entry.isDirectory()) {
+                tree.set(at, 'folder');
+                visit(full, at);
+            } else if (entry.isFile()) tree.set(at, `file ${createHash('sha256').update(fs.readFileSync(full)).digest('hex')}`);
+            else tree.set(at, 'neither a file nor a folder');
+        }
+    };
+    visit(root, '');
+    return tree;
+}
+
+/** What differs between two snapshots, path by path, or nothing. */
+function treeChanges(before: Map<string, string>, after: Map<string, string>): string[] {
+    const lines: string[] = [];
+    for (const [at, was] of before) {
+        const now = after.get(at);
+        if (now === undefined) lines.push(`${at} is gone`);
+        else if (now !== was) lines.push(`${at} changed`);
     }
+    for (const at of after.keys()) if (!before.has(at)) lines.push(`${at} is new`);
+    return lines;
+}
+
+/**
+ * Runs `load` with REFERENCE_SERIES's title edited in the working layer, and puts the data root back exactly (the note
+ * above). Its value, or null where nothing ran, and the failing lines for the data root, if any.
+ */
+async function withReferenceEdit<T>(load: () => Promise<T>): Promise<{ value: T | null; problems: string[] }> {
+    // One worker, in order: while the edit stands, any other row reading either server would see it. Playwright
+    // exposes fullyParallel on the config only, not on a project, so parity.config.ts sets neither on its project.
+    const { config } = test.info();
+    if (config.workers > 1 || config.fullyParallel) {
+        throw new Error(`F12's reference edit needs one worker, in order (workers ${config.workers}, fullyParallel ${config.fullyParallel}): the edit is visible to any other row reading the head's server at the same time.`);
+    }
+    const where = `F12's reference edit (${REFERENCE_SERIES.id}'s title, for Publish's no-JavaScript line)`;
+    if (!inbox || !inboxBuilt) return { value: null, problems: [`${where}: the Inbox fixture's data root was never snapshotted, so nothing was edited`] };
+    const { root } = inbox;
+    const built = inboxBuilt;
+    const before = treeChanges(built, snapshotTree(root));
+    if (before.length > 0) return { value: null, problems: [`${where}: the data root isn't the fixture as built, so nothing was edited; an earlier run may have left an edit behind: ${before.join('; ')}`] };
+    const record = await readAuthoredRecord(root, 'series', REFERENCE_SERIES.id);
+    if (record === null) return { value: null, problems: [`${where}: the fixture has no such series record, so nothing was edited`] };
+    const dir = authoredRecordDir(root, 'series', REFERENCE_SERIES.id);
+    // The folder's own files, byte for byte, before anything is written: what the restore puts back.
+    const aside = fs.mkdtempSync(path.join(temp, 'f12-reference-'));
+    const kept = fs.readdirSync(dir).filter((name) => fs.statSync(path.join(dir, name)).isFile());
+    for (const name of kept) fs.copyFileSync(path.join(dir, name), path.join(aside, `kept-${name}`), fs.constants.COPYFILE_EXCL);
+    const problems: string[] = [];
+    let version = record.version;
+    try {
+        version = (await writeAuthoredRecord({ ...structuredClone(record), title: REFERENCE_TITLE }, { expectedVersion: version, root })).version;
+        return { value: await load(), problems };
+    } finally {
+        try {
+            if (version !== record.version) version = (await writeAuthoredRecord({ ...structuredClone(record) }, { expectedVersion: version, root })).version;
+        } catch (error) {
+            problems.push(`${where}: the put-back through the writer failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // The folder exactly as it was: the versions written here moved out, newest first, and any the writer pruned copied back.
+        for (const name of fs.readdirSync(dir).filter((entry) => !kept.includes(entry)).sort().reverse()) {
+            fs.renameSync(path.join(dir, name), path.join(aside, `written-${name}`));
+        }
+        for (const name of kept) if (!fs.existsSync(path.join(dir, name))) fs.copyFileSync(path.join(aside, `kept-${name}`), path.join(dir, name), fs.constants.COPYFILE_EXCL);
+        const after = treeChanges(built, snapshotTree(root));
+        if (after.length > 0) problems.push(`${where}: the data root isn't the fixture as built after the put-back: ${after.join('; ')}`);
+    }
+}
+
+/**
+ * Publish's no-JavaScript line in the head, on its no-JavaScript screen, signed in, with REFERENCE_SERIES's edit
+ * pending (withReferenceEdit). Never with a pair's headStyle, so a self-test's change to the note can't change its
+ * model with it. The reference counts only where the bar is the form and holds the line: anything else is a failing
+ * line, named with the screen's heading, and the hold never passes on it.
+ */
+async function publishNoJsLine(origin: string, viewport: { width: number; height: number }, session?: string) {
+    const { value, problems } = await withReferenceEdit(async () => {
+        const { context, page, timedOut } = await open(origin, '', PUBLISH_PAIR, viewport, 1, '', { js: false, session, pin: true, head: true });
+        try {
+            const [paint] = await page.evaluate(readPaint, [{ selector: PUBLISH_NO_JS_LINE, properties: NOTE_PAINT }]);
+            const screen = await page.evaluate((bar) => ({
+                bar: document.querySelector(bar)?.localName ?? null,
+                heading: document.querySelector('main h1')?.textContent?.trim() ?? null,
+                theme: document.documentElement.getAttribute('data-theme'),
+            }), PUBLISH_BAR);
+            return { paint, timedOut, ...screen };
+        } finally {
+            await context.close();
+        }
+    });
+    const reference: string[] = [];
+    if (value && (value.bar !== 'form' || value.paint === null)) {
+        reference.push(`${PUBLISH_LINE}: not on Publish's no-JavaScript screen in the head (its bar ${value.bar === null ? 'absent' : `a ${value.bar}, not a form`}, its heading ${JSON.stringify(value.heading)}), so F12's note has nothing to hold to`);
+    }
+    return {
+        paint: value && reference.length === 0 ? value.paint : null,
+        timedOut: value?.timedOut ?? [],
+        theme: value?.theme ?? null,
+        problems: [...problems, ...reference],
+    };
 }
 
 /**
@@ -1144,8 +1277,8 @@ interface NoteCheck {
 /** F12's note in one no-JavaScript Inbox cell (NOTE_PAGES's a, b and c), against `base`'s walk, Publish's line read from `origin`, the head. */
 async function noteCheck(base: Walk, head: Walked2, origin: string, viewport: { width: number; height: number }, session?: string): Promise<NoteCheck> {
     const model = await publishNoJsLine(origin, viewport, session);
-    const check: NoteCheck = { walk: head.walk, structural: [], geometry: [], styles: [], sanctioned: [], deltas: [], timedOut: model.timedOut.map((wait) => `${wait} (head, Publish's no-JavaScript screen)`) };
-    if (model.theme !== 'dark') check.styles.push(`Publish's no-JavaScript screen painted ${model.theme ?? 'nothing'}, not dark`);
+    const check: NoteCheck = { walk: head.walk, structural: [...model.problems], geometry: [], styles: [], sanctioned: [], deltas: [], timedOut: model.timedOut.map((wait) => `${wait} (head, Publish's no-JavaScript screen)`) };
+    if (model.paint !== null && model.theme !== 'dark') check.styles.push(`Publish's no-JavaScript screen painted ${model.theme ?? 'nothing'}, not dark`);
     // b. No note, no allowance: the body is compared exactly, as every other box is.
     const note = head.note;
     if (!note) {
@@ -1171,9 +1304,10 @@ async function noteCheck(base: Walk, head: Walked2, origin: string, viewport: { 
             check.deltas.push(line);
         }
     }
-    // c. Painted as Publish's line.
+    // c. Painted as Publish's line, where the reference is there: its absence, or a data root that wasn't the fixture's,
+    // is already a failing line (publishNoJsLine), and the hold never passes without it.
     if (model.paint === null) {
-        check.structural.push(`${PUBLISH_LINE}: not on Publish's no-JavaScript screen in the head, so F12's note has nothing to hold to`);
+        if (check.structural.length === 0) check.structural.push(`${PUBLISH_LINE}: not read, so F12's note has nothing to hold to`);
         return check;
     }
     const held = holdNote(note, model.paint);
@@ -2040,6 +2174,9 @@ test.describe('the curator and its 503', () => {
             cookies[which] = JSON.stringify((await context.cookies()).map(({ name, value }) => ({ name, value })));
             await context.close();
         }
+        // The fixture as the run built it, items opened and both curators signed in: what F12's reference edit is held to
+        // before and after (withReferenceEdit).
+        inboxBuilt = snapshotTree(inbox!.root);
     });
 
     test.afterAll(async () => {
@@ -2112,7 +2249,7 @@ test.describe('the curator and its 503', () => {
                 const at = `${name} at ${viewport.width}`;
                 expect(failing.filter((line) => line.includes(seen)).length, `${at}: seen as ${seen}`).toBeGreaterThan(0);
                 if (bodyHolds) expect(note.geometry, `${at}: the body's allowance follows the note's own box`).toEqual([]);
-                expect(failing.filter((line) => line.startsWith('a wait timed out') || line.startsWith(`${PUBLISH_LINE}:`)), `${at}: every load settled, and Publish's line is there`).toEqual([]);
+                expect(failing.filter((line) => line.startsWith('a wait timed out') || line.startsWith(`${PUBLISH_LINE}:`) || line.startsWith("F12's reference edit")), `${at}: every load settled, Publish's line is there, and the data root is the fixture's`).toEqual([]);
             }
         });
     }
