@@ -443,4 +443,53 @@ test.describe("the badge's place on the catalog Home", () => {
             if (panel && place === 'v1.1.0') expect(around.oval!.left - panel.right, 'the panel ends 16 px before the badge').toBeLessThanOrEqual(17);
         });
     }
+
+    // Pixel 7 held sideways. The nav's 16 px reach into the place beside the story there, so the badge moves down off
+    // the nav, only that far, and keeps 16 px from the story, its panel's fade and the screen's right and bottom edges.
+    test('on a phone held sideways at 863 x 360, the landed badge shows beside the story, just under the nav, 16 px from the story, its panel and the edges', async ({ page }, testInfo) => {
+        runsOn(testInfo, 'mobile');
+        await page.setViewportSize({ width: 863, height: 360 });
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
+        await expect(badge(page)).toHaveAttribute('data-landed', '');
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'side');
+        await expect(badge(page)).toHaveCSS('visibility', 'visible');
+        const { around } = await inItsPlace(page);
+        console.log(`badge boxes at 863x360 on a phone: ${JSON.stringify(around)}`);
+        expect(around.panel, 'the panel is drawn from 640 px wide').not.toBeNull();
+        expect(863 - around.oval!.right, "the badge's room from the right edge").toBeGreaterThanOrEqual(15.5);
+        expect(360 - around.oval!.bottom, "the badge's room from the bottom edge").toBeGreaterThanOrEqual(15.5);
+        // Beside the story, right of the center, and moved down off the nav only as far as its 16 px.
+        expect(around.oval!.left, 'beside the story, right of the center').toBeGreaterThan(863 / 2);
+        expect(around.oval!.top - around.nav!.bottom, 'just under the nav').toBeLessThanOrEqual(17);
+    });
+
+    // A phone so short that no place keeps the badge 16 px from the nav and the copy: 320 x 500 with the fixture's
+    // two-line title. In Black, which raises the badge over the scrim, as Light and Bright do.
+    test('where no place clears the copy, the badge is out of sight and out of the accessibility tree at default text, and shows under the scrim with the text enlarged', async ({ page }, testInfo) => {
+        runsOn(testInfo, 'mobile');
+        await page.setViewportSize({ width: 320, height: 500 });
+        await page.addInitScript(() => localStorage.setItem('theme', 'black'));
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
+        await expect(badge(page)).toHaveAttribute('data-landed', '');
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'none');
+        const alt = await badge(page).locator('img').getAttribute('alt');
+        expect(alt, "the portrait's alt").toBeTruthy();
+        const portrait = badge(page).getByRole('img', { name: alt!, exact: true });
+        await expect(main(page)).not.toHaveAttribute('data-text-enlarged');
+        await expect(badge(page)).toHaveCSS('visibility', 'hidden');
+        await expect(badge(page)).toBeHidden();
+        await expect(portrait).toHaveCount(0);
+        expect(await page.locator('body').ariaSnapshot(), 'the accessibility tree').not.toContain(alt!);
+        // Enlarged text: the chrome scrolls, so the copy can move under the badge anywhere, and the scrim carries it.
+        await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
+        await expect(main(page)).toHaveAttribute('data-text-enlarged', '');
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'none');
+        await expect(badge(page)).toHaveCSS('visibility', 'visible');
+        await expect(badge(page)).toHaveCSS('z-index', '42');
+        await expect(portrait).toHaveCount(1);
+    });
 });

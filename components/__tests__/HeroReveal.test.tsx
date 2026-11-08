@@ -595,19 +595,26 @@ describe('badgePlace', () => {
     for (const blocker of [nav(320), ...shortStory(25)]) expect(gap(oval(short, 256, lifted), blocker)).toBeGreaterThanOrEqual(16 - 0.01);
   });
 
+  /** `from` to `to` in `step`s, both ends included. */
+  const range = (from: number, to: number, step: number) => Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i) => from + i * step);
+  /** The least room the painted oval keeps from the screen's edges. */
+  const edgeRoom = (view: { width: number; height: number }, painted: Box) => Math.min(painted.left, painted.top, view.width - painted.right, view.height - painted.bottom);
+  /** The sweep's most phones, so it stays a unit test's size: 13,144 now. */
+  const SWEEP_LIMIT = 15_000;
+
   it('never puts the badge on the copy of a phone held upright: it is clear of it, or it is out of sight', () => {
-    for (const width of [320, 360, 375, 390]) {
-      for (let height = 480; height <= 900; height += 4) {
-        for (let lift = 0; lift <= 240; lift += 8) {
-          // The copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the hint.
-          const story = shortStory(568 - height + lift).map((b) => ({ ...b, right: Math.min(b.right, width - 16) }));
-          const place = badgePlace({ width, height }, 256, nav(width), story);
-          // Out of sight: neither clear above the story nor beside it.
-          if (place && place.kind !== 'clear' && place.kind !== 'side') continue;
-          const painted = oval({ width, height }, 256, place);
-          for (const blocker of [nav(width), ...story]) expect(gap(painted, blocker), `${width} x ${height}, lifted ${lift}`).toBeGreaterThanOrEqual(16 - 0.01);
-        }
-      }
+    const phones = [320, 360, 375, 390].flatMap((width) => range(480, 900, 4).flatMap((height) => range(0, 240, 8).map((lift) => ({ width, height, lift }))));
+    expect(phones.length).toBeGreaterThan(0);
+    expect(phones.length).toBeLessThanOrEqual(SWEEP_LIMIT);
+    for (const { width, height, lift } of phones) {
+      // The copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the hint.
+      const story = shortStory(568 - height + lift).map((b) => ({ ...b, right: Math.min(b.right, width - 16) }));
+      const place = badgePlace({ width, height }, 256, nav(width), story);
+      // Out of sight: neither clear above the story nor beside it.
+      if (place && place.kind !== 'clear' && place.kind !== 'side') continue;
+      const painted = oval({ width, height }, 256, place);
+      for (const blocker of [nav(width), ...story]) expect(gap(painted, blocker), `${width} x ${height}, lifted ${lift}`).toBeGreaterThanOrEqual(16 - 0.01);
+      expect(edgeRoom({ width, height }, painted), `${width} x ${height}, lifted ${lift}: the edges`).toBeGreaterThanOrEqual(16 - 0.01);
     }
   });
 
@@ -628,6 +635,51 @@ describe('badgePlace', () => {
     const reaching = [...screens[7].story, box(28, 100, 700, 200)];
     expect(badgePlace({ width: 844, height: 390 }, 320, nav(844), reaching)!.kind).not.toBe('side');
   });
+
+  // Phones held sideways, scaled from CI's 844 x 390 measure (the title's type is 1.5rem + 3.5vw, the gutter 3.3vw):
+  // 863 x 360 is Pixel 7 held sideways, on the 320 px card; 640 x 360 is on the 256 px card, its panel drawn. At 360 px
+  // tall the chrome runs past the screen, as at 390, so the title sits 24 px under the nav.
+  const sideways = [
+    { view: { width: 863, height: 360 }, card: 320, story: story(box(28.48, 80, 393, 177.6), box(28.48, 189.6, 393, 211.9), box(28.48, 231.9, 166.48, 275.9), true) },
+    { view: { width: 640, height: 360 }, card: 256, story: story(box(21.12, 80, 333, 163.5), box(21.12, 175.5, 333, 196.7), box(21.12, 216.7, 159.12, 260.7), true) },
+  ] as const;
+
+  it.each(sideways)('on a phone held sideways at $view.width x $view.height, keeps the badge beside the story, 16 px from the nav, the copy, its panel and the edges', ({ view, card, story }) => {
+    const place = badgePlace(view, card, nav(view.width), [...story])!;
+    expect(place).toMatchObject({ kind: 'side', scale: 0.6 });
+    const painted = oval(view, card, place);
+    for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
+    expect(edgeRoom(view, painted)).toBeGreaterThanOrEqual(16 - 0.01);
+  });
+
+  it("at 640 x 360 moves the badge right off the panel's fade, only as far as its 16 px, inside the right edge's", () => {
+    const { view, card, story } = sideways[1];
+    const place = badgePlace(view, card, nav(640), [...story])!;
+    expect(place).toMatchObject({ kind: 'side', dy: -10, scale: 0.6 });
+    const painted = oval(view, card, place);
+    expect(painted.left).toBeCloseTo(story[3].right + 16, 9);
+    expect(painted.right).toBeLessThanOrEqual(640 - 16);
+  });
+
+  it('where the nav rejects the place beside the story, moves the badge down under it, and with no room there, hides it', () => {
+    const { view, card, story } = sideways[0];
+    // With no nav, the place beside the story clears as it is.
+    expect(badgePlace(view, card, null, [...story])).toEqual({ kind: 'side', dx: 863 / 4, dy: -10, scale: 0.6 });
+    // The nav's 16 px reach 3.2 px into the oval there, so it moves down that far and no further.
+    const moved = badgePlace(view, card, nav(863), [...story])!;
+    expect(moved).toMatchObject({ kind: 'side', dx: 863 / 4, scale: 0.6 });
+    expect(moved.dy).toBeCloseTo(-10 + 3.2, 9);
+    expect(oval(view, card, moved).top).toBeCloseTo(56 + 16, 9);
+    // A nav 120 px tall leaves 208 px down to the bottom edge's 16 px, short of the oval's 215: nowhere clears.
+    expect(badgePlace(view, card, box(0, 0, 863, 120), [...story])).toEqual({ kind: 'none', dx: 863 / 4, dy: -10, scale: 0.6 });
+  });
+
+  it("hides the badge on a phone held sideways where clearing the panel's fade would cross the right edge's 16 px", () => {
+    const { view, card, story } = sideways[1];
+    // The panel 27 px wider: beside it, the oval would end 12 px from the right edge.
+    const wider = [story[0], story[1], story[2], { ...story[3], right: story[3].right + 27 }];
+    expect(badgePlace(view, card, nav(640), wider)).toEqual({ kind: 'none', dx: 640 / 4, dy: -10, scale: 0.6 });
+  });
 });
 
 describe("the badge with no clear place (HeroReveal.module.css)", () => {
@@ -646,6 +698,66 @@ describe("the badge with no clear place (HeroReveal.module.css)", () => {
 
   it('with the text enlarged, sits beside the story under the scrim, as beside the story does', () => {
     expect(rules("main[data-text-enlarged] .badge:is([data-badge-place='side'], [data-badge-place='none'])")).toEqual({ 'z-index': '42' });
+  });
+});
+
+describe("the badge's place once the fonts are in", () => {
+  // Pixel 7 held sideways, 863 x 360: before the fonts are in the story has no boxes yet, and v1.1.0's place clears;
+  // once they are, the title takes its own face and its boxes, which no ResizeObserver here reports.
+  const home = () => (
+    <main>
+      <nav data-chrome-region="nav" />
+      <div data-chrome-region="story">
+        <span data-chrome-panel="" />
+        <h1>Coastline, early</h1>
+        <p>A fixture statement, in plain text.</p>
+        <a href="/series/coastline">Enter the series</a>
+      </div>
+      <HeroReveal isLoading={false} onSettled={() => undefined} portrait={PORTRAIT} />
+    </main>
+  );
+  const at = (left: number, top: number, right: number, bottom: number) => DOMRect.fromRect({ x: left, y: top, width: right - left, height: bottom - top });
+  const fontsIn: Record<string, DOMRect> = {
+    NAV: at(0, 0, 863, 56),
+    SPAN: at(0, 32, 489, 235.9),
+    H1: at(28.48, 80, 393, 177.6),
+    P: at(28.48, 189.6, 393, 211.9),
+    A: at(28.48, 231.9, 166.48, 275.9),
+  };
+  let loaded = false;
+  let fontsReady: () => void = () => undefined;
+  const original = { width: window.innerWidth, height: window.innerHeight };
+
+  beforeEach(() => {
+    loaded = false;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 863 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 360 });
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => (fontsReady = resolve)) } });
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(320);
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return (loaded && fontsIn[this.tagName]) || at(0, 0, 0, 0);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(document, 'fonts');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original.width });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: original.height });
+  });
+
+  it('measures the place again once the fonts are in', async () => {
+    const view = render(home());
+    const badge = () => view.container.querySelector<HTMLElement>('[data-badge-place]')!;
+    expect(badge().getAttribute('data-badge-place')).toBe('v1.1.0');
+    loaded = true;
+    await act(async () => {
+      fontsReady();
+      await Promise.resolve();
+    });
+    expect(badge().getAttribute('data-badge-place')).toBe('side');
+    expect(badge().style.getPropertyValue('--badge-dx')).toBe(`${863 / 4}px`);
+    view.unmount();
   });
 });
 
