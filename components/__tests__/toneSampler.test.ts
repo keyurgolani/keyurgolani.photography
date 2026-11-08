@@ -231,6 +231,74 @@ describe('canvasSampler', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  describe('stops once its measure is aborted, so a stale one fetches and decodes nothing more (#209)', () => {
+    it('fetches nothing when the measure was aborted before it began', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      expect(await canvasSampler(slide(), source, controller.signal)).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(bitmapMock).not.toHaveBeenCalled();
+    });
+
+    it('fetches nothing when the measure is aborted while it waits for the browser to be idle', async () => {
+      const idle: Array<() => void> = [];
+      vi.stubGlobal('requestIdleCallback', vi.fn((callback: () => void) => idle.push(callback)));
+      const controller = new AbortController();
+      const pending = canvasSampler(slide(), source, controller.signal);
+      await Promise.resolve();
+      expect(idle).toHaveLength(1);
+      controller.abort();
+      idle[0]();
+      expect(await pending).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('hands its signal to the fetch, so an abort stops the download it started', async () => {
+      const controller = new AbortController();
+      await canvasSampler(slide(), source, controller.signal);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+    });
+
+    it('decodes nothing when the measure is aborted while the file arrives', async () => {
+      const controller = new AbortController();
+      fetchMock.mockImplementationOnce(async () => {
+        controller.abort();
+        return { ok: true, status: 200, blob: async () => blob };
+      });
+      expect(await canvasSampler(slide(), source, controller.signal)).toBeNull();
+      expect(bitmapMock).not.toHaveBeenCalled();
+    });
+
+    it('closes the bitmap and reads nothing when the measure is aborted while the file decodes', async () => {
+      const controller = new AbortController();
+      bitmapMock.mockImplementationOnce(async () => {
+        controller.abort();
+        return bitmap;
+      });
+      expect(await canvasSampler(slide(), source, controller.signal)).toBeNull();
+      expect(bitmap.close).toHaveBeenCalledTimes(1);
+      expect(context.drawImage).not.toHaveBeenCalled();
+      expect(context.getImageData).not.toHaveBeenCalled();
+    });
+
+    it("gives copyTone() no tone for an aborted measure, not the theme's own scrim, so the caller keeps what it has", async () => {
+      const controller = new AbortController();
+      const sample = vi.fn(async () => {
+        controller.abort();
+        return new Uint8ClampedArray(16).fill(20);
+      });
+      expect(await copyTone(slide(), copy, { sample, signal: controller.signal })).toBeNull();
+      // The signal reaches the sampler.
+      expect(sample.mock.calls[0]).toContain(controller.signal);
+      document.body.replaceChildren();
+      // Aborted before it began: it doesn't sample at all.
+      sample.mockClear();
+      expect(await copyTone(slide(), copy, { sample, signal: controller.signal })).toBeNull();
+      expect(sample).not.toHaveBeenCalled();
+    });
+  });
+
   describe("skips quietly, so the theme keeps its own scrim, and never decodes the image on screen when it can't sample", () => {
     const expectSkipped = async (image: HTMLImageElement) => {
       const errors = vi.spyOn(console, 'error');
