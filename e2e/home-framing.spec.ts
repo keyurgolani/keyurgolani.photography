@@ -155,6 +155,87 @@ for (const theme of Object.keys(MATS) as (keyof typeof MATS)[]) {
     });
 }
 
+/**
+ * A photograph whose every pixel says where it is: red is its x and green its y, each as a fraction of 255, blue a
+ * constant. Lossless, so the colour on screen reads back as the point of the photograph drawn there. 400 by 600, the
+ * focal-point photograph's own 2:3, for every srcset candidate.
+ */
+async function coordinateMap(format: 'avif' | 'webp') {
+    const [width, height] = [400, 600];
+    const data = Buffer.alloc(width * height * 3);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) data.set([Math.round((x / (width - 1)) * 255), Math.round((y / (height - 1)) * 255), 128], (y * width + x) * 3);
+    const image = sharp(data, { raw: { width, height, channels: 3 } });
+    return (format === 'avif' ? image.avif({ lossless: true }) : image.webp({ lossless: true })).toBuffer();
+}
+
+/** How far a point read back off the screen may sit from where the crop puts it, as a fraction of the photograph. */
+const POINT_TOLERANCE = 0.02;
+
+/** The point of the coordinate map drawn at the viewport's CSS pixel (x, y), averaged over its device pixels. */
+async function pointAt(page: Page, x: number, y: number) {
+    const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 }, animations: 'disabled', caret: 'hide' });
+    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let [red, green, count] = [0, 0, 0];
+    for (let i = 0; i < data.length; i += info.channels, count++) [red, green] = [red + data[i], green + data[i + 1]];
+    return { x: red / count / 255, y: green / count / 255 };
+}
+
+// #4's phone portrait crop: on a phone held upright, a cover photograph wider than the screen's shape loses its sides,
+// and the focal point decides which. The CSS check above reads object-position; this one reads the screen, so the
+// part of the photograph a visitor sees is the part around its focal point, not the centre.
+test('on a phone held upright, a cover photograph is cut on its focal point: the screen shows the part around it, not the centre', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile', 'A phone held upright: Pixel 7.');
+    await page.route(`**/media/${HOME_FRAMING.focal.photoId}/**`, async (route) => {
+        const format = new URL(route.request().url()).pathname.endsWith('.avif') ? 'avif' : 'webp';
+        await route.fulfill({ status: 200, contentType: `image/${format}`, body: await coordinateMap(format) });
+    });
+    await openHome(page, 'dark');
+    await press(page, page.getByRole('button', { name: 'Pause slideshow', exact: true }));
+    await expect(page.locator('[data-playback]')).toHaveAttribute('data-playback', 'paused');
+    await pressNext(page);
+    await expectShown(page, HOME_FRAMING.focal.photoId);
+    await expect(shownSlide(page)).toHaveAttribute('data-crop', 'cover');
+    // The crossfade has ended: the opening has faded out, so nothing of it mixes into the colours read below.
+    await expect(shownSlide(page)).toHaveCSS('opacity', '1');
+    await expect.poll(() => page.locator('[data-photo-id][aria-hidden="true"]').evaluateAll((slides) => slides.filter((slide) => getComputedStyle(slide).opacity !== '0').length)).toBe(0);
+    // Only the slide stack paints, at one scale, as besidePrint() has it.
+    const style = await page.addStyleTag({
+        content: '[data-home-chrome], [data-home-vignette], [data-home-badge] { visibility: hidden !important; } [data-home-carousel] [data-photo-id] { animation: none !important; }',
+    });
+    try {
+        // The slide's box, the frame the visitor sees, and the photograph's shape.
+        const { box, natural } = await shownSlide(page).evaluate((slide) => {
+            const { left, top, width, height } = slide.getBoundingClientRect();
+            const img = slide.querySelector('img')!;
+            return { box: { left, top, width, height }, natural: { width: img.naturalWidth, height: img.naturalHeight } };
+        });
+        expect(box.height, 'the phone is held upright').toBeGreaterThan(box.width);
+        expect(box.left + box.width, 'the slide sits inside the screen').toBeLessThanOrEqual(page.viewportSize()!.width + 0.5);
+        // Cover scales the photograph to the box's height and cuts its sides.
+        const scale = Math.max(box.width / natural.width, box.height / natural.height);
+        const drawn = { width: natural.width * scale, height: natural.height * scale };
+        const { x: focalX, y: focalY } = HOME_FRAMING.focal.focalPoint;
+        /** The point of the photograph object-position `position` draws at (sx, sy) in the box. */
+        const cutAt = (position: { x: number; y: number }, sx: number, sy: number) => ({
+            x: (sx - (box.width - drawn.width) * position.x) / drawn.width,
+            y: (sy - (box.height - drawn.height) * position.y) / drawn.height,
+        });
+        // The focal point's own spot, where the photograph's (0.25, 0.75) lands, and either side of it.
+        for (const [u, v] of [[focalX, focalY], [0.05, 0.25], [0.5, 0.5], [0.95, 0.75]]) {
+            const [x, y] = [Math.floor(box.left + u * box.width), Math.floor(box.top + v * box.height)];
+            const [sx, sy] = [x + 0.5 - box.left, y + 0.5 - box.top];
+            const want = cutAt({ x: focalX, y: focalY }, sx, sy);
+            const centre = cutAt({ x: 0.5, y: 0.5 }, sx, sy);
+            expect(Math.abs(want.x - centre.x), 'a centre cut would show another part of the photograph here').toBeGreaterThan(2 * POINT_TOLERANCE);
+            const seen = await pointAt(page, x, y);
+            expect(Math.abs(seen.x - want.x), `at (${u}, ${v}) of the screen, the photograph's x: ${seen.x.toFixed(3)} against the focal cut's ${want.x.toFixed(3)} (a centre cut's ${centre.x.toFixed(3)})`).toBeLessThanOrEqual(POINT_TOLERANCE);
+            expect(Math.abs(seen.y - want.y), `at (${u}, ${v}) of the screen, the photograph's y`).toBeLessThanOrEqual(POINT_TOLERANCE);
+        }
+    } finally {
+        await style.evaluate((node) => node.parentNode?.removeChild(node));
+    }
+});
+
 /** A width's own screen the size of its viewport, as image-sizes.spec.ts has it, so the preload scanner sees the viewport. */
 const CONTEXTS: Record<string, BrowserContextOptions> = {
     '1280 by 800': { viewport: { width: 1280, height: 800 }, screen: { width: 1280, height: 800 }, deviceScaleFactor: 1, colorScheme: 'dark' },
