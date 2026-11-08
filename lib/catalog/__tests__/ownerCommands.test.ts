@@ -10,6 +10,7 @@ import { DATA_ROOT_FILE, libraryRoot } from '../../storage/config';
 import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
+import { globalSlot } from '../../globalSlot';
 import { CUTOVER_KEY } from '../mode';
 import { listPhotos, ownerStatus, runListCommand, runStatusCommand } from '../owner-status';
 import { publish, type PublishOptions } from '../publish';
@@ -81,7 +82,7 @@ describe('photos status', () => {
         const catalog = await fixture();
         // This process remembers a publish there (CUTOVER_KEY), as a web process that served the launch does, so it
         // answers active-unreadable while no revision can be read, never not-published.
-        const seen = (globalThis as typeof globalThis & { [CUTOVER_KEY]?: Set<string> })[CUTOVER_KEY] ??= new Set<string>();
+        const seen = globalSlot(CUTOVER_KEY, () => new Set<string>());
         const root = path.resolve(catalog.root);
         seen.add(root);
         cleanups.push(async () => void seen.delete(root));

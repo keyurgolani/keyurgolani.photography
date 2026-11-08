@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { callersAcross, callSites, deleteCalls, exclusionOf, identifierSites, PROCESS_CALL, RAIL_EXCLUSIONS, repositorySources, scanSource, shippedFiles, type DeleteCall } from './helpers/deleteCalls';
+import { callersAcross, callSites, deleteCalls, exclusionOf, identifierSites, PROCESS_CALL, RAIL_EXCLUSIONS, repositorySources, scanSource, scanText, shippedFiles, type DeleteCall } from './helpers/deleteCalls';
 import { REPO_ROOT } from './helpers/runTsx';
 
 /**
@@ -140,7 +140,7 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
         expect(SCANNED).toEqual(expect.arrayContaining(['lib/catalog/retention.ts', 'scripts/photos.ts', 'utils/imageOptimizer.ts', 'proxy.ts', 'instrumentation.ts', 'data/artist.ts', 'next.config.mjs']));
         expect(SCANNED.some((file) => file.startsWith('app/'))).toBe(true);
         expect(SCANNED.some((file) => file.startsWith('components/'))).toBe(true);
-        expect(SCANNED.some((file) => /__tests__|\.test\.|^e2e\/|^ci\/|^test\//.test(file))).toBe(false);
+        expect(SCANNED.some((file) => /__tests__\/|\.(?:test|spec)\./.test(file))).toBe(false);
         // Every source file is scanned or excluded by a rule with its reason, and every rule leaves out something real.
         const all = repositorySources();
         expect(all.filter((file) => !SCANNED.includes(file) && exclusionOf(file) === null)).toEqual([]);
@@ -150,7 +150,34 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             const ignored = rule.pattern.test('node_modules/x.js') || rule.pattern.test('.next/x.js');
             expect(all.some((file) => rule.pattern.test(file)), String(rule.pattern)).toBe(!ignored);
         }
-        expect(exclusionOf('ci/check-compose.mjs')?.reason).toMatch(/CI .*aren't shipped/);
+        expect(exclusionOf('ci/check-compose.sh')?.reason).toMatch(/CI .*aren't shipped/);
+    });
+
+    it('scans test/, e2e/ and ci/ but the files there that have to be left out, so a delete put anywhere else in them fails the rail', () => {
+        // A file in each of them that holds no delete is scanned like any other.
+        expect(SCANNED).toEqual(expect.arrayContaining(['test/visibility.ts', 'test/helpers/ports.ts', 'e2e/support/a11y.ts', 'e2e/themes/computed.ts', 'ci/perf/measure.mjs', 'ci/check-standalone.sh']));
+        // Every file left out there holds a finding, so none is left out that doesn't need it. Test files have their own rules.
+        const leftOut = repositorySources().filter((file) => /^(?:test|e2e|ci)\//.test(file) && !/(?:^|\/)__tests__\/|\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file) && exclusionOf(file) !== null);
+        expect(leftOut).toEqual(expect.arrayContaining(['test/fixtures/deleteRail/strayForms.ts', 'test/helpers/tempLibrary.ts', 'e2e/support/catalogServer.ts', 'ci/smoke-image.sh']));
+        expect(leftOut.filter((file) => deleteCalls([file]).length === 0)).toEqual([]);
+        // The plant, never run: one delete added to a file there that holds none, or in a new file anywhere in them, is one finding the rail fails on.
+        const read = (file: string) => fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+        const PLANT = 'export function later(dir) {\n    fs.rmSync(dir, { recursive: true, force: true });\n}\n';
+        const SHELL_PLANT = 'rm -rf "$DIR"\n';
+        const plants: (readonly [string, string])[] = [
+            ...['test/helpers/ports.ts', 'e2e/support/a11y.ts', 'ci/perf/measure.mjs'].map((file) => [file, `${read(file)}\n${PLANT}`] as const),
+            ['ci/check-standalone.sh', `${read('ci/check-standalone.sh')}\n${SHELL_PLANT}`],
+            ...['test/later.ts', 'test/helpers/later.ts', 'test/fixtures/later.ts', 'test/fixtures/deleteRail/later.ts', 'e2e/later.ts', 'e2e/support/later.ts', 'ci/later.mjs', 'ci/perf/later.mjs'].map((file) => [file, PLANT] as const),
+            ['ci/later.sh', SHELL_PLANT],
+        ];
+        for (const [file, text] of plants) {
+            expect(exclusionOf(file), file).toBeNull();
+            const before = fs.existsSync(path.join(REPO_ROOT, file)) ? deleteCalls([file]).length : 0;
+            expect(before, file).toBe(0);
+            const found = scanText(file, text);
+            expect(found.length, file).toBe(1);
+            expect(passes(found), file).toBe(false);
+        }
     });
 
     it('finds no delete call that is not on the allowlist, and in each function exactly the calls it pins, by text', () => {
@@ -271,7 +298,7 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             "import { spawn } from 'node:child_process';\nexport function shellEditor(): void {\n    spawn('sh', ['-c', 'true']);\n}\n",
         ];
         const dirs = [...new Set(SCANNED.map((file) => path.posix.dirname(file)))];
-        expect(dirs).toEqual(expect.arrayContaining(['.', 'data', 'lib', 'lib/catalog', 'app', 'components', 'utils', 'scripts']));
+        expect(dirs).toEqual(expect.arrayContaining(['.', 'data', 'lib', 'lib/catalog', 'app', 'components', 'utils', 'scripts', 'test', 'test/helpers', 'e2e/support', 'ci', 'ci/perf']));
         for (const dir of dirs) {
             for (const text of spawning) {
                 const file = dir === '.' ? 'later.ts' : `${dir}/later.ts`;

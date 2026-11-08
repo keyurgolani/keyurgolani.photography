@@ -3,7 +3,7 @@ import { LQIP_RE } from '../catalog/schema';
 import { encodeLqip, encodeVariant, lqipDataUri, variantWidthFor } from '../identity/profile';
 import { VARIANT_FILE_RE, VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
 import { PORTRAIT_LIMITS, PORTRAIT_TOKEN_RE, readAboutPortrait, readPortraitSource, type AboutPortraitState, type FocalPoint } from './aboutPortrait';
-import { globalSlot } from '../globalSlot';
+import { globalSlot, slotKey } from '../globalSlot';
 
 /**
  * About's portrait derivatives: the same widths and formats as a `/media`
@@ -63,7 +63,7 @@ interface Kept {
     queue: Promise<unknown>;
 }
 
-const SETS = Symbol.for('keyurgolani.photography.aboutPortrait.sets');
+const SETS = slotKey<Kept>(Symbol.for('keyurgolani.photography.aboutPortrait.sets'));
 
 function kept(): Kept {
     return globalSlot<Kept>(SETS, () => ({ set: null, loggedFailure: null, queue: Promise.resolve() }));
