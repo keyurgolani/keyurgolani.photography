@@ -599,6 +599,8 @@ test("Dark on a phone is today's at default text, and follows the copy only when
     const root = page.locator('main');
     const scrim = page.locator('[data-home-vignette]');
     await expect(root).not.toHaveAttribute('data-text-enlarged');
+    // Pixel 7's stage is tall enough for the copy to sit under the fixed wash's line (copyAboveDarkWash()).
+    await expect(root).not.toHaveAttribute('data-copy-high');
     // v1.2.0's phone wash, `linear-gradient(0deg, … .92 0%, … .28 66%, … .12 100%)`, as Chrome serializes it.
     await expect(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
     await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });

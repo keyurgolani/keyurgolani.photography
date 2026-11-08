@@ -7,7 +7,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, chromeOverflows, copyTone, coverSource, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyAboveDarkWash, copyTone, coverSource, DARK_WASH_COPY_TOP, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -701,6 +701,75 @@ describe("Home's root and the text size", () => {
     document.documentElement.style.fontSize = '16px';
     const view = render(home());
     expect(view.getByTestId('home').hasAttribute('data-text-enlarged')).toBe(false);
+  });
+});
+
+describe("Home's root and the copy's height on the stage", () => {
+  // A 390 x 664 stage, an iPhone in Safari with its toolbars showing, and 390 x 844, Dark parity's phone: the title's
+  // top 400 px and 580 px down.
+  const home = () => (
+    <main data-testid="home">
+      <div data-home-vignette="" />
+      <div data-chrome-region="story">
+        <h1>Coastline, early</h1>
+      </div>
+      <HeroReveal isLoading={false} onSettled={() => undefined} />
+    </main>
+  );
+  const stageAt = (height: number, titleTop: number) =>
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.hasAttribute('data-home-vignette')) return DOMRect.fromRect({ x: 0, y: 0, width: 390, height });
+      if (this.tagName === 'H1') return DOMRect.fromRect({ x: 16, y: titleTop, width: 258, height: 68 });
+      return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+    });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("says so on Home's root where the copy sits above Dark's fixed wash, and stops saying so when Home goes", () => {
+    stageAt(664, 400);
+    const view = render(home());
+    const root = view.getByTestId('home');
+    expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('60.24%');
+    expect(root.hasAttribute('data-copy-high')).toBe(true);
+    view.unmount();
+    expect(root.hasAttribute('data-copy-high')).toBe(false);
+  });
+
+  it('says nothing on a taller stage, so Dark keeps its wash there', () => {
+    stageAt(844, 580);
+    const view = render(home());
+    expect(view.getByTestId('home').hasAttribute('data-copy-high')).toBe(false);
+  });
+});
+
+describe('copyAboveDarkWash', () => {
+  // Dark's fixed phone wash (HomeChrome.module.css): rgb(8 10 9) at 0.92 at the stage's bottom and 0.28 at 66% up it.
+  const washAt = (up: number) => 0.92 + ((0.28 - 0.92) * up) / 0.66;
+  /** Dark's title, #f5f5f5, over a white photograph under the wash at `up` of the stage's height. */
+  const titleOverWhite = (up: number) => {
+    const alpha = washAt(up);
+    const [r, g, b] = [8, 10, 9].map((channel) => 255 * (1 - alpha) + channel * alpha);
+    return (luminance(245, 245, 245) + 0.05) / (luminance(r, g, b) + 0.05);
+  };
+
+  it("draws its line where Dark's fixed wash stops holding the title at 4.5:1, a point lower for the glyphs above the title's box", () => {
+    // The wash holds the title up to 35% up the stage, so to a copy top 65% down it, and no higher.
+    expect(titleOverWhite(0.35)).toBeGreaterThanOrEqual(4.5);
+    expect(titleOverWhite(0.351)).toBeLessThan(4.5);
+    // The title's glyphs reach about 6 px above its box, 0.7% of an 844 px stage, so the line is 66%.
+    expect(DARK_WASH_COPY_TOP).toBe(66);
+    expect(titleOverWhite(1 - DARK_WASH_COPY_TOP / 100)).toBeGreaterThan(4.6);
+  });
+
+  it('is a copy whose top sits higher than that on the stage', () => {
+    for (const top of [0, 40, 60.24, 64.4, 65.99]) expect(copyAboveDarkWash(top), `${top}%`).toBe(true);
+    for (const top of [66, 66.3, 68.72, 80, 100]) expect(copyAboveDarkWash(top), `${top}%`).toBe(false);
+  });
+
+  it("isn't, with no copy measured, so Dark keeps its wash", () => {
+    expect(copyAboveDarkWash(null)).toBe(false);
   });
 });
 

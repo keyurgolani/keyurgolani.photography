@@ -120,3 +120,26 @@ describe("Dark's phone wash under 380 px", () => {
     expect(selectors).toEqual([`${DARK} .vignette`]);
   });
 });
+
+// From 380 px Dark's fixed wash is set in percentages of the stage, so on a short stage (an iPhone in Safari with its
+// toolbars showing), or with reduced motion's hint lifting the copy, the title sat where it has thinned. HeroReveal
+// says so on Home's root (data-copy-high, badgePlace.ts's copyAboveDarkWash()), and there Dark's wash follows the copy
+// at every phone width, as Black's does. A taller stage keeps today's.
+describe("Dark's phone wash on a short stage", () => {
+  const phone = atRule(CHROME, 'media', '(max-width: 39.99rem)')!;
+  const enlarged = declarations(phone, `${DARK} .root[data-text-enlarged] .vignette`);
+
+  it('follows the copy where the copy sits above the fixed wash, as at enlarged text', () => {
+    const high = declarations(phone, `${DARK} .root[data-copy-high] .vignette`);
+    expect(high['--home-hold-at']).toBe(enlarged['--home-hold-at']);
+    expect(high.background).toBe(enlarged.background);
+    expect(high.background).toMatch(/rgb\(8 10 9 \/ 0\.86\) var\(--home-hold-at\)/);
+  });
+
+  it("is the same rule as enlarged text's, so the two never differ", () => {
+    const rules: Rule[] = [];
+    phone.walkRules((rule: Rule) => void (rule.selectors.some((selector) => selector.includes('[data-copy-high]')) && rules.push(rule)));
+    expect(rules).toHaveLength(1);
+    expect(rules[0].selectors).toEqual([`${DARK} .root[data-text-enlarged] .vignette`, `${DARK} .root[data-copy-high] .vignette`]);
+  });
+});
