@@ -265,6 +265,31 @@ describe('the held count, the Held filter and the library banner (#17)', () => {
         }
     });
 
+    it('says how many missing items are on hold only when some are: none, one, and several', () => {
+        const banner = (held: number) => {
+            const { container, unmount } = render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={0} cursor={0} item={null} library={{ cause: 'the library root is missing', held, itemId: EVT(7) }} />);
+            const text = container.querySelector('section#library')?.textContent;
+            const link = within(container.querySelector('section#library') as HTMLElement).getByRole('link', { name: "The library can't be reached" });
+            expect(link).toHaveAttribute('href', `/curation/inbox?item=${EVT(7)}#item`);
+            unmount();
+            return text;
+        };
+        // With nothing held, the banner stays, with its first sentence alone.
+        expect(banner(0)).toBe("The library can't be reached (the library root is missing), so nothing changes until it's back.");
+        expect(banner(1)).toBe("The library can't be reached (the library root is missing), so nothing changes until it's back. 1 missing item is on hold.");
+        expect(banner(20)).toBe("The library can't be reached (the library root is missing), so nothing changes until it's back. 20 missing items are on hold.");
+    });
+
+    it("says in the library item's own box that each held item has Release, beside the command", () => {
+        const library = detail({ ...item(7, { type: 'library-unavailable', title: 'Library unavailable', photoId: null, shortId: 'no photo ID', sourcePath: '.' }), can: { ...NONE, edit: true, defer: true, dismiss: true }, facts: [{ label: 'Cause', value: 'The library root is missing' }] });
+        render(<InboxDetailView view={view({ items: [library], selected: library })} />);
+        const box = screen.getByRole('region', { name: 'Library unavailable' });
+        expect(box.querySelector('p')?.textContent).toBe(
+            "While the watcher can't see the library, or can't read its files, it changes nothing, and the missing items it found since the outage began wait here instead of counting as missing. A pass that reads the library again closes this item and releases them. Release each held item, or run curation confirm-missing, to release one that's really gone.",
+        );
+        expect(within(box).getByText('curation confirm-missing').tagName).toBe('CODE');
+    });
+
     it('shows no banner while the library is available', () => {
         const { container } = render(<InboxWatch watcher={{ state: 'running' }} needsJudgment={0} cursor={0} item={null} library={null} />);
         expect(container.querySelector('#library')).toBeNull();
