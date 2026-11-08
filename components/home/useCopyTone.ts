@@ -13,6 +13,8 @@ export const TONE_SETTLE_MS = 150;
  * window changes size, settled for TONE_SETTLE_MS. Light's and Bright's copy takes a dark scrim over a dark photograph
  * (HomeChrome.module.css; spec §5). Before it's measured, with no copy on the page, or over a contain photograph (#4),
  * there's no tone, which is the theme's own scrim. A measure that can't read the image now keeps the tone it has.
+ * A newer measure aborts the one before it, and a slide change or Home's going aborts the one in flight, so a stale
+ * measure stops fetching and decoding (#209).
  */
 export function useCopyTone(carousel: RefObject<HTMLElement | null>, photoId: string | undefined, loaded: boolean) {
   useEffect(() => {
@@ -31,12 +33,15 @@ export function useCopyTone(carousel: RefObject<HTMLElement | null>, photoId: st
     // Only the newest measure writes, however the samples resolve (L6).
     let latest = 0;
     let settle: ReturnType<typeof setTimeout> | undefined;
+    let pending: AbortController | undefined;
     const measure = () => {
       const boxes = [...story.querySelectorAll(':is(h1, h2, p, a)'), ...root.querySelectorAll('[data-chrome-panel]')].map(boxOf).filter((box): box is Box => box !== null);
       const copy = unionOf(boxes);
       if (!copy) return;
       const run = ++latest;
-      void copyTone(image, copy, { position: positionOf(getComputedStyle(image).objectPosition) }).then((tone) => {
+      pending?.abort();
+      pending = new AbortController();
+      void copyTone(image, copy, { position: positionOf(getComputedStyle(image).objectPosition), signal: pending.signal }).then((tone) => {
         if (current && run === latest && tone !== null) root.setAttribute('data-copy-tone', tone);
       });
     };
@@ -51,6 +56,7 @@ export function useCopyTone(carousel: RefObject<HTMLElement | null>, photoId: st
     observer?.observe(story);
     return () => {
       current = false;
+      pending?.abort();
       clearTimeout(settle);
       image.removeEventListener('load', measure);
       window.removeEventListener('resize', later);

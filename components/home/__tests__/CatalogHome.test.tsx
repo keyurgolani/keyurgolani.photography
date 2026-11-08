@@ -1082,6 +1082,30 @@ describe('CatalogHome', () => {
       expect(failure()).toBe('');
     });
 
+    it("on image-unavailable Home, says the visitor's move once, with the slide's name alone, when its record can't be fetched either", async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => status(503));
+      await renderHome(narrowed());
+      await flush();
+      fail(2);
+      await flush();
+      fail(3);
+      await flush();
+      expect(document.querySelector('[data-home-state]')?.getAttribute('data-home-state')).toBe('image-unavailable');
+      // Each new, non-empty line of the carousel's polite region, as a screen reader would hear it.
+      const region = () => document.querySelector('[data-home-carousel] [aria-live]')!;
+      const heard: string[] = [];
+      const hear = () => {
+        const line = region().textContent ?? '';
+        if (region().getAttribute('aria-live') === 'polite' && line !== '' && line !== heard.at(-1)) heard.push(line);
+      };
+      click('Next photograph');
+      hear();
+      await flush();
+      hear();
+      expect(shownSlide()).toHaveAttribute('data-photo-id', id(4));
+      expect(heard).toEqual(['5 of 6']);
+    });
+
     it('ignores records from another revision, so two revisions never mix', async () => {
       vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ok([2, 3, 4], `rev_${'b'.repeat(64)}`));
       await renderHome(narrowed());

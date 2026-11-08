@@ -3,13 +3,14 @@ import { useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TONE_SETTLE_MS, useCopyTone } from '../useCopyTone';
 
-const tone = vi.hoisted(() => ({ next: 'dark' as 'dark' | 'light' | null, calls: 0, resolvers: [] as Array<(value: 'dark' | 'light' | null) => void>, held: false }));
+const tone = vi.hoisted(() => ({ next: 'dark' as 'dark' | 'light' | null, calls: 0, resolvers: [] as Array<(value: 'dark' | 'light' | null) => void>, held: false, signals: [] as Array<AbortSignal | undefined> }));
 vi.mock('../../badgePlace', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../badgePlace')>();
   return {
     ...actual,
-    copyTone: () => {
+    copyTone: (_image: HTMLImageElement, _copy: unknown, options?: { signal?: AbortSignal }) => {
       tone.calls += 1;
+      tone.signals.push(options?.signal);
       if (tone.held) return new Promise((resolve) => tone.resolvers.push(resolve));
       return Promise.resolve(tone.next);
     },
@@ -47,6 +48,7 @@ describe('useCopyTone', () => {
     tone.calls = 0;
     tone.held = false;
     tone.resolvers = [];
+    tone.signals = [];
   });
 
   const withBoxes = () =>
@@ -107,6 +109,35 @@ describe('useCopyTone', () => {
       tone.resolvers[0]('light');
     });
     expect(root.getAttribute('data-copy-tone')).toBe('dark');
+  });
+
+  it('aborts a measure once a newer one starts, and the one in flight when the slide changes or Home goes, so a stale one stops fetching and decoding (#209)', async () => {
+    withBoxes();
+    tone.held = true;
+    const view = render(home('a', true));
+    const image = view.container.querySelector('[data-photo-id="a"] img')!;
+    await act(async () => undefined);
+    expect(tone.signals).toHaveLength(1);
+    expect(tone.signals[0]?.aborted, 'the first measure, while it is the newest').toBe(false);
+    // The image loads a new source: the measure before it is stale.
+    await act(async () => {
+      image.dispatchEvent(new Event('load'));
+    });
+    expect(tone.signals).toHaveLength(2);
+    expect(tone.signals.map((signal) => signal?.aborted)).toEqual([true, false]);
+    // A settled resize supersedes it in turn.
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+      await new Promise((resolve) => setTimeout(resolve, TONE_SETTLE_MS + 50));
+    });
+    expect(tone.signals.map((signal) => signal?.aborted)).toEqual([true, true, false]);
+    // The slide changes: the effect's cleanup aborts the one in flight, and the new slide's measure runs.
+    await act(async () => view.rerender(home('b', true)));
+    expect(tone.signals.map((signal) => signal?.aborted)).toEqual([true, true, true, false]);
+    // Home goes: nothing it started keeps running.
+    view.unmount();
+    expect(tone.signals).toHaveLength(4);
+    expect(tone.signals.every((signal) => signal?.aborted)).toBe(true);
   });
 
   it("sets the tone on Home's root once the photograph on screen has loaded, again at each slide change, and clears it when Home goes", async () => {
