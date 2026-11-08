@@ -9,7 +9,7 @@ import { printable, runCurationCli } from '../commands';
 import type { CurationEvent } from '../events';
 import { loadInbox } from '../inbox';
 import { runInboxAction } from '../inbox-form';
-import { RESTORED_TEXT, restoreHint, resolvedResponse, suggestedFileLabel, type InboxView } from '../inbox-view';
+import { restoreAnswer, restoreHint, resolvedResponse, suggestedFileLabel, type InboxView } from '../inbox-view';
 import { listEvents } from '../repository';
 import { archiveMissing } from '../resolutions';
 import { createMissingWorld, removeMissingTemplate, type MissingWorld } from './missingWorld';
@@ -74,7 +74,7 @@ describe('Restore on the Inbox (#17)', { timeout: 60_000 }, () => {
         return { w, item: await newItemAt(w, 'returned/landscape.jpg') };
     }
 
-    it('names the archived photograph a new one restores, and restores it with no series, position or description, answering as a restored item says', async () => {
+    it('names the archived photograph a new one restores, and restores it with no series, position or description, answering that the restore waits for the watcher', async () => {
         const { w, item } = await archivedBack();
         const detail = await shown(item.id);
         expect(detail).toMatchObject({ type: 'new', restores: { name: 'landscape.jpg' } });
@@ -84,8 +84,12 @@ describe('Restore on the Inbox (#17)', { timeout: 60_000 }, () => {
         );
         // The page sends no series or description with Restore, and the server takes none it's sent.
         const state = await runInboxAction('restore', itemForm(item, w.revisionId, { series: 'ser_harbor', description: 'Not used.' }));
-        expect(state).toMatchObject({ status: 'done', action: 'restore', eventId: item.id, message: RESTORED_TEXT });
-        expect(RESTORED_TEXT).toBe(resolvedResponse({ kind: 'restored' }, 'new'));
+        // As Bind's answer: the restore is recorded, and the watcher applies it on its next pass.
+        const waiting = 'Restore recorded, and waiting for the watcher. On its next pass, landscape.jpg comes back with its original details, outside any series.';
+        expect(state).toMatchObject({ status: 'done', action: 'restore', eventId: item.id, message: waiting });
+        expect(restoreAnswer('landscape.jpg')).toBe(waiting);
+        // Once the watcher has applied it, the closed item says what happened, in the past tense, as before.
+        expect(resolvedResponse({ kind: 'restored' }, 'new')).toBe('This file brought the archived photograph back under its old ID, so its own item places it.');
         expect(pending(w.root)).toEqual([expect.objectContaining({ type: 'restore', path: 'returned/landscape.jpg', photoId: w.p, merge: item.photoId })]);
         expect((await w.event(item.id)).decisions.at(-1)).toMatchObject({ action: 'approve', restores: w.p });
         // Approved, so the page offers it no more.
