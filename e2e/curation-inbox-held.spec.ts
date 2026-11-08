@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { Page } from '@playwright/test';
 import { eventIdOf, eventKey } from '../lib/curation/events';
 import { bindAnswer, LIBRARY_BANNER, RELEASE_HINT, RELEASED_ANSWER, RESTORED_TEXT, restoreHint } from '../lib/curation/inbox-view';
-import { LIBRARY_EVENT_ID } from '../lib/curation/library';
+import { heldMissingIds, LIBRARY_EVENT_ID } from '../lib/curation/library';
 import { listEvents, readEvent } from '../lib/curation/repository';
 import { createCurationSink } from '../lib/curation/sink';
 import { identityPaths, readRegistry, writeRegistry } from '../lib/identity/registry';
@@ -22,8 +22,11 @@ import { expect, test } from './support/test';
 // place on a new photograph whose bytes are an archived one's; Bind's suggested files, which are `curation show`'s;
 // and the held missing items while the library item is open, with the Status filter's Held, Release on each, the
 // banner, and the held count. Sample values only. The fixture's temp folder stays for the runner to clear.
+//
+// Each row stands on its own: it reads what's held from the data root when it runs, and touches only its own items,
+// so one row failing never skips the rest, and a worker started again after a failure makes a fresh fixture.
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'default' });
 
 const HOOK_TIMEOUT = READY_TIMEOUT + 60_000;
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
@@ -58,7 +61,6 @@ const OUTAGE = '2026-02-01T02:00:00.000Z';
 
 let suggestedPath = '';
 let missingId = '';
-let heldIds: string[] = [];
 
 const newItemOf = (photoId: string, assetRevision: string) => eventIdOf(eventKey('new', { photoId, assetRevision, key: `new:${photoId}:${assetRevision}` }));
 
@@ -107,7 +109,7 @@ test.beforeAll(async () => {
     ]);
     const missingFacts: IdentityFact[] = bulk.slice(0, HELD).map((record) => fact(f, 'missing', record.photoId, { assetRevision: record.source.observedRevision, path: record.source.path, observedAt: OUTAGE }));
     await sink(missingFacts);
-    heldIds = missingFacts.map((entry) => eventIdOf(eventKey('missing', entry)));
+    expect(new Set(await heldNow())).toEqual(new Set(missingFacts.map((entry) => eventIdOf(eventKey('missing', entry)))));
     missingId = eventIdOf(eventKey('missing', fact(f, 'missing', DRAFT_ID)));
     expect((await readEvent(f.root, LIBRARY_EVENT_ID))?.status).toBe('open');
 
@@ -137,38 +139,51 @@ function pendingDecisions(): { type: string; path?: string; photoId?: string; me
     return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))) : [];
 }
 
+/** The missing items the library item holds now, as the page counts them: a row that releases one changes it. */
+async function heldNow(): Promise<string[]> {
+    const { events } = await listEvents(data().root);
+    return heldMissingIds(events, events.find((event) => event.id === LIBRARY_EVENT_ID));
+}
+
+/** The banner. Exact, since the library item's own box is a region named "Library unavailable". */
+const banner = (page: Page) => page.getByRole('region', { name: 'Library', exact: true });
+
 const answer = (page: Page, state: 'done') => page.getByRole('status').locator(`[data-state="${state}"]`);
 
 test('shows the library banner on the first load, above the list and the item, linking to the library item (#17)', async ({ page }) => {
+    const held = (await heldNow()).length;
     await openInbox(page);
-    const banner = page.getByRole('region', { name: 'Library' });
-    await expect(banner).toBeVisible();
-    await expect(banner).toHaveAttribute('data-tone', 'alert');
-    await expect(banner).toHaveText(/^The library can't be reached \(one pass found 20 of \d+ bound sources missing\), so nothing changes until it's back\. 20 missing items are on hold\.$/);
+    const strip = banner(page);
+    await expect(strip).toBeVisible();
+    await expect(strip).toHaveAttribute('data-tone', 'alert');
+    await expect(strip).toHaveText(new RegExp(`^The library can't be reached \\(one pass found ${HELD} of \\d+ bound sources missing\\), so nothing changes until it's back\\. ${held} missing items are on hold\\.$`));
     // Under the header, above both sides, as the watcher's strip is.
-    const [bannerBox, listBox] = await Promise.all([banner.boundingBox(), page.locator('#inbox-list').boundingBox()]);
+    const [bannerBox, listBox] = await Promise.all([strip.boundingBox(), page.locator('#inbox-list').boundingBox()]);
     expect(bannerBox && listBox && bannerBox.y + bannerBox.height <= listBox.y + 1).toBe(true);
     await expectNoA11yViolations(page, { include: '#library' });
-    await banner.getByRole('link', { name: LIBRARY_BANNER.lead }).click();
+    await strip.getByRole('link', { name: LIBRARY_BANNER.lead }).click();
     await expect(page).toHaveURL(new RegExp(`\\?item=${LIBRARY_EVENT_ID}#item$`));
     await expect(page.getByRole('heading', { level: 2, name: 'The photo library' })).toBeVisible();
 });
 
 test('counts the held items apart from the judgment count, and lists them under the Status filter\'s Held (#17)', async ({ page }) => {
+    const held = await heldNow();
+    expect(held.length).toBeGreaterThan(0);
     await openInbox(page);
-    await expect(page.locator('#inbox-list header p')).toHaveText(new RegExp(`^\\d+ of \\d+ items require judgment, ${HELD} held`));
+    await expect(page.locator('#inbox-list header p')).toHaveText(new RegExp(`^\\d+ of \\d+ items require judgment, ${held.length} held`));
     const filters = page.getByRole('search', { name: 'Filter the inbox' });
     await filters.getByRole('combobox', { name: 'Status' }).selectOption({ label: 'Held' });
     await filters.getByRole('button', { name: 'Apply filters' }).click();
     await waitForHydration(page);
     await expect(page).toHaveURL(/[?&]status=held/);
-    await expect(page.getByText(`${HELD} items match these filters`)).toBeVisible();
+    await expect(page.getByText(`${held.length} items match these filters`)).toBeVisible();
     const shown = await page.locator('#inbox-list a[data-row]').evaluateAll((links) => links.map((link) => link.getAttribute('data-row')));
-    expect(new Set(shown)).toEqual(new Set(heldIds));
+    expect(new Set(shown)).toEqual(new Set(held));
 });
 
 test('releases one held item with Release and an optional reason, as confirm-missing, and it counts as missing then (#17)', async ({ page, isMobile }) => {
-    const [first] = heldIds;
+    const held = await heldNow();
+    const [first] = held;
     await openInbox(page, `?item=${first}#item`);
     const form = page.getByRole('form', { name: 'Release' });
     await expect(form).toHaveAttribute('data-submit-gate', 'ready');
@@ -189,8 +204,9 @@ test('releases one held item with Release and an optional reason, as confirm-mis
     expect((await readEvent(data().root, first))?.decisions.at(-1)).toMatchObject({ action: 'confirm-missing', reason: 'Deleted on purpose.' });
     expect((await readEvent(data().root, first))?.version).toBe(before.version + 1);
     await openInbox(page);
-    await expect(page.locator('#inbox-list header p')).toHaveText(new RegExp(`, ${HELD - 1} held`));
-    await expect(page.getByRole('region', { name: 'Library' })).toContainText(`${HELD - 1} missing items are on hold.`);
+    expect(await heldNow()).toHaveLength(held.length - 1);
+    await expect(page.locator('#inbox-list header p')).toHaveText(new RegExp(`, ${held.length - 1} held`));
+    await expect(banner(page)).toContainText(`${held.length - 1} missing items are on hold.`);
 });
 
 test('lists the suggested files in Bind after the linked ones, none chosen, and binds the one chosen by its path (#17)', async ({ page }) => {
