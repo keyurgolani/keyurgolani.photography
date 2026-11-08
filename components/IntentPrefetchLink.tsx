@@ -5,16 +5,11 @@ import Link from 'next/link';
 // renders without it; useRouter() throws when it's empty.
 import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import { useContext, type ComponentProps, type FocusEvent } from 'react';
+import { savesData } from '@/components/savesData';
 
 export type IntentPrefetchLinkProps = Omit<ComponentProps<typeof Link>, 'href' | 'prefetch' | 'onPointerEnter' | 'onTouchStart'> & {
     href: string;
 };
-
-/** Whether the visitor asked the browser to save data (`navigator.connection.saveData`, #174), as B9's Viewer reads it. */
-function savesData(): boolean {
-    if (typeof navigator === 'undefined') return false;
-    return (navigator as Navigator & { connection?: { saveData?: unknown } }).connection?.saveData === true;
-}
 
 /**
  * A Link that prefetches its page only on a visitor's intent (#6 item 9): a

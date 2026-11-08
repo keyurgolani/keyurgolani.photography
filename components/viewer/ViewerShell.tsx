@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useDocumentVisible } from '@/components/motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
+import { savesData } from '@/components/savesData';
 import { useOnline } from '@/components/site/onlineStatus';
 import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 // Types only: the projection pulls the catalog schema and node:crypto in, which must stay out of the client bundle.
@@ -66,12 +67,6 @@ export const REVISION_CHECK_MS = 30_000;
 export const ANNOUNCE_SETTLE_MS = 250;
 /** A repeated message clears the region and lands again this long after, so a screen reader hears it again (bug 3). */
 export const REPEAT_GAP_MS = 100;
-
-/** Whether the visitor asked the browser to save data (`navigator.connection.saveData`, #174): then nothing is fetched ahead. */
-function savesData(): boolean {
-    if (typeof navigator === 'undefined') return false;
-    return (navigator as Navigator & { connection?: { saveData?: unknown } }).connection?.saveData === true;
-}
 
 /** Whether the browser says it's offline at the press. Unknown counts as online. */
 function offlineNow(): boolean {

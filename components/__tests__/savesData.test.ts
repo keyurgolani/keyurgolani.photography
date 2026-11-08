@@ -1,16 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { savesData } from '../savesData';
 
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
+// vitest runs from the repository's root.
+const ROOT = process.cwd();
 
 describe('savesData', () => {
     const connection = (value: unknown) => Object.defineProperty(navigator, 'connection', { configurable: true, value });
     afterEach(() => {
-        Reflect.deleteProperty(navigator, 'connection');
         vi.unstubAllGlobals();
+        Reflect.deleteProperty(navigator, 'connection');
     });
 
     it('is true only when the browser says saveData is on', () => {
