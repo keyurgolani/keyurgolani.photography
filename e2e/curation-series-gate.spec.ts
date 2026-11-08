@@ -74,7 +74,7 @@ const origin = () => {
 const seriesCount = () => fs.readdirSync(path.join(dataRoot(), 'authored', 'series')).length;
 const harbor = async () => (await readAuthoredRecord(dataRoot(), 'series', HARBOR.id)) as AuthoredSeries;
 
-/** Opens `pathname` with its scripts held back, so it can't hydrate, and checks every form on it waits at the gate. */
+/** Opens `pathname` with its scripts held back, so it can't hydrate, with its `count` forms there. */
 async function openHeld(page: Page, pathname: string, count: number) {
     await signIn(page, origin(), (curator as CuratorServer).passphrase);
     const release = await holdScripts(page);
@@ -82,7 +82,6 @@ async function openHeld(page: Page, pathname: string, count: number) {
     const forms = page.locator('main form');
     await expect(forms, `${pathname}: its forms`).toHaveCount(count);
     expect(await page.locator('html[data-hydrated]').count(), 'the page is held back from hydrating').toBe(0);
-    for (const form of await forms.all()) await expect(form, 'each form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
     await expect(page.locator(GATE_STATUS), 'no status before a press').toHaveCount(0);
     return { release, forms };
 }
@@ -118,6 +117,8 @@ test.describe('with JavaScript, before the page hydrates', () => {
         await page.keyboard.press(key);
         expect(await shown(), 'a text field, a checkbox and a select before the form is ready').toEqual(was);
         covered.push('the Series screen: text field, checkbox and select');
+        // Checked after the presses, so a form without the gate fails at the press that posts, by its name.
+        for (const form of await forms.all()) await expect(form, 'each form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
 
         const before = written(dataRoot());
         await release();
@@ -174,6 +175,8 @@ test.describe('with JavaScript, before the page hydrates', () => {
         await page.keyboard.press(key);
         expect(await shown(), 'a text field, a radio and a select before the form is ready').toEqual(was);
         covered.push("a series' page: text field, radio and select");
+        // Checked after the presses, so a form without the gate fails at the press that posts, by its name.
+        for (const form of await forms.all()) await expect(form, 'each form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
 
         const before = written(dataRoot());
         await release();

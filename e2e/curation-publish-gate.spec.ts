@@ -54,13 +54,14 @@ test.describe('with JavaScript, before the page hydrates', () => {
         const forms = page.locator('main form');
         await expect(forms, 'the four forms').toHaveCount(4);
         expect(await page.locator('html[data-hydrated]').count(), 'the page is held back from hydrating').toBe(0);
-        for (const form of await forms.all()) await expect(form, 'each form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
         // The press it makes once ready is offered before anything is pressed.
         const validate = page.locator('main form[data-sticky-bar] button[value="validate"]');
         await expect(validate, 'the press it makes once ready is offered').toHaveCount(1);
         await expect(page.locator(GATE_STATUS), 'no status before a press').toHaveCount(0);
 
         const covered = await pressEveryFormEarly(page, { name: 'Publish', forms, root: data().root, watch });
+        // Checked after the presses, so a form without the gate fails at the press that posts, by its name.
+        for (const form of await forms.all()) await expect(form, 'each form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
 
         const before = written(data().root);
         await release();

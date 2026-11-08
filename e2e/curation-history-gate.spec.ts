@@ -51,7 +51,6 @@ test.describe('with JavaScript, before the page hydrates', () => {
         await expect(forms, 'the restore form, the only one').toHaveCount(1);
         await expect(page.locator('#restore-heading')).toHaveText('Restore revision 2?');
         expect(await page.locator('html[data-hydrated]').count(), 'the page is held back from hydrating').toBe(0);
-        await expect(forms.first(), 'the form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
         const submit = page.locator('#restore-submit');
         await expect(submit, 'the press it makes once ready is offered').toHaveText('Restore revision 2');
         await expect(page.locator(GATE_STATUS), 'no status before a press').toHaveCount(0);
@@ -67,6 +66,8 @@ test.describe('with JavaScript, before the page hydrates', () => {
         await page.keyboard.type('Typed before the page was ready.');
         await expect(reason, 'the reason before the form is ready').toHaveValue('');
         covered.push('History: typing in the reason');
+        // Checked after the presses, so a form without the gate fails at the press that posts, by its name.
+        await expect(forms.first(), 'the form waits at the gate').toHaveAttribute('data-submit-gate', 'waiting');
 
         const before = written(data().root);
         await release();
