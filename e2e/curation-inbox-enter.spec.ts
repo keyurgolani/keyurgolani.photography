@@ -3,7 +3,7 @@ import { readEvent } from '../lib/curation/repository';
 import { signIn } from './support/curatorServer';
 import { INBOX_SERIES } from './support/curation-inbox';
 import { waitForHydration } from './support/hydration';
-import { reveal, useGateWorld } from './support/inbox-gate';
+import { useGateWorld } from './support/inbox-gate';
 import { watchSends } from './support/sent-forms';
 import { expect, test } from './support/test';
 
@@ -12,7 +12,8 @@ import { expect, test } from './support/test';
 // file to bind. Each form stops that, so the key there sends nothing, and the page stays where it was. Space still
 // ticks, the arrow keys still choose, and Enter in a text field still sends its form, as before. Bind's suggested
 // files and Release are curation-inbox-held.spec.ts's, on its fixture. The fixture and server are one per test
-// (useGateWorld), so each row stands on its own.
+// (useGateWorld), so each row stands on its own. Bind and Dismiss sit in closed disclosures, whose content a role query
+// can't find, so each row opens its own by its summary first, as the curator does.
 
 test.use({ actionTimeout: 10_000 });
 
@@ -87,9 +88,10 @@ test("a missing source to bind: Enter on a file's radio sends nothing, the arrow
     await open(page, 'bind');
     const sends = await watchSends(page);
     const before = await written();
+    await page.locator('#item').getByText('Bind to the file that replaces it').click();
     const bind = page.getByRole('form', { name: 'Bind' });
     const radios = bind.getByRole('group', { name: 'File to bind' }).getByRole('radio');
-    await reveal(radios.first());
+    await expect(radios, 'the file at its last path, then Another file in the library').toHaveCount(2);
     await expect(radios.first(), 'the file at its last path is chosen').toBeChecked();
     const linked = ((await radios.first().locator('xpath=ancestor::label[1]').textContent()) ?? '').replace(/, the new file at its last path$/, '');
     await radios.first().focus();
@@ -117,8 +119,9 @@ test("a file the watcher cannot read: Enter in Dismiss's reason still sends Dism
     await open(page, 'failed');
     const sends = await watchSends(page);
     await sends.stop();
+    await page.locator('#item').getByText('Dismiss with a reason').click();
     const reason = page.locator('#item').getByRole('textbox', { name: 'Reason' });
-    await reveal(reason);
+    await expect(reason).toBeVisible();
     await reason.fill('An export from another app; the JPEG is already in.');
     const version = (await readEvent(data().root, ids.failed))!.version;
     const sent = page.waitForResponse((response) => response.request().method() === 'POST', { timeout: 15_000 });
