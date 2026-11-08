@@ -265,6 +265,37 @@ test('a photograph passed before it finished loading stops loading', async ({ pa
     for (const route of held) await route.continue().catch(() => undefined);
 });
 
+// The same with motion on, for a mouse visitor, who never puts a finger on the photograph: the passed photograph
+// slides out beside the next one, then leaves the stage, so it stops loading once that slide lands. Only a visitor
+// whose finger has been on the photograph keeps the photographs they've seen beside it, to drag back in.
+test('with motion on, a photograph passed before it finished loading stops loading once the next one has slid in', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'The abort is read from Chromium\'s network events.');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    const held: Route[] = [];
+    await page.route((url) => url.pathname.startsWith(`/media/${P[1]}/`), (route) => void held.push(route));
+    const failed: { pathname: string; error: string }[] = [];
+    page.on('requestfailed', (request) => failed.push({ pathname: new URL(request.url()).pathname, error: request.failure()?.errorText ?? '' }));
+    await openViewer(page, P[0]);
+    await next(page).click();
+    await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
+    await expect.poll(() => held.length, 'the second photograph was asked for and is held').toBeGreaterThan(0);
+    // The photograph itself: the one passed may still be sliding out beside it.
+    expect(await page.locator('[data-viewer-current] img').evaluate((image: HTMLImageElement) => image.naturalWidth), 'nothing painted yet').toBe(0);
+    const asked = held.map((route) => new URL(route.request().url()).pathname);
+
+    await next(page).click();
+    await expect(page).toHaveURL(`${origin()}${href(P[2])}`);
+    await expect(header(page)).toContainText('03 / 03');
+    // Its slide out over, the passed photograph isn't beside the stage any more.
+    await expect(page.locator('[data-viewer-peek]'), 'no peek once the slide has landed').toHaveCount(0);
+    await expect
+        .poll(() => failed.filter((request) => asked.includes(request.pathname)).map((request) => request.error), 'the passed photograph was stopped')
+        .toContainEqual(expect.stringMatching(/ERR_ABORTED/));
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    for (const route of held) await route.continue().catch(() => undefined);
+});
+
 /** Where the reading area's title line sits on screen: the title (when shown), and the first line of the caption or the description. */
 async function titleLine(page: Page) {
     return page.locator('[data-surface="viewer"]').evaluate((root) => {

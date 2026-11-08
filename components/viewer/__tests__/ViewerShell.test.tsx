@@ -1480,6 +1480,112 @@ describe('ViewerShell, the photograph follows the finger (9a)', () => {
         expect(peeks()).toEqual(['previous', 'next']);
     });
 
+    // A visitor who never puts a finger on the photograph (a mouse, a keyboard) never drags a neighbour in, so a
+    // photograph they've passed has no use beside the stage once its slide out is over, and must stop loading there.
+    describe('a photograph passed by a key or a control, with no finger on the photograph', () => {
+        const slides: { keyframes: Keyframe[]; animation: { currentTime: number; onfinish: (() => void) | null; cancel: () => void } }[] = [];
+        beforeEach(() => {
+            slides.length = 0;
+            Object.assign(Element.prototype, {
+                animate(this: Element, keyframes: Keyframe[]) {
+                    const animation = { currentTime: 0, onfinish: null, cancel: vi.fn(), effect: { getComputedTiming: () => ({ progress: 0 }) } };
+                    if ('transform' in keyframes[0]) slides.push({ keyframes, animation });
+                    return animation as unknown as Animation;
+                },
+            });
+        });
+        afterEach(() => {
+            delete (Element.prototype as Partial<Element>).animate;
+        });
+        const peekOf = (side: 'previous' | 'next') => document.querySelector(`[data-viewer-peek="${side}"]`);
+
+        it('slides out beside the photograph coming in, as it does today, and leaves the stage once that slide lands', () => {
+            for (const [press, to, side] of [
+                [() => fireEvent.keyDown(document.body, { key: 'ArrowRight' }), 3, 'previous'],
+                [() => fireEvent.click(step('Next photograph')), 3, 'previous'],
+                [() => fireEvent.keyDown(document.body, { key: 'ArrowLeft' }), 1, 'next'],
+                [() => fireEvent.click(step('Previous photograph')), 1, 'next'],
+            ] as const) {
+                const { move, unmount } = renderWithImages('page', 2);
+                expect(peeks()).toEqual([]);
+                press();
+                move(to);
+                // Photograph 2 is the one leaving: beside the one coming in, on the side it leaves by, for the slide.
+                expect(slides).toHaveLength(1);
+                expect(peeks()).toEqual([side]);
+                expect(peekOf(side)?.querySelector('img')?.getAttribute('src')).toContain(id(2));
+                act(() => slides[0].animation.onfinish?.());
+                expect(peeks()).toEqual([]);
+                expect(fetchMock).not.toHaveBeenCalled();
+                unmount();
+                slides.length = 0;
+            }
+        });
+
+        it('keeps no photograph it has passed beside the stage when the move lands at once, with no Web Animations', () => {
+            delete (Element.prototype as Partial<Element>).animate;
+            const { move } = renderWithImages('page', 1);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(2);
+            expect(peeks()).toEqual([]);
+            fireEvent.click(step('Next photograph'));
+            move(3);
+            expect(peeks()).toEqual([]);
+            fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+            move(2);
+            expect(peeks()).toEqual([]);
+        });
+
+        it('drops the one before when a remembered press slides the next one in mid-slide', () => {
+            const { move } = renderWithImages('page', 1);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(2);
+            expect(peeks()).toEqual(['previous']);
+            // Photograph 3 lands while 2 is still sliding in: 2 is now the one leaving, and 1 has no slot on the stage.
+            move(3);
+            expect(peeks()).toEqual(['previous']);
+            expect(peekOf('previous')?.querySelector('img')?.getAttribute('src')).toContain(id(2));
+            act(() => slides.at(-1)!.animation.onfinish?.());
+            expect(peeks()).toEqual([]);
+        });
+
+        it('brings every photograph it has shown back as a peek the moment a finger goes down, with no fetch for them', async () => {
+            delete (Element.prototype as Partial<Element>).animate;
+            const { move } = renderWithImages('page', 1);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            move(2);
+            expect(peeks()).toEqual([]);
+            pointer(stage(), 'pointerdown');
+            // At once, before any answer: photograph 1 was shown, so it's there to drag in.
+            expect(peeks()).toEqual(['previous']);
+            pointer(stage(), 'pointerup');
+            await settle();
+            // Only 3 is asked for.
+            expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([`/api/catalog/series/fixture/photos/${id(3)}?revision=rev_${'a'.repeat(64)}`]);
+            expect(peeks()).toEqual(['previous', 'next']);
+        });
+
+        it("still shows a move's accent at once from a photograph it has shown, as before", () => {
+            delete (Element.prototype as Partial<Element>).animate;
+            const accented = (n: number) => {
+                const viewer = model(n, true, true);
+                viewer.photo.accent = `#10203${n}`;
+                return (
+                    <StoryViewer key={viewer.photo.id} viewer={viewer} closeHref="/work/fixture" previousHref={n > 1 ? photoHref(n - 1) : null} nextHref={n < 3 ? photoHref(n + 1) : null} pendingCopy={null} />
+                );
+            };
+            const view = render(<ViewerShell mode="page">{accented(2)}</ViewerShell>);
+            fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+            view.rerender(<ViewerShell mode="page">{accented(3)}</ViewerShell>);
+            expect(root()?.style.getPropertyValue('--cc-accent')).toBe('#102033');
+            // Back toward 2, which isn't beside the stage any more: the rules take its accent at the press, before it arrives.
+            fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+            expect(counter()).toBe('02 / 03');
+            expect(root()?.style.getPropertyValue('--cc-accent')).toBe('#102032');
+        });
+    });
+
     it('under reduced motion follows nothing, asks for no neighbor, and changes the counter when the photograph arrives', async () => {
         setPrefersReducedMotion(true);
         const { move } = renderWithImages('page', 2);
