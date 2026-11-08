@@ -498,6 +498,45 @@ async function revealByKeyboard(page: Page) {
     await expect(page.locator('[data-home-chrome]')).toHaveCSS('opacity', '1');
 }
 
+/**
+ * Dark from 380 px on a phone: its fixed wash is set in percentages of the stage's height, so on a short stage, or with
+ * reduced motion's hint lifting the copy about 25 px, the title can sit where the wash has thinned. 390 by 664 is an
+ * iPhone in Safari with its toolbars showing. 390 by 844 with reduced motion is a taller stage, Dark parity's phone.
+ * Each row prints its numbers, and the copy's top as a percentage of the stage, whether it holds or not.
+ */
+const DARK_SHORT_STAGES = [
+    { name: 'at 380 by 664, a short stage', viewport: { width: 380, height: 664 } },
+    { name: 'at 390 by 664, an iPhone in Safari with its toolbars showing', viewport: { width: 390, height: 664 } },
+    { name: 'at 380 by 800, with reduced motion', viewport: { width: 380, height: 800 }, reducedMotion: true },
+    { name: 'at 389 by 800, with reduced motion', viewport: { width: 389, height: 800 }, reducedMotion: true },
+    { name: 'at 390 by 844, with reduced motion, a taller stage', viewport: { width: 390, height: 844 }, reducedMotion: true },
+] as const;
+
+for (const { name: where, viewport, ...rest } of DARK_SHORT_STAGES) {
+    const reducedMotion = 'reducedMotion' in rest;
+    test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${where}`, async ({ page }, testInfo) => {
+        runsOn(testInfo, 'mobile');
+        await page.setViewportSize(viewport);
+        await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
+        if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
+        await openingAs(page, '#ffffff');
+        await openHome(page);
+        await expectShown(page, HOME_OPENING);
+        await revealByKeyboard(page);
+        const title = page.getByRole('heading', { level: 1 });
+        const statement = page.locator('[data-chrome-region="story"] p');
+        await expect(statement).toHaveText(HOME_SERIES.shortStatement);
+        const titleContrast = await worstTextContrast(page, title);
+        const statementContrast = await worstTextContrast(page, statement);
+        const copyTop = await page.locator('[data-home-vignette]').evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
+        const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}: title ${titleContrast.toFixed(3)}:1, statement ${statementContrast.toFixed(3)}:1, copy top ${copyTop}`;
+        console.log(row);
+        testInfo.annotations.push({ type: 'contrast', description: row });
+        expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+        expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+    });
+}
+
 for (const theme of ['light', 'bright'] as const) {
     test(`in ${theme}, the copy takes a dark scrim over a dark opening photograph and keeps 4.5:1`, async ({ page }) => {
         await page.addInitScript((stored) => localStorage.setItem('theme', stored), theme);
