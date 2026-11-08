@@ -13,9 +13,13 @@ export interface Box {
   bottom: number;
 }
 
-/** Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. */
+/**
+ * Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. 'none' is where no
+ * place clears the chrome: it lands beside the story, as the intro always took it there, and stays out of sight at
+ * default text (HeroReveal.module.css).
+ */
 export interface BadgePlace {
-  kind: 'clear' | 'side';
+  kind: 'clear' | 'side' | 'none';
   dx: number;
   dy: number;
   scale: number;
@@ -30,6 +34,8 @@ const BADGE_CLEARANCE = 16;
 const RING = 4;
 /** The smallest the badge gets above the story, and its size beside the story on a short landscape screen. */
 const MIN_SCALE = 0.6;
+/** The smallest it gets above the story where beside it doesn't clear either, as on a short phone held upright. */
+const UPRIGHT_MIN_SCALE = 0.4;
 /** ProfilePicture.module.css's frame: v1.1.0's 3394 x 3620 shape. */
 const FACE_HEIGHT_PER_WIDTH = 3620 / 3394;
 
@@ -71,34 +77,45 @@ const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left
  * scaled down toward 0.6 only when the room between the nav and the story is
  * too short for it. With no room even at 0.6, as on a phone held sideways, it
  * goes beside the story instead: a quarter of the width right of the center,
- * 10 px above the middle, at 0.6.
+ * 10 px above the middle, at 0.6, where that clears. On a short phone held
+ * upright the story spans the screen, so beside it lies on the title: there it
+ * shrinks further above the story, toward 0.4, and with no room even at 0.4 it
+ * is 'none'.
  */
 export function badgePlace(view: { width: number; height: number }, card: number, nav: Box | null, story: Box[]): BadgePlace | null {
   if (card <= 0 || view.width <= 0 || view.height <= 0) return null;
   const cx = view.width / 2;
   const home = view.height - V110_RISE;
   const blockers = nav ? [nav, ...story] : story;
-  const clears = (cy: number, scale: number) => {
+  const clears = (x: number, cy: number, scale: number) => {
     const reach = ovalReach(card, scale);
-    const oval = { left: cx - reach.half, right: cx + reach.half, top: cy - reach.above, bottom: cy + reach.below };
+    const oval = { left: x - reach.half, right: x + reach.half, top: cy - reach.above, bottom: cy + reach.below };
     return blockers.every((box) => !within(oval, box, BADGE_CLEARANCE - 0.01));
   };
-  if (clears(home, V110_SCALE)) return null;
+  if (clears(cx, home, V110_SCALE)) return null;
   const ceiling = (nav ? nav.bottom : 0) + BADGE_CLEARANCE;
-  for (let step = 0; V110_SCALE - step / 100 >= MIN_SCALE - 1e-9; step += 1) {
-    const scale = V110_SCALE - step / 100;
-    const reach = ovalReach(card, scale);
-    // The story in the badge's column, or near it, sets how low it may sit.
-    const floor = Math.min(
-      view.height - BADGE_CLEARANCE,
-      ...story.filter((box) => box.left < cx + reach.half + BADGE_CLEARANCE && cx - reach.half < box.right + BADGE_CLEARANCE).map((box) => box.top - BADGE_CLEARANCE),
-    );
-    if (floor - ceiling < reach.above + reach.below) continue;
-    // As close to v1.1.0's center as the room allows.
-    const cy = Math.min(Math.max(home, ceiling + reach.above), floor - reach.below);
-    if (clears(cy, scale)) return { kind: 'clear', dx: 0, dy: cy - view.height / 2, scale };
-  }
-  return { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+  // Centered above the story, at the largest scale from `from` hundredths below 0.85 down to `least` that clears.
+  const above = (from: number, least: number): BadgePlace | null => {
+    for (let step = from; V110_SCALE - step / 100 >= least - 1e-9; step += 1) {
+      const scale = V110_SCALE - step / 100;
+      const reach = ovalReach(card, scale);
+      // The story in the badge's column, or near it, sets how low it may sit.
+      const floor = Math.min(
+        view.height - BADGE_CLEARANCE,
+        ...story.filter((box) => box.left < cx + reach.half + BADGE_CLEARANCE && cx - reach.half < box.right + BADGE_CLEARANCE).map((box) => box.top - BADGE_CLEARANCE),
+      );
+      if (floor - ceiling < reach.above + reach.below) continue;
+      // As close to v1.1.0's center as the room allows.
+      const cy = Math.min(Math.max(home, ceiling + reach.above), floor - reach.below);
+      if (clears(cx, cy, scale)) return { kind: 'clear', dx: 0, dy: cy - view.height / 2, scale };
+    }
+    return null;
+  };
+  const lifted = above(0, MIN_SCALE);
+  if (lifted) return lifted;
+  const side: BadgePlace = { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+  if (clears(cx + side.dx, view.height / 2 + side.dy, side.scale)) return side;
+  return above(Math.round((V110_SCALE - MIN_SCALE) * 100) + 1, UPRIGHT_MIN_SCALE) ?? { ...side, kind: 'none' };
 }
 
 /**

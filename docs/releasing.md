@@ -506,7 +506,7 @@ site-config/
     portrait.json    # optional
 ```
 
-Home shows the same file. On a first visit it's the portrait at the center of Home's loading screen, which glides into its place as the page opens, above the bottom of the screen, or higher where that would sit behind the series title or the navigation, and stays there as a small badge that shows with Home's navigation. Home asks for a small copy from the same `/about/portrait/` set, so it never reads the file a second time. Use an opaque photo: where a PNG is transparent, Home and About show a plain background behind it.
+Home shows the same file. On a first visit it's the portrait at the center of Home's loading screen, which glides into its place as the page opens, above the bottom of the screen, or higher where that would sit behind the series title or the navigation, smaller on a short phone, and stays there as a small badge that shows with Home's navigation. Where even a small badge can't clear the title, as on a very small phone with a long title, it doesn't stay. Home asks for a small copy from the same `/about/portrait/` set, so it never reads the file a second time. Use an opaque photo: where a PNG is transparent, Home and About show a plain background behind it.
 
 `portrait.json` takes two fields, both optional:
 

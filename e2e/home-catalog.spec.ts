@@ -352,11 +352,11 @@ async function worstTextContrast(page: Page, target: Locator): Promise<number> {
 
 /**
  * Where the white-photograph case below runs: two desktop widths, and on mobile Pixel 7's own screen and the narrow
- * phones under 380 px, in Dark (the suite's System) and in Black. From 360 px All bodies of work sits beside Enter the
- * series; at 320 it stays under Enter. 320 by 568 is the smallest phone, with the copy highest up its screen. Reduced
- * motion adds the controls' "Off with reduced motion" hint, which lifts the copy about 25 px. Black's 320 row is 800
- * tall: at 568 Home's badge goes beside the story, over the title, and Black raises it over the scrim, which no wash
- * can hold.
+ * phones under 380 px, in Dark (the suite's System) and in Black, and 320 by 568 in every theme. From 360 px All bodies
+ * of work sits beside Enter the series; at 320 it stays under Enter. 320 by 568 is the smallest phone, with the copy
+ * highest up its screen: there Home's badge shrinks above the story (badgePlace()), since Light, Bright and Black raise
+ * it over the scrim, where no wash can hold the title over it. Reduced motion adds the controls' "Off with reduced
+ * motion" hint, which lifts the copy about 25 px.
  */
 const WHITE_CASES = [
     { name: 'at 1440 px', project: 'desktop', viewport: { width: 1440, height: 900 } },
