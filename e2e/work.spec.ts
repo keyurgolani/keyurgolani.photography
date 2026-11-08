@@ -546,10 +546,11 @@ for (const theme of ['dark', 'light', 'bright', 'black'] as const) {
             `${CONTAIN_FOCAL.y * 100}%`,
         ]);
         await expect.poll(() => coverLoaded(ridge)).toBe(true);
-        // Its decode, not its load, is what drops the LQIP.
-        await expect(frame).toHaveAttribute('data-decoded', '');
+        // Its decode, not its load, is what drops the LQIP. Soft, as is the style check below, so a failure still goes on
+        // to report where the print sits and what paints the bands.
+        await expect.soft(frame).toHaveAttribute('data-decoded', '');
         const image = frame.locator('img');
-        expect(
+        expect.soft(
             await image.evaluate((img) => {
                 const computed = getComputedStyle(img);
                 return Object.fromEntries(['object-fit', 'object-position', 'background-size', 'background-repeat', 'background-image'].map((name) => [name, computed.getPropertyValue(name)]));
