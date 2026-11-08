@@ -95,7 +95,7 @@ On Next 16.4.2 this prints the lines below. The line numbers move from one relea
 ```bash
 V=16.4.5
 gh api -H 'Accept: application/vnd.github.raw' "repos/vercel/next.js/contents/packages/next/src/compiled/react-dom/cjs/react-dom-server.node.production.js?ref=v${V}" | grep -c getDerivedStateFromError
-gh api -H 'Accept: application/vnd.github.raw' "repos/vercel/next.js/contents/packages/next/src/server/app-render/app-render.tsx?ref=v${V}" | grep -n -A8 "id: '__next_error__'"
+gh api -H 'Accept: application/vnd.github.raw' "repos/vercel/next.js/contents/packages/next/src/server/app-render/app-render.tsx?ref=v${V}" | grep -n -A13 "id: '__next_error__'"
 ```
 
 With `V=16.4.2`, the version `v2.0.0` ships, this prints:
@@ -111,6 +111,11 @@ With `V=16.4.2`, the version `v2.0.0` ships, this prints:
 2308-      process.env.__NEXT_DEV_SERVER && err
 2309-        ? createElement('template', {
 2310-            'data-next-error-message': err.message,
+2311-            'data-next-error-digest': 'digest' in err ? err.digest : '',
+2312-            'data-next-error-stack': err.stack,
+2313-          })
+2314-        : null
+2315-    )
 ```
 
 If either answer changes, Next may now render the not-found page on the server. Then the bump goes in a PR of its own, through the full gate, and that PR shows the fix. On a server for `e2e/series.spec.ts`'s catalog, whose `sentinel-draft` series is a draft, this prints `0` today and `1` once it's fixed:
@@ -197,7 +202,7 @@ Releases run one at a time, and waiting ones queue. The job summary shows the ve
 
 Start from the tag the host runs now. It's the `PHOTOGRAPHY_IMAGE_TAG` line in the `.env` next to `docker-compose.prod.yml`, and `docker inspect --format '{{.Config.Image}}' <web container>` shows the image `web` really runs. Note it, since [Rollback](#rollback) goes back to it.
 
-A release's notes describe what changed since the release before it, so a host that skipped a release also takes every step the skipped ones listed. When any release between the running one and the new one changed a setting in `docker-compose.prod.yml`, install the new file first, the way the slice C block of #10 below does: fetch it, check it with your override, keep the old copy as `docker-compose.prod.yml.before-vX.Y.Z`, then move it in. A release whose file changes only a comment, such as `v2.0.0`, runs on the older file, and its section says so. `v1.2.1` changed it, giving `curator` the read-only `./site-config` mount, so a host on `v1.2.0` installs the new file on the way to any later release.
+A release's notes describe what changed since the release before it, so a host that skipped a release also takes every step the skipped ones listed. When any release between the running one and the new one changed a setting in `docker-compose.prod.yml`, install the new file first, the way the slice C block of #10 below does: fetch it, check it with your override, keep the old copy as `docker-compose.prod.yml.before-vX.Y.Z`, then move it in. A release whose file changes only a comment, such as `v2.0.0`, runs on the older file, and its section says so. `v1.2.1` changed a setting, giving `curator` the read-only `./site-config` mount, so a host on `v1.2.0` installs the new file on the way to any later release.
 
 When the host has an override, as the override rules further down this section describe, every command here names both files, `-f docker-compose.prod.yml -f <override>`, or runs as plain `docker compose` with the symlink layout below. `-f docker-compose.prod.yml` alone leaves the override out, so its photos path, networks, and services, a tunnel or proxy included, drop out of the project. The commands below write the two-file form.
 
@@ -564,7 +569,7 @@ The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`'s
 
 The host takes four steps. With an override, add `-f <override>` after each `-f docker-compose.prod.yml`, and add `curator` to the `pull` and `up -d` lines when it runs. A host on `v1.6.x` or older takes `v1.7.0`'s steps on the way.
 
-1. **Note the running tag and revision, and back up the data root.** The `grep` prints the line [Rolling back](#rolling-back-from-v200) below returns to, `docker inspect` checks that `web` runs it, as [Deploying](#deploying) says, and `/api/ready` names the revision step 4 compares. On a host that runs `v2.0.0-rc.1`, the `grep` prints the candidate's `sha-` line instead, which is no rollback target: Rolling back goes to the line the candidate replaced, `PHOTOGRAPHY_IMAGE_TAG=v1.7.0@sha256:77f5cfcdc713828e280419d459741e7e139c18e2b5a50f3aa9fcf278aed6c40d`. Then back up with the block in [Backing up](data-root.md#backing-up), whose archive is the one [Restoring](data-root.md#restoring) takes. Keep the last backup made on `v1.7.x`, which on that host is the one from before the candidate: it's the last data root `v1.7.x` reads in full.
+1. **Note the running tag and revision, and back up the data root.** The `grep` prints the line [Rolling back](#rolling-back-from-v200) below returns to, `docker inspect` checks that `web` runs it, as [Deploying](#deploying) says, and `/api/ready`, on `PHOTOGRAPHY_PORT` if you set one, names the revision step 4 compares. On a host that runs `v2.0.0-rc.1`, the `grep` prints the candidate's `sha-` line instead, which is no rollback target: Rolling back goes to the line the candidate replaced, `PHOTOGRAPHY_IMAGE_TAG=v1.7.0@sha256:77f5cfcdc713828e280419d459741e7e139c18e2b5a50f3aa9fcf278aed6c40d`. Then back up with the block in [Backing up](data-root.md#backing-up), whose archive is the one [Restoring](data-root.md#restoring) takes. Keep the last backup made on `v1.7.x`, which on that host is the one from before the candidate: it's the last data root `v1.7.x` reads in full.
 
    ```bash
    grep '^PHOTOGRAPHY_IMAGE_TAG=' .env
