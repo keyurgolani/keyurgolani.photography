@@ -8,14 +8,14 @@ import { callersAcross, callSites, deleteCalls, exclusionOf, identifierSites, PR
 import { REPO_ROOT } from './helpers/runTsx';
 
 /**
- * The rail for delete calls (#181's A10 review, the coordinator's item 10).
+ * The rail for delete calls (#181's review, the coordinator's item 10).
  * Purge and GC reach only data the app itself made, and bytes a tombstone
  * took down go only on the owner's `photos gc --apply`. So every call in the
  * source tree that can delete a file or a folder is on this list, by file
  * and function, with why it may delete, and any other one fails the build.
  *
  * A new delete call needs an entry here, reviewed like the code. No entry may
- * carry `until` now: A12 removed the last legacy `utils/imageOptimizer.ts`
+ * carry `until` now: v2.0.0 removed the last legacy `utils/imageOptimizer.ts`
  * deletes but `removeQuietly()`, which only clears a build's own temp files,
  * and a test pins that none is left. An entry that waits on later work means
  * changing that test, in review.
@@ -26,7 +26,7 @@ interface Allowed {
      * What the entry lets past: a delete (the default); a process call, which
      * must say in `runs` what it runs, and in its reason why that can't
      * delete; or a read the rail can't resolve, the only kind whose reason
-     * may say it reaches no delete (#181's A10 review, items 39 and 39a).
+     * may say it reaches no delete (#181's review, items 39 and 39a).
      */
     kind?: 'delete' | 'process' | 'unresolvable-read';
     /** For a process call: what it runs. */
@@ -95,7 +95,7 @@ const ALLOWLIST: readonly Allowed[] = [
         reason: "each module's own process-wide state slot on globalThis, under its Symbol.for() key; reaches no delete",
     },
     { file: 'lib/catalog/testing.ts', fn: 'createTestCatalog.cleanup', calls: ['fs.promises.rm(created, { recursive: true, force: true })'], reason: 'when a test calls cleanup(): the test catalog helper removes the temp folder it created' },
-    // The legacy pipeline's one delete left after A12, which removed purgeDynamicCache() and forgetSetSource().
+    // The legacy pipeline's one delete left after v2.0.0, which removed purgeDynamicCache() and forgetSetSource().
     { file: 'utils/imageOptimizer.ts', fn: 'removeQuietly', calls: ['fs.promises.rm(file, { force: true })'], reason: 'only the temp files a legacy build staged itself; since v1.7.0 nothing shipped runs that pipeline, only e2e/support/carry-over.ts and unit tests, on temp libraries' },
 ];
 
@@ -215,7 +215,7 @@ describe('the delete-call rail', { timeout: 60_000 }, () => {
             else expect(entry.reason, key(entry)).toMatch(WHEN);
             expect(/reaches no delete/.test(entry.reason), key(entry)).toBe(entry.kind === 'unresolvable-read');
         }
-        // A12 removed purgeDynamicCache() and forgetSetSource(), and with them every `until` entry.
+        // v2.0.0 removed purgeDynamicCache() and forgetSetSource(), and with them every `until` entry.
         expect(ALLOWLIST.filter((entry) => entry.file === 'utils/imageOptimizer.ts').map((entry) => entry.fn)).toEqual(['removeQuietly']);
         expect(ALLOWLIST.filter((entry) => entry.until !== undefined).map(key)).toEqual([]);
     });

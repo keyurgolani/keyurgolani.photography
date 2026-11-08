@@ -1174,7 +1174,7 @@ const ABOUT_FRAME: Allowance[] = (
 });
 
 /**
- * #179's frame again, in About's link hover at 390 (B1's CI). Playwright's hover scrolls its link into view when it's
+ * #179's frame again, in About's link hover at 390 (found in CI). Playwright's hover scrolls its link into view when it's
  * below the fold. In the base, the 354 px photo puts the statement's first link under the fold at 844, so the hover
  * scrolls the page 159 px. In the head, the 4:3 photo is 105 px shorter, the link is in view already, and nothing
  * scrolls. So every box, the nav's too, sits 159 px apart in the viewport: 54 px below the photo, where the shorter

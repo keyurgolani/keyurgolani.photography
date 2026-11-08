@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import postcss, { type AtRule, type Rule } from 'postcss';
 import { describe, expect, it } from 'vitest';
 
-// #4's framing (v2.0.0 B7), from HomeSequence.module.css itself: a cover crop is cut on the photograph's focal point,
+// #4's framing (v2.0.0), from HomeSequence.module.css itself: a cover crop is cut on the photograph's focal point,
 // a contain one sits whole on the theme's mat, and the sheet keeps no class Home doesn't render (#6 item 17).
 
 const read = (name: string) => fs.readFileSync(fileURLToPath(new URL(`../${name}`, import.meta.url)), 'utf8');
@@ -41,7 +41,7 @@ describe("Home's slide framing", () => {
     expect(image['background-size']).toBe('contain !important');
     expect(image['background-repeat']).toBe('no-repeat');
     // Once the print has decoded, the LQIP goes: its own shape drifts from the photograph's, so it would show as a strip on
-    // the mat around the print (B7 review).
+    // the mat around the print (found in review).
     expect(declarations(".slide[data-crop='contain'][data-decoded] .slideImage")['background-image']).toBe('none !important');
     // The mat is the carousel's ground: each theme's --gah-mat-fill (HomeChrome.module.css), Dark's and Black's black.
     expect(declarations('.carousel')['background-color']).toBe('var(--gah-mat-fill, #000)');
