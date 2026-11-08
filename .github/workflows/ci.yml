@@ -84,8 +84,9 @@ jobs:
     # The Playwright install is bounded at three 6-minute tries and test:budgets
     # at 12 minutes, most of them writing the 5,000-photograph library. The rest
     # is the suite's, which grows with each PR, so time it on a recent run before
-    # moving this.
-    timeout-minutes: 55
+    # moving this. A run on 11-08 took 45.9 of 55 minutes with more rows still to
+    # land, so it has 70 until the integration run gives a new measure.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v7
 
