@@ -21,7 +21,7 @@ import { expect, test } from './support/test';
 // #17's three Inbox pieces on both #1 projects, on a fixture and a curator server of their own: Restore in Approve's
 // place on a new photograph whose bytes are an archived one's; Bind's suggested files, which are `curation show`'s;
 // and the held missing items while the library item is open, with the Status filter's Held, Release on each, the
-// banner, and the held count. Sample values only. The fixture's temp folder stays for the runner to clear.
+// banner, and the held count. Sample values only. The fixture removes its temp folder once the file's rows are done.
 //
 // Each row stands on its own: it reads what's held from the data root when it runs, and touches only its own items,
 // so one row failing never skips the rest, and a worker started again after a failure makes a fresh fixture.
@@ -121,7 +121,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     test.setTimeout(HOOK_TIMEOUT);
     await curator?.stop();
-    fixture?.watcher.stop();
+    await fixture?.cleanup();
 });
 
 test.beforeEach(async ({ page }) => {

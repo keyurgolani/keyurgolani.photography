@@ -1,7 +1,5 @@
 // @vitest-environment node
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '../test/helpers/curatorSecrets';
@@ -118,12 +116,13 @@ describe('Confirm, Archive, Restore and Release at the curator boundary (#118, #
         return { root: w.root, form: () => pageForm(event, w.revisionId, { intent: 'archive', reason: 'Gone for good.', confirmed: 'yes' }), action: archiveItem };
     }
 
-    /** P's file out of the library, moved to a folder of its own: the world's temp roots stay for the lead, unremoved. */
-    const takeP = (w: Awaited<ReturnType<typeof createMissingWorld>>) => fs.renameSync(w.lib.file(P_PATH), path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'boundary-taken-')), 'landscape.jpg'));
+    /** P's file out of the world's own temp library, as archivable() takes it. */
+    const takeP = (w: Awaited<ReturnType<typeof createMissingWorld>>) => fs.rmSync(w.lib.file(P_PATH));
 
     /** #17: P archived, then its bytes back at another path, so Restore on that new photograph would go through. */
     async function restorable() {
         const w = await createMissingWorld(images);
+        cleanups.push(() => w.cleanup());
         takeP(w);
         await w.pass();
         const missing = await w.event(w.missingId);
@@ -139,6 +138,7 @@ describe('Confirm, Archive, Restore and Release at the curator boundary (#118, #
     /** #17: a missing source, so Release, confirm-missing, would go through. */
     async function releasable() {
         const w = await createMissingWorld(images);
+        cleanups.push(() => w.cleanup());
         takeP(w);
         await w.pass();
         const event = await w.event(w.missingId);

@@ -21,12 +21,12 @@ import { createCurationFixture, type CurationFixture } from './curationFixtures'
  * filter's Held, offers Release on each, which is `curation confirm-missing`, and says so in its banner. The summary
  * the poll reads leaves them out of its judgment count too, and carries no held count.
  *
- * The temp roots stay under the OS temp folder.
+ * Each fixture removes its own temp root once its test is done.
  */
 
-const restores: (() => void)[] = [];
-afterEach(() => {
-    for (const restore of restores.splice(0).reverse()) restore();
+const restores: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+    for (const restore of restores.splice(0).reverse()) await restore();
 });
 
 const quiet = { log: () => undefined, warn: () => undefined, error: () => undefined };
@@ -35,6 +35,7 @@ const hex = (n: number) => n.toString(16).padStart(64, '0');
 
 async function served(): Promise<CurationFixture> {
     const f = await createCurationFixture({ published: true });
+    restores.push(() => f.cleanup());
     restores.push(setDataDir(f.root));
     return f;
 }

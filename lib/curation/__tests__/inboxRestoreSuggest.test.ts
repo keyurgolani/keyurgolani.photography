@@ -1,8 +1,7 @@
 // @vitest-environment node
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { folderBytes } from '../../../test/helpers/folderBytes';
 import { identityPaths } from '../../identity/registry';
 import { printable, runCurationCli } from '../commands';
@@ -18,8 +17,8 @@ import { makeImages, P_PATH, type Images } from './replacementWorld';
 /**
  * #17 on the Inbox, on the missing-source world (real images and passes): Restore, which takes Approve's place on a
  * new photograph whose bytes are an archived photograph's, and Bind's suggested files, which are `curation show`'s.
- * runInboxAction() is what the server actions call once requireCurator() lets them in. The worlds' temp roots stay
- * under the OS temp folder, and a file taken out of the library is moved, never deleted.
+ * runInboxAction() is what the server actions call once requireCurator() lets them in. Each world removes its own temp
+ * roots once its test is done.
  */
 
 let images: Images;
@@ -29,6 +28,18 @@ beforeAll(async () => {
 afterAll(() => {
     removeMissingTemplate();
 });
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+/** A fresh missing-source world, removed with its temp roots after the test. */
+async function world(): Promise<MissingWorld> {
+    const w = await createMissingWorld(images);
+    cleanups.push(() => w.cleanup());
+    return w;
+}
 
 const ACTOR = 'curator:test';
 
@@ -44,9 +55,9 @@ function itemForm(event: Pick<CurationEvent, 'id' | 'version'>, base: string | n
     return form;
 }
 
-/** P's file out of the library, moved to a folder of its own, as the owner deleting it looks to the watcher. */
+/** P's file out of the world's own temp library, as the owner deleting it looks to the watcher. */
 function takeP(w: MissingWorld): void {
-    fs.renameSync(w.lib.file(P_PATH), path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'inbox-taken-')), 'landscape.jpg'));
+    fs.rmSync(w.lib.file(P_PATH));
 }
 
 /** #10's decisions waiting for the watcher's next pass. */
@@ -61,7 +72,7 @@ const newItemAt = async (w: MissingWorld, at: string) => (await listEvents(w.roo
 describe('Restore on the Inbox (#17)', { timeout: 60_000 }, () => {
     /** P archived, then its bytes back at another path, a new photograph the pass says is a copy of P. */
     async function archivedBack(): Promise<{ w: MissingWorld; item: CurationEvent }> {
-        const w = await createMissingWorld(images);
+        const w = await world();
         takeP(w);
         await w.pass();
         const missing = await w.event(w.missingId);
@@ -97,7 +108,7 @@ describe('Restore on the Inbox (#17)', { timeout: 60_000 }, () => {
     });
 
     it('offers no Restore on a new photograph that is no archived one\'s, and refuses a Restore sent for it as stale, writing nothing', async () => {
-        const w = await createMissingWorld(images);
+        const w = await world();
         fs.writeFileSync(w.lib.file('harbor/other.jpg'), images.third);
         await w.pass();
         const item = await newItemAt(w, 'harbor/other.jpg');
@@ -113,7 +124,7 @@ describe('Restore on the Inbox (#17)', { timeout: 60_000 }, () => {
 describe("Bind's suggested files on the Inbox (#17)", { timeout: 60_000 }, () => {
     /** P's file gone, then other pixels with its file name at `at`, which the watcher suggests for P. */
     async function suggested(at: string): Promise<{ w: MissingWorld; missing: CurationEvent; item: CurationEvent }> {
-        const w = await createMissingWorld(images);
+        const w = await world();
         takeP(w);
         await w.pass();
         fs.mkdirSync(path.dirname(w.lib.file(at)), { recursive: true });
