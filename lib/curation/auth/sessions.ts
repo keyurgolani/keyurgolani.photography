@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { globalSlot } from '../../globalSlot';
+import { globalSlot, slotKey } from '../../globalSlot';
 
 /**
  * Curator sessions (#14's 14-2). A session is a random 32-byte ID held in
@@ -34,7 +34,7 @@ interface Store {
     sessions: Map<string, Session>;
 }
 
-const STORE_KEY = Symbol.for('keyurgolani.photography.curatorSessions');
+const STORE_KEY = slotKey<Store>(Symbol.for('keyurgolani.photography.curatorSessions'));
 
 function store(): Store {
     return globalSlot<Store>(STORE_KEY, () => ({ sessions: new Map() }));

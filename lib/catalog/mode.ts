@@ -4,7 +4,7 @@ import { hasErrorCode } from '../storage/fsx';
 import { listActivations } from './repository';
 import type { ActivePointer } from './types';
 import { readActivePointer } from './working-layer';
-import { globalSlot } from '../globalSlot';
+import { globalSlot, slotKey } from '../globalSlot';
 
 /**
  * Whether a data root has published, as checkPublished() finds it. Since
@@ -30,7 +30,7 @@ export type PublishCheck = { state: Exclude<PublishState, 'unknown'> } | { state
  * another remembers. One Set on globalThis, under a registered symbol every
  * copy finds, is the process's only memory.
  */
-export const CUTOVER_KEY = Symbol.for('keyurgolani.photography.catalogCutover');
+export const CUTOVER_KEY = slotKey<Set<string>>(Symbol.for('keyurgolani.photography.catalogCutover'));
 
 /** Data roots this process has seen publish, shared by every bundle. */
 function cutOver(): Set<string> {
