@@ -875,49 +875,80 @@ describe("Home's root and the copy's height on the stage", () => {
 describe('copyAboveDarkWash', () => {
   // Dark's fixed phone wash (HomeChrome.module.css): rgb(8 10 9) at 0.92 at the stage's bottom and 0.28 at 66% up it.
   const washAt = (up: number) => 0.92 + ((0.28 - 0.92) * up) / 0.66;
-  /** Dark's ink at `alpha` (its title #f4f6f5, its statement the same at 0.76) over a white photograph under the wash at a top `down`% down the stage. */
-  const overWhite = (alpha: number) => (down: number) => {
-    const wash = washAt(1 - down / 100);
-    const behind = [8, 10, 9].map((channel) => 255 * (1 - wash) + channel * wash);
-    const ink = [244, 246, 245].map((channel, i) => channel * alpha + behind[i] * (1 - alpha));
-    return (luminance(ink[0], ink[1], ink[2]) + 0.05) / (luminance(behind[0], behind[1], behind[2]) + 0.05);
+  const ratio = (a: number[], b: number[]) => {
+    const [lighter, darker] = [luminance(a[0], a[1], a[2]), luminance(b[0], b[1], b[2])].sort((x, y) => y - x);
+    return (lighter + 0.05) / (darker + 0.05);
   };
-  const title = overWhite(1);
-  const statement = overWhite(0.76);
-  // CI's worst pixel under each line box at 390 x 844 with reduced motion, Dark's title 65.69% down and its statement
-  // 75.20%: 4.577 and 4.615. The title's line boxes reach above its box (its leading is 0.9), so it reads a little
-  // under the wash at its box's top; the statement's start below its box (1.25), so it reads a little over.
-  const TITLE_LOSS = title(65.69) - 4.577;
-  const STATEMENT_GAIN = 4.615 - statement(75.2);
+  // The measure's own reading (e2e's worstTextContrast()): the pixel behind the text is the wash over a white
+  // photograph in whole 8-bit channels, as the screenshot gives it, and the ink is what the canvas reads Dark's as:
+  // the title #f4f6f5, the statement rgba(244, 246, 245, 0.76), which it reads as (244, 246, 244) at 194/255.
+  const behind = (down: number) => {
+    const wash = washAt(1 - down / 100);
+    return [8, 10, 9].map((channel) => Math.round(255 * (1 - wash) + channel * wash));
+  };
+  /** The ink's reading over the pixel `down`% down the stage. */
+  const reading = (ink: number[], alpha: number) => (down: number) => {
+    const pixel = behind(down);
+    return ratio(ink.map((channel, i) => channel * alpha + pixel[i] * (1 - alpha)), pixel);
+  };
+  const title = reading([244, 246, 245], 1);
+  const statement = reading([244, 246, 244], 194 / 255);
+  /** The highest point, to a thousandth of a percent, from which `ink` reads at least `min` all the way down. */
+  const from = (ink: (down: number) => number, min: number) => {
+    for (let step = 0; step <= 50_000; step += 1) if (ink(50 + step / 1000) >= min) return 50 + step / 1000;
+    return Number.NaN;
+  };
+  // CI's worst pixel at 390 x 844 with reduced motion: the title's top 65.69% down, 4.577:1, and the statement's
+  // 75.20%, 4.615:1. Where the reading gives those is where each line box's top sits: the title's above its box (its
+  // leading is 0.9), the statement's below its own (1.25).
+  const TITLE_LINE_BOX = from(title, 4.577) - 65.69;
+  const STATEMENT_LINE_BOX = from(statement, 4.615) - 75.2;
+  /** Where a box's top first holds 4.5:1 under today's wash, from its line box's. */
+  const titleHolds = from(title, 4.5) - TITLE_LINE_BOX;
+  const statementHolds = from(statement, 4.5) - STATEMENT_LINE_BOX;
 
-  it("draws the title's line where Dark's fixed wash stops holding the title at 4.5:1", () => {
-    expect(TITLE_LOSS).toBeGreaterThan(0);
+  it('finds the line boxes where the measure puts them', () => {
+    expect(TITLE_LINE_BOX).toBeLessThan(0);
+    expect(STATEMENT_LINE_BOX).toBeGreaterThan(0);
+  });
+
+  it("draws the title's line where today's wash holds the title at 4.5:1, 0.4 of a point inside it", () => {
+    expect(titleHolds).toBeCloseTo(65.09, 2);
     expect(DARK_WASH_TITLE_TOP).toBe(65.5);
-    expect(title(DARK_WASH_TITLE_TOP) - TITLE_LOSS).toBeGreaterThanOrEqual(4.5);
-    // Half a point higher, the title no longer holds.
-    expect(title(DARK_WASH_TITLE_TOP - 0.5) - TITLE_LOSS).toBeLessThan(4.5);
+    expect(DARK_WASH_TITLE_TOP - titleHolds).toBeGreaterThanOrEqual(0.4);
   });
 
-  it("draws the statement's line where Dark's fixed wash stops holding the statement at 4.5:1", () => {
-    expect(STATEMENT_GAIN).toBeGreaterThan(0);
-    expect(DARK_WASH_STATEMENT_TOP).toBe(74.5);
-    expect(statement(DARK_WASH_STATEMENT_TOP) + STATEMENT_GAIN).toBeGreaterThanOrEqual(4.5);
-    // Half a point higher, the statement no longer holds.
-    expect(statement(DARK_WASH_STATEMENT_TOP - 0.5) + STATEMENT_GAIN).toBeLessThan(4.5);
+  it("draws the statement's line where today's wash holds the statement at 4.5:1, a quarter of a point inside it", () => {
+    // The statement holds from 74.50% down, so a line at 74.5 had no margin.
+    expect(statementHolds).toBeCloseTo(74.5, 2);
+    expect(74.5 - statementHolds).toBeLessThan(0.01);
+    expect(DARK_WASH_STATEMENT_TOP).toBe(74.75);
+    expect(DARK_WASH_STATEMENT_TOP - statementHolds).toBeGreaterThanOrEqual(0.25);
+    // Still under Dark parity's statement at 390 x 844 with reduced motion (75.20%, 75.21% in the gate) and Pixel 7's
+    // (about 78.1%), so both keep today's wash.
+    expect(DARK_WASH_STATEMENT_TOP).toBeLessThan(75.2);
   });
 
-  it("keeps today's wash at 390 x 844 with reduced motion, where the title and the statement both hold 4.5:1", () => {
+  it("keeps today's wash at 390 x 844 with reduced motion, where CI read the title at 4.577:1 and the statement at 4.615:1", () => {
     expect(copyAboveDarkWash(65.69, 75.2)).toBe(false);
-    expect(title(65.69)).toBeGreaterThanOrEqual(4.5);
-    expect(statement(75.2)).toBeGreaterThanOrEqual(4.5);
+    expect(title(65.69 + TITLE_LINE_BOX)).toBeGreaterThanOrEqual(4.5);
+    expect(statement(75.2 + STATEMENT_LINE_BOX)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("holds the copy far above 4.5:1 where the wash follows it, as CI read Dark under 380 px after the copy-following wash: 12.954 and 8.504 to 8.595", () => {
+    // The wash that follows holds at 0.86 up to the copy's top. The title, at the hold, reads 12.917 here, against
+    // CI's 12.954; the statement sits lower, in deeper wash, so it reads more than at the hold: CI's 8.504 to 8.595.
+    const hold = [8, 10, 9].map((channel) => Math.round(255 * 0.14 + channel * 0.86));
+    expect(Math.abs(ratio([244, 246, 245], hold) - 12.954)).toBeLessThan(0.05);
+    expect(ratio([244, 246, 244].map((channel, i) => channel * (194 / 255) + hold[i] * (61 / 255)), hold)).toBeLessThanOrEqual(8.504);
   });
 
   it('is a title whose top sits above the title line, or a statement whose top sits above the statement line', () => {
-    for (const top of [0, 40, 60.24, 63.8, 65.49]) expect(copyAboveDarkWash(top, 90), `the title ${top}%`).toBe(true);
-    for (const top of [0, 60, 72.29, 73.88, 74.49]) expect(copyAboveDarkWash(90, top), `the statement ${top}%`).toBe(true);
+    for (const top of [0, 40, 54.98, 60.24, 63.8, 65.49]) expect(copyAboveDarkWash(top, 90), `the title ${top}%`).toBe(true);
+    for (const top of [0, 60, 72.29, 73.88, 74.5, 74.74]) expect(copyAboveDarkWash(90, top), `the statement ${top}%`).toBe(true);
     // A one-line title under the title line, its statement above the statement line.
     expect(copyAboveDarkWash(68.13, 73.88)).toBe(true);
-    for (const [top, below] of [[65.5, 74.5], [65.69, 75.2], [68.72, 78.2], [80, 90], [100, 100]]) expect(copyAboveDarkWash(top, below), `${top}% and ${below}%`).toBe(false);
+    for (const [top, below] of [[65.5, 74.75], [65.69, 75.2], [68.72, 78.2], [80, 90], [100, 100]]) expect(copyAboveDarkWash(top, below), `${top}% and ${below}%`).toBe(false);
   });
 
   it("isn't, with nothing measured, so Dark keeps its wash", () => {

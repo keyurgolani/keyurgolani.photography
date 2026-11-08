@@ -1,8 +1,11 @@
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import sharp from 'sharp';
-import { altOf, CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER, HOME_SERIES } from './support/catalog-home';
+import type { TestCatalog } from '../lib/catalog/testing';
+import { altOf, CATALOG_ORIGIN, HOME_ONE_LINE_TITLE, HOME_OPENING, HOME_ORDER, HOME_SERIES } from './support/catalog-home';
+import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { contrast, type Rgb } from './support/contrast';
 import { expectHomeImmersive, photoPoint } from './support/home';
+import { publishHomeCopyFixture } from './support/homeFixture';
 import { waitForHydration } from './support/hydration';
 import { checkSurface, expectUniqueNames } from './support/surface';
 import { expect, test } from './support/test';
@@ -45,12 +48,12 @@ async function expectShown(page: Page, photoId: string) {
 }
 
 /** Opens Home, counting /api/photos requests, and waits until it rests on the opening photograph alone. */
-async function openHome(page: Page) {
+async function openHome(page: Page, url = '/') {
     const legacyRequests: string[] = [];
     page.on('request', (request) => {
         if (new URL(request.url()).pathname.startsWith('/api/photos')) legacyRequests.push(request.url());
     });
-    await page.goto('/');
+    await page.goto(url);
     await waitForHydration(page);
     await expectHomeImmersive(page);
     return legacyRequests;
@@ -502,66 +505,107 @@ async function revealByKeyboard(page: Page) {
  * Dark from 380 px on a phone: its fixed wash is set in percentages of the stage's height, so on a short stage, or with
  * reduced motion's hint lifting the copy about 25 px, the title can sit where the wash has thinned. 390 by 664 is an
  * iPhone in Safari with its toolbars showing. 390 by 844 with reduced motion is a taller stage, Dark parity's phone.
- * Dark's wash follows the copy only where the title's top sits above 65.5% of the stage or the statement's above 74.5%
- * (badgePlace.ts's copyAboveDarkWash()), and is today's elsewhere: `follows` says which. A one-line title (`oneLine`)
- * starts lower, under the title's line, while its statement stays where it was. Each row prints its numbers, and the
- * title's and the statement's tops as percentages of the stage, whether it holds or not.
+ * Dark's wash follows the copy only where the title's top sits above 65.5% of the stage or the statement's above 74.75%
+ * (badgePlace.ts's copyAboveDarkWash()), and is today's elsewhere: `follows` says which. `failNext` shows the failure
+ * notice, which lifts the copy. A one-line title starts lower, under the title's line, while its statement stays
+ * where it was: those rows, below, take a fixture of their own. Each row prints its numbers, and the title's and the
+ * statement's tops as percentages of the stage, whether it holds or not.
  */
-const DARK_SHORT_STAGES = [
+type DarkStage = { name: string; viewport: { width: number; height: number }; follows: boolean; reducedMotion?: boolean; failNext?: boolean };
+
+const DARK_SHORT_STAGES: DarkStage[] = [
     { name: 'at 380 by 664, a short stage', viewport: { width: 380, height: 664 }, follows: true },
     { name: 'at 390 by 664, an iPhone in Safari with its toolbars showing', viewport: { width: 390, height: 664 }, follows: true },
-    { name: 'at 390 by 664, with a one-line title', viewport: { width: 390, height: 664 }, follows: true, oneLine: true },
     { name: 'at 380 by 800, with reduced motion', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true },
-    { name: 'at 380 by 800, with reduced motion and a one-line title', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true, oneLine: true },
     { name: 'at 389 by 800, with reduced motion', viewport: { width: 389, height: 800 }, reducedMotion: true, follows: true },
     { name: "at 390 by 844, with reduced motion, a taller stage, where Dark's wash is today's", viewport: { width: 390, height: 844 }, reducedMotion: true, follows: false },
-] as const;
+    { name: 'at 390 by 844, with reduced motion, with the failure notice showing', viewport: { width: 390, height: 844 }, reducedMotion: true, failNext: true, follows: true },
+];
 
-/** A one-line title for the rows that need one: the fixture's own breaks over two lines on a phone. */
-const ONE_LINE_TITLE = 'Coastline';
+/** The rows one-line-title fixture's server serves: its title starts under the title's line, its statement above the statement's. */
+const ONE_LINE_STAGES: DarkStage[] = [
+    { name: 'at 390 by 664, with a one-line title', viewport: { width: 390, height: 664 }, follows: true },
+    { name: 'at 380 by 800, with reduced motion and a one-line title', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true },
+];
 
-for (const { name: where, viewport, follows, ...rest } of DARK_SHORT_STAGES) {
-    const reducedMotion = 'reducedMotion' in rest;
-    const oneLine = 'oneLine' in rest;
-    test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${where}`, async ({ page }, testInfo) => {
-        runsOn(testInfo, 'mobile');
-        await page.setViewportSize(viewport);
-        await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
-        if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
-        await openingAs(page, '#ffffff');
-        await openHome(page);
+/** One Dark stage row, on Home at `url`. */
+async function darkStage(page: Page, testInfo: TestInfo, { viewport, follows, reducedMotion = false, failNext = false }: DarkStage, url = '/') {
+    runsOn(testInfo, 'mobile');
+    await page.setViewportSize(viewport);
+    await page.addInitScript(() => localStorage.setItem('theme', 'dark'));
+    if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
+    await openingAs(page, '#ffffff');
+    if (failNext) await page.route(`**/media/${after(1)}/**`, (route) => route.abort());
+    await openHome(page, url);
+    await expectShown(page, HOME_OPENING);
+    await revealByKeyboard(page);
+    if (failNext) {
+        await tabTo(page, next(page));
+        await page.keyboard.press('Enter');
+        await expect(status(page)).toHaveText(`Couldn’t load photograph ${at(after(1)).replace(' / ', ' of ')}`);
         await expectShown(page, HOME_OPENING);
-        await revealByKeyboard(page);
-        const title = page.getByRole('heading', { level: 1 });
-        const statement = page.locator('[data-chrome-region="story"] p');
-        const scrim = page.locator('[data-home-vignette]');
-        await expect(statement).toHaveText(HOME_SERIES.shortStatement);
-        const copyTop = () => scrim.evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
-        if (oneLine) {
-            // HeroReveal measures the copy again when the title's box changes size.
-            const before = await copyTop();
-            await title.evaluate((el, text) => void (el.textContent = text), ONE_LINE_TITLE);
-            await expect.poll(copyTop, 'the copy measured again under the shorter title').not.toBe(before);
-            expect(await title.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))), "the title's lines").toBe(1);
-        }
-        const titleContrast = await worstTextContrast(page, title);
-        const statementContrast = await worstTextContrast(page, statement);
-        const tops = await page.evaluate(() => {
-            const stage = document.querySelector('[data-home-vignette]')!.getBoundingClientRect();
-            const down = (el: Element | null) => (el ? (((el.getBoundingClientRect().top - stage.top) / stage.height) * 100).toFixed(2) : 'none');
-            const story = document.querySelector('[data-chrome-region="story"]')!;
-            return { title: down(story.querySelector('h1')), statement: down(story.querySelector('p')) };
-        });
-        const high = await page.locator('main').evaluate((el) => el.hasAttribute('data-copy-high'));
-        const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}${oneLine ? ', one-line title' : ''}: title ${titleContrast.toFixed(3)}:1 at ${tops.title}%, statement ${statementContrast.toFixed(3)}:1 at ${tops.statement}%, copy top ${await copyTop()}, wash ${high ? 'follows the copy' : "today's"}`;
-        console.log(row);
-        testInfo.annotations.push({ type: 'contrast', description: row });
-        expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
-        expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
-        expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
-        if (!follows) await expect.soft(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
+    }
+    const title = page.getByRole('heading', { level: 1 });
+    const statement = page.locator('[data-chrome-region="story"] p');
+    const scrim = page.locator('[data-home-vignette]');
+    await expect(statement).toHaveText(HOME_SERIES.shortStatement);
+    const lines = await title.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+    const titleContrast = await worstTextContrast(page, title);
+    const statementContrast = await worstTextContrast(page, statement);
+    const tops = await page.evaluate(() => {
+        const stage = document.querySelector('[data-home-vignette]')!.getBoundingClientRect();
+        const down = (el: Element | null) => (el ? (((el.getBoundingClientRect().top - stage.top) / stage.height) * 100).toFixed(2) : 'none');
+        const story = document.querySelector('[data-chrome-region="story"]')!;
+        return { title: down(story.querySelector('h1')), statement: down(story.querySelector('p')) };
+    });
+    const copyTop = await scrim.evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
+    const high = await page.locator('main').evaluate((el) => el.hasAttribute('data-copy-high'));
+    const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}${failNext ? ', failure notice' : ''}, ${lines}-line title: title ${titleContrast.toFixed(3)}:1 at ${tops.title}%, statement ${statementContrast.toFixed(3)}:1 at ${tops.statement}%, copy top ${copyTop}, wash ${high ? 'follows the copy' : "today's"}`;
+    console.log(row);
+    testInfo.annotations.push({ type: 'contrast', description: row });
+    expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+    expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+    expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
+    if (!follows) await expect.soft(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
+    return lines;
+}
+
+for (const stage of DARK_SHORT_STAGES) {
+    test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${stage.name}`, async ({ page }, testInfo) => {
+        await darkStage(page, testInfo, stage);
     });
 }
+
+// The one-line rows on a Home fixture of their own, whose featured series has a nine-character title
+// (HOME_ONE_LINE_TITLE), so nothing changes the page after it opens. Its own `next start`, on mobile only.
+test.describe('Dark on a phone, with a one-line title', () => {
+    test.describe.configure({ mode: 'default' });
+    let oneLine: { catalog: TestCatalog; server: CatalogServer } | undefined;
+
+    test.beforeAll(async () => {
+        const testInfo = test.info();
+        test.skip(testInfo.project.name !== 'mobile', 'Runs on mobile.');
+        test.setTimeout(READY_TIMEOUT + 60_000);
+        const { catalog } = await publishHomeCopyFixture({ title: HOME_ONE_LINE_TITLE });
+        // Above the ports the other specs with servers of their own take when E2E_CATALOG_PORT pins them.
+        const base = Number(process.env.E2E_CATALOG_PORT);
+        oneLine = { catalog, server: await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + 40 + testInfo.parallelIndex : undefined) };
+    });
+
+    // The fixture's data root stays under the OS temp folder, for whoever runs the suite to move to the Trash.
+    test.afterAll(async () => {
+        test.setTimeout(READY_TIMEOUT + 60_000);
+        await oneLine?.server.stop();
+    });
+
+    for (const stage of ONE_LINE_STAGES) {
+        test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${stage.name}`, async ({ page }, testInfo) => {
+            if (!oneLine) throw new Error("The one-line fixture's server did not start");
+            expect(await darkStage(page, testInfo, stage, `${oneLine.server.origin}/`), "the title's lines").toBe(1);
+            await expect(page.getByRole('heading', { level: 1 })).toHaveText(HOME_ONE_LINE_TITLE);
+        });
+    }
+});
 
 for (const theme of ['light', 'bright'] as const) {
     test(`in ${theme}, the copy takes a dark scrim over a dark opening photograph and keeps 4.5:1`, async ({ page }) => {

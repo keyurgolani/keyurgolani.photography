@@ -30,6 +30,12 @@ export const HOME_SERIES = {
 } as const;
 
 /**
+ * Copy for a Home fixture of its own (e2e/support/homeFixture.ts's publishHomeCopyFixture()): a nine-character title,
+ * one line on every phone, where the fixture's own breaks over two.
+ */
+export const HOME_ONE_LINE_TITLE = 'Coastline';
+
+/**
  * #4's framing (v2.0.0 B7), for e2e/home-framing.spec.ts: the Home fixture with the opening photograph cropped to
  * `contain`, and the one after it framed on a focal point. Only publishHomeFramingFixture() in homeFixture.ts
  * publishes them, so every other Home spec, Dark parity's included, keeps centred cover crops.
