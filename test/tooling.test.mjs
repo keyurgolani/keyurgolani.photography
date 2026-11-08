@@ -531,14 +531,14 @@ describe("CI's retried steps", () => {
     const inside = (...lines) => `${LOOP}${lines.map((line) => `            ${line}\n`).join('')}`;
     const PLACE = "a loop the check can't place";
     for (const [mutant, text, problem] of [
-      ['C1, a loop in a case arm', before('case "$RUNNER_OS" in Linux) for t in 1 2 3; do sleep 600; done ;; esac'), PLACE],
-      ['S1, a loop in a subshell', before('( for t in 1 2 3; do sleep 600; done )'), PLACE],
-      ['S2, a loop in a command substitution', before('waited=$(for t in 1 2 3; do sleep 600; done)'), PLACE],
-      ['S3, time for', before('time for t in 1 2 3; do sleep 600; done'), PLACE],
+      ['a loop in a case arm', before('case "$RUNNER_OS" in Linux) for t in 1 2 3; do sleep 600; done ;; esac'), PLACE],
+      ['a loop in a subshell', before('( for t in 1 2 3; do sleep 600; done )'), PLACE],
+      ['a loop in a command substitution', before('waited=$(for t in 1 2 3; do sleep 600; done)'), PLACE],
+      ['a loop after time', before('time for t in 1 2 3; do sleep 600; done'), PLACE],
       // A heredoc's lines aren't commands: here its done line would end the retry loop early, and hide the sleep 600.
-      ['H1b, a heredoc in a step with a loop', inside("sed 's/^/  /' <<'EOF'", '  done', '  EOF', 'sleep 600').replace(/\n {12} {2}(done|EOF)\n/g, '\n          $1\n'), "heredocs aren't read"],
+      ['a heredoc in a step with a loop', inside("sed 's/^/  /' <<'EOF'", '  done', '  EOF', 'sleep 600').replace(/\n {12} {2}(done|EOF)\n/g, '\n          $1\n'), "heredocs aren't read"],
       // $'it\'s' ends at its escaped quote for a plain reading, which then swallows the sleep 600 into the echo.
-      ['Q2b, an ANSI-C quote in a step with a loop', inside("echo $'it\\'s'", 'sleep 600', "echo \\'"), "ANSI-C quotes aren't read"],
+      ['an ANSI-C quote in a step with a loop', inside("echo $'it\\'s'", 'sleep 600', "echo \\'"), "ANSI-C quotes aren't read"],
     ]) {
       // A function, since a replacement string reads $' as the text after the match.
       const mutated = ci.replace(LOOP, () => text);
