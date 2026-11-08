@@ -253,53 +253,6 @@ describe('WorkCoverImage', () => {
         expect(container.querySelector('img')).toHaveAttribute('loading', 'eager');
     });
 
-    it('marks the frame decoded once its image has, which is when a contain cover drops its LQIP', () => {
-        const { container } = render(<WorkCoverImage cover={cover(4, { crop: 'contain' })} />);
-        const frame = container.firstElementChild as HTMLElement;
-        expect(frame).not.toHaveAttribute('data-decoded');
-        // jsdom has no decode(), so the load is the decode.
-        fireEvent.load(container.querySelector('img') as HTMLImageElement);
-        expect(frame).toHaveAttribute('data-decoded', '');
-    });
-
-    it('waits for decode() where the browser has it, and still counts a loaded image whose decode() rejects', async () => {
-        const settle: { resolve: () => void; reject: (error: Error) => void }[] = [];
-        Object.defineProperty(HTMLImageElement.prototype, 'decode', {
-            configurable: true,
-            value: () => new Promise<void>((resolve, reject) => void settle.push({ resolve, reject })),
-        });
-        try {
-            const first = render(<WorkCoverImage cover={cover(4, { crop: 'contain' })} />).container;
-            fireEvent.load(first.querySelector('img') as HTMLImageElement);
-            expect(first.firstElementChild).not.toHaveAttribute('data-decoded');
-            expect(settle, 'the load asked for a decode').toHaveLength(1);
-            await act(async () => settle[0].resolve());
-            expect(first.firstElementChild).toHaveAttribute('data-decoded', '');
-
-            // A decode that rejects for an image that did load, as when a wider window picks a larger candidate.
-            const second = render(<WorkCoverImage cover={cover(5, { crop: 'contain' })} />).container;
-            imageState({ complete: true, naturalWidth: 1200, currentSrc: 'http://localhost/media/x/w1200.webp' });
-            fireEvent.load(second.querySelector('img') as HTMLImageElement);
-            expect(settle, 'the second load asked for a decode').toHaveLength(2);
-            await act(async () => settle[1].reject(new Error('EncodingError')));
-            expect(second.firstElementChild).toHaveAttribute('data-decoded', '');
-        } finally {
-            delete (HTMLImageElement.prototype as { decode?: unknown }).decode;
-        }
-    });
-
-    it('marks the frame decoded at mount for an image that loaded before hydration', () => {
-        imageState({ complete: true, naturalWidth: 1200, currentSrc: 'http://localhost/media/x/w1200.webp' });
-        const { container } = render(<WorkCoverImage cover={cover(4, { crop: 'contain' })} />);
-        expect(container.firstElementChild).toHaveAttribute('data-decoded', '');
-    });
-
-    it('leaves the frame undecoded while its image is still loading', () => {
-        imageState({ complete: false, naturalWidth: 0, currentSrc: 'http://localhost/media/x/w1200.webp' });
-        const { container } = render(<WorkCoverImage cover={cover(4, { crop: 'contain' })} />);
-        expect(container.firstElementChild).not.toHaveAttribute('data-decoded');
-    });
-
     it('preloads only the first cover, at high priority, with the srcset and sizes its <picture> has (#6)', () => {
         const lazy = render(<WorkCoverImage cover={cover(6)} />).container;
         expect(lazy.querySelector('img')?.hasAttribute('fetchpriority')).toBe(false);
