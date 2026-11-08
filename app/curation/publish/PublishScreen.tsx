@@ -4,6 +4,7 @@ import { Fragment, useActionState, useEffect, useRef, useState, useSyncExternalS
 import { Check, ChevronDown, CircleAlert, Clock, ExternalLink, FileCheck2, Link2, RefreshCw, Sparkles, TriangleAlert, Undo2, UploadCloud, type LucideIcon } from 'lucide-react';
 import curator from '../curator.module.css';
 import { itemUrl } from '../inbox/journey';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import PreviewFrame from '@/components/curation/PreviewFrame';
 import { PublishAnswerContext } from './HistoryContext';
 import { localize } from '@/lib/curation/publish-history';
@@ -272,6 +273,8 @@ function RefusalStrip({ text }: { text: string }) {
 
 /** A row's fix: a link that opens the description review, a stamp-only form, an Inbox link, or the CLI's hint. */
 function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContext }) {
+    // Its forms post through the screen's action, so each waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const refused = ctx.refusal?.rowId === row.id && ctx.refusal.intent !== 'use-published' ? ctx.refusal.text : null;
     if (fix.type === 'description') {
         if (ctx.open === row.id) {
@@ -302,7 +305,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
                             </p>
                         </div>
                     </div>
-                    <form action={ctx.dispatch} className={styles.fixActions}>
+                    <form action={ctx.dispatch} className={styles.fixActions} {...submitGate(ready)}>
                         <input type="hidden" name="intent" value="mark-description" />
                         <input type="hidden" name="rowId" value={row.id} />
                         <input type="hidden" name="photoId" value={fix.photoId} />
@@ -356,7 +359,7 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
     if (fix.type === 'restamp') {
         return (
             <div className={styles.restamp}>
-                <form action={ctx.dispatch}>
+                <form action={ctx.dispatch} {...submitGate(ready)}>
                     <input type="hidden" name="intent" value="mark-reviewed" />
                     <input type="hidden" name="rowId" value={row.id} />
                     <input type="hidden" name="kind" value={fix.target.kind} />
@@ -407,10 +410,11 @@ function FixAction({ row, fix, ctx }: { row: LedgerRow; fix: Fix; ctx: FixContex
 
 /** A9: Use the published value, a native submit in its own form, named for the record; the server action is the gate. */
 function UsePublishedAction({ row, fix, ctx }: { row: LedgerRow; fix: UsePublishedFix; ctx: FixContext }) {
+    const ready = useHydrated();
     const refused = ctx.refusal?.rowId === row.id && ctx.refusal.intent === 'use-published' ? ctx.refusal.text : null;
     return (
         <div className={styles.restamp}>
-            <form action={ctx.dispatch}>
+            <form action={ctx.dispatch} {...submitGate(ready)}>
                 <input type="hidden" name="intent" value="use-published" />
                 <input type="hidden" name="rowId" value={row.id} />
                 <input type="hidden" name="kind" value={fix.kind} />
@@ -681,6 +685,7 @@ function ResultSlot({ answer, view, facts, ctx, zone }: { answer: Answer | null;
 
 /** The sticky bar: one form whose submits are Validate and Publish, or, out of date, Load the updated ledger alone. */
 function ActionBar({ view, facts, pending, sent, ctx, historyParams }: { view: ScreenView; facts: DisplayFacts; pending: boolean; sent: Intent | null; ctx: FixContext; historyParams?: PublishScreenProps['historyParams'] }) {
+    const ready = useHydrated();
     const bar = facts.bar;
     if (!bar) return null;
     if (bar.loadUpdated) {
@@ -718,7 +723,7 @@ function ActionBar({ view, facts, pending, sent, ctx, historyParams }: { view: S
             </button>
         );
     return (
-        <form action={ctx.dispatch} className={styles.actions} aria-busy={pending ? true : undefined} data-sticky-bar="">
+        <form action={ctx.dispatch} className={styles.actions} aria-busy={pending ? true : undefined} data-sticky-bar="" {...submitGate(ready)}>
             <input type="hidden" name="draftId" value={view.draftId} />
             <input type="hidden" name="active" value={view.active.revisionId} />
             {facts.validated ? <input type="hidden" name="validated" value={view.draftId} /> : null}

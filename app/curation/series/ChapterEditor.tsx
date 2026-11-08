@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Plus, X } from 'lucide-react';
 import styles from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { orderSeries } from './actions';
 import { errorFor, offWhile, useOrder } from './useOrder';
 import SeriesAnswer from './SeriesAnswer';
@@ -19,6 +20,8 @@ import { placeLabel, type SeriesOrderView } from '@/lib/curation/series-view';
  */
 export default function ChapterEditor({ seriesId, order, activeRevisionId }: { seriesId: string; order: SeriesOrderView; activeRevisionId: string | null }) {
     const { state, pending, send, submit, answerRef } = useOrder(orderSeries, { seriesId, version: String(order.version), base: activeRevisionId ?? 'none' });
+    // Each chapter's Move start and Add a chapter submit by hand, so each waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const addRef = useRef<HTMLFormElement>(null);
     const titleRef = useRef<HTMLInputElement>(null);
     const startRef = useRef<HTMLSelectElement>(null);
@@ -58,7 +61,7 @@ export default function ChapterEditor({ seriesId, order, activeRevisionId }: { s
                             <li key={chapter.id} className={series.chapter}>
                                 <p className={series.memberName}>{chapter.title}</p>
                                 <p className={styles.hint}>Starts at {placeOf.get(chapter.startPhotoId) ?? 'a photograph the series no longer holds'}</p>
-                                <form key={`${chapter.id}:${chapter.startPhotoId}`} method="post" onSubmit={submit('chapter-move', { chapterId: chapter.id })} aria-label={`Move the start of ${named}`}>
+                                <form key={`${chapter.id}:${chapter.startPhotoId}`} method="post" onSubmit={submit('chapter-move', { chapterId: chapter.id })} aria-label={`Move the start of ${named}`} {...submitGate(ready)}>
                                     <label className={styles.label}>
                                         Starts at
                                         <select className={styles.control} name="startPhotoId" defaultValue={chapter.startPhotoId} aria-label={`Starts at: ${named}`}>
@@ -82,7 +85,7 @@ export default function ChapterEditor({ seriesId, order, activeRevisionId }: { s
             )}
             <SeriesAnswer state={shown} regionRef={answerRef} refreshHref={`/curation/series/${seriesId}`} />
             {photos.length === 0 ? null : (
-                <form ref={addRef} className={series.subform} method="post" onSubmit={submit('chapter-add')} aria-labelledby="add-chapter-heading">
+                <form ref={addRef} className={series.subform} method="post" onSubmit={submit('chapter-add')} aria-labelledby="add-chapter-heading" {...submitGate(ready)}>
                     <h3 id="add-chapter-heading">Add a chapter</h3>
                     <label className={styles.label}>
                         Chapter title

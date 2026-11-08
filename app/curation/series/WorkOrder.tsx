@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react';
 import styles from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { orderWork } from './actions';
 import { offWhile, useOrder } from './useOrder';
 import SeriesAnswer from './SeriesAnswer';
@@ -21,6 +22,8 @@ type Pressed = { seriesId: string; control: 'up' | 'down' };
  */
 export function WorkOrderEditor({ work, activeRevisionId }: { work: WorkOrderView; activeRevisionId: string | null }) {
     const { state, pending, send, submit, answerRef } = useOrder(orderWork, { version: String(work.version), base: activeRevisionId ?? 'none' });
+    // Put on Work submits by hand, so it waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const listRef = useRef<HTMLOListElement>(null);
     const pressed = useRef<Pressed | null>(null);
     const count = work.order.length;
@@ -81,7 +84,7 @@ export function WorkOrderEditor({ work, activeRevisionId }: { work: WorkOrderVie
                 </ol>
             )}
             {work.offWork.length > 0 ? (
-                <form className={series.subform} method="post" onSubmit={submit('work-order', { move: 'on' })} aria-labelledby="put-on-work-heading">
+                <form className={series.subform} method="post" onSubmit={submit('work-order', { move: 'on' })} aria-labelledby="put-on-work-heading" {...submitGate(ready)}>
                     <h3 id="put-on-work-heading">Put on Work</h3>
                     <label className={styles.label}>
                         Series
@@ -115,6 +118,8 @@ export function WorkOrderEditor({ work, activeRevisionId }: { work: WorkOrderVie
  */
 export function FeaturedForm({ work, activeRevisionId }: { work: WorkOrderView; activeRevisionId: string | null }) {
     const { state, pending, submit, answerRef } = useOrder(orderWork, { version: String(work.version), base: activeRevisionId ?? 'none' });
+    // The form submits by hand, so it waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     useEffect(() => {
         if (state.status === 'idle') return;
         answerRef.current?.focus();
@@ -130,7 +135,7 @@ export function FeaturedForm({ work, activeRevisionId }: { work: WorkOrderView; 
             {offered.length === 0 ? (
                 <p className={series.empty}>No series is published yet, so none can be featured.</p>
             ) : (
-                <form key={work.featured.join(' ')} method="post" onSubmit={submit('featured')} aria-labelledby="featured-heading">
+                <form key={work.featured.join(' ')} method="post" onSubmit={submit('featured')} aria-labelledby="featured-heading" {...submitGate(ready)}>
                     <fieldset className={styles.sequence} aria-describedby="featured-hint">
                         <legend>Featured series</legend>
                         {offered.map((entry) => (

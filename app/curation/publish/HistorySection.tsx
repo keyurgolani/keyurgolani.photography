@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Check, CircleAlert, CircleDashed, Clock, ExternalLink, RefreshCw, Undo2, type LucideIcon } from 'lucide-react';
 import curator from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { usePublishAnswer } from './HistoryContext';
 import { jumpTo } from './jump';
 import type { Answer } from '@/lib/curation/publish-facts';
@@ -159,6 +160,8 @@ interface DialogProps {
 function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps) {
     const ref = useRef<HTMLDialogElement>(null);
     const [state, dispatch, pending] = useActionState(action, RESTORE_IDLE);
+    // The form posts through the restore action, so it waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const [reason, setReason] = useState('');
     // An empty reason caught here, before any post; the server's own check answers `reason-missing` too.
     const [missing, setMissing] = useState(0);
@@ -298,7 +301,7 @@ function RestoreDialog({ plan, zone, staticOpen, action, onClose }: DialogProps)
             <p role="status" className={curator.visuallyHidden}>
                 {pending ? `Restoring revision ${n}. Revision ${plan.active} stays live until the switch.` : ''}
             </p>
-            <form className={styles.form} action={dispatch} onSubmit={submit} noValidate aria-busy={pending || undefined}>
+            <form className={styles.form} action={dispatch} onSubmit={submit} noValidate aria-busy={pending || undefined} {...submitGate(ready)}>
                 <input type="hidden" name="revisionId" value={plan.revisionId} />
                 <input type="hidden" name="expectedActive" value={plan.activeRevisionId} />
                 <div className={styles.dialogBody}>
