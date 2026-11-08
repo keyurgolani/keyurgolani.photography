@@ -502,18 +502,27 @@ async function revealByKeyboard(page: Page) {
  * Dark from 380 px on a phone: its fixed wash is set in percentages of the stage's height, so on a short stage, or with
  * reduced motion's hint lifting the copy about 25 px, the title can sit where the wash has thinned. 390 by 664 is an
  * iPhone in Safari with its toolbars showing. 390 by 844 with reduced motion is a taller stage, Dark parity's phone.
- * Each row prints its numbers, and the copy's top as a percentage of the stage, whether it holds or not.
+ * Dark's wash follows the copy only where the title's top sits above 65.5% of the stage or the statement's above 74.5%
+ * (badgePlace.ts's copyAboveDarkWash()), and is today's elsewhere: `follows` says which. A one-line title (`oneLine`)
+ * starts lower, under the title's line, while its statement stays where it was. Each row prints its numbers, and the
+ * title's and the statement's tops as percentages of the stage, whether it holds or not.
  */
 const DARK_SHORT_STAGES = [
-    { name: 'at 380 by 664, a short stage', viewport: { width: 380, height: 664 } },
-    { name: 'at 390 by 664, an iPhone in Safari with its toolbars showing', viewport: { width: 390, height: 664 } },
-    { name: 'at 380 by 800, with reduced motion', viewport: { width: 380, height: 800 }, reducedMotion: true },
-    { name: 'at 389 by 800, with reduced motion', viewport: { width: 389, height: 800 }, reducedMotion: true },
-    { name: 'at 390 by 844, with reduced motion, a taller stage', viewport: { width: 390, height: 844 }, reducedMotion: true },
+    { name: 'at 380 by 664, a short stage', viewport: { width: 380, height: 664 }, follows: true },
+    { name: 'at 390 by 664, an iPhone in Safari with its toolbars showing', viewport: { width: 390, height: 664 }, follows: true },
+    { name: 'at 390 by 664, with a one-line title', viewport: { width: 390, height: 664 }, follows: true, oneLine: true },
+    { name: 'at 380 by 800, with reduced motion', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true },
+    { name: 'at 380 by 800, with reduced motion and a one-line title', viewport: { width: 380, height: 800 }, reducedMotion: true, follows: true, oneLine: true },
+    { name: 'at 389 by 800, with reduced motion', viewport: { width: 389, height: 800 }, reducedMotion: true, follows: true },
+    { name: "at 390 by 844, with reduced motion, a taller stage, where Dark's wash is today's", viewport: { width: 390, height: 844 }, reducedMotion: true, follows: false },
 ] as const;
 
-for (const { name: where, viewport, ...rest } of DARK_SHORT_STAGES) {
+/** A one-line title for the rows that need one: the fixture's own breaks over two lines on a phone. */
+const ONE_LINE_TITLE = 'Coastline';
+
+for (const { name: where, viewport, follows, ...rest } of DARK_SHORT_STAGES) {
     const reducedMotion = 'reducedMotion' in rest;
+    const oneLine = 'oneLine' in rest;
     test(`in Dark, the series title and statement keep 4.5:1 over a white opening photograph on a phone ${where}`, async ({ page }, testInfo) => {
         runsOn(testInfo, 'mobile');
         await page.setViewportSize(viewport);
@@ -525,15 +534,32 @@ for (const { name: where, viewport, ...rest } of DARK_SHORT_STAGES) {
         await revealByKeyboard(page);
         const title = page.getByRole('heading', { level: 1 });
         const statement = page.locator('[data-chrome-region="story"] p');
+        const scrim = page.locator('[data-home-vignette]');
         await expect(statement).toHaveText(HOME_SERIES.shortStatement);
+        const copyTop = () => scrim.evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
+        if (oneLine) {
+            // HeroReveal measures the copy again when the title's box changes size.
+            const before = await copyTop();
+            await title.evaluate((el, text) => void (el.textContent = text), ONE_LINE_TITLE);
+            await expect.poll(copyTop, 'the copy measured again under the shorter title').not.toBe(before);
+            expect(await title.evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))), "the title's lines").toBe(1);
+        }
         const titleContrast = await worstTextContrast(page, title);
         const statementContrast = await worstTextContrast(page, statement);
-        const copyTop = await page.locator('[data-home-vignette]').evaluate((el) => (el as HTMLElement).style.getPropertyValue('--home-copy-top') || 'unset');
-        const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}: title ${titleContrast.toFixed(3)}:1, statement ${statementContrast.toFixed(3)}:1, copy top ${copyTop}`;
+        const tops = await page.evaluate(() => {
+            const stage = document.querySelector('[data-home-vignette]')!.getBoundingClientRect();
+            const down = (el: Element | null) => (el ? (((el.getBoundingClientRect().top - stage.top) / stage.height) * 100).toFixed(2) : 'none');
+            const story = document.querySelector('[data-chrome-region="story"]')!;
+            return { title: down(story.querySelector('h1')), statement: down(story.querySelector('p')) };
+        });
+        const high = await page.locator('main').evaluate((el) => el.hasAttribute('data-copy-high'));
+        const row = `Dark ${viewport.width}x${viewport.height}${reducedMotion ? ', reduced motion' : ''}${oneLine ? ', one-line title' : ''}: title ${titleContrast.toFixed(3)}:1 at ${tops.title}%, statement ${statementContrast.toFixed(3)}:1 at ${tops.statement}%, copy top ${await copyTop()}, wash ${high ? 'follows the copy' : "today's"}`;
         console.log(row);
         testInfo.annotations.push({ type: 'contrast', description: row });
         expect.soft(titleContrast, "the title's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
         expect.soft(statementContrast, "the statement's worst contrast over the white photograph").toBeGreaterThanOrEqual(AA);
+        expect.soft(high, follows ? "Dark's wash follows the copy" : "Dark's wash is today's").toBe(follows);
+        if (!follows) await expect.soft(scrim).toHaveCSS('background-image', 'linear-gradient(rgba(8, 10, 9, 0.12) 0%, rgba(8, 10, 9, 0.28) 34%, rgba(8, 10, 9, 0.92) 100%)');
     });
 }
 

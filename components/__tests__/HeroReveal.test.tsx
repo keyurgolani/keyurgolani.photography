@@ -7,7 +7,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, chromeOverflows, copyAboveDarkWash, copyTone, coverSource, DARK_WASH_COPY_TOP, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyAboveDarkWash, copyTone, coverSource, DARK_WASH_STATEMENT_TOP, DARK_WASH_TITLE_TOP, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -705,30 +705,40 @@ describe("Home's root and the text size", () => {
 });
 
 describe("Home's root and the copy's height on the stage", () => {
-  // A 390 x 664 stage, an iPhone in Safari with its toolbars showing, and 390 x 844, Dark parity's phone: the title's
-  // top 400 px and 580 px down.
+  // Dark's phone stages from 380 px, as CI measured them over a white photograph: 390 x 664, an iPhone in Safari with
+  // its toolbars showing; 380 x 800 with reduced motion and a one-line title; and 390 x 844, Dark parity's phone, at
+  // default motion and with reduced motion. The title's and the statement's tops in px down the stage.
   const home = () => (
     <main data-testid="home">
       <div data-home-vignette="" />
       <div data-chrome-region="story">
         <h1>Coastline, early</h1>
+        <p>A fixture statement, in plain text.</p>
       </div>
       <HeroReveal isLoading={false} onSettled={() => undefined} />
     </main>
   );
-  const stageAt = (height: number, titleTop: number) =>
+  const stageAt = (height: number, titleTop: number, statementTop: number) =>
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
       if (this.hasAttribute('data-home-vignette')) return DOMRect.fromRect({ x: 0, y: 0, width: 390, height });
-      if (this.tagName === 'H1') return DOMRect.fromRect({ x: 16, y: titleTop, width: 258, height: 68 });
+      if (this.tagName === 'H1') return DOMRect.fromRect({ x: 16, y: titleTop, width: 258, height: 34 });
+      if (this.tagName === 'P') return DOMRect.fromRect({ x: 16, y: statementTop, width: 258, height: 20 });
       return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
     });
+  const copyHigh = (height: number, titleTop: number, statementTop: number) => {
+    stageAt(height, titleTop, statementTop);
+    const view = render(home());
+    const high = view.getByTestId('home').hasAttribute('data-copy-high');
+    view.unmount();
+    return high;
+  };
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("says so on Home's root where the copy sits above Dark's fixed wash, and stops saying so when Home goes", () => {
-    stageAt(664, 400);
+  it("says so on Home's root where the title sits above Dark's fixed wash, and stops saying so when Home goes", () => {
+    stageAt(664, 400, 480);
     const view = render(home());
     const root = view.getByTestId('home');
     expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('60.24%');
@@ -737,39 +747,73 @@ describe("Home's root and the copy's height on the stage", () => {
     expect(root.hasAttribute('data-copy-high')).toBe(false);
   });
 
-  it('says nothing on a taller stage, so Dark keeps its wash there', () => {
-    stageAt(844, 580);
-    const view = render(home());
-    expect(view.getByTestId('home').hasAttribute('data-copy-high')).toBe(false);
+  it('says so for a one-line title under the title line whose statement sits above the statement line', () => {
+    // 380 x 800 with reduced motion: the title's top 68.13% down, the statement's 73.88%.
+    expect(copyHigh(800, 545, 591)).toBe(true);
+  });
+
+  it("says nothing where the title and the statement both sit under their lines, so Dark keeps today's wash", () => {
+    // 390 x 844 at default motion, Pixel 7's kind of stage: 68.72% and 78.20%.
+    expect(copyHigh(844, 580, 660)).toBe(false);
+    // 390 x 844 with reduced motion, Dark parity's phone: 65.69% and 75.20%, under both lines.
+    expect(copyHigh(844, 554.42, 634.7)).toBe(false);
   });
 });
 
 describe('copyAboveDarkWash', () => {
   // Dark's fixed phone wash (HomeChrome.module.css): rgb(8 10 9) at 0.92 at the stage's bottom and 0.28 at 66% up it.
   const washAt = (up: number) => 0.92 + ((0.28 - 0.92) * up) / 0.66;
-  /** Dark's title, #f5f5f5, over a white photograph under the wash at `up` of the stage's height. */
-  const titleOverWhite = (up: number) => {
-    const alpha = washAt(up);
-    const [r, g, b] = [8, 10, 9].map((channel) => 255 * (1 - alpha) + channel * alpha);
-    return (luminance(245, 245, 245) + 0.05) / (luminance(r, g, b) + 0.05);
+  /** Dark's ink at `alpha` (its title #f4f6f5, its statement the same at 0.76) over a white photograph under the wash at a top `down`% down the stage. */
+  const overWhite = (alpha: number) => (down: number) => {
+    const wash = washAt(1 - down / 100);
+    const behind = [8, 10, 9].map((channel) => 255 * (1 - wash) + channel * wash);
+    const ink = [244, 246, 245].map((channel, i) => channel * alpha + behind[i] * (1 - alpha));
+    return (luminance(ink[0], ink[1], ink[2]) + 0.05) / (luminance(behind[0], behind[1], behind[2]) + 0.05);
   };
+  const title = overWhite(1);
+  const statement = overWhite(0.76);
+  // CI's worst pixel under each line box at 390 x 844 with reduced motion, Dark's title 65.69% down and its statement
+  // 75.20%: 4.577 and 4.615. The title's line boxes reach above its box (its leading is 0.9), so it reads a little
+  // under the wash at its box's top; the statement's start below its box (1.25), so it reads a little over.
+  const TITLE_LOSS = title(65.69) - 4.577;
+  const STATEMENT_GAIN = 4.615 - statement(75.2);
 
-  it("draws its line where Dark's fixed wash stops holding the title at 4.5:1, a point lower for the glyphs above the title's box", () => {
-    // The wash holds the title up to 35% up the stage, so to a copy top 65% down it, and no higher.
-    expect(titleOverWhite(0.35)).toBeGreaterThanOrEqual(4.5);
-    expect(titleOverWhite(0.351)).toBeLessThan(4.5);
-    // The title's glyphs reach about 6 px above its box, 0.7% of an 844 px stage, so the line is 66%.
-    expect(DARK_WASH_COPY_TOP).toBe(66);
-    expect(titleOverWhite(1 - DARK_WASH_COPY_TOP / 100)).toBeGreaterThan(4.6);
+  it("draws the title's line where Dark's fixed wash stops holding the title at 4.5:1", () => {
+    expect(TITLE_LOSS).toBeGreaterThan(0);
+    expect(DARK_WASH_TITLE_TOP).toBe(65.5);
+    expect(title(DARK_WASH_TITLE_TOP) - TITLE_LOSS).toBeGreaterThanOrEqual(4.5);
+    // Half a point higher, the title no longer holds.
+    expect(title(DARK_WASH_TITLE_TOP - 0.5) - TITLE_LOSS).toBeLessThan(4.5);
   });
 
-  it('is a copy whose top sits higher than that on the stage', () => {
-    for (const top of [0, 40, 60.24, 64.4, 65.99]) expect(copyAboveDarkWash(top), `${top}%`).toBe(true);
-    for (const top of [66, 66.3, 68.72, 80, 100]) expect(copyAboveDarkWash(top), `${top}%`).toBe(false);
+  it("draws the statement's line where Dark's fixed wash stops holding the statement at 4.5:1", () => {
+    expect(STATEMENT_GAIN).toBeGreaterThan(0);
+    expect(DARK_WASH_STATEMENT_TOP).toBe(74.5);
+    expect(statement(DARK_WASH_STATEMENT_TOP) + STATEMENT_GAIN).toBeGreaterThanOrEqual(4.5);
+    // Half a point higher, the statement no longer holds.
+    expect(statement(DARK_WASH_STATEMENT_TOP - 0.5) + STATEMENT_GAIN).toBeLessThan(4.5);
   });
 
-  it("isn't, with no copy measured, so Dark keeps its wash", () => {
-    expect(copyAboveDarkWash(null)).toBe(false);
+  it("keeps today's wash at 390 x 844 with reduced motion, where the title and the statement both hold 4.5:1", () => {
+    expect(copyAboveDarkWash(65.69, 75.2)).toBe(false);
+    expect(title(65.69)).toBeGreaterThanOrEqual(4.5);
+    expect(statement(75.2)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('is a title whose top sits above the title line, or a statement whose top sits above the statement line', () => {
+    for (const top of [0, 40, 60.24, 63.8, 65.49]) expect(copyAboveDarkWash(top, 90), `the title ${top}%`).toBe(true);
+    for (const top of [0, 60, 72.29, 73.88, 74.49]) expect(copyAboveDarkWash(90, top), `the statement ${top}%`).toBe(true);
+    // A one-line title under the title line, its statement above the statement line.
+    expect(copyAboveDarkWash(68.13, 73.88)).toBe(true);
+    for (const [top, below] of [[65.5, 74.5], [65.69, 75.2], [68.72, 78.2], [80, 90], [100, 100]]) expect(copyAboveDarkWash(top, below), `${top}% and ${below}%`).toBe(false);
+  });
+
+  it("isn't, with nothing measured, so Dark keeps its wash", () => {
+    expect(copyAboveDarkWash(null, null)).toBe(false);
+    expect(copyAboveDarkWash(null, 80)).toBe(false);
+    expect(copyAboveDarkWash(70, null)).toBe(false);
+    expect(copyAboveDarkWash(null, 70)).toBe(true);
+    expect(copyAboveDarkWash(60, null)).toBe(true);
   });
 });
 
