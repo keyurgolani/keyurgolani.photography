@@ -23,7 +23,7 @@ if (process.env.PHOTOS_TEST_ROOT_UID !== undefined && Number.isInteger(rootUid) 
     const realStatSync = fs.statSync;
     const target = fs.realpathSync(fakedRoot);
     fs.statSync = function statSync(file, options) {
-        const stat = realStatSync.call(fs, file, options);
+        const stat = realStatSync(file, options);
         if (!stat || typeof file !== 'string') return stat;
         let resolved;
         try { resolved = fs.realpathSync(file); } catch { return stat; }
