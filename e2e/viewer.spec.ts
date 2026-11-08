@@ -237,9 +237,9 @@ test('moves replace the history entry, so one Back leaves the Viewer for the pag
 
 // #6 gap 30: a photograph the visitor moves past before it finished stops loading (stopFetching.ts). Its /media
 // response is held, so it's still on its way at the second Next. The first photograph is the server's preloaded lead,
-// which can't be stopped, so the race is on the second. Under reduced motion, since otherwise the passed photograph
-// stays on as the previous neighbour's peek (9a), which keeps loading it on purpose. Chromium reports a stopped
-// request as ERR_ABORTED.
+// which can't be stopped, so the race is on the second. Under reduced motion, where nothing slides and there are no
+// peeks, so it stops at once; the test after this one is the same with motion on. Chromium reports a stopped request
+// as ERR_ABORTED.
 test('a photograph passed before it finished loading stops loading', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'The abort is read from Chromium\'s network events.');
     await page.emulateMedia({ reducedMotion: 'reduce' });

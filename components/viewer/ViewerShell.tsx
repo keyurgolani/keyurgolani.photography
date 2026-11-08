@@ -139,7 +139,10 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  * neighbors peeking in beside it once a finger has gone down on it (their
  * sets come from the peek endpoint then, never on a first load, #6), and a
  * move settles in: from the lift for a swipe, and from its arrival for
- * Previous, Next, and the arrow keys, so every move looks the same. The
+ * Previous, Next, and the arrow keys, so every move looks the same, the
+ * photograph it leaves sliding out beside it. Until a finger has been on the
+ * photograph, that one leaves the stage once the slide lands, so a
+ * photograph passed stops loading (#6 gap 30). The
  * header and the reading area stay put. The counter, the accent rules and
  * the arrows' ends change once, at the lift (or the press). The words under the photograph
  * stay as they are until the photograph's page arrives, and change then with
@@ -195,6 +198,18 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const [peeks, setPeeks] = useState<ReadonlyMap<string, ViewerPeek>>(NO_PEEKS);
     /** Set once a finger goes down on the photograph: from then on, each photograph's neighbors are asked for. */
     const engaged = useRef(false);
+    /** engaged, for the render: from then on every peek the shell has is beside the photograph, to drag in. */
+    const [touched, setTouched] = useState(false);
+    /** The peekKey of the photograph shown now, so the next arrival knows which one it leaves. */
+    const shownKey = useRef<string | null>(null);
+    /**
+     * The photograph the last move left, while it slides out beside the one coming in, or null. Until a finger has
+     * been on the photograph it's the only peek beside the stage, and it goes once the slide lands, so a photograph
+     * passed stops loading (#6 gap 30): a visitor who never drags has no use for it there.
+     */
+    const [leaving, setLeaving] = useState<string | null>(null);
+    /** Counts the arrivals' slides, so a slide stopped by the next one doesn't clear that one's `leaving`. */
+    const slides = useRef(0);
     const requested = useRef(new Set<string>());
     /** The revision the last photograph shown came from. */
     const shownRevision = useRef<string | null>(null);
@@ -341,6 +356,8 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         // Every photograph shown can peek back in once the Viewer moves on from it.
         const { image, accent } = chrome;
         const key = peekKey(chrome.revisionId, chrome.photoId);
+        const left = shownKey.current;
+        shownKey.current = key;
         requested.current.add(key);
         setPeeks((current) => (current.has(key) ? current : new Map(current).set(key, { image, accent })));
         if (first) return;
@@ -355,7 +372,12 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setPending(null);
         const motion = motionRef.current;
         if (motion !== null && !reduced) {
-            motion.arrive(moved?.direction ?? null);
+            // The photograph left slides out beside this one, and is beside the stage until the slide lands.
+            const slide = ++slides.current;
+            setLeaving(left);
+            motion.arrive(moved?.direction ?? null, () => {
+                if (slides.current === slide) setLeaving(null);
+            });
             motion.wordsIn();
         }
         const active = document.activeElement;
@@ -481,6 +503,7 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const engage = useCallback(() => {
         if (reduced) return;
         engaged.current = true;
+        setTouched(true);
         askForPeeks(chrome);
     }, [reduced, askForPeeks, chrome]);
     useEffect(() => {
@@ -708,6 +731,13 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
 
     const actions = useMemo<ViewerChromeActions>(() => ({ step: (direction) => step(direction), close }), [step, close]);
     const busy = pending !== null;
+    // What's beside the stage: every peek once a finger has been on the photograph, else only the one sliding out.
+    const besideStage = useMemo<ReadonlyMap<string, ViewerPeek>>(() => {
+        if (reduced) return NO_PEEKS;
+        if (touched) return peeks;
+        const peek = leaving === null ? undefined : peeks.get(leaving);
+        return leaving === null || peek === undefined ? NO_PEEKS : new Map([[leaving, peek]]);
+    }, [reduced, touched, peeks, leaving]);
     const context = useMemo<ViewerShellContext>(
         () => ({
             mode,
@@ -717,15 +747,16 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
             report,
             technicalOpen,
             setTechnicalOpen,
-            peeks: reduced ? NO_PEEKS : peeks,
+            peeks: besideStage,
             busy,
             reportUnavailable,
             close,
         }),
-        [mode, chrome, zoomed, headingId, report, technicalOpen, reduced, peeks, busy, reportUnavailable, close],
+        [mode, chrome, zoomed, headingId, report, technicalOpen, besideStage, busy, reportUnavailable, close],
     );
-    // The counter, the accents and the arrows' ends show a move once it's decided, before its photograph arrives. Under
-    // reduced motion nothing slides, so they change when it arrives, as before 9a.
+    // The counter, the accents and the arrows' ends show a move once it's decided, before its photograph arrives, the
+    // accent from every peek the shell has, beside the stage or not. Under reduced motion nothing slides, so they
+    // change when it arrives, as before 9a.
     const shown = useMemo<ViewerChromeState | null>(() => {
         if (chrome === null || pending === null || reduced || pending.from !== chrome.photoId) return chrome;
         const to = pending.direction === 'next' ? chrome.nextPhotoId : chrome.previousPhotoId;
