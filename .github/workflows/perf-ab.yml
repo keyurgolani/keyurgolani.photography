@@ -18,7 +18,7 @@ on:
         required: false
         default: ''
       rounds:
-        description: Rounds, 5 to 20. Each takes about 9 minutes.
+        description: Rounds, 5 to 20. Each takes about 6 to 7 minutes.
         type: number
         required: true
         default: 5
@@ -35,9 +35,9 @@ jobs:
     name: Perf A/B
     # Pinned, so a run months apart measures on the same image. Not -latest.
     runs-on: ubuntu-24.04
-    # Two installs and builds take about 10 minutes, and each round about 9 (Home on both fixtures, the Viewer on one),
-    # so this covers about 20 rounds.
-    timeout-minutes: 200
+    # Measured: about 2.5 minutes to install and build, and about 6.3 a round (Home on both fixtures, the Viewer on one).
+    # 20 rounds then take about 128 minutes, so 160 covers them with about 25% to spare.
+    timeout-minutes: 160
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:

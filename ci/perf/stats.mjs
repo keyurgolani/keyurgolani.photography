@@ -15,7 +15,7 @@
 
 /** The fewest rounds the job runs. Fewer, and one bad round decides a median. */
 export const MIN_ROUNDS = 5;
-/** The most, which the workflow's 200-minute ceiling covers. */
+/** The most, which the workflow's 160-minute ceiling covers. */
 export const MAX_ROUNDS = 20;
 /** The noise floor's multiple of the median A/A gap. */
 export const NOISE_FACTOR = 4;
