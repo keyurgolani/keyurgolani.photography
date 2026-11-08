@@ -70,7 +70,7 @@ describe('npm run test:budgets', () => {
     expect(workflow).toMatch(/needs: \[[^\]]*\be2e\b[^\]]*\]/);
     // Its own ceiling, so a hang fails the step and the uploads after it still run, inside a job with room for it.
     expect(workflow).toMatch(/- name: "Check #6's budgets"\n\s+timeout-minutes: 12\n\s+run: npm run test:budgets\n/);
-    expect(workflow).toMatch(/\n {2}e2e:\n(?:.*\n)*? {4}timeout-minutes: 55\n/);
+    expect(workflow).toMatch(/\n {2}e2e:\n(?:.*\n)*? {4}timeout-minutes: 70\n/);
     expect(workflow).not.toContain('about 19 minutes');
   });
 
