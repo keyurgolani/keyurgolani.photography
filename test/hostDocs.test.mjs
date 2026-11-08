@@ -68,6 +68,17 @@ function legacyGcPromises(file, text) {
   return text.split('\n').flatMap((line, index) => (GC_PROMISE.some((promise) => promise.test(line)) && LEGACY_FOLDER.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 160)}`] : []));
 }
 
+/**
+ * A release-process label: a PR lane or the review it had, such as A8, B7E or F4. The docs name issues by number
+ * (#14) and releases by version, never by lane. A bare R stays out: the docs use it as a placeholder and a flag.
+ */
+const RELEASE_LABEL = /(?<![\w#-])(?:[AB](?:1[0-2]|[1-9])[A-Z]?|C1|F(?:1[0-4]|[1-9])|H1|S1)(?![\w-])|\bPARITY\b/g;
+
+/** Each release-process label in the text, as `file:line: label`. */
+function releaseLabels(file, text) {
+  return text.split('\n').flatMap((line, index) => [...line.matchAll(RELEASE_LABEL)].map(([label]) => `${file}:${index + 1}: ${label}`));
+}
+
 describe('the host docs', () => {
   it('flag a delete on or under the library, and leave docker --rm and the old image cache alone', () => {
     const flagged = [
@@ -117,6 +128,33 @@ describe('the host docs', () => {
   // #15 shipped no GC for the legacy folders (v2.0.0, A12): a host step moves them aside instead.
   it.each(HOST_DOCS)('%s promises no GC for the legacy folders', (file) => {
     expect(legacyGcPromises(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
+  });
+
+  it('flag a release-process label, and leave issue numbers, versions, flags and hex alone', () => {
+    const flagged = [
+      '`e2e/curation-inbox-screen.spec.ts` from #14\'s A8, whose `checkSurface()` covers the rows',
+      "The inbox's arrival sequence (v2.0.0, A8).",
+      "A6's inbox items are stamped 2",
+      'and, from A6, the `library-unavailable` item',
+      'a fix from B7E',
+      'as F4 found',
+      'H1 and S1 too',
+      'the C1 burst row',
+    ];
+    for (const text of flagged) expect(releaseLabels('probe.md', text), text).not.toEqual([]);
+    const allowed = [
+      'Fixes #14 and #184, in v2.0.0 and v1.7.x.',
+      'sudo chown -R 1001:1001 portfolio-data',
+      '`Held: N missing sources. Builds: R retrying, P failed for good.`',
+      'the colour `#A1B2C3`, and `sha256-a1b2`',
+      'the second PR of slice E of #13, and #14\'s 14-2',
+      'AA contrast, WCAG 2.5.3, and `photos.mjs`',
+    ];
+    for (const text of allowed) expect(releaseLabels('probe.md', text), text).toEqual([]);
+  });
+
+  it.each(HOST_DOCS)('%s names no release-process label', (file) => {
+    expect(releaseLabels(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
   });
 });
 
