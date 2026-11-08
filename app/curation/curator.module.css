@@ -1208,8 +1208,8 @@ main.state {
   --curator-field: #f8f5ee;
   --curator-box: #f2ede3;
   --curator-rule: #c9bfae;
-  /* For P2-8's outline on the selected row and tab: Light's strong rule is under 3:1 on the active fill, so the
-     outline takes the muted ink there. */
+  /* For P2-8's outline on the selected row and tab: Light's strong rule only just clears 3:1 on the active fill
+     (3.02), so the outline takes the muted ink there for margin (4.67). */
   --curator-selected-rule: #645a4e;
   /* Opaque already: the row's outline is the tab's. */
   --curator-selected-row-rule: #645a4e;
