@@ -86,6 +86,16 @@ describe.each(Object.entries(THEMES))('the curator in %s', (_, t) => {
         expect(on(t['--gah-rule-strong'], over(color('--curator-field'), page))).toBeGreaterThanOrEqual(3);
     });
 
+    // A button's or a link-button's border is the strong rule, so it keeps 3:1 on every surface a control sits on:
+    // the page, the header, the list, a box, a field, the three notices (Publish's "Edit the series" sits on the change notice)
+    // and the jump-landing tint (a Publish row's fixes, History's Restore after a jump lands).
+    it('draws the strong rule at 3:1 on every surface where controls sit', () => {
+        expect.soft(on(t['--gah-rule-strong'], page), 'on the page').toBeGreaterThanOrEqual(3);
+        for (const surface of ['--curator-header', '--curator-list', '--curator-active', '--curator-box', '--curator-field', '--curator-lock-bg', '--curator-tone-alert-bg', '--curator-tone-change-bg']) {
+            expect.soft(on(t['--gah-rule-strong'], over(color(surface), page)), `on ${surface}`).toBeGreaterThanOrEqual(3);
+        }
+    });
+
     it('reads the primary, the badges and the lock', () => {
         expect(ratio(color('--curator-primary-ink'), color('--curator-primary')), 'the primary').toBeGreaterThanOrEqual(4.5);
         for (const tone of ['new', 'change', 'alert', 'settled']) {

@@ -15,7 +15,7 @@
  */
 const LIGHT =
   '--lts-paper:#ebe5d9;--lts-glass:#ebe5d9e6;--lts-ink:#29231d;--lts-ink-soft:#4d443a;--lts-ribs:none;' +
-  '--lts-rule:#29231d24;--lts-rule-strong:#8c7f6f;--lts-frame:#f8f5ee;' +
+  '--lts-rule:#29231d24;--lts-rule-strong:#847767;--lts-frame:#f8f5ee;' +
   '--lts-shadow:0 0 0 1px #29231d14,0 16px 28px -14px #3c2a146b;--lts-link-rule:#2a4a72;' +
   '--lts-caption-bg:#f8f5eeeb;--lts-caption-ink:#3a3229';
 const BRIGHT =
