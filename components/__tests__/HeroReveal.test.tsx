@@ -911,6 +911,35 @@ describe("Home's root and the copy's height on the stage", () => {
     // 390 x 844 with reduced motion, Dark parity's phone: 65.69% and 75.20%, under both lines.
     expect(copyHigh(844, 554.42, 634.7)).toBe(false);
   });
+
+  it("says nothing where the chrome scrolls at default text with both tops under their lines, so Dark keeps today's wash", () => {
+    // 390 x 844 at default text, the chrome 1,000 px tall in its 844: the title 68.72% down, the statement 78.20%.
+    stageAt(844, 580, 660);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-home-chrome') ? 1000 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-home-chrome') ? 844 : 0;
+    });
+    const view = render(
+      <main data-testid="home">
+        <div data-home-vignette="" />
+        <div data-home-chrome="">
+          <div data-chrome-region="story">
+            <h1>Coastline, early</h1>
+            <p>A fixture statement, in plain text.</p>
+          </div>
+        </div>
+        <HeroReveal isLoading={false} onSettled={() => undefined} />
+      </main>,
+    );
+    const root = view.getByTestId('home');
+    // The copy moves under a fixed scrim, so the hold still covers the whole print.
+    expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('0%');
+    expect(root.hasAttribute('data-text-enlarged')).toBe(false);
+    expect(root.hasAttribute('data-copy-high')).toBe(false);
+    view.unmount();
+  });
 });
 
 describe('copyAboveDarkWash', () => {
