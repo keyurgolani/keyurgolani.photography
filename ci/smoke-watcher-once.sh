@@ -25,6 +25,8 @@
 # test/fixtures/makeLibrary.ts, which its node runs with the types stripped,
 # so the runner needs no Node and no fixture binaries are committed.
 # WATCHER_CMD overrides the watcher command. Binds a random port on 127.0.0.1.
+# The temp root goes under $RUNNER_TEMP, the job's own temp folder in CI, or
+# $TMPDIR elsewhere.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,7 +35,7 @@ IMAGE=${IMAGE:-ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke}
 WATCHER_CMD=${WATCHER_CMD:-node dist/scripts/imageWatcher.mjs}
 read -r -a WATCHER <<<"$WATCHER_CMD"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-watcher-once.XXXXXX")
 LIB=$TMP/library
 # The watcher's data root, which the migration initializes.
 ROOT=$TMP/root

@@ -10,14 +10,15 @@
 #   npm run build && npm run smoke:media
 #
 # Never touches the real library or data root. SMOKE_MEDIA_PORT picks the
-# port on 127.0.0.1, 3940 by default.
+# port on 127.0.0.1, 3940 by default. The temp root goes under $RUNNER_TEMP,
+# the job's own temp folder in CI, or $TMPDIR elsewhere.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 PORT=${SMOKE_MEDIA_PORT:-3940}
 BASE_URL=http://127.0.0.1:$PORT
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-media.XXXXXX")
 export PHOTOGRAPHY_LIBRARY_DIR=$TMP/library
 export PHOTOGRAPHY_DATA_DIR=$TMP/data
 SERVER_PID=
