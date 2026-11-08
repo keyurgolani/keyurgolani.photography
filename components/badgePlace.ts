@@ -159,14 +159,14 @@ export function homeCopyTop(stage: Box, story: Box[]): number | null {
 
 /**
  * Where Dark's fixed phone wash stops holding its title and its statement over a white photograph, as tops in
- * homeCopyTop()'s percentages of the stage. That wash (HomeChrome.module.css) is set in percentages of the stage: 0.92
- * at its bottom, 0.28 at 66% up it. CI measured the worst pixel under each line box at 390 x 844 with reduced motion,
- * the title's top 65.69% down and the statement's 75.20%: 4.577 and 4.615:1. The title's line boxes reach above its box
- * and the statement's start below its own, so from those numbers the title holds 4.5:1 from 65.5% down and the
- * statement from 74.5% down.
+ * homeCopyTop()'s percentages of the stage, each with some margin. That wash (HomeChrome.module.css) is set in
+ * percentages of the stage: 0.92 at its bottom, 0.28 at 66% up it. CI measured the worst pixel under each line box at
+ * 390 x 844 with reduced motion, the title's top 65.69% down and the statement's 75.20%: 4.577 and 4.615:1. Read as the
+ * measure reads it, in whole 8-bit pixels, the title holds 4.5:1 from 65.09% down and the statement from 74.50%, so the
+ * lines are 65.5 and 74.75, both still above 390 x 844's own tops.
  */
 export const DARK_WASH_TITLE_TOP = 65.5;
-export const DARK_WASH_STATEMENT_TOP = 74.5;
+export const DARK_WASH_STATEMENT_TOP = 74.75;
 
 /**
  * Whether the title's top sits higher on the stage than Dark's fixed phone wash holds it, or the statement's does, as
