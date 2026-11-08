@@ -16,6 +16,7 @@ import { createInboxFixture, DRAFT_ID, fact, FRESH, FRESH_SOURCES, type InboxFix
 import { waitForHydration } from './support/hydration';
 import { checkSurface } from './support/surface';
 import { expectMinTargetSize } from './support/targets';
+import { watchSends } from './support/sent-forms';
 import { expect, test } from './support/test';
 
 // #17's three Inbox pieces on both #1 projects, on a fixture and a curator server of their own: Restore in Approve's
@@ -209,6 +210,25 @@ test('releases one held item with Release and an optional reason, as confirm-mis
     await expect(banner(page)).toContainText(`${held.length - 1} missing items are on hold.`);
 });
 
+// Before the row that binds, which takes Bind away. Enter on a radio sends the form in Chromium by its first submit, Bind:
+// the form stops that, and the watch stops any post that got out, so even a red run binds nothing.
+test("sends nothing for Enter on a suggested file's radio in Bind, and keeps it chosen with its path (#17)", async ({ page }) => {
+    await openInbox(page, `?item=${missingId}#item`);
+    await page.getByText('Bind to the file that replaces it').click();
+    const form = page.getByRole('form', { name: 'Bind' });
+    const suggestion = form.getByRole('radio', { name: `${suggestedPath}: same file name, different pixels` });
+    await suggestion.check();
+    await expect(form.getByRole('textbox', { name: 'Library path' })).toHaveValue(suggestedPath);
+    const sends = await watchSends(page);
+    await suggestion.focus();
+    await sends.nothingSent("Enter on a suggested file's radio", () => page.keyboard.press('Enter'));
+    await expect(suggestion).toBeChecked();
+    await expect(suggestion).toBeFocused();
+    await expect(form.getByRole('textbox', { name: 'Library path' })).toHaveValue(suggestedPath);
+    expect(pendingDecisions().filter((decision) => decision.type === 'bind' && decision.photoId === DRAFT_ID)).toEqual([]);
+    await sends.stop();
+});
+
 test('lists the suggested files in Bind after the linked ones, none chosen, and binds the one chosen by its path (#17)', async ({ page }) => {
     await openInbox(page, `?item=${missingId}#item`);
     await page.getByText('Bind to the file that replaces it').click();
@@ -251,4 +271,17 @@ test("offers Restore in Approve's place on a new photograph whose bytes are an a
     expect((await listEvents(data().root)).events.find((entry) => entry.id === itemId)).toMatchObject({ status: 'approved' });
     await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0);
     await expect(page.locator('[role="status"]:has([data-state="done"])')).toBeFocused();
+});
+
+test("still sends Release for Enter in its reason, a text field, as the browser does by itself (#17)", async ({ page }) => {
+    const [first] = await heldNow();
+    await openInbox(page, `?item=${first}#item`);
+    const form = page.getByRole('form', { name: 'Release' });
+    const before = (await readEvent(data().root, first))!;
+    const reason = form.getByRole('textbox', { name: 'Reason for releasing' });
+    await reason.fill('Gone for good.');
+    await reason.press('Enter');
+    await expect(answer(page, 'done')).toHaveText(RELEASED_ANSWER);
+    expect((await readEvent(data().root, first))?.decisions.at(-1)).toMatchObject({ action: 'confirm-missing', reason: 'Gone for good.' });
+    expect((await readEvent(data().root, first))?.version).toBe(before.version + 1);
 });

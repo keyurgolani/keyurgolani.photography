@@ -1,11 +1,11 @@
 import { ImageOff, RefreshCw } from 'lucide-react';
 import styles from '../curator.module.css';
-import BulkActions, { type BulkRow } from './BulkActions';
+import BulkActions, { PickBox, type BulkRow } from './BulkActions';
 import EmptyArrival from './EmptyArrival';
 import EventBadge from './EventBadge';
 import ReturnToRow from './ReturnToRow';
 import { ageLabel, ANY_QUERY, bulkChoices, inboxQueryString, listPage, rowLabels, STATUS_FILTERS, TYPE_FILTERS, type InboxQuery } from '@/lib/curation/inbox-list';
-import { BULK_FORM_ID, fileParts, itemName, summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
+import { fileParts, itemName, summaryText, type InboxItem, type InboxView, type ItemGroup } from '@/lib/curation/inbox-view';
 
 type ReadyView = Extract<InboxView, { state: 'ready' }>;
 
@@ -57,7 +57,7 @@ function Pick({ item, label, pickable }: { item: InboxItem; label: string; picka
     if (!pickable) return <span className={styles.pickSpacer} aria-hidden="true" />;
     return (
         <label className={styles.pick}>
-            <input key={`${item.id}:${item.version}`} className={styles.pickBox} type="checkbox" name="items" form={BULK_FORM_ID} id={`pick-${item.id}`} value={`${item.id}:${item.version}`} />
+            <PickBox key={`${item.id}:${item.version}`} id={`pick-${item.id}`} value={`${item.id}:${item.version}`} />
             <span className={styles.visuallyHidden}>Select {label}</span>
         </label>
     );

@@ -4,7 +4,7 @@ import { startTransition, useActionState, type FormEvent } from 'react';
 import styles from '../curator.module.css';
 import { bulkItems } from './actions';
 import ErrorSummary, { type SummaryEntry } from './ErrorSummary';
-import { submitGate, submitOff, useHydrated } from './useHydrated';
+import { keepEnterOffChoices, submitGate, submitOff, useHydrated } from './useHydrated';
 import { BULK_FORM_ID, BULK_IDLE, DEFER_LABEL } from '@/lib/curation/inbox-view';
 
 export interface BulkRow {
@@ -43,9 +43,9 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
         // As ItemActions: while the action is out, aria-disabled, never `disabled`, so a focused button keeps focus.
         if (pending) return;
         const submitter = (event.nativeEvent as SubmitEvent).submitter;
-        // A8 review N5: only a bulk button sends this form. Enter in a checkbox submits it with no submitter, or the first
-        // button, which it never meant to press, so a submit no bulk button made sends nothing. The form's data takes
-        // the checked boxes the form owns by their `form` attribute, outside it in the rows.
+        // Only a bulk button sends this form, so a submit no bulk button made, as Enter on a box can be, sends nothing.
+        // Where Enter on a box would press the first button, the box stops it (PickBox). The form's data takes the
+        // checked boxes the form owns by their `form` attribute, outside it in the rows.
         if (!(submitter instanceof HTMLButtonElement) || submitter.name !== 'intent' || (submitter.value !== 'defer' && submitter.value !== 'unassigned')) return;
         const form = new FormData(event.currentTarget);
         form.set(submitter.name, submitter.value);
@@ -103,4 +103,13 @@ export default function BulkActions({ base, rows, canDefer, canUnassign, firstPi
             ) : null}
         </form>
     );
+}
+
+/**
+ * A row's checkbox for the bulk actions, which InboxList's Pick puts beside the row's link. It's this form's by its
+ * `form` attribute, and its own client component so that it takes keepEnterOffChoices(): Enter on a ticked box would
+ * otherwise send this form by its first button, Decide later on selected.
+ */
+export function PickBox({ id, value }: { id: string; value: string }) {
+    return <input className={styles.pickBox} type="checkbox" name="items" form={BULK_FORM_ID} id={id} value={value} onKeyDown={keepEnterOffChoices} />;
 }
