@@ -109,8 +109,10 @@
   object-position: var(--focal-x, 50%) var(--focal-y, 50%);
 }
 
+/* A contain photograph is shown whole, so there's no crop for the focal point to steer: centred, as on Home. */
 .frame[data-cover='contain'] .cover {
   object-fit: contain;
+  object-position: center;
 }
 
 .fallback {
