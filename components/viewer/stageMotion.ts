@@ -33,6 +33,8 @@ interface Running {
     easing: string;
     /** The move it settles into, or null for a slide back to rest. */
     step: ViewerStep | null;
+    /** Called once, when this slide is over: it landed, or something stopped it. */
+    over?: () => void;
 }
 
 /**
@@ -120,14 +122,16 @@ export class StageMotion {
      * goes on on the new track, one stage over, at the same point of the same curve. A move that didn't settle in from
      * a drag (Previous, Next, an arrow key) slides in now from the side it comes from, or, when the photograph it
      * leaves was still sliding (a press remembered during the last move, or one soon after it landed), from where that
-     * photograph is, so nothing jumps.
+     * photograph is, so nothing jumps. `landed` is called once, when the track is at rest: at once when nothing slides,
+     * or when the slide lands or something stops it (another arrival, a finger, reset).
      */
-    arrive(step: ViewerStep | null): void {
+    arrive(step: ViewerStep | null, landed: () => void = () => undefined): void {
         const element = this.track();
         const running = this.running;
         this.held = null;
         if (element === null) {
             this.stop();
+            landed();
             return;
         }
         if (running !== null && running.step !== null) {
@@ -137,9 +141,10 @@ export class StageMotion {
             if (time === null || Number(time) >= running.duration) {
                 // It had already landed: the new track is at its rest.
                 this.rest(element);
+                landed();
                 return;
             }
-            this.animate(element, running.from + shift, running.to + shift, null, running.duration, running.easing, Number(time));
+            this.animate(element, running.from + shift, running.to + shift, null, running.duration, running.easing, Number(time), landed);
             return;
         }
         // The photograph leaving sits one stage over on the new track: wherever a slide left it, or at its rest.
@@ -147,10 +152,11 @@ export class StageMotion {
         this.stop();
         if (step === null) {
             this.rest(element);
+            landed();
             return;
         }
         const from = leaving + (step === 'next' ? this.pitch() : -this.pitch());
-        this.settle(element, from, 0, null, 0, 'commit', CONTROL_SLOPE);
+        this.settle(element, from, 0, null, 0, 'commit', CONTROL_SLOPE, landed);
     }
 
     /** Drop any settle, hold, or words in their fade, and put the track at rest, as Zoom, a pinch, reduced motion, or unmount need. */
@@ -219,38 +225,42 @@ export class StageMotion {
         velocity: number,
         kind: SettleKind = step === null ? 'return' : 'commit',
         openingSlope = 0,
+        over?: () => void,
     ): number {
         this.stop();
         const distance = Math.abs(to - from);
         if (distance < 0.5) {
             if (step === null) this.rest(element);
             else this.place(element, to, step);
+            over?.();
             return 0;
         }
         // The finger's speed toward where the photograph is going.
         const speed = velocity * Math.sign(to - from);
         const { duration, easing } = settleOf(kind, distance, speed, openingSlope);
-        this.animate(element, from, to, step, duration, easing, 0);
+        this.animate(element, from, to, step, duration, easing, 0, over);
         return duration;
     }
 
-    private animate(element: HTMLElement, from: number, to: number, step: ViewerStep | null, duration: number, easing: string, at: number): void {
+    private animate(element: HTMLElement, from: number, to: number, step: ViewerStep | null, duration: number, easing: string, at: number, over?: () => void): void {
         if (!animates(element)) {
             if (step === null && to === 0) this.rest(element);
             else this.place(element, to, step);
+            over?.();
             return;
         }
         element.toggleAttribute('data-moving', true);
         element.style.transform = translate(to);
         const animation = element.animate([{ transform: translate(from) }, { transform: translate(to) }], { duration, easing, fill: 'backwards' });
         animation.currentTime = at;
-        const running: Running = { element, animation, from, to, duration, easing, step };
+        const running: Running = { element, animation, from, to, duration, easing, step, over };
         this.running = running;
         animation.onfinish = () => {
             if (this.running !== running) return;
             animation.cancel();
-            this.running = step === null ? null : { ...running, animation: null };
+            this.running = step === null ? null : { ...running, animation: null, over: undefined };
             if (step === null && to === 0) this.rest(element);
+            over?.();
         };
     }
 
@@ -273,6 +283,7 @@ export class StageMotion {
             running.animation.onfinish = null;
             running.animation.cancel();
         }
+        running?.over?.();
     }
 
     /**

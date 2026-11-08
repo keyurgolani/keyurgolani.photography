@@ -10,7 +10,7 @@ import { HOME_OPENING, HOME_ORDER, HOME_PHOTO_IDS, HOME_SERIES } from '../suppor
 import { createInboxFixture, OPENED_INBOX_ITEMS, openInboxItems, type InboxFixture } from '../support/curation-inbox';
 import { failImage } from '../support/failImage';
 import { publishHomeFixture } from '../support/homeFixture';
-import { compare, completeHiddenSegments, failures, walk, type Allowance, type Comparison, type Walk } from './computed';
+import { compare, completeHiddenSegments, failures, paintsAs, readPaint, walk, type Allowance, type Comparison, type Walk } from './computed';
 import { cameraRowDeparture, FACT_ROWS, readFactRows, type FactRow } from '../../test/helpers/viewerFacts';
 import { INBOX_HYDRATION_TIMEOUT, waitForInboxForms } from '../../test/helpers/inboxReady';
 
@@ -45,6 +45,9 @@ import { INBOX_HYDRATION_TIMEOUT, waitForInboxForms } from '../../test/helpers/i
 // report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
 // with its style in before first paint (chrome with every photograph taken out, or a checkerboard under glass; then
 // the photographs alone), the base against itself beside the head against the base.
+// Two of the Viewer's states have no screen in the base (#178): the offline notice and ViewerUnavailable. The head
+// reaches them by a head-only act (Pair.headAct); NEW_STATES holds each of their new parts to the base element it's
+// made from, and the offline notice's pair also compares the rest of the page against the base at rest.
 // The visitor pages, the 404 and the error page; the curator signed out and in, and its 503. The legacy Gallery and
 // its lightbox were pairs too, until #13's slice E took them off the visitor side (the note above CURATOR says why).
 
@@ -184,6 +187,12 @@ interface Pair {
     url: string;
     /** After the load: reveal Home's chrome, scroll to the sequence, open the Viewer, hover or focus a photograph. */
     act?: (page: Page) => Promise<void>;
+    /**
+     * After `act`, in the head's loads only, with JavaScript: a state the base has no screen for (#178's offline notice
+     * and ViewerUnavailable). The base's walk is the same page at rest. What the state adds is left out (leaveOut), and
+     * NEW_STATES holds it to the base elements it's made from. A gate-only pair, so the pixel report never pairs it.
+     */
+    headAct?: (page: Page) => Promise<void>;
     /** Home's intro, at its settled frame: under reduced motion the intro never plays, and the badge fades in where it lands. */
     intro?: boolean;
     /** A signed-in curator page. */
@@ -256,7 +265,15 @@ interface PassShot {
  * JavaScript nothing waits on the page's scripts, and an act that needs them does nothing, in both builds alike.
  * `pin` puts Home on the paused clock for the gate's walk (BADGE_LINGER_MS's note).
  */
-async function open(origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, scale: number, css: string, { js = true, session, motion = pair.motion, pin = false }: { js?: boolean; session?: string; motion?: Motion; pin?: boolean } = {}) {
+async function open(
+    origin: string,
+    stored: string,
+    pair: Pair,
+    viewport: { width: number; height: number },
+    scale: number,
+    css: string,
+    { js = true, session, motion = pair.motion, pin = false, head = false }: { js?: boolean; session?: string; motion?: Motion; pin?: boolean; head?: boolean } = {},
+) {
     const context = await browser.newContext({ viewport, deviceScaleFactor: scale, colorScheme: 'dark', reducedMotion: motion ? 'no-preference' : 'reduce', javaScriptEnabled: js });
     // Home's timers, held still (BADGE_LINGER_MS's note).
     const homeClock = pin && !motion && js && pair.url === '/';
@@ -332,6 +349,8 @@ async function open(origin: string, stored: string, pair: Pair, viewport: { widt
     // act abandoned at 3 s can still be pressing keys during the walk.
     if (js) await pair.act?.(page);
     else if (!pair.gateOnly) await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
+    // A state only the head has (Pair.headAct): the base stays at rest.
+    if (js && head) await pair.headAct?.(page);
     await settleImages();
     if (motion && js) {
         await page.evaluate(() => {
@@ -583,6 +602,38 @@ const VIEWER_POSITION = [{ selector: '[data-surface="viewer"] header p > span.sr
  */
 const VIEWER_FAILED_BOX = { selector: '[data-surface="viewer"] [data-photo="unavailable"] > *', why: '#175: a failed photograph says so, with its alt and Retry' };
 
+/**
+ * #178's offline move, in the head only (Pair.headAct): the browser goes offline, and Next from the keyboard, with
+ * focus on the page, says so by the controls and stays where it is. The base has no notice: offline, its Next lands on
+ * the page it prefetched.
+ */
+const offlineNext = async (page: Page) => {
+    await page.context().setOffline(true);
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('[data-viewer-offline]'), 'the offline notice is up').toBeVisible();
+};
+/** The offline notice, new in the head: left out of the gate's walks, and held to the controls by NEW_STATES. */
+const VIEWER_OFFLINE = { selector: '[data-surface="viewer"] [data-viewer-offline]', why: '#178: a move asked for offline says so by the controls' };
+/** A photograph ID in shape that no fixture publishes. */
+const UNPUBLISHED = 'ph_00000000-0000-4000-8000-000000000999';
+/**
+ * #178's ViewerUnavailable, in the head only (Pair.headAct): a move inside the Viewer onto a photograph the served
+ * revision doesn't have, as one a publish took away mid-visit would be. The parity servers can't publish mid-run, so
+ * the move is the router's own replace, the one a Next press makes, through Next's public router instance
+ * (window.next.router), to an ID no fixture has: the intercepted route's not-found, in the shell. The base has no such
+ * state; there the same URL is the site's not-found page.
+ */
+const unavailableMove = async (page: Page) => {
+    const moved = await page.evaluate((href) => {
+        const router = (window as { next?: { router?: { replace: (to: string, options: { scroll: boolean }) => void } } }).next?.router;
+        if (!router) return false;
+        router.replace(href, { scroll: false });
+        return true;
+    }, `${series}/photo/${UNPUBLISHED}`);
+    expect(moved, "Next's router is on the page, as window.next.router").toBe(true);
+    await expect(page.locator('[data-viewer-unavailable-heading]'), 'ViewerUnavailable is up, its heading focused').toBeFocused();
+};
+
 const VISITOR: Pair[] = [
     { name: 'home-intro', url: '/', intro: true, glass: true },
     { name: 'home-rest', url: '/', glass: true },
@@ -694,6 +745,16 @@ const VISITOR: Pair[] = [
             await page.locator('main figure a').first().click();
             await expect(page.getByRole('dialog')).toBeVisible();
         },
+    },
+    // #178's offline notice (NEW_STATES), in the head only: the rest of the page, with the notice up, against the base at
+    // rest. The notice sits over the stage's foot and takes no row's height, so nothing else may move or change.
+    {
+        name: 'viewer-offline',
+        cameraRows: true,
+        gateOnly: true,
+        url: `${series}/photo/${HOME_OPENING}`,
+        leaveOut: [...VIEWER_POSITION, VIEWER_OFFLINE],
+        headAct: offlineNext,
     },
     // The same modal from the sequence's first slot, the other way in (#126's Delta 1, L1').
     {
@@ -818,6 +879,111 @@ const CURATOR: Pair[] = [
         await keyboardFocus(page, inboxRefresh(page));
     } },
 ];
+
+/** One of a new state's parts, read in the head, and the base element it's made from, read in the base at rest. */
+interface NewPart {
+    part: string;
+    as: string;
+    properties: readonly string[];
+    why: string;
+}
+/** A state the base has no screen for, reached by its pair's headAct, and what each of its new parts must paint as. */
+interface NewState {
+    pair: Pair;
+    parts: NewPart[];
+}
+const SIDES = ['top', 'right', 'bottom', 'left'] as const;
+const EDGE = SIDES.flatMap((side) => [`border-${side}-color`, `border-${side}-width`, `border-${side}-style`]);
+const CORNERS = ['top-left', 'top-right', 'bottom-right', 'bottom-left'].map((corner) => `border-${corner}-radius`);
+const INK = ['color', '-webkit-text-fill-color'];
+const GROUND = ['background-color', 'background-image'];
+const TYPE = ['font-family', 'font-weight', 'font-style', 'letter-spacing', 'text-transform'];
+/** The base's Viewer at rest, on the photograph the new states start from: the page its models are read from. */
+const VIEWER_AT_REST: Pair = { name: 'viewer', url: `${series}/photo/${HOME_OPENING}` };
+/** The base's Next, an outlined round step, enabled: HOME_OPENING has a photograph after it. */
+const BASE_NEXT = '[data-surface="viewer"] [data-viewer-step="next"]';
+/** The base's technical-details toggle, the reading area's outlined control (the header's are borderless). */
+const BASE_CONTROL = '[data-surface="viewer"] [data-viewer-focus="technical"]';
+/**
+ * Dark parity for the Viewer's two states the base has no screen for (#178). Each part the state adds is read in the
+ * head's Dark, in both of Dark's routes with JavaScript, at every gate size, and must paint each named property as the
+ * base element it's made from does in the base's Viewer at rest (VIEWER_AT_REST, stored `dark`): its ink, ground,
+ * edge, corners and type, its letter-spacing as a share of its own font size (paintsAs). What a part sizes for itself
+ * (the heading's title size, line heights, padding) has no counterpart there, so it isn't held. The offline notice's pair is in VISITOR too, where the gate compares the rest of
+ * the page, notice up, against the base at rest.
+ */
+const NEW_STATES: NewState[] = [
+    {
+        pair: VISITOR.find((pair) => pair.name === 'viewer-offline')!,
+        parts: [
+            { part: VIEWER_OFFLINE.selector, as: BASE_NEXT, properties: [...INK, ...GROUND, ...EDGE], why: "#178: the offline notice in the step controls' ink, on their ground, inside their edge" },
+            { part: VIEWER_OFFLINE.selector, as: BASE_CONTROL, properties: [...CORNERS, ...TYPE, 'font-size'], why: "#178: the offline notice with an outlined control's corners and type" },
+        ],
+    },
+    ...(['page', 'modal'] as const).map((mode): NewState => {
+        const back = `[data-viewer-unavailable] > ${mode === 'page' ? 'a' : 'button'}`;
+        return {
+            pair: {
+                name: mode === 'page' ? 'viewer-unavailable' : 'viewer-modal-unavailable',
+                gateOnly: true,
+                ...(mode === 'page'
+                    ? { url: `${series}/photo/${HOME_OPENING}` }
+                    : {
+                          url: series,
+                          act: async (page: Page) => {
+                              await page.locator('main figure a').first().click();
+                              await expect(page.getByRole('dialog')).toBeVisible();
+                          },
+                      }),
+                headAct: unavailableMove,
+            },
+            parts: [
+                { part: '[data-surface="viewer"]', as: '[data-surface="viewer"]', properties: [...INK, ...GROUND], why: "#178: ViewerUnavailable on the Viewer's own ground" },
+                { part: '[data-viewer-unavailable-heading]', as: '[data-surface="viewer"] header h1', properties: [...INK, ...TYPE], why: "#178: its heading in the Viewer heading's ink and type" },
+                { part: '[data-viewer-unavailable] > p', as: '[data-viewer-reading] > div:nth-of-type(2) > p:last-child', properties: [...INK, ...TYPE], why: "#178: its words in the description's softer ink" },
+                { part: back, as: BASE_CONTROL, properties: [...INK, ...GROUND, ...EDGE, ...CORNERS, ...TYPE, 'font-size', 'text-decoration-line'], why: `#178: Back to the series, ${mode === 'page' ? 'a link' : 'a button'}, as an outlined control` },
+            ],
+        };
+    }),
+];
+
+/**
+ * One NEW_STATES state, read at every gate size: the base's models once per size (stored `dark`, at rest), and the
+ * head's parts in both of Dark's routes with JavaScript (the state needs it), after its headAct. Its failing lines, each
+ * named by size and route: a part that paints otherwise, a part or model that isn't there, a wait that timed out, or a
+ * head that doesn't paint Dark. `headStyle` is a self-test's change in the head, which may walk fewer `sizes`.
+ */
+async function newState(state: NewState, origins: { base: string; head: string }, { headStyle = '', sizes = GATE_VIEWPORTS }: { headStyle?: string; sizes?: Record<string, { width: number; height: number }> } = {}): Promise<string[]> {
+    const failing: string[] = [];
+    const read = async (origin: string, stored: string, pair: Pair, viewport: { width: number; height: number }, head: boolean, entries: { selector: string; properties: readonly string[] }[]) => {
+        const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, head ? headStyle : '', { pin: true, head });
+        try {
+            return { paints: await page.evaluate(readPaint, entries), theme: await page.evaluate(() => document.documentElement.getAttribute('data-theme')), timedOut };
+        } finally {
+            await context.close();
+        }
+    };
+    for (const [size, viewport] of Object.entries(sizes)) {
+        const base = await read(origins.base, 'dark', VIEWER_AT_REST, viewport, false, state.parts.map(({ as, properties }) => ({ selector: as, properties })));
+        for (const [route, stored] of [
+            ['System on a dark device', ''],
+            ['a stored `dark`', 'dark'],
+        ] as const) {
+            const head = await read(origins.head, stored, state.pair, viewport, true, state.parts.map(({ part, properties }) => ({ selector: part, properties })));
+            const where = `${state.pair.name} at ${size} ${viewport.width}, ${route}`;
+            const lines = [
+                ...state.parts.flatMap(({ part, as, properties }, index) => paintsAs(part, head.paints[index], as, base.paints[index], properties)),
+                ...base.timedOut.map((wait) => `a wait timed out: ${wait} (base)`),
+                ...head.timedOut.map((wait) => `a wait timed out: ${wait} (head)`),
+                ...(head.theme === 'dark' ? [] : [`painted ${head.theme ?? 'nothing'}, not dark`]),
+            ];
+            fs.appendFileSync(STYLE_ROWS, `| ${state.pair.name} (new in the head), ${route} | ${viewport.width} | | ${lines.length} | | | | | | |\n`);
+            if (lines.length > 0) fs.appendFileSync(STYLE_DETAILS, `\n### ${state.pair.name} (new in the head), ${route}, ${viewport.width}\n\n${lines.map((line) => `- \`${line}\``).join('\n')}\n`);
+            failing.push(...lines.map((line) => `${where}: ${line}`));
+        }
+    }
+    return failing;
+}
 
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on the preview's stored `charcoal`. */
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
@@ -1180,7 +1346,8 @@ async function styles(
         head ? `${HEAD_ONLY.map((entry) => entry.selector).join(',')}{display:none!important}` : '',
         pair.headStyle && head ? pair.headStyle : '',
     ].join('');
-    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion, pin: true });
+    // The head's own walk alone: a warm-up of either build stays at rest.
+    const { context, page, timedOut } = await open(origin, stored, pair, viewport, 1, css, { js, session, motion, pin: true, head: tag === 'head' });
     try {
         const selectors = allowancesFor(pair, viewport.width).map((entry) => entry.selector);
         // The self-test's page with its theme taken off, to show a missing theme fails anywhere but the error shell.
@@ -1398,6 +1565,8 @@ test.afterAll(async () => {
             '',
             `Left out of both walks in place, its own paint and its pseudo-elements' checked against its parent's: ${FOLDED.map((entry) => `\`${entry.selector}\` on ${entry.url} (${entry.why})${entry.focus ? `, with its focused ::after pinned in ${entry.focus.page} to ${Object.entries(entry.focus.after).map(([name, value]) => `${name}: ${value}`).join(', ')} (${entry.focus.why})` : ''}`).join('; ')}.`,
             '',
+            `New in the head, with no screen in the base (#178), reached in the head alone and each new part held to the base element it's made from in the base's Viewer at rest (a row's Styles count is its failing lines): ${NEW_STATES.map((state) => `${state.pair.name}: ${state.parts.map((part) => `\`${part.part}\` as \`${part.as}\` (${part.properties.join(', ')}; ${part.why})`).join('; ')}`).join('. ')}.`,
+            '',
             '| Page, route | Width | Structure | Styles | Tokens | Boxes over allowance | Box deltas | Largest delta (px) | Waits timed out | New tokens |',
             '|---|---|---|---|---|---|---|---|---|---|',
             read(STYLE_ROWS).trimEnd(),
@@ -1435,6 +1604,13 @@ test.describe('the visitor site', () => {
     });
 
     parity('visitor', VISITOR, () => visitor, { legacy: true, portrait: true });
+
+    // The Viewer's states the base has no screen for (NEW_STATES): each new part paints as today's Viewer does.
+    for (const state of NEW_STATES) {
+        test(`visitor: ${state.pair.name}, new in the head, paints as today's Viewer`, async () => {
+            expect.soft(await newState(state, visitor), `${state.pair.name}: each new part against the base element it's made from`).toEqual([]);
+        });
+    }
 
     // Once, for the record (R2-P2-2): with the scrim on a layer of its own in both builds, does Home's old raster step
     // with its chrome show?
@@ -1527,6 +1703,38 @@ test.describe('the visitor site', () => {
             expect([...base.timedOut, ...head.timedOut], `${name}: both loads settled`).toEqual([]);
         });
     }
+
+    // NEW_STATES sees what it claims to: each of these, a new part's paint changed in the head, must fail it, seen as
+    // that part's property. At one size: the check is the same at every size.
+    for (const [name, stateName, headStyle, seen] of [
+        ["the offline notice's edge red", 'viewer-offline', '[data-viewer-offline]{border-color:rgb(255 0 0)!important}', '[data-surface="viewer"] [data-viewer-offline] border-top-color: rgb(255, 0, 0)'],
+        ["ViewerUnavailable's words in the full ink", 'viewer-unavailable', '[data-viewer-unavailable]>p{color:var(--cc-ink)!important}', '[data-viewer-unavailable] > p color: '],
+        ['Back to the series square, in the modal', 'viewer-modal-unavailable', '[data-viewer-unavailable]>button{border-radius:0!important}', '[data-viewer-unavailable] > button border-top-left-radius: 0px'],
+        // Tracking is held as a share of the font size, so the heading's larger size passes, and other tracking fails.
+        ["ViewerUnavailable's heading tracked tighter", 'viewer-unavailable', '[data-viewer-unavailable-heading]{letter-spacing:-0.04em!important}', '[data-viewer-unavailable-heading] letter-spacing: '],
+    ] as const) {
+        test(`self-test: ${name} in the head fails its new-state check`, async () => {
+            const state = NEW_STATES.find((candidate) => candidate.pair.name === stateName)!;
+            const failing = await newState(state, visitor, { headStyle, sizes: { desktop: VIEWPORTS.desktop } });
+            expect(failing.filter((line) => line.includes(seen)).length, `${name}: seen as ${seen}`).toBeGreaterThan(0);
+            expect(failing.filter((line) => line.includes('a wait timed out') || line.includes('not in the')), `${name}: every load settled, every part and model there`).toEqual([]);
+        });
+    }
+
+    // The offline notice's gate pair compares the rest of the page: a notice that took room in the stage's row would move
+    // the reading area under it, and must fail the gate by its boxes, though the notice itself is left out.
+    test('self-test: an offline notice that takes room in the head fails the gate', async () => {
+        const offline = VISITOR.find((candidate) => candidate.name === 'viewer-offline')!;
+        const pair: Pair = { ...offline, name: 'self-test, the offline notice taking room', headStyle: '[data-viewer-offline]{margin-top:1200px!important}' };
+        const viewport = VIEWPORTS.desktop;
+        const route = 'a stored `dark`';
+        const [base, head] = [await styles(visitor.base, 'dark', pair, viewport, 'base'), await styles(visitor.head, 'dark', pair, viewport, 'head')];
+        expect([...base.timedOut, ...head.timedOut], 'both loads settled').toEqual([]);
+        const { allowances, shifts } = geometryFor(pair, viewport.width, route, base.walk);
+        const comparison = compare(base.walk, head.walk, allowances, sanctionedFor(pair, viewport.width, base.walk, route), shifts);
+        judge(pair.name, viewport.width, comparison);
+        expect(comparison.geometry.length, 'the gate sees the reading area move').toBeGreaterThan(0);
+    });
 
     // Work's reveal (WORK_REVEAL) is sanctioned as exactly 160 px. A px more or less on the room's foot padding moves it
     // 161 or 159 px, and the gate, under that sanction, must fail every box, off by 1 px, and see nothing else.

@@ -9,17 +9,20 @@
  *
  * `build` runs `npm run build` in each tree under the Playwright servers' env, as e2e/themes/build.ts does.
  *
- * `measure`, for each fixture, `one` (Home's one featured series) and `variety` (three featured series in a loop):
+ * `measure`, for each fixture, `one` (Home's one featured series) and `variety` (three featured series in a loop),
+ * Home, and on `one` the Viewer too: loaded directly at the first photograph of the first series Work lists, which
+ * each server finds from its own Work and series pages, and which must be the same page on all three (stats.mjs
+ * samePath()). Only on `one`, since the Viewer's page doesn't change with how many series Home features:
  * 1. Publishes the fixture three times, under os.tmpdir(), each by its own tree's e2e/support/publish-home-fixture.ts
  *    (lib/catalog/testing.ts createTestCatalog), so each build reads a catalog its own code wrote. Base's two copies
  *    go to A1 and A2, head's to B. Each gets a stand-in About portrait from its tree's write-site-config.ts and an
  *    empty photo library.
  * 2. Starts `next start` on 127.0.0.1 for each, A1 on 3871, B on 3872, A2 on 3873, waits for /api/ready, and refuses
- *    to go on unless `ss` shows each port listening on 127.0.0.1 only. Warms each: Home and every image it names, six
- *    times.
- * 3. Does one load per server and profile that isn't recorded, so round 1 doesn't pay for a cold browser. Then runs
- *    `--rounds` rounds in stats.mjs's roundOrder(), each server `--loads` cold loads of Home per profile
- *    (measure.mjs), in system Chrome from the runner image, so nothing is downloaded.
+ *    to go on unless `ss` shows each port listening on 127.0.0.1 only. Warms each: every page it measures and every
+ *    image the page names, six times.
+ * 3. Does one load per server, page and profile that isn't recorded, so round 1 doesn't pay for a cold browser. Then
+ *    runs `--rounds` rounds in stats.mjs's roundOrder(), each server `--loads` cold loads of each page per profile
+ *    (measure.mjs), kept under stats.mjs loadKey(), in system Chrome from the runner image, so nothing is downloaded.
  * 4. Stops the servers.
  * Then reads each build's first-load JS from its manifests, and writes everything to `<out>/raw.json`, with each
  * server's log beside it. report.mjs turns that into the table and the verdict.
@@ -36,11 +39,12 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { measureLoad, PROFILES } from './measure.mjs';
-import { loopbackListeners, parseRounds, roundOrder, SERVERS, treeFor } from './stats.mjs';
+import { loadKey, loopbackListeners, parseRounds, roundOrder, samePath, SERVERS, seriesPathIn, treeFor, viewerPathIn } from './stats.mjs';
 
 /** @typedef {import('./stats.mjs').Server} Server */
 
-const FIXTURES = /** @type {const} */ ({ one: [], variety: ['--variety'] });
+/** Each fixture's publish flags, and the pages measured on it (stats.mjs PAGES). @type {Record<string, { flags: readonly string[], pages: readonly ('home' | 'viewer')[] }>} */
+const FIXTURES = { one: { flags: [], pages: ['home', 'viewer'] }, variety: { flags: ['--variety'], pages: ['home'] } };
 /** @type {Record<Server, number>} */
 const PORTS = { A1: 3871, B: 3872, A2: 3873 };
 const READY_MS = 120_000;
@@ -150,13 +154,22 @@ async function serve(tree, port, root, logFile) {
 
 const IMAGE_URLS = /(\/about\/portrait\/[0-9a-f]{32}\/w[0-9]+\.(avif|webp))|(\/media\/[^" ,]+\.(avif|webp))/g;
 
-/** Home and every image it names, several times, so each featured series' opening is warm. @param {string} origin */
-async function warm(origin) {
+/** Each page and every image it names, several times, so each featured series' opening is warm. @param {string} origin @param {readonly string[]} paths */
+async function warm(origin, paths) {
   for (let pass = 0; pass < WARM_PASSES; pass++) {
-    const html = await fetch(`${origin}/`).then((response) => response.text());
-    const urls = new Set([...html.matchAll(IMAGE_URLS)].map((match) => match[0].replaceAll('&amp;', '&')));
-    for (const url of urls) await fetch(`${origin}${url}`).then((response) => response.arrayBuffer());
+    for (const page of paths) {
+      const html = await fetch(`${origin}${page}`).then((response) => response.text());
+      const urls = new Set([...html.matchAll(IMAGE_URLS)].map((match) => match[0].replaceAll('&amp;', '&')));
+      for (const url of urls) await fetch(`${origin}${url}`).then((response) => response.arrayBuffer());
+    }
   }
+}
+
+/** The Viewer page measured on `origin`: the first photograph of the first series its Work page lists, or null. @param {string} origin */
+async function viewerPath(origin) {
+  const series = seriesPathIn(await fetch(`${origin}/work`).then((response) => response.text()));
+  if (series === null) return null;
+  return viewerPathIn(await fetch(`${origin}${series}`).then((response) => response.text()), series);
 }
 
 /** Publishes `fixture` by `tree` into `root`, with a stand-in site config and an empty library. @param {string} tree @param {string} root @param {readonly string[]} flags */
@@ -205,7 +218,7 @@ async function measure(argv) {
   // Every host but 127.0.0.1 unresolvable, so no request leaves the runner and the cache can stay on (measure.mjs).
   const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'] });
   const raw = {
-    meta: { base: { ref: opts.baseRef, sha: shaOf(opts.base) }, head: { ref: opts.headRef, sha: shaOf(opts.head) }, rounds: opts.rounds, loads: opts.loads, browser: `Chrome ${browser.version()}`, runner: process.env.ImageOS ? `${process.env.ImageOS} ${process.env.ImageVersion ?? ''}`.trim() : os.platform(), startedAt: new Date().toISOString() },
+    meta: { base: { ref: opts.baseRef, sha: shaOf(opts.base) }, head: { ref: opts.headRef, sha: shaOf(opts.head) }, rounds: opts.rounds, loads: opts.loads, browser: `Chrome ${browser.version()}`, runner: process.env.ImageOS ? `${process.env.ImageOS} ${process.env.ImageVersion ?? ''}`.trim() : os.platform(), startedAt: new Date().toISOString(), viewer: /** @type {Record<string, string>} */ ({}) },
     /** @type {Record<string, { rounds: import('./stats.mjs').Round[] }>} */
     fixtures: {},
     /** @type {{ base: import('./stats.mjs').RouteJs[], head: import('./stats.mjs').RouteJs[] } | undefined} */
@@ -213,7 +226,7 @@ async function measure(argv) {
   };
   const write = (name = 'raw.json') => fs.writeFileSync(path.join(opts.out, name), `${JSON.stringify(raw, null, 1)}\n`);
   try {
-    for (const [fixture, flags] of Object.entries(FIXTURES)) {
+    for (const [fixture, { flags, pages }] of Object.entries(FIXTURES)) {
       /** @type {Partial<Record<Server, { origin: string, stop: () => Promise<unknown> }>>} */
       const servers = {};
       try {
@@ -225,11 +238,23 @@ async function measure(argv) {
           servers[server] = await serve(tree, PORTS[server], root, path.join(opts.out, `server-${fixture}-${server}.log`));
           log(`${fixture}: ${server} ready on ${PORTS[server]}`);
         }
-        for (const server of SERVERS) await warm(/** @type {{ origin: string }} */ (servers[server]).origin);
+        /** @param {Server} server */
+        const originOf = (server) => /** @type {{ origin: string }} */ (servers[server]).origin;
+        /** Each page measured on this fixture, by name, as its path. @type {Record<string, string>} */
+        const paths = { home: '/' };
+        if (pages.includes('viewer')) {
+          /** @type {Partial<Record<Server, string | null>>} */
+          const found = {};
+          for (const server of SERVERS) found[server] = await viewerPath(originOf(server));
+          paths.viewer = samePath(found);
+          raw.meta.viewer[fixture] = paths.viewer;
+          log(`${fixture}: the Viewer is ${paths.viewer}`);
+        }
+        for (const server of SERVERS) await warm(originOf(server), pages.map((page) => paths[page]));
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        // One unrecorded load per server and profile, so the browser's first loads land in no round.
-        for (const server of roundOrder(0)) for (const profile of Object.values(PROFILES)) await measureLoad(browser, `${/** @type {{ origin: string }} */ (servers[server]).origin}/`, profile);
-        log(`${fixture}: browser warmed on every server and profile`);
+        // One unrecorded load per server, page and profile, so the browser's first loads land in no round.
+        for (const server of roundOrder(0)) for (const page of pages) for (const profile of Object.values(PROFILES)) await measureLoad(browser, `${originOf(server)}${paths[page]}`, profile);
+        log(`${fixture}: browser warmed on every server, page and profile`);
         const rounds = (raw.fixtures[fixture] = { rounds: /** @type {import('./stats.mjs').Round[]} */ ([]) }).rounds;
         for (let round = 0; round < opts.rounds; round++) {
           const order = roundOrder(round);
@@ -239,9 +264,12 @@ async function measure(argv) {
           for (const server of order) {
             /** @type {Record<string, import('./stats.mjs').Load[]>} */
             const byProfile = {};
-            for (const [name, profile] of Object.entries(PROFILES)) {
-              byProfile[name] = [];
-              for (let load = 0; load < opts.loads; load++) byProfile[name].push(await measureLoad(browser, `${/** @type {{ origin: string }} */ (servers[server]).origin}/`, profile));
+            for (const page of pages) {
+              for (const [name, profile] of Object.entries(PROFILES)) {
+                const key = loadKey(page, name);
+                byProfile[key] = [];
+                for (let load = 0; load < opts.loads; load++) byProfile[key].push(await measureLoad(browser, `${originOf(server)}${paths[page]}`, profile));
+              }
             }
             record.servers[server] = byProfile;
             const lcps = Object.entries(byProfile).map(([name, loads]) => `${name} LCP ${loads.map((load) => load.lcp).join('/')} TBT ${loads.map((load) => load.tbt).join('/')}`);
