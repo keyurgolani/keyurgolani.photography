@@ -908,8 +908,8 @@ const BASE_CONTROL = '[data-surface="viewer"] [data-viewer-focus="technical"]';
  * Dark parity for the Viewer's two states the base has no screen for (#178). Each part the state adds is read in the
  * head's Dark, in both of Dark's routes with JavaScript, at every gate size, and must paint each named property as the
  * base element it's made from does in the base's Viewer at rest (VIEWER_AT_REST, stored `dark`): its ink, ground,
- * edge, corners and type. What a part sizes for itself (the heading's title size, line heights, padding) has no
- * counterpart there, so it isn't held. The offline notice's pair is in VISITOR too, where the gate compares the rest of
+ * edge, corners and type, its letter-spacing as a share of its own font size (paintsAs). What a part sizes for itself
+ * (the heading's title size, line heights, padding) has no counterpart there, so it isn't held. The offline notice's pair is in VISITOR too, where the gate compares the rest of
  * the page, notice up, against the base at rest.
  */
 const NEW_STATES: NewState[] = [
@@ -1710,6 +1710,8 @@ test.describe('the visitor site', () => {
         ["the offline notice's edge red", 'viewer-offline', '[data-viewer-offline]{border-color:rgb(255 0 0)!important}', '[data-surface="viewer"] [data-viewer-offline] border-top-color: rgb(255, 0, 0)'],
         ["ViewerUnavailable's words in the full ink", 'viewer-unavailable', '[data-viewer-unavailable]>p{color:var(--cc-ink)!important}', '[data-viewer-unavailable] > p color: '],
         ['Back to the series square, in the modal', 'viewer-modal-unavailable', '[data-viewer-unavailable]>button{border-radius:0!important}', '[data-viewer-unavailable] > button border-top-left-radius: 0px'],
+        // Tracking is held as a share of the font size, so the heading's larger size passes, and other tracking fails.
+        ["ViewerUnavailable's heading tracked tighter", 'viewer-unavailable', '[data-viewer-unavailable-heading]{letter-spacing:-0.04em!important}', '[data-viewer-unavailable-heading] letter-spacing: '],
     ] as const) {
         test(`self-test: ${name} in the head fails its new-state check`, async () => {
             const state = NEW_STATES.find((candidate) => candidate.pair.name === stateName)!;

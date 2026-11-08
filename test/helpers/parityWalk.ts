@@ -439,27 +439,52 @@ export const failures = (c: Comparison) => [...c.structural, ...c.styles, ...c.g
 /**
  * The named computed properties of the first element each selector finds, or null where it finds none: the paint of a
  * state's new parts in the head, and of the base elements they're made from in the base (dark-parity.spec.ts's
- * NEW_STATES). Runs in the page with its one argument (page.evaluate), so it reads nothing from this file.
+ * NEW_STATES). With letter-spacing it reads font-size too, which paintsAs() holds tracking against. Runs in the page
+ * with its one argument (page.evaluate), so it reads nothing from this file.
  */
 export function readPaint(entries: readonly { selector: string; properties: readonly string[] }[]): (Record<string, string> | null)[] {
     return entries.map(({ selector, properties }) => {
         const element = document.querySelector(selector);
         if (element === null) return null;
         const style = getComputedStyle(element);
-        return Object.fromEntries(properties.map((property) => [property, style.getPropertyValue(property)]));
+        const names = properties.includes('letter-spacing') && !properties.includes('font-size') ? [...properties, 'font-size'] : properties;
+        return Object.fromEntries(names.map((property) => [property, style.getPropertyValue(property)]));
     });
 }
 
 /**
+ * How far a part's tracking may be from its model's, in em. Tracking is set in em, so a part at another font size than
+ * its model has other px at the same tracking; computed px carry a few decimals, so a share can be off by rounding.
+ */
+export const LETTER_SPACING_SLACK_EM = 0.001;
+
+/** A computed px value as a number, `normal` (letter-spacing's) as 0, or null for anything else. */
+const pixels = (value: string | undefined) => (value === 'normal' ? 0 : value !== undefined && /^-?[\d.]+(e-?\d+)?px$/.test(value) ? Number.parseFloat(value) : null);
+
+/** The failing line for letter-spacing, held as a share of each element's own font size, or none. */
+function trackingLine(part: string, head: Record<string, string>, model: string, base: Record<string, string>): string[] {
+    const [spacing, size, baseSpacing, baseSize] = [head['letter-spacing'], head['font-size'], base['letter-spacing'], base['font-size']].map(pixels);
+    if (spacing === null || size === null || size === 0 || baseSpacing === null || baseSize === null || baseSize === 0) {
+        const of = (record: Record<string, string>) => `${record['letter-spacing'] ?? 'not read'} of ${record['font-size'] ?? 'no font size read'}`;
+        return [`${part} letter-spacing: ${of(head)}, where the base's ${model} has ${of(base)}`];
+    }
+    const [share, baseShare] = [spacing / size, baseSpacing / baseSize];
+    if (Math.abs(share - baseShare) <= LETTER_SPACING_SLACK_EM) return [];
+    return [`${part} letter-spacing: ${head['letter-spacing']} (${share.toFixed(4)}em of ${head['font-size']}), where the base's ${model} has ${base['letter-spacing']} (${baseShare.toFixed(4)}em of ${base['font-size']})`];
+}
+
+/**
  * Whether a new part, read in the head, paints each of `properties` as `model`, read in the base, does: one failing line
- * per property that differs or wasn't read, or one for a part or a model that isn't on its page. An empty list of
- * properties is refused, since it would pass anything.
+ * per property that differs or wasn't read, or one for a part or a model that isn't on its page. Every property must be
+ * the same exactly, but letter-spacing, which must be the same share of each one's own font size, within
+ * LETTER_SPACING_SLACK_EM. An empty list of properties is refused, since it would pass anything.
  */
 export function paintsAs(part: string, head: Record<string, string> | null, model: string, base: Record<string, string> | null, properties: readonly string[]): string[] {
     if (properties.length === 0) throw new Error(`${part} as ${model}: no properties to compare.`);
     if (head === null) return [`${part}: not in the head`];
     if (base === null) return [`${model}: not in the base`];
     return properties.flatMap((property) => {
+        if (property === 'letter-spacing') return trackingLine(part, head, model, base);
         const value = head[property];
         if (value === base[property]) return [];
         return [`${part} ${property}: ${value === undefined ? 'not read' : value}, where the base's ${model} has ${base[property]}`];
