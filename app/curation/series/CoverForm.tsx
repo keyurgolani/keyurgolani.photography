@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import styles from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { orderSeries } from './actions';
 import { errorFor, offWhile, useOrder } from './useOrder';
 import SeriesAnswer from './SeriesAnswer';
@@ -21,6 +22,8 @@ const percentOf = (value: number) => String(Math.round(value * 1000) / 10);
  */
 export default function CoverForm({ seriesId, order, activeRevisionId }: { seriesId: string; order: SeriesOrderView; activeRevisionId: string | null }) {
     const { state, pending, submit, answerRef } = useOrder(orderSeries, { seriesId, version: String(order.version), base: activeRevisionId ?? 'none' });
+    // Both forms submit by hand, so each waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const coverRef = useRef<HTMLSelectElement>(null);
     const focalRef = useRef<HTMLInputElement>(null);
     useEffect(() => {
@@ -47,7 +50,7 @@ export default function CoverForm({ seriesId, order, activeRevisionId }: { serie
             ) : (
                 <>
                     {/* noValidate: the server words a refusal, by the field, rather than the browser. */}
-                    <form key={`cover:${cover?.photoId ?? ''}:${focal ? `${focal.x},${focal.y}` : ''}`} className={series.subform} method="post" noValidate onSubmit={submit('cover')} aria-labelledby="cover-form-heading">
+                    <form key={`cover:${cover?.photoId ?? ''}:${focal ? `${focal.x},${focal.y}` : ''}`} className={series.subform} method="post" noValidate onSubmit={submit('cover')} aria-labelledby="cover-form-heading" {...submitGate(ready)}>
                         <h3 id="cover-form-heading">Cover</h3>
                         <label className={styles.label}>
                             Cover photograph
@@ -97,7 +100,7 @@ export default function CoverForm({ seriesId, order, activeRevisionId }: { serie
                             </button>
                         </div>
                     </form>
-                    <form key={`opening:${order.openingPhotoId ?? ''}`} className={series.subform} method="post" onSubmit={submit('opening')} aria-labelledby="opening-form-heading">
+                    <form key={`opening:${order.openingPhotoId ?? ''}`} className={series.subform} method="post" onSubmit={submit('opening')} aria-labelledby="opening-form-heading" {...submitGate(ready)}>
                         <h3 id="opening-form-heading">Opening photograph</h3>
                         <label className={styles.label}>
                             Opening photograph

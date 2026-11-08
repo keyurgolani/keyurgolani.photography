@@ -12,9 +12,10 @@ export function useHydrated(): boolean {
 }
 
 /**
- * An Inbox form's place at the submit gate (components/site/submitGateScript.ts): `waiting` in the server HTML, where
+ * A curator form's place at the submit gate (components/site/submitGateScript.ts): `waiting` in the server HTML, where
  * the head's script drops a press, Enter, requestSubmit, a tick or typing on it while scripts run; `ready` once the
- * form has mounted and its handlers are there. Nothing is disabled for it, so without JavaScript the form is the
+ * form has mounted and its handlers are there. The Inbox's, Publish's, History's and the Series screens' forms take it
+ * from the component that holds their handler. Nothing is disabled for it, so without JavaScript the form is the
  * server's markup alone.
  */
 export const submitGate = (ready: boolean) => ({ 'data-submit-gate': ready ? 'ready' : 'waiting' });
