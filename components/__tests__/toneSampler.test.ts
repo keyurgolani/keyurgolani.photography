@@ -297,6 +297,18 @@ describe('canvasSampler', () => {
       expect(await copyTone(slide(), copy, { sample, signal: controller.signal })).toBeNull();
       expect(sample).not.toHaveBeenCalled();
     });
+
+    it("gives copyTone() no tone when the sampler throws after the measure was aborted, not the theme's own scrim", async () => {
+      const controller = new AbortController();
+      const sample = vi.fn(async () => {
+        controller.abort();
+        throw new DOMException('The canvas has been tainted by cross-origin data.', 'SecurityError');
+      });
+      expect(await copyTone(slide(), copy, { sample, signal: controller.signal })).toBeNull();
+      // Without an abort the same throw is the theme's own scrim, as before.
+      document.body.replaceChildren();
+      expect(await copyTone(slide(), copy, { sample: async () => Promise.reject(new Error('no')) })).toBe('light');
+    });
   });
 
   describe("skips quietly, so the theme keeps its own scrim, and never decodes the image on screen when it can't sample", () => {
