@@ -1115,8 +1115,12 @@ async function readNote(page: Page): Promise<NoteRead | null> {
  * keepWatcherAlive() rewrites every 30 s, with its staging temps (HEARTBEAT_NAMES).
  * The edit is visible to every reader of the data root while it stands, the base's server's too, which shares it, so
  * the run must have one worker and run in order: a parallel run fails at once.
+ * The published series, since only a visible change is pending: a draft series never reaches the compiled catalog
+ * (lib/catalog/compile.ts), so an edit to it leaves the draft the live revision, and Publish with no bar again. It
+ * stands for that one load only: noteCheck() runs after the cell's head walk has closed its context, and gate()
+ * walks each size's base before its routes, so no walk of either build is ever made while it stands.
  */
-const REFERENCE_SERIES = INBOX_SERIES.draft;
+const REFERENCE_SERIES = INBOX_SERIES.published;
 const REFERENCE_TITLE = `${REFERENCE_SERIES.title}, edited for F12's reference`;
 /** Publish's action bar, which must be the form that holds the line. */
 const PUBLISH_BAR = '[data-sticky-bar]';
