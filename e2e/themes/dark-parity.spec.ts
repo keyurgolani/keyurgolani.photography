@@ -36,10 +36,14 @@ import { INBOX_HYDRATION_TIMEOUT, waitForInboxForms } from '../../test/helpers/i
 // motion allowed, on a paused clock run to a fixed point in its loading phase, where the grain and the ripples are.
 // The gate also walks hover and focus on the nav links, Home's controls (their hover only with motion allowed), About's
 // links, and the Inbox's rows and buttons.
+// F12's note, the Inbox's no-JavaScript line, is in a <noscript>, which the walk skips (NOTE_PAGES): in the Inbox's
+// no-JavaScript cells the body may grow by the note's margin box, measured in the same load, and by nothing else; a
+// missing note fails; and the note must paint as Publish's no-JavaScript line, but for its centring.
 // Self-tests inject a change into the head that must fail the gate: Home's scrim and --gah-ink 1/255 off, the glass
 // blur at 13px, a photograph's opacity at .96 and its corners square, About's link labels underlined red, a hovered
-// nav link white, the intro's grain at .12 and a hovered Home control, both with motion allowed, and the Viewer's bands
-// gone.
+// nav link white, the intro's grain at .12 and a hovered Home control, both with motion allowed, the Viewer's bands
+// gone, and in the no-JavaScript Inbox, F12's note with 1 px of padding or its colour 1/255 off, 1 px more margin
+// under the loading label, and no note.
 //
 // What the gate can't see is raster only: how the browser draws a blur, a resample or an antialiased edge. The pixel
 // report covers that, as an artefact, not a gate: two passes over every shot at 1x and 2x, each in its own fresh load
@@ -193,6 +197,11 @@ interface Pair {
      * NEW_STATES holds it to the base elements it's made from. A gate-only pair, so the pixel report never pairs it.
      */
     headAct?: (page: Page) => Promise<void>;
+    /**
+     * In the head's loads without JavaScript only, after the load: a self-test's change to the DOM that CSS can't make
+     * (F12's note taken out, NOTE_PAGES). A gate pair has none.
+     */
+    headNoJsAct?: (page: Page) => Promise<void>;
     /** Home's intro, at its settled frame: under reduced motion the intro never plays, and the badge fades in where it lands. */
     intro?: boolean;
     /** A signed-in curator page. */
@@ -351,6 +360,7 @@ async function open(
     else if (!pair.gateOnly) await Promise.race([pair.act?.(page).catch(() => undefined), page.waitForTimeout(3000)]);
     // A state only the head has (Pair.headAct): the base stays at rest.
     if (js && head) await pair.headAct?.(page);
+    if (!js && head) await pair.headNoJsAct?.(page);
     await settleImages();
     if (motion && js) {
         await page.evaluate(() => {
@@ -985,6 +995,165 @@ async function newState(state: NewState, origins: { base: string; head: string }
     return failing;
 }
 
+// --- F12's note: the Inbox's no-JavaScript line ------------------------------------------------------------------
+
+/**
+ * F12 (v2.0.0): without JavaScript the Inbox never leaves its loading state, so a <noscript> line after the status
+ * region says what needs JavaScript (app/curation/inbox/loading.tsx, curator.module.css's .noScriptNote). The walk
+ * skips NOSCRIPT with its subtree (test/helpers/parityWalk.ts), so the note's one trace in the comparison is the body,
+ * whose flow holds it: CI run 42499424839 failed the Inbox's five pairs at 390 on `body` alone, 46.375 px taller, the
+ * note's 8 px margin-top and two lines of 19.1875. The coordinator's ruling, held in every no-JavaScript cell of the
+ * Inbox's pairs, at all three sizes, in the gate and nowhere else (noteCheck):
+ * a. The body may grow by the note's margin box (its border box's height, margin-top and margin-bottom), measured in
+ *    the head in the same load as the walk, within NOTE_SLACK, and by nothing else: its x, y and width stay exact. Then
+ *    the head's body box is the base's for compare(), which is unchanged, and every other box is compared as before.
+ * b. The note must be there, or the cell fails, so the allowance can't outlive it.
+ * c. It paints as Publish's own no-JavaScript line (publish.module.css's .reason) does on Publish's no-JavaScript
+ *    screen in the head: NOTE_HOLD, each exactly. Only text-align departs, centred against Publish's right, and that
+ *    is listed as sanctioned.
+ * At 1440 and 1024 too the body must grow by exactly the note, never by 0. #145's one-screen layout is
+ * `.page:has(> .body)`, and without JavaScript the whole page waits in React's hidden segment (display: none), so the
+ * body's flow is the loading state and the note at every width, as at 390, the note there likely one line where 390
+ * wraps it to two. Those widths passed CI only because INDEPENDENT_PANELS lets `body` move up to 700 px; this check
+ * runs before that allowance can, and in every cell. A body that didn't grow would mean the note left the flow.
+ */
+const NOTE_PAGES = (pair: Pair) => pair.name === 'inbox' || pair.stateOf === 'inbox';
+/** The note, by its place: the <noscript> straight after the loading state's status region (InboxLoading.test.tsx). */
+const INBOX_NOTE = '[role="status"] + noscript > p';
+/** Publish's no-JavaScript line, the one <noscript> in its action bar's form (PublishScreen.tsx's ActionBar). */
+const PUBLISH_NO_JS_LINE = '[data-sticky-bar] > noscript > p';
+/** How far the body's growth may be from the note's margin box, in CSS px: boxes are in 1/64 px, so this is rounding only. */
+const NOTE_SLACK = 0.001;
+/** What the note holds to Publish's line, exactly. */
+const NOTE_HOLD = [
+    'font-size', 'line-height', 'letter-spacing', 'font-weight', 'color',
+    ...SIDES.map((side) => `margin-${side}`),
+    ...SIDES.map((side) => `padding-${side}`),
+    ...EDGE,
+];
+/** What's read of both: the hold, and text-align, its one sanctioned departure. */
+const NOTE_PAINT = [...NOTE_HOLD, 'text-align'];
+const HORIZONTAL_MARGIN = ['margin-right', 'margin-left'];
+const PUBLISH_PAIR = CURATOR.find((pair) => pair.name === 'publish')!;
+const PUBLISH_LINE = `Publish's no-JavaScript line (.reason, ${PUBLISH_NO_JS_LINE})`;
+
+/** The note as the head's no-JavaScript Inbox lays it out and paints it, read in the walk's own load. */
+interface NoteRead {
+    /** Its border box's height, from getBoundingClientRect. */
+    border: number;
+    top: number;
+    bottom: number;
+    paint: Record<string, string>;
+}
+
+/** The note in `page`, or null where there's none. */
+async function readNote(page: Page): Promise<NoteRead | null> {
+    const [paint] = await page.evaluate(readPaint, [{ selector: INBOX_NOTE, properties: NOTE_PAINT }]);
+    if (paint === null) return null;
+    const box = await page.evaluate((selector) => {
+        const element = document.querySelector(selector);
+        if (element === null) return null;
+        const style = getComputedStyle(element);
+        return { border: element.getBoundingClientRect().height, top: Number.parseFloat(style.marginTop), bottom: Number.parseFloat(style.marginBottom) };
+    }, INBOX_NOTE);
+    return box && { ...box, paint };
+}
+
+/** Publish's no-JavaScript line in the head, on its no-JavaScript screen, signed in: never with a pair's headStyle, so a self-test's change to the note can't change its model with it. */
+async function publishNoJsLine(origin: string, viewport: { width: number; height: number }, session?: string) {
+    const { context, page, timedOut } = await open(origin, '', PUBLISH_PAIR, viewport, 1, '', { js: false, session, pin: true, head: true });
+    try {
+        const [paint] = await page.evaluate(readPaint, [{ selector: PUBLISH_NO_JS_LINE, properties: NOTE_PAINT }]);
+        return { paint, timedOut, theme: await page.evaluate(() => document.documentElement.getAttribute('data-theme')) };
+    } finally {
+        await context.close();
+    }
+}
+
+/**
+ * The style hold (c): each of NOTE_HOLD that differs is a failing line, and the note's horizontal margin, if it
+ * differs, is one line of its own (.noScriptNote's `0.5rem var(--site-gutter) 0` against .reason's `0.5rem 0 0`, open
+ * for the coordinator). text-align is sanctioned as centre against right, and nothing else.
+ */
+function holdNote(note: Record<string, string>, model: Record<string, string>): { failing: string[]; sanctioned: string[] } {
+    const failing = NOTE_HOLD.filter((property) => !HORIZONTAL_MARGIN.includes(property) && note[property] !== model[property]).map(
+        (property) => `F12's note ${property}: ${note[property]}, where ${PUBLISH_LINE} has ${model[property]}`,
+    );
+    if (HORIZONTAL_MARGIN.some((property) => note[property] !== model[property])) {
+        failing.push(
+            `F12's note's horizontal margin, open for the coordinator: margin-right ${note['margin-right']} and margin-left ${note['margin-left']}, where ${PUBLISH_LINE} has ${model['margin-right']} and ${model['margin-left']} (.noScriptNote's 0.5rem var(--site-gutter) 0 against .reason's 0.5rem 0 0)`,
+        );
+    }
+    if (note['text-align'] === 'center' && model['text-align'] === 'right') {
+        return { failing, sanctioned: [`F12's note text-align: center, where ${PUBLISH_LINE} has right: sanctioned, the note is centred under the loading label`] };
+    }
+    failing.push(`F12's note text-align: ${note['text-align']}, where ${PUBLISH_LINE} has ${model['text-align']}: only centre against right is sanctioned`);
+    return { failing, sanctioned: [] };
+}
+
+/** One no-JavaScript Inbox cell's note: the head's walk to compare (its body box the base's, where the note allows it), and the lines it adds. */
+interface NoteCheck {
+    walk: Walk;
+    structural: string[];
+    geometry: string[];
+    styles: string[];
+    sanctioned: string[];
+    deltas: string[];
+    timedOut: string[];
+}
+
+/** F12's note in one no-JavaScript Inbox cell (NOTE_PAGES's a, b and c), against `base`'s walk, Publish's line read from `origin`, the head. */
+async function noteCheck(base: Walk, head: Walked2, origin: string, viewport: { width: number; height: number }, session?: string): Promise<NoteCheck> {
+    const model = await publishNoJsLine(origin, viewport, session);
+    const check: NoteCheck = { walk: head.walk, structural: [], geometry: [], styles: [], sanctioned: [], deltas: [], timedOut: model.timedOut.map((wait) => `${wait} (head, Publish's no-JavaScript screen)`) };
+    if (model.theme !== 'dark') check.styles.push(`Publish's no-JavaScript screen painted ${model.theme ?? 'nothing'}, not dark`);
+    // b. No note, no allowance: the body is compared exactly, as every other box is.
+    const note = head.note;
+    if (!note) {
+        check.structural.push(`F12's note (${INBOX_NOTE}): not in the head's no-JavaScript Inbox, so nothing lets the body grow`);
+        return check;
+    }
+    // a. The body, by exactly the note's margin box.
+    const [b, h] = [base.elements.find((element) => element.path === 'body'), head.walk.elements.find((element) => element.path === 'body')];
+    if (b && h) {
+        const box = note.border + note.top + note.bottom;
+        const grew = h.rect[3] - b.rect[3];
+        const still = [0, 1, 2].every((i) => h.rect[i] === b.rect[i]);
+        const rects = `${b.rect.map((v) => +v.toFixed(3)).join(' ')} against ${h.rect.map((v) => +v.toFixed(3)).join(' ')}`;
+        const measured = `${+box.toFixed(4)} px, its border box ${+note.border.toFixed(4)} and margins ${note.top} and ${note.bottom}`;
+        if (still && Math.abs(grew - box) <= NOTE_SLACK) {
+            const line = `body: ${rects}, grown by ${+grew.toFixed(4)} px, F12's note's margin box (${measured})`;
+            check.sanctioned.push(line);
+            check.deltas.push(line);
+            check.walk = { ...head.walk, elements: head.walk.elements.map((element) => (element.path === 'body' ? { ...element, rect: b.rect } : element)) };
+        } else {
+            const line = `body: ${rects}: grown by ${+grew.toFixed(4)} px${still ? '' : ', its x, y or width moved too'}, where F12's note's margin box is ${measured} (within ${NOTE_SLACK} px)`;
+            check.geometry.push(line);
+            check.deltas.push(line);
+        }
+    }
+    // c. Painted as Publish's line.
+    if (model.paint === null) {
+        check.structural.push(`${PUBLISH_LINE}: not on Publish's no-JavaScript screen in the head, so F12's note has nothing to hold to`);
+        return check;
+    }
+    const held = holdNote(note.paint, model.paint);
+    check.styles.push(...held.failing);
+    check.sanctioned.push(...held.sanctioned);
+    return check;
+}
+
+/** A cell's comparison with its note's lines in it, where judge() counts and prints them. */
+function withNote(comparison: Comparison, note: NoteCheck | null): Comparison {
+    if (!note) return comparison;
+    comparison.structural.push(...note.structural);
+    comparison.geometry.push(...note.geometry);
+    comparison.styles.push(...note.styles);
+    comparison.sanctioned.push(...note.sanctioned);
+    comparison.deltas.push(...note.deltas);
+    return comparison;
+}
+
 /** Shoots `pair` from both, at every size and scale, and pins the diff; and, with `legacy`, the head on the preview's stored `charcoal`. */
 const row = (label: string, size: string, width: number, scale: number, d: Diff) =>
     record(`| ${label} | ${size} ${width} | ${scale}x | ${d.count} | ${d.maxStep} | ${d.photoStep} | ${d.styles.length} | ${d.box} |`);
@@ -1318,6 +1487,8 @@ interface Walked2 {
     shell: boolean;
     /** The Viewer's details list rows, for a `cameraRows` pair, null where a dt or dd is missing; empty for any other. */
     facts: (FactRow | null)[];
+    /** F12's note, read in the head's no-JavaScript Inbox loads (NOTE_PAGES), null where it's missing; left out of every other load. */
+    note?: NoteRead | null;
 }
 
 /**
@@ -1371,7 +1542,10 @@ async function styles(
         // Read as the text is, untrimmed, with a row that hasn't exactly one dt and one dd as null (readFactRows).
         const facts: (FactRow | null)[] = pair.cameraRows ? await page.evaluate(readFactRows, FACT_ROWS) : [];
         const leaveOut = [...HEAD_ONLY, ...(pair.leaveOut ?? [])].map((entry) => entry.selector);
-        return { walk: await walk(page, selectors, [...leaveOut, ...baseOnly], { retag: retagFor(pair), fold: foldFor(pair) }), timedOut, ...painted, facts };
+        const walked = await walk(page, selectors, [...leaveOut, ...baseOnly], { retag: retagFor(pair), fold: foldFor(pair) });
+        // F12's note, in the same load as the walk, so its box is the one the body holds (NOTE_PAGES).
+        const note = !js && head && NOTE_PAGES(pair) ? await readNote(page) : undefined;
+        return { walk: walked, timedOut, ...painted, facts, note };
     } finally {
         await context.close();
     }
@@ -1454,10 +1628,12 @@ async function gate(pair: Pair, origins: { base: string; head: string }, cookies
             ['no JavaScript', '', false, baseNoJs],
         ] as const) {
             const head = await styles(origins.head, stored, pair, viewport, 'head', { js, session: cookies?.head });
+            // F12's note, in every no-JavaScript cell of the Inbox's pairs: its body allowance, its presence, its hold.
+            const note = route === 'no JavaScript' && NOTE_PAGES(pair) ? await noteCheck(against.walk, head, origins.head, viewport, cookies?.head) : null;
             const { allowances, shifts } = geometryFor(pair, viewport.width, route, against.walk);
             const sanctioned = sanctionedFor(pair, viewport.width, against.walk, route);
-            const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`)];
-            const comparison = compare(against.walk, head.walk, allowances, sanctioned, shifts);
+            const timedOut = [...unwarmed, ...against.timedOut.map((wait) => `${wait} (base)`), ...head.timedOut.map((wait) => `${wait} (head)`), ...(note?.timedOut ?? [])];
+            const comparison = withNote(compare(against.walk, note?.walk ?? head.walk, allowances, sanctioned, shifts), note);
             // The details list's departure (#175): Camera make merged into Camera, and the three unit rows. A failing
             // line is structural, so the report counts and prints it; the sanction is recorded only when none fails.
             if (pair.cameraRows) {
@@ -1863,6 +2039,39 @@ test.describe('the curator and its 503', () => {
             }
         }
     });
+
+    // F12's note (NOTE_PAGES) sees what it claims to: each of these, in the head's no-JavaScript Inbox only, must fail
+    // the gate's no-JavaScript cell, seen as itself, on loads that settled, with Publish's line there to hold the note
+    // to. The colour is Dark's --gah-ink-muted (styles/tokens.css), +1 on blue. A change to the note's own box moves the
+    // body with it, so the measured allowance still holds there, and only the hold sees it. The margin goes on the
+    // loading state's status region, under its label, so no walked box moves, and only the body's allowance can see it.
+    // The missing note is taken out of the DOM, since the hold doesn't read display, at every size, as the gate holds it.
+    const inboxAtRest = CURATOR.find((candidate) => candidate.name === 'inbox')!;
+    const removeNote = (page: Page) => page.evaluate((selector) => document.querySelector(selector)?.remove(), INBOX_NOTE);
+    for (const [name, change, seen, sizes, bodyHolds] of [
+        ["1 px of padding on F12's note", { headStyle: `${INBOX_NOTE}{padding-top:1px!important}` }, "F12's note padding-top: 1px,", [VIEWPORTS.phone], true],
+        ["1 px more margin under the Inbox's loading label", { headStyle: 'body [role="status"]:has(+ noscript){margin-bottom:1px!important}' }, "where F12's note's margin box is", [VIEWPORTS.phone], false],
+        ["F12's note's colour 1/255 off", { headStyle: `${INBOX_NOTE}{color:rgba(244, 246, 246, 0.62)!important}` }, "F12's note color: rgba(244, 246, 246, 0.62),", [VIEWPORTS.phone], true],
+        ["no F12 note", { headNoJsAct: removeNote }, `F12's note (${INBOX_NOTE}): not in the head`, Object.values(GATE_VIEWPORTS), false],
+    ] as const) {
+        test(`self-test: ${name} in the head's no-JavaScript Inbox fails the gate`, async () => {
+            // The Inbox pair under its own allowances, as the gate's rows are, so only the change can fail it.
+            const pair: Pair = { ...inboxAtRest, name: `self-test, ${name}`, stateOf: 'inbox', ...change };
+            const route = 'no JavaScript';
+            for (const viewport of sizes) {
+                const base = await styles(curator.base, '', pair, viewport, 'base', { js: false, session: cookies.base });
+                const head = await styles(curator.head, '', pair, viewport, 'head', { js: false, session: cookies.head });
+                const note = await noteCheck(base.walk, head, curator.head, viewport, cookies.head);
+                const { allowances, shifts } = geometryFor(pair, viewport.width, route, base.walk);
+                const comparison = withNote(compare(base.walk, note.walk, allowances, sanctionedFor(pair, viewport.width, base.walk, route), shifts), note);
+                const failing = judge(`${pair.name}, ${route}`, viewport.width, comparison, [...base.timedOut, ...head.timedOut, ...note.timedOut]);
+                const at = `${name} at ${viewport.width}`;
+                expect(failing.filter((line) => line.includes(seen)).length, `${at}: seen as ${seen}`).toBeGreaterThan(0);
+                if (bodyHolds) expect(note.geometry, `${at}: the body's allowance follows the note's own box`).toEqual([]);
+                expect(failing.filter((line) => line.startsWith('a wait timed out') || line.startsWith(`${PUBLISH_LINE}:`)), `${at}: every load settled, and Publish's line is there`).toEqual([]);
+            }
+        });
+    }
 
     parity('curator', CURATOR, () => curator, { legacy: true, session: () => cookies });
     parity('curator', [{ name: '503', url: '/curation/login', bare: true }], () => broken, { legacy: true });
