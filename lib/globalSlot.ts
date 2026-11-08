@@ -10,3 +10,10 @@ export function globalSlot<T>(key: symbol, init: () => T): T {
     holder[key] ??= init();
     return holder[key] as T;
 }
+
+/** A slot's key, for the value of type `T` it holds. Any symbol, for now: nothing ties a key to its type yet. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T is unused until a key carries its type.
+export type SlotKey<T> = symbol;
+
+/** The key for a slot holding a `T`: `key` itself, a Symbol.for() key with a plain name. */
+export const slotKey = <T>(key: symbol): SlotKey<T> => key;
