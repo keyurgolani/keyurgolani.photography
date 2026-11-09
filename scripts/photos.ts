@@ -35,12 +35,19 @@
  *     bind to a path another photo holds merges that photo into <photoId>
  *     only when --merge names it, and only if it was minted at that path.
  *
- *   npx tsx scripts/photos.ts status [--json]
+ *   npx tsx scripts/photos.ts status [--json] [--check]
  *     The data root, the catalog mode and active revision, the last publish,
  *     registry counts, the working layer's records, how many photos no series
  *     lists and how many have no reviewed description, the curation inbox's
- *     open missing sources and failures (#17), and the watcher's heartbeat.
- *     Exits 1 unless the data root is ready and everything reads.
+ *     counts (what needs review, and the open missing, failed, ambiguous and
+ *     stale items, each listed, a missing one with its age), and the
+ *     watcher's heartbeat. Exits 1 unless the data root is ready and
+ *     everything reads. --check is for a monitor: it also exits 1 on an open
+ *     missing, failed or ambiguous item, an inbox item it can't read, a
+ *     failed last watcher pass, a watcher that has got no pass through for
+ *     over 30 minutes, or a heartbeat over 5 minutes old, and prints why;
+ *     --json then adds a `check` object with a code for each, and stays JSON
+ *     if status itself fails.
  *
  *   npx tsx scripts/photos.ts list [--unassigned] [--json]
  *     Every photo the registry holds, but not archived ones, with its library
@@ -63,9 +70,10 @@
  *     lengths it refuses. --dry-run takes no lock and writes nothing.
  *
  *   npx tsx scripts/photos.ts carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
- *     One-time setup for a new data root, before the launch publish: put
- *     every photo the legacy Gallery lists into one published series,
- *     Gallery, in its order, featured and alone in Work's order. The photos
+ *     One-time setup before the launch publish, only on a library the
+ *     legacy site served; a fresh library skips it. It puts every photo the
+ *     legacy Gallery lists into one published series, Gallery, in its
+ *     order, featured and alone in Work's order. The photos
  *     keep the names the Gallery gives them, "Photograph N of T", with no
  *     description, and their records say they were carried over. Without
  *     --apply it writes nothing and prints the plan. It refuses a working
@@ -105,7 +113,10 @@
  *     writing nothing, so it runs on a read-only data root too. Prints the
  *     candidate ID and the first 200 issues. Exits 0 when only warnings
  *     remain, 1 on any error, 2 on a usage error, 4 when a catalog file is
- *     damaged or can't be read, and 3 when the data root isn't ready.
+ *     damaged or can't be read, and 3 when the data root isn't ready. Then
+ *     prints each screen's read-model size for the candidate beside its
+ *     budget in lib/perf/budgets.ts, and a BUDGET_WARNING line for each model
+ *     over one (#6). A warning, not a rule: it never changes the exit code.
  *
  *   npx tsx scripts/photos.ts publish [--actor <name>] [--reason <text>] [--expect <candidateId>]
  *                                     [--dry-run] [--confirm-launch] [--reprofile]
@@ -113,30 +124,82 @@
  *     its revision, and make that revision active. The actor is --actor or
  *     PHOTOS_ACTOR, and one is required. --reason defaults to publish.
  *     --expect stops unless the candidate has that ID, and --dry-run stops
- *     after validation. The first publish replaces the legacy Home and
- *     Gallery, so it needs --confirm-launch, and prints what changes: a
- *     one-time setup step for a new data root, never a routine publish.
+ *     after validation. The first publish is the launch, so it needs
+ *     --confirm-launch, and prints how many photographs it puts on the site:
+ *     a one-time setup step for a new data root, never a routine publish.
  *     --reprofile moves every photograph the watcher can rebuild to the
  *     current profile: run identity reprofile --all first. Exits 0 when
  *     published, unchanged, or a dry run passes, 1 on validation errors, 2
  *     on a usage error, 4 when a catalog file is damaged or an I/O error
  *     stops it, and 3 on any other stop. Logs one JSON line per event.
  *
- *   npx tsx scripts/photos.ts history
+ *   npx tsx scripts/photos.ts diff [--json]
+ *     What a publish of the working layer would change for visitors: #16's
+ *     ledger against the active revision, grouped as the Publish screen
+ *     groups it, with the candidate ID, the live revision, each row's change
+ *     ID and review state, an authored or route row's value before and
+ *     after (text cut at 200 characters), and what a row that waits on a
+ *     review needs. --json prints the same rows in a versioned shape,
+ *     schemaVersion 1, with whether photos review can mark each one
+ *     (README, "Reviewing what a publish changes"). Takes no lock and
+ *     writes nothing. Exits 0,
+ *     3 when the data root isn't ready, and 4 when a catalog file is damaged
+ *     or can't be read.
+ *
+ *   npx tsx scripts/photos.ts review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+ *     Mark rows photos diff printed reviewed, through the Publish screen's
+ *     own writer, after checking them against what is live. --expect and
+ *     --expect-active are the candidate and the live revision photos diff
+ *     printed, and it writes nothing once either moved. It stamps each field
+ *     a row waits on with the value it holds, under the authored lock, and
+ *     refuses a value or record that moved. It never clears a suggested
+ *     description (write one with photos edit), a row whose Inbox item needs
+ *     a decision again, or a rebase conflict, and it names every row: there
+ *     is no --all, and rows that share a stamp, such as two moves in one
+ *     series, are marked only with all of them named. It checks every
+ *     record under one hold on the authored lock before it writes any. The
+ *     actor is --actor or PHOTOS_ACTOR, and one is required. Publishes
+ *     nothing. Exits 0 when marked or nothing was left
+ *     to mark, 1 when a row can't be marked here, so nothing was written, 2
+ *     on a usage error, 3 when the draft, the live revision or a record
+ *     moved, or the authored lock stays busy, and 4 for I/O.
+ *
+ *   npx tsx scripts/photos.ts review --use-published <changeId> --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+ *     Put back what is live for one row instead: the live revision's value
+ *     of the row's field goes into the draft as an authored write, through
+ *     the writer the Publish screen's "Use the published value" calls. Only
+ *     for a field whose review went stale because the live revision changed
+ *     it, or that a restore left in conflict, and never while its Inbox item
+ *     needs a decision. photos diff names the rows it takes. The draft
+ *     changes, so run photos diff again before publishing. Same exit codes.
+ *
+ *   npx tsx scripts/photos.ts history [--json] [--limit <n>] [--revisions]
  *     Every activation, oldest first by sequence, with its revision number
  *     and ID, actor, reason, time, validation result, and what its revision
  *     changed against its parent. The live one says LIVE, and one that never
- *     moved the active pointer says interrupted. Takes no lock and writes
- *     nothing. Exits 0, 3 when the data root isn't ready, and 4 when a
- *     catalog file is damaged.
+ *     moved the active pointer says interrupted. --limit shows the newest n.
+ *     --revisions adds each revision that has been live, newest first, with
+ *     its rollback eligibility and reasons, planned as rollback plans it.
+ *     --json prints it all as one versioned object, its usage and data-root
+ *     stops included, with the exit code. Takes no lock and writes
+ *     nothing. Exits 0, 2 on a usage error, 3 when the data root isn't
+ *     ready, and 4 when a catalog file is damaged: with --limit, only a
+ *     shown row's counts, and with --revisions, so does a revision that
+ *     can't be planned.
  *
  *   npx tsx scripts/photos.ts rollback --to <number | revisionId> --reason <text> [--actor <name>]
- *                                      [--expect-active <revisionId>] [--yes]
+ *                                      [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
  *     Make a revision that was active before live again, as a new rollback
  *     activation that keeps its number. Prints what it brings back, removes,
  *     and changes against the active revision, and the target's issues: an
  *     integrity error, such as a missing derivative or a privacy rule's,
- *     stops it, and editorial errors print and don't. Then it asks to
+ *     stops it. An editorial error, such as an accent today's rules refuse,
+ *     comes back only with --accept <ruleId> for each flagged rule, given
+ *     once per rule; without one it stops before it asks, and the
+ *     activation records the rules it accepted. A target whose last
+ *     photos verify failed, as status/verify.json records it, or any target
+ *     while that record can't be read, stops the same way until
+ *     --accept verify.failed, which only this command takes. Then it asks to
  *     confirm in a terminal; elsewhere --yes confirms, and only with
  *     --expect-active naming the active revision the list was made
  *     against. The actor is --actor or PHOTOS_ACTOR, and one is required.
@@ -145,11 +208,32 @@
  *     confirmation: it finishes what a crashed activation left undone. A
  *     live revision that can't be read is no reason to refuse: the list is
  *     then everything the target publishes. Exits 0 when rolled back or already
- *     active, 1 when the target was never active or its rules stop it, 2 on
- *     a usage error, 4 when a catalog file is damaged or an I/O error stops
+ *     active, 1 when the target was never active, its rules stop it, an
+ *     editorial error isn't accepted, or its recorded verify failed without
+ *     --accept verify.failed, 2 on a usage error (an --accept that isn't an
+ *     editorial rule's ID or verify.failed included), 4 when a catalog file is damaged or an I/O error stops
  *     it, and 3 on any other stop, such as no confirmation, another
  *     revision going live first, or a busy lock. Logs one JSON line per
  *     event.
+ *
+ *   npx tsx scripts/photos.ts verify [--revision <revisionId>] [--json]
+ *     Check the catalog the way a restore needs it: every revision file
+ *     parses and hashes to its name, every rule passes on it (an integrity
+ *     error fails it, an editorial one warns), and every derivative set it
+ *     publishes has its manifest's files at their sizes and SHA-256, each set
+ *     hashed once. Then the chain: the active pointer names an activation
+ *     record for its revision, every previous activation it names exists,
+ *     and committed activations have a pointer. Prints each revision's
+ *     result and whether a rollback can return to it, and the fix for what
+ *     fails. Reads the data root only, never the library, and takes no
+ *     catalog lock: only a short lock of its own around writing the record.
+ *     A full run records its result in status/verify.json, which the
+ *     curator's Publish screen and photos rollback read; --revision checks
+ *     one revision alone and records only a pass that started after the
+ *     recorded run finished, which clears that revision's recorded failure. Exits 0 when the live revision and the chain pass,
+ *     even if an older revision fails, 1 when either fails, 2 on a usage
+ *     error, 3 when the data root isn't ready, and 4 when the registry or an
+ *     activation record can't be read or an I/O error stops it.
  *
  *   npx tsx scripts/photos.ts curation list [--status <status> | --all] [--json]
  *   npx tsx scripts/photos.ts curation show <eventId> [--json]
@@ -164,13 +248,19 @@
  *     puts back the revision the confirm replaced, while that confirm is
  *     still the inbox's latest change to the photo's revision. reopen and
  *     show say what defer will do.
- *   npx tsx scripts/photos.ts curation bind <eventId> --version <n> [--path <library path>]
+ *   npx tsx scripts/photos.ts curation bind <eventId> --version <n> [--path <library path> | --to <photoId>]
  *   npx tsx scripts/photos.ts curation archive <eventId> --version <n>
+ *   npx tsx scripts/photos.ts curation confirm-missing <eventId> --version <n>
  *     #17's settlements of a missing source: bind an intentional replacement
  *     (#10's bind decision), or archive after removing series references,
  *     which is the takedown once photos publish runs. archive needs --base
  *     once a revision is active. publish --dry-run lists what would leave
- *     the site under Removed.
+ *     the site under Removed. confirm-missing records that the file is gone
+ *     on purpose, and writes the item only.
+ *   npx tsx scripts/photos.ts curation resolve <eventId> --version <n> --as new | --as replacement-of <photoId>
+ *     #14's answer to an ambiguous item, as #10's new or bind decision, and
+ *     bind --to names which of the photographs it may be the file is. On a
+ *     replacement, --as new makes the file its own photograph.
  *     The curation inbox (lib/curation/commands.ts). New photographs wait
  *     here until approved into the draft; nothing here publishes. Item
  *     commands take the --version that list or show printed, and --base
@@ -189,22 +279,92 @@
  *     0400, and prints no secret. Exits 0 when written, 1 when refused or
  *     the file can't be written, and 2 on a usage error.
  *
+ *   npx tsx scripts/photos.ts purge <photoId> [--asset-revision <assetRevision>] --reason <text> [--actor <name>] [--yes]
+ *   npx tsx scripts/photos.ts purge --revoke <tombstoneId> --reason <text> [--actor <name>] [--yes]
+ *     #15's takedown that survives a rollback. A dry run unless --yes: it
+ *     prints one plain line saying what it takes down, then each asset
+ *     revision and set, and each revision that was live before and loses
+ *     rollback eligibility, and writes nothing. With --yes it prints the same,
+ *     then writes catalog/tombstones/<tombstoneId>.json: from the next request
+ *     /media answers 410 for every set it lists, and no revision that shows
+ *     one can be published or rolled back to. It deletes nothing; only the
+ *     owner's photos gc --apply, more than 7 days later, deletes the bytes.
+ *     Without --asset-revision it takes down every asset revision the registry
+ *     holds for the photo now. It refuses an asset the live revision shows, or
+ *     a photo a draft series lists at a targeted asset revision: publish
+ *     without it, or take it out with photos sequence remove, first. --revoke
+ *     takes a tombstone back until photos gc --apply deletes a folder it
+ *     lists; after that the takedown is permanent, and only a backup of the
+ *     data root brings it back. The actor is --actor or PHOTOS_ACTOR, and one
+ *     is required, as is --reason. Holds the catalog lock, and purge the
+ *     authored lock too, waiting up to 30 s for each. Never touches the
+ *     library. Exits 0 when planned, written, or already done, 1 when refused
+ *     (a live or listed asset, an unknown photo, asset revision or tombstone,
+ *     or a revoke after GC deleted or cut short a folder its marker records,
+ *     or while one is set aside whole, to rename back first), 2 on a usage
+ *     error, 3 when a lock stays busy or the data root isn't ready, and 4 when
+ *     a file is damaged or an I/O error stops it.
+ *
  *   npx tsx scripts/photos.ts gc [--apply <planDigest>]
  *     Plan the cleanup docs/data-root.md's retention rules allow: staging
- *     folders a killed derivative build left and candidates that never
- *     became a revision, once each is more than 7 days old. It lists every
- *     path with its class, the rule that allows it, and its size, and
- *     prints the plan's digest. It deletes nothing without --apply, which
- *     takes that digest, plans again, and deletes only if the plan is
- *     still the same. Both hold the catalog and authored locks for the
- *     whole run, waiting up to 30 s for each. It never deletes an asset,
- *     a revision, an activation, a record, or anything in edits/. Exits 0
- *     when planned or applied, 1 when a folder it would delete in is a
- *     symlink, isn't a folder, resolves somewhere else, or changes just
- *     before a delete, 2 on a usage error, 4 when a catalog file is
- *     damaged or an I/O error stops it, and 3 on any other stop, such as a
+ *     folders a killed derivative build left and candidates that never became
+ *     a revision, once each is more than 7 days old, and the asset folders a
+ *     standing tombstone took down more than 7 days ago that nothing always
+ *     protected names (the live revision, a draft series listing the photo at
+ *     that asset revision, an open Inbox item, or a staging folder) and whose
+ *     manifests account for every file in it. It lists every path with its
+ *     class, the rule that allows it, and its size, reports the sets nothing
+ *     references without deleting them, prints byte totals and what each
+ *     protection keeps, and prints the plan's digest. It deletes nothing
+ *     without --apply, which takes that digest, plans again, and deletes only
+ *     if the plan is still the same, after one plain line saying what it
+ *     deletes. Both hold the catalog and authored locks for the whole run,
+ *     waiting up to 30 s for each. Apply sets each tombstoned folder aside as
+ *     .gc-<assetRevision>-<prefix>-<uuid>, checks it once more, and only then
+ *     deletes it; a .gc- folder a stopped run left is reported, never deleted.
+ *     It never deletes any other asset, a revision, an activation, a record, a
+ *     tombstone, anything in edits/, or anything in the library. Exits 0 when
+ *     planned or applied, 1 when a folder it would delete in is a symlink,
+ *     isn't a folder, resolves somewhere else, sits in the library, or changes
+ *     just before a delete, 2 on a usage error, 4 when a catalog file is
+ *     damaged, an I/O error stops it, a delete fails partway, or a planned
+ *     asset folder is always protected now, and 3 on any other stop, such as a
  *     changed plan or a busy lock. --apply logs one JSON line per path it
  *     deletes.
+ *
+ *   npx tsx scripts/photos.ts gc --set-aside <assets/<photoId>/<assetRevision or .gc-…>>
+ *     Renames a folder a standing tombstone takes down, or the .gc- folder a
+ *     stopped run left beside one, into the data root's own
+ *     trash/<photoId>-<name>-<date-time>/, on the same filesystem, under the
+ *     asset's own lock, taken first without waiting, then the catalog,
+ *     curation and authored locks, and deletes nothing. It refuses, exit 1, any
+ *     other path (NOT_AN_ASSET_PATH), a folder no standing tombstone takes
+ *     down (NOT_TAKEN_DOWN), one the live revision, a draft series, an open
+ *     Inbox item or a staging folder names (PROTECTED), a .gc- folder set
+ *     aside whole, which goes back instead (SET_ASIDE_WHOLE), a symlink, a
+ *     file or a symlinked trash/ (UNSAFE_PATH), a cross-device move
+ *     (CROSS_DEVICE) and an existing destination (EXISTS); 3 when a lock stays
+ *     busy (ASSET_LOCKED at once; CATALOG_LOCKED, CURATION_LOCKED, AUTHORED_LOCKED) or
+ *     is lost or the data root isn't ready, and 4 when a file is damaged or an
+ *     I/O error stops it. After the rename it asks the always-protected set
+ *     again, and puts the folder back (PROTECTED) if anything names it now;
+ *     when something took its place, it exits 4 (PUT_BACK_BLOCKED), leaves it
+ *     in trash/, and photos status names it with its holder. Emptying trash/
+ *     is the owner's own step.
+ *
+ *   npx tsx scripts/photos.ts legacy-derivatives [--stdout]
+ *     Judge the legacy folders a watcher before v1.7.0 wrote at the top of
+ *     the library, for scripts/host/legacy-move-aside.sh. For each of the
+ *     eight names the library's root lists exactly, case-sensitively, it
+ *     records every file with its size and mtime when each is one the v1.x
+ *     pipeline wrote for an original the scan sees at the root, by name,
+ *     header and width, and otherwise why the folder stays. It only reads
+ *     the library, and writes only status/legacy-derivatives.json in the
+ *     data root, mode 0644, refusing a symlinked status/. --stdout also
+ *     prints the manifest, and the summary goes to stderr, so the owner can
+ *     save a copy he can read. The script takes it for 24 hours and one
+ *     --apply. Exits 0 when written, 1 when the library or the data root
+ *     isn't there or ready, and 2 on a usage error.
  *
  * The library is PHOTOGRAPHY_LIBRARY_DIR, with no default: a command that
  * reads the library exits 1 when it's unset. The data root is
@@ -230,8 +390,12 @@ import { runCarryOver } from '../lib/catalog/carry-over';
 import { runDescribeImport } from '../lib/catalog/describe-import';
 import { runDraftInit } from '../lib/catalog/draft-init';
 import { recordRef, runEditRecord } from '../lib/catalog/edit-record';
-import { rollbackArgs, runHistoryCommand, runRollbackCommand } from '../lib/catalog/history-cli';
+import { historyArgs, historyStop, rollbackArgs, runHistoryCommand, runRollbackCommand, type HistoryArgs } from '../lib/catalog/history-cli';
+import { diffArgs, reviewArgs, runDiffCommand, runReviewCommand } from '../lib/catalog/ledger-cli';
+import { purgeArgs, runPurgeCommand } from '../lib/catalog/purge-cli';
 import { gcArgs, runGcCommand } from '../lib/catalog/retention-cli';
+import { ownerGate } from '../lib/catalog/owner-gate';
+import { runVerifyCommand, verifyArgs } from '../lib/catalog/verify-cli';
 import { runListCommand, runStatusCommand } from '../lib/catalog/owner-status';
 import { issueLines, photoIdArg, publishReport, sequenceArgs, seriesArgs, parseFlags, UsageError } from '../lib/catalog/owner-cli';
 import { publish, PUBLISH_EXIT_CODES, validateWorkingLayer, VALIDATE_EXIT_CODES } from '../lib/catalog/publish';
@@ -244,9 +408,11 @@ import { createDecision, decisionFileName, isLibraryPath, writeDecision, type De
 import { ASSET_REVISION_RE } from '../lib/identity/ids';
 import { DryRunRefusedError, migrateDryRun } from '../lib/identity/migration';
 import { jsonLogSink, runReconcilePass } from '../lib/identity/pass';
+import { runLegacyDerivativesCommand } from '../lib/identity/legacy-derivatives';
 import { identityPaths } from '../lib/identity/registry';
 import { LibraryRootMissingError } from '../lib/identity/scan';
 import { formatStatus, identityStatus } from '../lib/identity/status';
+import { budgetLines, measureInChild } from '../lib/perf/catalog-budgets';
 import { configuredLibraryRoot, dataRoot, dataRootStatus, libraryRoot, LibraryRootConfigError } from '../lib/storage/config';
 import { isInside } from '../lib/storage/fsx';
 
@@ -262,12 +428,12 @@ const USAGE = `Usage:
   ${PROGRAM} identity archive <photoId> [--reason <text>]
   ${PROGRAM} identity retry <photoId> [<assetRevision>] [--reason <text>]
   ${PROGRAM} identity reprofile (<photoId> | --all) [--reason <text>]
-  ${PROGRAM} status [--json]
+  ${PROGRAM} status [--json] [--check]
   ${PROGRAM} list [--unassigned] [--json]
   ${PROGRAM} draft:init
   ${PROGRAM} describe --import <file> [--dry-run]
   ${PROGRAM} carry-over [--apply --actor <name>] [--allow-missing <photoId or path>,...]
-        One-time setup for a new data root, before the launch publish.
+        One-time setup before the launch publish, only on a library the legacy site served; a fresh library skips it.
   ${PROGRAM} edit (<photoId> | <seriesId> | site) [--file <path>] [--expect-version <N>]
   ${PROGRAM} sequence show <seriesId>
   ${PROGRAM} sequence set <seriesId> <photoId>... [--expect-version <N>]
@@ -282,13 +448,28 @@ const USAGE = `Usage:
   ${PROGRAM} series featured (<seriesId>... | --clear) [--expect-version <N>]
   ${PROGRAM} validate [--reprofile]
   ${PROGRAM} publish [--actor <name>] [--reason <text>] [--expect <candidateId>] [--dry-run] [--confirm-launch] [--reprofile]
-        --confirm-launch is for the launch publish only, the one-time setup step that replaces the legacy site.
-  ${PROGRAM} history
-  ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--expect-active <revisionId>] [--yes]
+        --confirm-launch is for the launch publish only, a one-time setup step for a new data root, never a routine publish.
+  ${PROGRAM} diff [--json]
+  ${PROGRAM} review <changeId>... --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+        Marks the rows photos diff printed reviewed, each named, and rows that share a stamp together; there is no --all.
+  ${PROGRAM} review --use-published <changeId> --expect <candidateId> --expect-active <revisionId | none> [--actor <name>]
+        Puts the live revision's value back into the draft for one row, as the Publish screen's "Use the published value" does.
+  ${PROGRAM} history [--json] [--limit <n>] [--revisions]
+  ${PROGRAM} rollback --to <number | revisionId> --reason <text> [--actor <name>] [--accept <ruleId>]... [--expect-active <revisionId>] [--yes]
+        --accept, once per editorial rule flagged on the target, brings it back with that error; it's the only flag that repeats.
+        --accept verify.failed brings back a revision whose last photos verify failed.
+  ${PROGRAM} verify [--revision <revisionId>] [--json]
 ${curationUsage(PROGRAM)}
+  ${PROGRAM} purge <photoId> [--asset-revision <assetRevision>] --reason <text> [--actor <name>] [--yes]
+  ${PROGRAM} purge --revoke <tombstoneId> --reason <text> [--actor <name>] [--yes]
+        A dry run unless --yes. A tombstone answers 410 at once. Only photos gc --apply deletes the bytes, after 7 days.
   ${PROGRAM} gc [--apply <planDigest>]
+  ${PROGRAM} gc --set-aside <assets/photoId/assetRevision>
+        Moves that folder, or a .gc- folder beside it, into the data root's trash/. It never deletes.
+  ${PROGRAM} legacy-derivatives [--stdout]
+        Writes the manifest scripts/host/legacy-move-aside.sh needs; it only reads the library. --stdout also prints it, to save a copy.
 ${credentialUsage(PROGRAM)}
-A flag given twice is refused. An argument that starts with - goes after --.
+A flag given twice is refused, except --accept. An argument that starts with - goes after --.
 In production: docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs <command>
 The README's "Curating the catalog" section has the commands, the hand-edit rules, and the launch checklist.`;
 
@@ -366,6 +547,9 @@ function decisionInput(type: DecisionInput['type'], positionals: string[], value
             if (!all && positionals.length !== 1) throw new UsageError('identity reprofile needs a photo ID or --all.');
             return { ...base, type, ...(all ? {} : { photoId: photoIdArg(positionals[0]) }) };
         }
+        case 'restore':
+            // Not in DECISION_COMMANDS: the curator restores an archived photograph by approving its duplicate's item (A5).
+            throw new UsageError('photos identity has no restore. Approve the duplicate\'s item with curation approve, which writes the restore decision.');
     }
 }
 
@@ -402,6 +586,11 @@ async function decide(type: DecisionInput['type'], args: string[]): Promise<numb
         }
         if (outcome.reason === 'library-empty') {
             console.error(`[photos] The library has no photos, but the registry has ${outcome.present} present, so the pass marked nothing missing and applied nothing. Check the mount and PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
+            return 1;
+        }
+        if (outcome.reason === 'library-unavailable') {
+            const why = outcome.cause === 'missing' ? `Library root not found: ${configuredLibraryRoot()}` : `The library root can't be read (${outcome.detail ?? 'unknown'})`;
+            console.error(`[photos] ${why}. Check the mount or PHOTOGRAPHY_LIBRARY_DIR. The decision is saved in ${file}, and the next pass that runs applies it. Don't run the command again.`);
             return 1;
         }
         console.error(`[photos] The data root is ${outcome.state}${outcome.detail ? `: ${outcome.detail}` : ''}. The decision is saved in ${file}.`);
@@ -461,6 +650,13 @@ async function validate(args: string[]): Promise<number> {
     print(`[photos] ${result.outcome}: ${result.message}`);
     if (result.candidateId) print(`Candidate: ${result.candidateId}`);
     for (const line of issueLines(result.issues, 'publish --dry-run writes them all to the diagnostics file.')) print(line);
+    if (result.content && result.candidateId) {
+        // A warning, never a failure: a child that can't run, or answers in another shape, says so and changes nothing.
+        const lines = await measureInChild(result.content, { revisionId: result.candidateId, revisionNumber: null })
+            .then((measured) => budgetLines(measured))
+            .catch((error: unknown) => budgetLines(error instanceof Error ? error : new Error(String(error))));
+        for (const line of lines) print(line);
+    }
     return exitCode;
 }
 
@@ -496,11 +692,39 @@ async function publishCommand(args: string[]): Promise<number> {
     return exitCode;
 }
 
-async function historyCommand(args: string[]): Promise<number> {
-    parseFlags({ args, options: {} });
+/** A catalog command from lib/catalog: its arguments first, then the data root, as validate takes it. */
+async function catalogCommand<T>(parse: () => T, run: (root: string, args: T) => Promise<CommandResult>): Promise<number> {
+    const parsed = parse();
     const root = catalogRoot();
     if (typeof root === 'number') return root;
-    return printed(await runHistoryCommand(root));
+    return printed(await run(root, parsed));
+}
+
+async function historyCommand(args: string[]): Promise<number> {
+    // With --json, the usage and data-root stops answer in JSON on stdout too, with their exit code.
+    const json = args.includes('--json');
+    const jsonStop = (result: CommandResult) => {
+        process.stdout.write(result.output);
+        return result.exitCode;
+    };
+    let parsed: HistoryArgs;
+    try {
+        parsed = historyArgs(args);
+    } catch (error) {
+        if (json && error instanceof UsageError) return jsonStop(historyStop(2, 'USAGE_ERROR', error.message, true));
+        throw error;
+    }
+    if (parsed.json && dataRoot() === null) {
+        const status = dataRootStatus();
+        return jsonStop(historyStop(3, 'DATA_ROOT_NOT_READY', `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.`, true));
+    }
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    const result = await runHistoryCommand(root, parsed);
+    if (!parsed.json) return printed(result);
+    // JSON goes to stdout whatever the exit code, as verify --json's does.
+    process.stdout.write(result.output);
+    return result.exitCode;
 }
 
 /** Ask a yes-or-no question on the terminal. Only "yes" confirms. */
@@ -524,11 +748,46 @@ async function rollbackCommand(args: string[]): Promise<number> {
     });
 }
 
+async function verifyCommand(args: string[]): Promise<number> {
+    const parsed = verifyArgs(args);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return runVerifyCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
+}
+
+async function purgeCommand(args: string[]): Promise<number> {
+    const parsed = purgeArgs(args);
+    const root = catalogRoot();
+    if (typeof root === 'number') return root;
+    return runPurgeCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
+}
+
 async function gcCommand(args: string[]): Promise<number> {
     const parsed = gcArgs(args);
     const root = catalogRoot();
     if (typeof root === 'number') return root;
     return runGcCommand(root, parsed, { out: (line) => console.log(line), err: (line) => console.error(line) });
+}
+
+async function legacyDerivativesCommand(args: string[]): Promise<number> {
+    if (args.length > 1 || (args.length === 1 && args[0] !== '--stdout')) throw new UsageError('photos legacy-derivatives takes only --stdout.');
+    const stdout = args[0] === '--stdout';
+    const root = ownerRoot();
+    if (typeof root === 'number') return root;
+    const status = dataRootStatus({ write: true });
+    if (status.state !== 'ready') {
+        console.error(`[photos] The data root isn't ready (${status.state}${status.detail ? `: ${status.detail}` : ''}). Nothing was written.`);
+        return 1;
+    }
+    const result = await runLegacyDerivativesCommand({ dataRoot: root, library: libraryRoot(), stdout });
+    if (result.exitCode !== 0) {
+        process.stderr.write(result.output);
+        return result.exitCode;
+    }
+    // With --stdout the manifest is the output, so a redirect saves exactly it, and the summary goes to stderr.
+    process.stdout.write(result.output);
+    if (stdout) process.stderr.write(result.summary);
+    return 0;
 }
 
 /** Print a handler's text, on stdout when it succeeded and stderr when it didn't, and return its exit code. */
@@ -551,9 +810,13 @@ function ownerRoot(): string | number {
 }
 
 async function statusCommand(args: string[]): Promise<number> {
-    const { values } = parseFlags({ args, options: { json: { type: 'boolean' } } });
+    const { values } = parseFlags({ args, options: { json: { type: 'boolean' }, check: { type: 'boolean' } } });
     // status is the diagnostic command, so it reports even with no data root.
-    return printed(await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json }));
+    const result = await runStatusCommand({ dataRoot: dataRoot() }, { json: values.json, check: values.check });
+    if (!values.json) return printed(result);
+    // JSON goes to stdout whatever the exit code, as history --json's does, so a monitor reads one stream.
+    process.stdout.write(result.output);
+    return result.exitCode;
 }
 
 async function listCommand(args: string[]): Promise<number> {
@@ -612,6 +875,13 @@ async function orderCommand(parse: () => SequenceCommand): Promise<number> {
 
 async function main(argv: string[]): Promise<number> {
     const [command, ...args] = argv;
+    // #15's one-uid rule: a command that takes a lock or writes under the data root runs only as the data root's
+    // owner, the uid web runs as, and refuses before its first lock otherwise (lib/catalog/owner-gate.ts).
+    const wrongOwner = ownerGate(argv, { root: dataRoot() });
+    if (wrongOwner) {
+        console.error(`[photos] WRONG_OWNER: ${wrongOwner}`);
+        return 1;
+    }
     try {
         if (command === 'migrate') return await migrate(args);
         if (command === 'identity') return await identity(args);
@@ -625,8 +895,11 @@ async function main(argv: string[]): Promise<number> {
         if (command === 'series') return await orderCommand(() => seriesArgs(args));
         if (command === 'validate') return await validate(args);
         if (command === 'publish') return await publishCommand(args);
+        if (command === 'diff') return await catalogCommand(() => diffArgs(args), runDiffCommand);
+        if (command === 'review') return await catalogCommand(() => reviewArgs(args), runReviewCommand);
         if (command === 'history') return await historyCommand(args);
         if (command === 'rollback') return await rollbackCommand(args);
+        if (command === 'verify') return await verifyCommand(args);
         if (command === 'curation' && (CREDENTIAL_COMMANDS as readonly string[]).includes(args[0] ?? '')) {
             const result = await runCredentialCommand(args[0] as (typeof CREDENTIAL_COMMANDS)[number], args.slice(1), { stdin: process.stdin, stderr: process.stderr });
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
@@ -637,7 +910,9 @@ async function main(argv: string[]): Promise<number> {
             (result.exitCode === 0 ? process.stdout : process.stderr).write(result.output);
             return result.exitCode;
         }
+        if (command === 'purge') return await purgeCommand(args);
         if (command === 'gc') return await gcCommand(args);
+        if (command === 'legacy-derivatives') return await legacyDerivativesCommand(args);
         throw new UsageError(command ? `Unknown command: ${command}` : 'No command given.');
     } catch (error) {
         if (error instanceof UsageError) {

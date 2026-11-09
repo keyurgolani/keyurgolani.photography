@@ -10,12 +10,12 @@ import { historyState, knownGood, readHistory } from '../history';
 import { historyLines, rollbackArgs, runHistoryCommand, runRollbackCommand, type RollbackArgs, type RollbackIo } from '../history-cli';
 import { CATALOG_LEASE_MS, publish, type PublishOptions, type PublishResult } from '../publish';
 import { CATALOG_LOCK, CatalogIntegrityError, listActivations, readRevisionFile, revisionFilePath } from '../repository';
-import { planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackResult } from '../rollback';
+import { acceptanceCheck, planRollback, rollback, ROLLBACK_EXIT_CODES, type RollbackOptions, type RollbackResult } from '../rollback';
 import { registerRule } from '../rules';
 import { createTestCatalog, type TestCatalog, type TestCatalogOptions } from '../testing';
 import type { Activation, ActivePointer, AuthoredPhoto } from '../types';
 import { AUTHORED_LOCK, writeAuthoredRecord } from '../working-layer-writer';
-import { catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
+import { authoredPaths, catalogPaths, readActivePointer, readWorkingLayer } from '../working-layer';
 import { VARIANT_BYTES } from './catalogFixtures';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -33,8 +33,22 @@ registerRule({
         : []),
 });
 
+/** A second editorial rule, so a target can carry two and a rollback accept only one. */
+let secondEditorialOn: string | null = null;
+registerRule({
+    id: 'test.rollback-editorial-b',
+    version: 1,
+    severity: 'error',
+    gate: 'publish',
+    rollbackClass: 'editorial',
+    check: (ctx) => (secondEditorialOn !== null && ctx.authored === null && ctx.active?.revisionId === secondEditorialOn
+        ? [{ record: { kind: 'site', id: 'site' }, field: 'featuredSeriesIds', message: 'A second test editorial error.' }]
+        : []),
+});
+
 afterEach(async () => {
     editorialErrorOn = null;
+    secondEditorialOn = null;
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -307,17 +321,92 @@ describe('photos rollback', { timeout: 60_000 }, () => {
         expect(stored(root)).toEqual(files);
     });
 
-    it('rolls back to a target with only editorial errors, prints them, and records them as accepted', async () => {
-        const { root, rollTo, one, two } = await twoRevisions({ seed: 216 });
+    /** Everything a refused rollback must leave as it was: the catalog (activations, pointer, revisions), the working layer, and the locks. */
+    const untouched = (root: string) => ({ catalog: folderBytes(catalogPaths(root).dir), authored: folderBytes(authoredPaths(root).dir), locks: folderBytes(path.join(root, 'locks')) });
+
+    it('refuses anything unaccepted even on a plan with no target, and calls a READY plan without one an error', () => {
+        const revisionId = `rev_${'a'.repeat(64)}`;
+        const ready = { outcome: 'READY' as const, message: '', target: null, active: null, impact: null, seriesTitles: {}, issues: [], blocking: [], editorial: ['accent.contrast'] };
+        expect(acceptanceCheck(ready, [], revisionId)).toEqual({
+            outcome: 'ACCEPTANCE_REQUIRED',
+            unaccepted: ['accent.contrast'],
+            message: `${revisionId} has editorial errors a rollback brings back only when you accept each one: accent.contrast. Run it again with --accept accent.contrast. Nothing was rolled back.`,
+        });
+        expect(acceptanceCheck(ready, ['accent.contrast'], revisionId)).toMatchObject({ outcome: 'STORAGE_ERROR', message: expect.stringContaining('names no target') });
+        const target = { revisionId, revisionNumber: 4 };
+        expect(acceptanceCheck({ ...ready, target }, ['accent.contrast'], revisionId)).toBeNull();
+        expect(acceptanceCheck({ ...ready, target }, [], revisionId)).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', message: expect.stringMatching(/^Revision 4 \(rev_a+\) has editorial errors/) });
+    });
+
+    it('refuses a target with editorial errors nobody accepted, ACCEPTANCE_REQUIRED, exit 1, writing nothing', async () => {
+        const { root, rollTo, one, two, events } = await twoRevisions({ seed: 216 });
         editorialErrorOn = one;
         const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+        // The plan stays READY, with its editorial list, so History keeps Restore and the dialog asks for each one.
         expect(planned).toMatchObject({ outcome: 'READY', editorial: ['test.rollback-editorial'], blocking: [] });
         expect(planned.issues).toEqual([expect.objectContaining({ code: 'test.rollback-editorial', severity: 'error' })]);
+        const before = untouched(root);
 
         const result = await rollTo(one, two);
+        expect(result).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', activation: null, unaccepted: ['test.rollback-editorial'] });
+        expect(result.message).toBe(`Revision 1 (${one}) has editorial errors a rollback brings back only when you accept each one: test.rollback-editorial. Run it again with --accept test.rollback-editorial. Nothing was rolled back.`);
+        expect(ROLLBACK_EXIT_CODES[result.outcome]).toBe(1);
+        expect(untouched(root)).toEqual(before);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+        expect(events.find((event) => event.event === 'catalog.rollback.started')).toMatchObject({ acceptedRules: [] });
+        expect(events.find((event) => event.event === 'catalog.rollback.failed')).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', unaccepted: ['test.rollback-editorial'] });
+    });
+
+    it('rolls back once the editorial error is accepted, and records exactly the flagged rules', async () => {
+        const { root, rollTo, one, two, events } = await twoRevisions({ seed: 217 });
+        editorialErrorOn = one;
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial'] });
         expect(result.outcome).toBe('ROLLED_BACK');
         expect(result.activation).toMatchObject({ acceptedRules: ['test.rollback-editorial'], validation: { errors: 1 } });
         expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+        expect(events.find((event) => event.event === 'catalog.rollback.started')).toMatchObject({ acceptedRules: ['test.rollback-editorial'] });
+        expect(events.find((event) => event.event === 'catalog.rollback.activated')).toMatchObject({ acceptedRules: ['test.rollback-editorial'] });
+    });
+
+    it('refuses with two editorial errors and one accepted, naming the other, writing nothing', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 218 });
+        editorialErrorOn = one;
+        secondEditorialOn = one;
+        expect((await planRollback({ dataRoot: root, to: { revisionNumber: 1 } })).editorial).toEqual(['test.rollback-editorial', 'test.rollback-editorial-b']);
+        const before = untouched(root);
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial'] });
+        expect(result).toMatchObject({ outcome: 'ACCEPTANCE_REQUIRED', unaccepted: ['test.rollback-editorial-b'] });
+        expect(result.message).toContain('accept each one: test.rollback-editorial-b. Run it again with --accept test.rollback-editorial-b.');
+        expect(untouched(root)).toEqual(before);
+
+        const both = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial-b', 'test.rollback-editorial'] });
+        expect(both.outcome).toBe('ROLLED_BACK');
+        expect(both.activation?.acceptedRules).toEqual(['test.rollback-editorial', 'test.rollback-editorial-b']);
+    });
+
+    it("doesn't record an accept for a rule that isn't flagged", async () => {
+        const { rollTo, one, two } = await twoRevisions({ seed: 219 });
+        editorialErrorOn = one;
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial', 'test.rollback-editorial-b', 'accent.format'] });
+        expect(result.outcome).toBe('ROLLED_BACK');
+        expect(result.activation?.acceptedRules).toEqual(['test.rollback-editorial']);
+        // A target with nothing flagged records no accepts at all.
+        const back = await rollTo(two, one, { acceptedRules: ['accent.format'] });
+        expect(back.outcome).toBe('ROLLED_BACK');
+        expect(back.activation?.acceptedRules).toEqual([]);
+    });
+
+    it('still refuses an integrity error with VALIDATION_FAILED, whatever it accepts', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 220 });
+        editorialErrorOn = one;
+        const photo = (await readRevisionFile(root, one))?.content.photos[0];
+        if (!photo) throw new Error('Revision 1 has no photo.');
+        fs.rmSync(mediaFilePath({ photoId: photo.id, assetRevision: photo.assetRevision, profileId: photo.profileId }, 'w400', 'webp', root));
+        const before = untouched(root);
+        const result = await rollTo(one, two, { acceptedRules: ['test.rollback-editorial', 'assets.variant'] });
+        expect(result.outcome).toBe('VALIDATION_FAILED');
+        expect(result.message).toContain('(assets.variant)');
+        expect(untouched(root)).toEqual(before);
     });
 
     describe('when it is interrupted', () => {
@@ -438,7 +527,7 @@ describe('photos rollback', { timeout: 60_000 }, () => {
 });
 
 describe('runRollbackCommand', { timeout: 60_000 }, () => {
-    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back the caption', actor: 'curator', yes: false, ...overrides });
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back the caption', actor: 'curator', accept: [], yes: false, ...overrides });
 
     it('prints the impact list, asks, and rolls back on yes against the active revision it showed', async () => {
         const { catalog, root, two, one } = await twoRevisions({ seed: 241 });
@@ -511,7 +600,7 @@ describe('runRollbackCommand', { timeout: 60_000 }, () => {
 });
 
 describe('fix round 1', { timeout: 60_000 }, () => {
-    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', yes: false, ...overrides });
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', accept: [], yes: false, ...overrides });
 
     it('rolls back off a live revision whose file is damaged, listing everything the target publishes', async () => {
         const { catalog, root, one, two } = await twoRevisions({ seed: 251 });
@@ -658,7 +747,7 @@ describe('fix round 1', { timeout: 60_000 }, () => {
 });
 
 describe('fix round 2', { timeout: 60_000 }, () => {
-    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', yes: false, ...overrides });
+    const args = (overrides: Partial<RollbackArgs> = {}): RollbackArgs => ({ to: { revisionNumber: 1 }, reason: 'roll back', actor: 'curator', accept: [], yes: false, ...overrides });
 
     it('names a damaged registry relative to the data root', async () => {
         const { root } = await twoRevisions({ seed: 261 });
@@ -740,5 +829,240 @@ describe('after a rollback off a damaged live revision', { timeout: 60_000 }, ()
         for (const name of fs.readdirSync(catalogPaths(root).revisionsDir).filter((entry) => entry !== `${two}.json`)) {
             expect(fs.readFileSync(path.join(catalogPaths(root).revisionsDir, name), 'utf8')).not.toContain(secondCaption);
         }
+    });
+});
+
+describe('a slug rename (#5)', { timeout: 60_000 }, () => {
+    /** Give the fixture's one series a new slug and aliases in the working layer. Returns its old slug. */
+    async function readdress(root: string, slug: string, slugAliases: (old: string) => string[]): Promise<string> {
+        const record = (await readWorkingLayer(root)).series[0];
+        if (!record) throw new Error('The fixture has no series');
+        await writeAuthoredRecord({ ...structuredClone(record), slug, slugAliases: slugAliases(record.slug) }, { expectedVersion: record.version, root });
+        return record.slug;
+    }
+
+    it('refuses a publish that drops the old slug, and takes it with the old slug as an alias', async () => {
+        const { root, publishNow } = await setup({ seed: 260 });
+        const first = await publishNow();
+        expect(first.outcome).toBe('PUBLISHED');
+        const old = await readdress(root, 'fixture-renamed', () => []);
+        const refused = await publishNow();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(refused.issues).toContainEqual(expect.objectContaining({ code: 'route.slug-change', severity: 'error', field: 'slug', message: expect.stringContaining(`from /work/${old} to /work/fixture-renamed`) }));
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: first.revisionId });
+
+        await readdress(root, 'fixture-renamed', () => [old]);
+        expect(await publishNow()).toMatchObject({ outcome: 'PUBLISHED', revisionNumber: 2 });
+    });
+
+    it("rolls back across it only with an accept, as an editorial rule and never an integrity one, and photos rollback exits 1 without it", async () => {
+        const { root, publishNow, rollTo } = await setup({ seed: 261 });
+        const one = (await publishNow()).revisionId ?? '';
+        const old = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        const two = (await publishNow()).revisionId ?? '';
+
+        // Revision 1 has the old slug and no alias for the new one, so going back drops /work/fixture-renamed.
+        const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+        expect(planned).toMatchObject({ outcome: 'READY', editorial: ['route.slug-change'], blocking: [] });
+        expect(planned.issues).toEqual([expect.objectContaining({ code: 'route.slug-change', field: 'slug', message: expect.stringContaining(`from /work/fixture-renamed to /work/${old}`) })]);
+
+        const headless = io(null);
+        const code = await runRollbackCommand(root, { to: { revisionNumber: 1 }, reason: 'undo the rename', actor: 'curator', accept: [], yes: true, expectActive: two }, headless);
+        expect(code).toBe(1);
+        const printed = [...headless.lines, ...headless.errors].join('\n');
+        expect(printed).toContain('--accept route.slug-change');
+        // A stored revision can't be edited, so the hint is the accept, not the publish fix.
+        expect(printed).toContain('    A rollback brings this back only once you accept it: --accept route.slug-change with photos rollback, or its box in Restore on the Publish screen.');
+        expect(printed).not.toContain('to slugAliases with photos edit');
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+
+        const back = await rollTo(one, two, { acceptedRules: ['route.slug-change'] });
+        expect(back.outcome).toBe('ROLLED_BACK');
+        expect(back.activation).toMatchObject({ revisionId: one, acceptedRules: ['route.slug-change'], validation: { errors: 1 } });
+    });
+
+    it('refuses a second rename that keeps only the newest old slug', async () => {
+        const { root, publishNow } = await setup({ seed: 263 });
+        await publishNow();
+        const first = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        expect((await publishNow()).outcome).toBe('PUBLISHED');
+        await readdress(root, 'fixture-renamed-again', () => ['fixture-renamed']);
+        const refused = await publishNow();
+        expect(refused.outcome).toBe('VALIDATION_FAILED');
+        expect(refused.issues).toContainEqual(expect.objectContaining({ code: 'route.slug-change', field: 'slugAliases', message: expect.stringContaining(`drops /work/${first}`) }));
+        await readdress(root, 'fixture-renamed-again', () => [first, 'fixture-renamed']);
+        expect((await publishNow()).outcome).toBe('PUBLISHED');
+    });
+
+    it("doesn't flag a rollback whose target keeps every live slug", async () => {
+        const { root, publishNow, rollTo } = await setup({ seed: 262 });
+        await publishNow();
+        const old = await readdress(root, 'fixture-renamed', (slug) => [slug]);
+        const two = (await publishNow()).revisionId ?? '';
+        // Back to the old slug, keeping the new one as an alias: nothing breaks, so nothing asks.
+        await readdress(root, old, () => ['fixture-renamed']);
+        const three = (await publishNow()).revisionId ?? '';
+        const forward = await planRollback({ dataRoot: root, to: { revisionNumber: 2 } });
+        expect(forward).toMatchObject({ outcome: 'READY', editorial: [] });
+        expect((await rollTo(two, three)).outcome).toBe('ROLLED_BACK');
+    });
+});
+
+/**
+ * #181's fault matrix, the steps the tests above don't reach: a fault after
+ * the lock, after eligibility, and at unlock; the pointer's temp written but
+ * not linked, a crash just after the link, and ENOSPC on the pointer write,
+ * through the pointer-write seam; and a rollback on top of a crashed
+ * publish's pending record. Each leaves the activations, the pointer and the
+ * working layer byte-identical, or recoverable on the next run.
+ */
+describe('the fault matrix (#181)', { timeout: 60_000 }, () => {
+    /** The activations, the pointer, and the working layer. */
+    const state = (root: string) => ({ activations: folderBytes(catalogPaths(root).activationsDir), pointer: folderBytes(catalogPaths(root).active), authored: folderBytes(authoredPaths(root).dir) });
+    const lockFile = (root: string) => path.join(root, 'locks', `${CATALOG_LOCK}.lock`);
+    const crash = (where: string) => () => {
+        throw new Error(`crash ${where}`);
+    };
+
+    it('a fault after it takes the lock writes nothing, releases the lock, and the next run rolls back', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 281 });
+        const before = state(root);
+        const crashed = await rollTo(one, two, { hooks: { afterLock: crash('after the lock') } });
+        expect(crashed).toMatchObject({ outcome: 'STORAGE_ERROR', message: 'crash after the lock. Nothing was rolled back.', activation: null });
+        expect(state(root)).toEqual(before);
+        expect(fs.existsSync(lockFile(root))).toBe(false);
+        expect((await rollTo(one, two)).outcome).toBe('ROLLED_BACK');
+    });
+
+    it('a fault after eligibility, before the pending record, writes nothing, and the next run rolls back', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 282 });
+        const before = state(root);
+        let planned: unknown = null;
+        const crashed = await rollTo(one, two, { hooks: { afterEligibility: (plan) => { planned = plan.outcome; throw new Error('crash after eligibility'); } } });
+        expect(planned).toBe('READY');
+        expect(crashed).toMatchObject({ outcome: 'STORAGE_ERROR', message: 'crash after eligibility. Nothing was rolled back.' });
+        expect(state(root)).toEqual(before);
+        expect(fs.existsSync(lockFile(root))).toBe(false);
+        expect((await rollTo(one, two)).outcome).toBe('ROLLED_BACK');
+    });
+
+    it('a fault at unlock still reports the finished rollback, and the next command takes the lock once its lease runs out', async () => {
+        const { root, rollTo, events, one, two } = await twoRevisions({ seed: 283 });
+        const result = await rollTo(one, two, { leaseMs: 400, hooks: { lock: { beforeRelease: crash('at unlock') } } });
+        expect(result.outcome).toBe('ROLLED_BACK');
+        expect(ROLLBACK_EXIT_CODES[result.outcome]).toBe(0);
+        expect(result.message).toBe(`Rolled back to revision 1 (${one}) from revision 2 (${two}). The catalog lock couldn't be released (crash at unlock), so the next publish or rollback may wait until its lease runs out.`);
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:rollback:committed:1']);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+        expect(await bases(root)).toEqual([one]);
+        expect(fs.existsSync(lockFile(root))).toBe(true);
+        expect(events.filter((event) => event.event === 'catalog.rollback.activated')).toHaveLength(1);
+        // The left lock's lease runs out and the next one takes it over.
+        const next = await rollTo(two, one, { waitMs: 5_000 });
+        expect(next.outcome).toBe('ROLLED_BACK');
+        expect(next.activation?.lockTakeover).toMatchObject({ previousOwner: expect.any(String) });
+    });
+
+    it('a crash with the pointer temp written but not linked leaves the old pointer live, and the next run sets the record aside', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 284 });
+        const pointer = folderBytes(catalogPaths(root).active);
+        const authored = folderBytes(authoredPaths(root).dir);
+        let left: { file: string; bytes: Buffer } | null = null;
+        const crashed = await rollTo(one, two, {
+            hooks: {
+                pointer: {
+                    beforeLink: (temp) => {
+                        // A hard crash leaves the temp behind; the writer's own cleanup runs only on a throw.
+                        left = { file: temp, bytes: fs.readFileSync(temp) };
+                        throw new Error('crash before the link');
+                    },
+                },
+            },
+        });
+        expect(crashed).toMatchObject({ outcome: 'STORAGE_ERROR', message: 'crash before the link. Nothing was rolled back.' });
+        const leftover = left as { file: string; bytes: Buffer } | null;
+        if (!leftover) throw new Error('The pointer write never staged a temp.');
+        fs.writeFileSync(leftover.file, leftover.bytes);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+        expect(folderBytes(catalogPaths(root).active)).toEqual({ ...pointer, [path.basename(leftover.file)]: leftover.bytes.toString('utf8') });
+        expect(folderBytes(authoredPaths(root).dir)).toEqual(authored);
+        expect((await readHistory(root)).rows.map((row) => `${row.state}${row.live ? ':live' : ''}`)).toEqual(['committed', 'committed:live', 'interrupted']);
+
+        const retry = await rollTo(one, two);
+        expect(retry.outcome).toBe('ROLLED_BACK');
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:rollback:abandoned:1', '4:rollback:committed:1']);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+    });
+
+    it('a crash just after the pointer link leaves the target live, and the next run records it', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 285 });
+        const crashed = await rollTo(one, two, { hooks: { pointer: { afterLink: crash('after the link') } } });
+        expect(crashed).toMatchObject({ outcome: 'STORAGE_ERROR', message: `crash after the link. ${one} is live, and the next publish or rollback finishes recording it.` });
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+        const again = await rollTo(one, one);
+        expect(again.outcome).toBe('NO_CHANGES');
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:rollback:committed:1']);
+        expect(await bases(root)).toEqual([one]);
+    });
+
+    it('ENOSPC on the pointer write leaves the pointer and the working layer as they were, and a pending record the next run sets aside', async () => {
+        const { root, rollTo, one, two } = await twoRevisions({ seed: 286 });
+        const pointer = folderBytes(catalogPaths(root).active);
+        const authored = folderBytes(authoredPaths(root).dir);
+        const crashed = await rollTo(one, two, {
+            hooks: {
+                pointer: {
+                    beforeWrite: (temp) => {
+                        throw Object.assign(new Error(`ENOSPC: no space left on device, write '${temp}'`), { code: 'ENOSPC', path: temp });
+                    },
+                },
+            },
+        });
+        expect(crashed.outcome).toBe('STORAGE_ERROR');
+        expect(crashed.message).toMatch(/^ENOSPC on catalog\/active\/\.v\d+\.\d+\.[0-9a-f-]+\.tmp\. Nothing was rolled back\.$/);
+        expect(crashed.message).not.toContain(root);
+        expect(folderBytes(catalogPaths(root).active)).toEqual(pointer);
+        expect(folderBytes(authoredPaths(root).dir)).toEqual(authored);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: two });
+        expect((await listActivations(root)).at(-1)).toMatchObject({ status: 'pending', kind: 'rollback', revisionId: one });
+
+        const retry = await rollTo(one, two);
+        expect(retry.outcome).toBe('ROLLED_BACK');
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:rollback:abandoned:1', '4:rollback:committed:1']);
+    });
+
+    it("rolls back on top of a crashed publish's pending record, which never went live, setting it aside first", async () => {
+        const { catalog, root, rollTo, publishNow, editPhoto, one, two } = await twoRevisions({ seed: 287 });
+        await editPhoto(catalog.photos[1].id, (photo) => {
+            photo.caption = 'A caption that never goes live.';
+        });
+        const crashed = await publishNow({ hooks: { afterStep: (step) => { if (step === 10) throw new Error('crash after step 10'); } } });
+        expect(crashed.outcome).toBe('STORAGE_ERROR');
+        const pending = (await listActivations(root)).at(-1);
+        expect(pending).toMatchObject({ status: 'pending', kind: 'publish' });
+
+        const result = await rollTo(one, two);
+        expect(result).toMatchObject({ outcome: 'ROLLED_BACK', recovery: { abandoned: [pending?.activationId] } });
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:publish:abandoned:3', '4:rollback:committed:1']);
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: one });
+    });
+
+    it("rolls back on top of a crashed publish's pending record the pointer names, recording it committed first", async () => {
+        const { catalog, root, rollTo, publishNow, editPhoto, one } = await twoRevisions({ seed: 288 });
+        await editPhoto(catalog.photos[1].id, (photo) => {
+            photo.caption = 'A caption revision 3 publishes.';
+        });
+        const crashed = await publishNow({ hooks: { afterStep: (step) => { if (step === 11) throw new Error('crash after step 11'); } } });
+        const three = crashed.revisionId ?? crashed.candidateId ?? '';
+        expect(await readActivePointer(root)).toMatchObject({ revisionId: three });
+        const pending = (await listActivations(root)).at(-1);
+        expect(pending).toMatchObject({ status: 'pending', kind: 'publish', revisionNumber: 3 });
+
+        const planned = await planRollback({ dataRoot: root, to: { revisionNumber: 1 } });
+        expect(planned).toMatchObject({ outcome: 'READY', active: { revisionId: three, revisionNumber: 3 } });
+        const result = await rollTo(one, three);
+        expect(result).toMatchObject({ outcome: 'ROLLED_BACK', recovery: { committed: pending?.activationId } });
+        expect(await statuses(root)).toEqual(['1:publish:committed:1', '2:publish:committed:2', '3:publish:committed:3', '4:rollback:committed:1']);
+        expect((await listActivations(root)).at(-1)).toMatchObject({ previousRevisionId: three, previousActivationId: pending?.activationId });
     });
 });

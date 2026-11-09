@@ -1,4 +1,5 @@
 // @vitest-environment node
+import fs from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listActivations } from '@/lib/catalog/repository';
 import { readActivePointer, readAuthoredRecord } from '@/lib/catalog/working-layer';
@@ -9,7 +10,7 @@ import { resetSessionsForTests } from '@/lib/curation/auth/sessions';
 import { makeCuratorSecrets, type TestCuratorSecrets } from '@/test/helpers/curatorSecrets';
 import { folderBytes } from '@/test/helpers/folderBytes';
 import { setDataDir } from '@/test/helpers/tempDataRoot';
-import { createHistoryFixture, createPublishFixture, createRemovalsFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
+import { createEditorialFixture, createHistoryFixture, createPublishFixture, createRemovalsFixture, createRenameFixture, fixBoth, holdCatalogLock, SALT_ROADS, SALT_ROADS_IDS, SALT_ROADS_TITLES, setAssetsAside, type PublishFixture } from '@/test/helpers/publishFixture';
 
 // #15's 15-4 on real data roots, through the real curator boundary: the
 // page's History read, the restore action's guards (anonymous, a wrong
@@ -28,7 +29,7 @@ vi.mock('@/lib/catalog/rollback', async (importOriginal) => {
     return { ...actual, rollback: vi.fn(actual.rollback) };
 });
 
-const { rollback } = await import('@/lib/catalog/rollback');
+const { planRollback, rollback } = await import('@/lib/catalog/rollback');
 const { loadPublishPage } = await import('../load');
 const { publishAction, restoreAction } = await import('../actions');
 
@@ -392,5 +393,204 @@ describe('a restore that removes many photographs', () => {
                 { text: `Removes 8 photographs: ${SALT_ROADS_TITLES.slice(0, 5).join(', ')}`, more: SALT_ROADS_TITLES.slice(5) },
             ]),
         );
+    });
+});
+
+describe('a restore that brings back editorial errors (#117)', () => {
+    beforeEach(async () => {
+        await onRoot(() => createEditorialFixture());
+        // The fixture's own restore to revision 3 ran through the spy.
+        vi.mocked(rollback).mockClear();
+    });
+
+    /** Restore revision 4, as the dialog posts it, with one `accept` field per value. */
+    async function restoreFlagged(history: HistoryView, accepts: readonly (string | File)[], reason = 'Bring the dark accent back.'): Promise<RestoreState> {
+        const plan = history.plans[4];
+        if (!plan) throw new Error(`No plan for revision 4: ${Object.keys(history.plans).join(', ')}`);
+        const data = form({ revisionId: plan.revisionId, expectedActive: plan.activeRevisionId, reason });
+        for (const value of accepts) data.append('accept', value);
+        return restoreAction(RESTORE_IDLE, data);
+    }
+
+    it('plans one box per flagged rule, labelled in plain words', async () => {
+        const { history } = await page();
+        expect(history.plans[4].editorial).toEqual({
+            lead: "Today's checks flag one style on revision 4.",
+            rules: [{ id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" }],
+            note: 'Restoring brings it back as it was, and History records that you accepted it.',
+        });
+    });
+
+    it("gives the flagged rule a rollback's hint, the accept, not the publish fix", async () => {
+        const plan = await planRollback({ dataRoot: fixture.root, to: { revisionNumber: 4 } });
+        const issue = plan.issues.find((entry) => entry.code === 'accent.contrast');
+        expect(issue?.hint).toBe('A rollback brings this back only once you accept it: --accept accent.contrast with photos rollback, or its box in Restore on the Publish screen.');
+    });
+
+    it('refuses a post without the accept, whatever the dialog did: ACCEPTANCE_REQUIRED, unlogged, and nothing written', async () => {
+        const { history } = await page();
+        const before = folderBytes(fixture.root);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const result = resultOf(await restoreFlagged(history, []));
+            expect(result).toEqual({
+                tone: 'alert',
+                heading: "Revision 4 needs you to accept what today's checks flag",
+                body: ['Nothing was restored. Revision 3 stays live.'],
+                list: ["Salt Roads' accent color: it's hard to read on the Viewer's dark bands."],
+                actions: ['close', 'reload'],
+            });
+            expect(vi.mocked(rollback).mock.calls[0][0]).toMatchObject({ acceptedRules: [] });
+            expect(logged).not.toHaveBeenCalled();
+        } finally {
+            logged.mockRestore();
+        }
+        expect(folderBytes(fixture.root)).toEqual(before);
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe((fixture as PublishFixture & { live: string }).live);
+    });
+
+    it('restores with the accept, and the new entry says what was accepted', async () => {
+        const { history } = await page();
+        const state = await restoreFlagged(history, ['accent.contrast']);
+        expect(state.answer).toEqual({ kind: 'restored', sequence: 6, rebased: true });
+        const flagged = (fixture as PublishFixture & { flagged: string }).flagged;
+        expect((await readActivePointer(fixture.root))?.revisionId).toBe(flagged);
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ kind: 'rollback', actor: 'curator:web', revisionId: flagged, acceptedRules: ['accent.contrast'] });
+        const after = await page({ restored: 6 });
+        expect(after.history.entries[0]).toMatchObject({ title: 'Revision 4', extra: "Accepted at restore: an accent color that's hard to read on the Viewer's dark bands." });
+    });
+
+    it('drops junk accept values before rollback() sees them, and keeps at most 16', async () => {
+        const { history } = await page();
+        const junk = ['../../etc', 'ACCENT.CONTRAST', '', `accent.${'x'.repeat(60)}`, 'accent contrast', new File(['x'], 'accent.contrast')];
+        const many = Array.from({ length: 20 }, (_, index) => `test.rule-${index}`);
+        const result = resultOf(await restoreFlagged(history, [...junk, 'accent.format', 'accent.format', ...many]));
+        expect(result.heading).toBe("Revision 4 needs you to accept what today's checks flag");
+        expect(vi.mocked(rollback).mock.calls[0][0].acceptedRules).toEqual(['accent.format', ...many.slice(0, 15)]);
+        const state = await restoreFlagged(history, [...junk, 'accent.contrast']);
+        expect(state.answer?.kind).toBe('restored');
+        expect((await listActivations(fixture.root)).at(-1)?.acceptedRules).toEqual(['accent.contrast']);
+    });
+
+    it('runs requireCurator() first: an anonymous post that accepts everything is refused before a field is read', async () => {
+        const { history } = await page();
+        requestHeaders = new Headers({ ...ACTION });
+        const before = folderBytes(fixture.root);
+        const outcome = await restoreFlagged(history, ['accent.contrast']).catch((error: unknown) => error);
+        expect(isNotFound(outcome)).toBe(true);
+        expect(rollback).not.toHaveBeenCalled();
+        expect(folderBytes(fixture.root)).toEqual(before);
+    });
+});
+
+describe('a restore across a slug rename (#5)', () => {
+    beforeEach(async () => {
+        await onRoot(() => createRenameFixture());
+    });
+
+    /** Restore revision 3, from revision 4's /work/salt-roads-west back to /work/salt-roads, with one `accept` field per value. */
+    async function restoreAcross(history: HistoryView, accepts: readonly string[]): Promise<RestoreState> {
+        const plan = history.plans[3];
+        if (!plan) throw new Error(`No plan for revision 3: ${Object.keys(history.plans).join(', ')}`);
+        const data = form({ revisionId: plan.revisionId, expectedActive: plan.activeRevisionId, reason: 'Undo the new address.' });
+        for (const value of accepts) data.append('accept', value);
+        return restoreAction(RESTORE_IDLE, data);
+    }
+
+    it('asks for the address change by name, as an accept and not a refusal', async () => {
+        const { history } = await page();
+        expect(history.plans[3].editorial).toEqual({
+            lead: "Today's checks flag one address change on revision 3.",
+            rules: [{ id: 'route.slug-change', label: "Accept Salt Roads' address: it changes from /work/salt-roads-west to /work/salt-roads without keeping the old one" }],
+            note: 'Restoring brings it back as it was, and History records that you accepted it.',
+        });
+    });
+
+    it('restores nothing without the accept, and says what is still to accept', async () => {
+        const { history } = await page();
+        const before = folderBytes(fixture.root);
+        const result = resultOf(await restoreAcross(history, []));
+        expect(result).toMatchObject({
+            heading: "Revision 3 needs you to accept what today's checks flag",
+            list: ["Salt Roads' address: it changes from /work/salt-roads-west to /work/salt-roads without keeping the old one."],
+        });
+        expect(folderBytes(fixture.root)).toEqual(before);
+    });
+
+    it('restores with the accept, and History says what was accepted', async () => {
+        const { history } = await page();
+        const state = await restoreAcross(history, ['route.slug-change']);
+        expect(state.answer).toMatchObject({ kind: 'restored', rebased: true });
+        expect((await listActivations(fixture.root)).at(-1)).toMatchObject({ kind: 'rollback', actor: 'curator:web', acceptedRules: ['route.slug-change'] });
+        const sequence = state.answer?.kind === 'restored' ? state.answer.sequence : 0;
+        const after = await page({ restored: sequence });
+        expect(after.history.entries[0]).toMatchObject({ title: 'Revision 3', extra: "Accepted at restore: an address change that doesn't keep the old address." });
+        expect((await readAuthoredRecord(fixture.root, 'series', SALT_ROADS))).toMatchObject({ slug: 'salt-roads', slugAliases: [] });
+    });
+});
+
+// #181's A7: History reads the verify record as `photos rollback` does. A revision whose last photos verify
+// failed gets no Restore, and a post that names it anyway, even one carrying `accept=verify.failed`, writes
+// nothing: the override is the command line's alone.
+describe('a revision a photos verify failed (A7)', () => {
+    beforeEach(async () => onRoot(() => createPublishFixture()));
+
+    async function failRevision(revision: number): Promise<string> {
+        const { runVerifyCommand } = await import('@/lib/catalog/verify-cli');
+        const { verifyRecordPath } = await import('@/lib/catalog/verify');
+        const quiet = { out: () => undefined, err: () => undefined };
+        expect(await runVerifyCommand(fixture.root, { json: false }, quiet)).toBe(0);
+        const revisionId = (await listActivations(fixture.root)).find((activation) => activation.revisionNumber === revision)?.revisionId ?? '';
+        const record = JSON.parse(fs.readFileSync(verifyRecordPath(fixture.root), 'utf8')) as { revisions: { revisionId: string; ok: boolean; problems: string[]; problemCount: number }[] };
+        Object.assign(record.revisions.find((entry) => entry.revisionId === revisionId) ?? {}, { ok: false, problems: ['a set no longer matches its sha256'], problemCount: 1 });
+        fs.writeFileSync(verifyRecordPath(fixture.root), JSON.stringify(record));
+        return revisionId;
+    }
+
+    it('shows no Restore for it, and a reason that names photos verify', async () => {
+        await failRevision(1);
+        const { history } = await page();
+        expect(history.plans[1]).toBeUndefined();
+        expect(history.entries[1]).toMatchObject({ title: 'Revision 1', eligibility: { type: 'text', tone: 'alert', text: "It failed its last check, so it can't come back from here. Run photos verify to see what to fix." } });
+    });
+
+    // The A7 review: a record that can't be read refuses every Restore, so the server log says why, once per load.
+    it('logs why a damaged record refuses, once, and offers no Restore', async () => {
+        const { runVerifyCommand } = await import('@/lib/catalog/verify-cli');
+        const { verifyRecordPath } = await import('@/lib/catalog/verify');
+        expect(await runVerifyCommand(fixture.root, { json: false }, { out: () => undefined, err: () => undefined })).toBe(0);
+        fs.writeFileSync(verifyRecordPath(fixture.root), '{ not json');
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const { history } = await page();
+            expect(history.plans[1]).toBeUndefined();
+            expect(history.entries[1]).toMatchObject({ eligibility: { type: 'text', tone: 'alert', text: "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again." } });
+            expect(logged.mock.calls.filter(([line]) => String(line).includes("status/verify.json can't be read: it isn't valid JSON or a verify record."))).toHaveLength(1);
+        } finally {
+            logged.mockRestore();
+        }
+    });
+
+    it('refuses a post for it, accept=verify.failed included, unlogged, and writes nothing', async () => {
+        const live = (await readActivePointer(fixture.root))?.revisionId ?? '';
+        const target = await failRevision(1);
+        const before = folderBytes(fixture.root);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const data = form({ revisionId: target, expectedActive: live, reason: 'Bring it back anyway.' });
+            data.append('accept', 'verify.failed');
+            const result = resultOf(await restoreAction(RESTORE_IDLE, data));
+            expect(result).toEqual({
+                tone: 'alert',
+                heading: "Revision 1 failed its last check, so it can't come back",
+                body: ['Nothing was restored. Revision 2 stays live. Run photos verify to see what to fix.'],
+                actions: ['close', 'reload'],
+            });
+            expect(vi.mocked(rollback).mock.calls[0][0]).toMatchObject({ acceptedRules: [] });
+            expect(logged).not.toHaveBeenCalled();
+        } finally {
+            logged.mockRestore();
+        }
+        expect(folderBytes(fixture.root)).toEqual(before);
     });
 });

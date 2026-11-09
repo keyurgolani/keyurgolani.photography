@@ -93,6 +93,20 @@ function toLogin(host: string, scheme: 'http' | 'https', cookie: string | null):
     });
 }
 
+/**
+ * The series page and the Viewer: `/work/<slug>` and `/work/<slug>/photo/<photoId>`, one segment each, whatever their
+ * case. Their 308s (#5, #7) follow the active revision, so a rollback can undo one.
+ */
+const SERIES_PAGE_RE = /^\/work\/[^/]+(?:\/photo\/[^/]+)?$/;
+
+/**
+ * Their Cache-Control, set here rather than left to force-dynamic, as /gallery's is: a later `revalidate` or PPR
+ * would change Next's own header without a word, and a kept 308 would outlive the revision that sent it. Next keeps a
+ * Cache-Control the proxy set (its page handler writes one only when none is there), on the 200 and the redirect
+ * alike. It's the value Next gives a dynamic page, so a 200 reads as it did.
+ */
+export const SERIES_CACHE_CONTROL = 'private, no-cache, no-store, max-age=0, must-revalidate';
+
 /** Methods that only read. Anything else can reach a server action or a mutating handler. */
 const READ_METHODS = new Set(['GET', 'HEAD']);
 
@@ -121,9 +135,11 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
  *   for the action.
  * - `/gallery` gets a 308 to `/work` (galleryMoved()), behind the two checks
  *   above, so the curator process answers it only on the curator's `Host`.
+ * - The series and Viewer pages pass with SERIES_CACHE_CONTROL, so their
+ *   308s are never stored.
  * - Everything under /assets/photos gets a 404, at any depth: the original
- *   sources, and the legacy basename derivatives the watcher writes until
- *   the second PR of #13's slice E stops them. Photos serve only from the
+ *   sources, and any legacy basename derivatives a watcher before v1.7.0
+ *   wrote and the library still holds. Photos serve only from the
  *   /media sets the served revision holds. None of this reads the data root.
  */
 export function proxy(request: NextRequest): NextResponse {
@@ -184,6 +200,11 @@ export function proxy(request: NextRequest): NextResponse {
     if (!READ_METHODS.has(method) && method !== 'OPTIONS') return notFound();
     if (pathname === GALLERY_PATH && READ_METHODS.has(method)) return galleryMoved(request);
     if (isUnderPhotos(pathname)) return notFound();
+    if (SERIES_PAGE_RE.test(pathname) && READ_METHODS.has(method)) {
+        const response = NextResponse.next();
+        response.headers.set('Cache-Control', SERIES_CACHE_CONTROL);
+        return response;
+    }
     return NextResponse.next();
 }
 

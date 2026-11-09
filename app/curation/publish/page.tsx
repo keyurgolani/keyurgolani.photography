@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import CuratorHeader from '../CuratorHeader';
 import styles from '../curator.module.css';
 import { requireCurator } from '@/lib/curation/auth';
-import { publishAction, restoreAction } from './actions';
+import { publishAction, restoreAction, watchPublish } from './actions';
 import { numberFrom } from './history-load';
 import HistorySection from './HistorySection';
 import { loadPublishPage } from './load';
@@ -44,6 +44,7 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
                     previewHref={page.previewHref}
                     openFix={fix}
                     action={publishAction}
+                    watch={watchPublish}
                     historyParams={history}
                     history={<HistorySection view={page.history} action={restoreAction} openRestore={restore} />}
                 />
@@ -51,7 +52,10 @@ export default async function PublishPage({ searchParams }: PublishPageProps) {
                 <main className={styles.state}>
                     <p role="status" className={styles.visuallyHidden} />
                     <h1>Nothing is live yet</h1>
-                    <p>The first publish replaces the legacy Home and Gallery, and it runs from the command line, where it prints what changes and asks you to confirm the launch. History starts with that first publish.</p>
+                    <p>
+                        Until the first publish, Home and Work show an error page. The first publish runs from the command line, where it prints what changes and asks
+                        you to confirm the launch. History starts with that first publish.
+                    </p>
                     <p>
                         <code className={publish.command}>photos publish --confirm-launch</code>
                     </p>

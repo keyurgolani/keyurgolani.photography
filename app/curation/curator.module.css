@@ -787,6 +787,28 @@ p.fieldError {
   font-weight: 500;
 }
 
+/* #14: the watcher warning, a full-width strip under the header, above the list and the item, in the alert tone. */
+.watcherNotice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.625rem var(--site-gutter);
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.watcherNotice svg {
+  margin-top: 0.15rem;
+  color: var(--curator-tone-alert-ink);
+}
+
+/* Its pointer inside the item, for a phone that a deep link landed past the strip. A wide screen shows the strip itself. */
+.watcherPointer {
+  display: none;
+}
+
 /* The answer an approval or Decide later brought to the page it opened: the
    done tone, its check, one sentence and the way back, in one row when it
    fits. In the list it needs the list's own inset. */
@@ -961,6 +983,10 @@ main.state {
 
   .body > .list,
   .detail > .fields {
+    /* Each panel scrolls on its own, so it's the containing block of the hidden text inside it (a row's checkbox
+       name, Archive's spoken reason line, Confirm unavailable's note): nothing positioned in it gives the window room
+       to scroll (#145, A8's CI and review). */
+    position: relative;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -1081,6 +1107,25 @@ main.state {
     text-decoration: none;
   }
 
+  /* It spans the window's width, so its ring sits inside it, as a row's and a panel's do, or the window cuts its sides. */
+  .backToList:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-width));
+    box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark) !important;
+  }
+
+  .watcherPointer {
+    display: block;
+    margin: 0;
+    padding: 0.625rem 1.125rem;
+    border-bottom: 1px solid var(--curator-rule);
+    color: var(--curator-tone-alert-ink);
+    background: var(--curator-tone-alert-bg);
+  }
+
+  .watcherPointer a {
+    color: inherit;
+  }
+
   /* No rule under it here: Back to inbox's rule is just above, the notice has its own box, and the photo's ground below already separates it. */
   .arrivalStrip:not(:empty) {
     padding: 0.75rem 1.125rem;
@@ -1163,8 +1208,8 @@ main.state {
   --curator-field: #f8f5ee;
   --curator-box: #f2ede3;
   --curator-rule: #c9bfae;
-  /* For P2-8's outline on the selected row and tab: Light's strong rule is under 3:1 on the active fill, so the
-     outline takes the muted ink there. */
+  /* For P2-8's outline on the selected row and tab: Light's strong rule only just clears 3:1 on the active fill
+     (3.02), so the outline takes the muted ink there for margin (4.67). */
   --curator-selected-rule: #645a4e;
   /* Opaque already: the row's outline is the tab's. */
   --curator-selected-row-rule: #645a4e;
@@ -1243,4 +1288,195 @@ main.state {
    aria-current and its place in the tab row. */
 :global(html[data-theme='black']) .screen[aria-current='page'] {
   background: transparent;
+}
+
+/* #14 (A8): the Inbox top: the watcher strip, the offline state and the poll's line, each a full-width strip, each
+   straight in the page as the watcher strip was before A8. The poll's live region is in the page from the start; with
+   nothing said it takes no room. */
+.updatesEmpty:empty {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+
+.updates {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.updates p {
+  margin: 0;
+}
+
+/* An inline link in a sentence, so the target rule's inline exemption applies; it still gets room for the ring. */
+.updatesLink {
+  color: var(--gah-ink);
+  text-underline-offset: 0.2em;
+}
+
+/* #14 (A8): the list's filters, under its header: two native selects and Apply, in a row that wraps. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+.filter {
+  display: flex;
+  min-width: 9rem;
+  flex: 1 1 9rem;
+  flex-direction: column;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-label);
+}
+
+.filterActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.range {
+  margin: 0;
+  padding: 0.5rem 1rem 0;
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+/* #14 (A8): an item's age, under its ID, in the quiet label size. */
+.itemAge {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+/* #14 (A8): the bulk actions, above the rows they act on. */
+.bulk {
+  margin: 0;
+}
+
+.bulkBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0;
+}
+
+.bulk > .hint {
+  margin: 0.375rem 1rem 0;
+}
+
+.bulkAnswer:not(:empty) {
+  margin: 0.5rem 1rem 0;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+}
+
+.bulkAnswer p {
+  margin: 0;
+}
+
+.bulk > .errorSummary {
+  margin: 0.5rem 1rem 0;
+}
+
+/* A row with a checkbox: the box in its own 44 px column, beside the row's link, never inside it. The column is as
+   wide as what it holds and the link keeps its own padding, so with the column taken out the link sits where it was
+   before A8, as Dark parity compares it (A8's CI). */
+.pickRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.pick,
+.pickSpacer {
+  display: grid;
+  width: 44px;
+  place-items: center;
+  border-bottom: 1px solid var(--curator-rule);
+}
+
+/* The checkbox's name is visually hidden text, absolutely positioned. The column is its containing block, so its box
+   stays inside the list's own scroll and never gives the window room to scroll on a wide screen (#145, A8's CI). */
+.pick {
+  position: relative;
+}
+
+.pickRow > .item {
+  grid-column: 2;
+}
+
+/* A native checkbox, drawn at the full 44 px target so its box is what gets the focus token, inset so the list's own
+   scroll edge never clips the ring. The tick is the system's own, coloured by accent-color. */
+.pickBox {
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  accent-color: var(--curator-primary);
+  cursor: pointer;
+}
+
+.pickBox:focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  box-shadow: inset 0 0 0 calc(var(--focus-ring-width) + var(--focus-ring-offset)) var(--focus-ring-dark) !important;
+}
+
+/* #14 (A8): Previous and Next page, under the rows. */
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+}
+
+.pagerAt {
+  color: var(--gah-ink-muted);
+  font-size: var(--gah-type-label);
+}
+
+/* #14 (A8): the one error summary a failed submit shows: what failed, and a link to each record and field. */
+.errorSummary {
+  font-size: var(--gah-type-label);
+}
+
+.errorSummary:focus {
+  outline: none;
+}
+
+.errorSummary:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-light);
+}
+
+.errorTitle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  margin: 0;
+  font-family: var(--gah-font-sans);
+  font-size: var(--gah-type-ui);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.errorTitle svg {
+  flex: none;
+  margin-top: 0.15rem;
+}
+
+.errorList {
+  margin: 0.375rem 0 0;
+  padding-left: 1.5rem;
+}
+
+.errorList li + li {
+  margin-top: 0.25rem;
+}
+
+.errorList a {
+  color: var(--gah-ink);
+  text-underline-offset: 0.2em;
 }

@@ -178,6 +178,7 @@ describe('seriesPageOf on a revision', () => {
                 cover: {
                     photoId: P[1],
                     position: 3,
+                    title: null,
                     href: `/work/fixture-a/photo/${P[1]}`,
                     image: { width: cover.width, height: cover.height, variants: shippedLadder(cover.variants), lqip: cover.lqip },
                     focalPoint: { x: 0.4, y: 0.6 },
@@ -186,7 +187,9 @@ describe('seriesPageOf on a revision', () => {
                 },
                 total: 6,
                 // One page holds the whole sequence, so there's nothing to continue.
+                prevHref: null,
                 nextHref: null,
+                focusPhotoId: null,
                 entries: ORDER_A.map((photoId, index) => ({
                     photoId,
                     position: index + 1,
@@ -245,6 +248,16 @@ describe('seriesPageOf on a revision', () => {
         }
     });
 
+    it('never redirects to a slug another series\' record has taken, which would show that series', () => {
+        // A hand-written revision: two series under one slug. The later one takes it.
+        const clash = structuredClone(content);
+        clash.series[1].slug = 'fixture-a';
+        const clashReader = readerOf(clash);
+        expect(page(clashReader.getSeriesPage('fixture-a')).id).toBe('ser_fixture-b');
+        for (const slug of ['old-fixture-a', 'Old-Fixture-A']) expect(clashReader.getSeriesPage(slug), slug).toEqual({ kind: 'not-found' });
+        expect(clashReader.getSeriesPage('Fixture-A')).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
+    });
+
     it('lets a current slug win over another series\' alias', () => {
         const clash = structuredClone(content);
         clash.series[1].slugAliases = ['fixture-a'];
@@ -271,7 +284,7 @@ describe('seriesPageOf on a revision', () => {
         // One frozen value, so no not-found can differ from another by a field.
         expect(new Set(answers).size).toBe(1);
         expect(Object.isFrozen(answers[0])).toBe(true);
-        expect(answers[0]).toBe(reader.getSeriesPage('Fixture-A'));
+        expect(answers[0]).toBe(reader.getSeriesPage('Fixture-Draft'));
     });
 
     it('answers a series with nothing to open not-found, as Work leaves it out', () => {
@@ -297,14 +310,43 @@ describe('seriesPageOf on a revision', () => {
         expect(page(reader.getSeriesPage('fixture-b')).id).toBe('ser_fixture-b');
     });
 
-    it('answers a letter-case variant and other malformed slugs not-found, without reading the catalog', () => {
-        expect(reader.getSeriesPage('Fixture-A')).toEqual({ kind: 'not-found' });
-        expect(reader.getSeriesPage('OLD-FIXTURE-A')).toEqual({ kind: 'not-found' });
-        for (const slug of ['Fixture-A', '..', 'fixture-a/', 'fixture-a.json', ['fixture-a'], undefined, 'a'.repeat(65)]) {
+    it('redirects a letter-case variant of the slug or a former slug to the canonical one (#5, decided)', () => {
+        for (const slug of ['Fixture-A', 'FIXTURE-A', 'fixture-A', 'Old-Fixture-A', 'OLD-FIXTURE-A']) {
+            expect(reader.getSeriesPage(slug), slug).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
+        }
+        expect(reader.getSeriesPage('Fixture-B')).toEqual({ kind: 'redirect', slug: 'fixture-b', location: '/work/fixture-b' });
+    });
+
+    it('never loops: every redirect\'s target renders', () => {
+        for (const slug of ['Fixture-A', 'OLD-FIXTURE-A', 'old-fixture-a']) {
+            const result = reader.getSeriesPage(slug);
+            if (result.kind !== 'redirect') throw new Error(`${slug} did not redirect`);
+            expect(page(reader.getSeriesPage(result.slug)).href).toBe(result.location);
+        }
+    });
+
+    it('folds ASCII letters only, so no other character can fold into a slug', () => {
+        // U+212A KELVIN SIGN lowers to "k", U+0130 to "i̇", and U+017F LONG S uppers to "S": none is a letter-case variant here.
+        const kelvin = structuredClone(content);
+        kelvin.series[1].slug = 'kiln';
+        const kelvinReader = readerOf(kelvin);
+        expect(page(kelvinReader.getSeriesPage('kiln')).id).toBe('ser_fixture-b');
+        expect(kelvinReader.getSeriesPage('Kiln')).toEqual({ kind: 'redirect', slug: 'kiln', location: '/work/kiln' });
+        for (const slug of ['\u212Ailn', '\u0130ln', 'fixture-\u0130', 'fixture-\u017F']) expect(kelvinReader.getSeriesPage(slug), slug).toEqual({ kind: 'not-found' });
+    });
+
+    it('answers a letter-case variant of a draft, hidden, or unknown slug with the one not-found', () => {
+        for (const slug of ['Fixture-Draft', 'OLD-FIXTURE-DRAFT', 'Fixture-Hidden', 'Fixture-Z']) expect(reader.getSeriesPage(slug), slug).toBe(reader.getSeriesPage('fixture-z'));
+    });
+
+    it('answers a malformed slug not-found, without reading the catalog', () => {
+        for (const slug of ['..', 'fixture-a/', 'fixture-a.json', ['fixture-a'], undefined, 'a'.repeat(65), 'A'.repeat(65), 'Fixture--A', '\u212Ailn']) {
             expect(seriesPageOf(trap(), slug, routes)).toEqual({ kind: 'not-found' });
         }
         // The trap does fail once the slug passes, so the checks above prove the catalog went unread.
         expect(() => seriesPageOf(trap(), 'fixture-a', routes)).toThrow('The catalog was read');
+        // A letter-case variant is in shape once folded, so it reads the catalog, to find out whether it names a series.
+        expect(() => seriesPageOf(trap(), 'Fixture-A', routes)).toThrow('The catalog was read');
     });
 });
 
@@ -676,9 +718,9 @@ describe('the authored copy and metadata inputs', () => {
 describe('the allowlist', () => {
     it('returns only the approved fields: no accent, aliases, caption, credit, per-photo date, camera facts, profile, or source', () => {
         const result = page(readerOf(revisionContent()).getSeriesPage('fixture-a'));
-        expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'href', 'id', 'metadata', 'nextHref', 'slug', 'total', 'workHref']);
+        expect(Object.keys(result).sort()).toEqual(['authored', 'catalogRevision', 'chapters', 'cover', 'entries', 'facts', 'focusPhotoId', 'href', 'id', 'metadata', 'nextHref', 'prevHref', 'slug', 'total', 'workHref']);
         expect(Object.keys(result.entries[0]).sort()).toEqual(['description', 'href', 'image', 'photoId', 'position', 'title']);
-        expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'description', 'focalPoint', 'href', 'image', 'photoId', 'position']);
+        expect(Object.keys(result.cover ?? {}).sort()).toEqual(['crop', 'description', 'focalPoint', 'href', 'image', 'photoId', 'position', 'title']);
         expect(Object.keys(result.metadata).sort()).toEqual(['canonicalPath', 'description', 'shareImage', 'title']);
         const json = JSON.stringify(result);
         for (const leak of ['#a0b0c0', '#c08040', 'accent', 'old-fixture-a', 'slugAliases', 'Fixture caption', 'Fixture credit', 'Fixture Make', 'Fixture Model', 'technical', 'profileId', 'assetRevision', 'fixture-source-one', 'openingPhotoId', 'ser_fixture-b', 'fixture-draft', 'fixture-hidden', P[7], P[8], P[9]]) {
@@ -749,12 +791,15 @@ describe('seriesPageFrom', () => {
 
     it('answers a malformed slug not-found without loading the catalog', async () => {
         const load = vi.fn(async () => okCatalog());
-        for (const slug of ['Fixture-A', '..', undefined, ['fixture-a'], 'fixture-a.json']) {
+        for (const slug of ['..', undefined, ['fixture-a'], 'fixture-a.json', 'Fixture--A']) {
             expect(await seriesPageFrom(load, slug, routes)).toEqual({ kind: 'not-found' });
         }
         expect(load).not.toHaveBeenCalled();
         expect((await seriesPageFrom(load, 'fixture-a', routes)).kind).toBe('ok');
         expect(load).toHaveBeenCalledTimes(1);
+        // A letter-case variant reads the catalog and redirects.
+        expect(await seriesPageFrom(load, 'Fixture-A', routes)).toEqual({ kind: 'redirect', slug: 'fixture-a', location: '/work/fixture-a' });
+        expect(load).toHaveBeenCalledTimes(2);
     });
 
     it('reports a site with nothing published as unavailable, never a not-found or a redirect', async () => {

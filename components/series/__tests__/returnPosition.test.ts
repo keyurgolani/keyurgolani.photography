@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, clearReturn, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
+import { COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, SERIES_TITLE_ID, clearReturn, focusHeading, openerOf, readReturn, restoreReturn, scheduleRestore, withReturn } from '../returnPosition';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 
 // The series page's return record (#5): what goes into the series' history
@@ -278,6 +278,24 @@ describe('restoreReturn and scheduleRestore', () => {
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
+    it('waits for #6, with the opener on the page, when the extent starts before the server\'s page (a deep entry, B5), so the offset is put back on the whole layout', () => {
+        window.history.replaceState({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 1, loaded: 200 }, [RETURN_KEY]: record(PHOTO) }, '');
+        inView(document.getElementById(`photo-${PHOTO}`), 100);
+        scheduleRestore(record(PHOTO, 'entry', 4800), { ...SERIES, first: 101 });
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
+        restored();
+        expect(scrollTo).toHaveBeenCalledWith({ top: 4800, left: 0, behavior: 'instant' });
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
+    it('restores at once when the extent starts where the server\'s page does', () => {
+        window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 101, loaded: 200 } }, '');
+        inView(document.getElementById(`photo-${PHOTO}`), 100);
+        scheduleRestore(record(PHOTO), { ...SERIES, first: 101 });
+        expect(document.activeElement?.id).toBe(`photo-${PHOTO}`);
+    });
+
     it('does not wait for a busy section alone, which #6 can\'t have marked by the time the page mounts', () => {
         document.querySelector('section')?.setAttribute('aria-busy', 'true');
         scheduleRestore(record(LATE, 'entry', 0), SERIES);
@@ -372,6 +390,109 @@ describe('restoreReturn and scheduleRestore', () => {
         const remove = vi.spyOn(window, 'removeEventListener');
         scheduleRestore(record(LATE), SERIES)();
         expect(remove.mock.calls.map(([type, , options]) => [type, options])).toEqual(expect.arrayContaining([['keydown', true], ['pointerdown', true], ['wheel', true]]));
+    });
+});
+
+describe('the heading fallback (#5, B5)', () => {
+    const LEFT = 'ph_00000000-0000-4000-8000-000000000009';
+    const SERIES = { slug: 'harbor', revisionId: 'rev_a', total: 300 };
+    let scrollIntoView: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        document.body.innerHTML = `
+            <main>
+                <h1 id="${SERIES_TITLE_ID}">Harbor</h1>
+                <section aria-labelledby="series-sequence">
+                    <h2 id="series-sequence">Sequence</h2>
+                    <ol><li><a id="photo-${PHOTO}" href="/work/harbor/photo/${PHOTO}">Entry</a></li></ol>
+                </section>
+            </main>`;
+        window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+        scrollIntoView = vi.fn();
+        Element.prototype.scrollIntoView = scrollIntoView as unknown as Element['scrollIntoView'];
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+        window.history.replaceState(null, '');
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        document.body.innerHTML = '';
+    });
+
+    const heading = () => document.getElementById(SERIES_TITLE_ID) as HTMLElement;
+    const restoredEvent = () => document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+
+    it('is never the default: a restore that finds no opener leaves focus alone', () => {
+        expect(restoreReturn({ photoId: LEFT, opener: 'entry', scrollY: 0 })).toBeNull();
+        expect(document.activeElement).toBe(document.body);
+        expect(heading().hasAttribute('tabindex')).toBe(false);
+    });
+
+    it('focuses the series heading when asked to, once the photograph is known to be gone, and it takes focus only by script', () => {
+        vi.spyOn(heading(), 'getBoundingClientRect').mockReturnValue(rect(40, 60));
+        expect(restoreReturn({ photoId: LEFT, opener: 'entry', scrollY: 0 }, { heading: true })).toBe(heading());
+        expect(document.activeElement).toBe(heading());
+        expect(heading().getAttribute('tabindex')).toBe('-1');
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        // Once focus leaves it, it's out of reach again, as it was in the server HTML.
+        heading().blur();
+        expect(heading().hasAttribute('tabindex')).toBe(false);
+    });
+
+    it('scrolls it the least distance into view when the offset left it out', () => {
+        vi.spyOn(heading(), 'getBoundingClientRect').mockReturnValue(rect(-900, 60));
+        restoreReturn({ photoId: LEFT, opener: 'cover', scrollY: 2400 }, { heading: true });
+        expect(document.activeElement).toBe(heading());
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'instant' });
+    });
+
+    it('takes focus only from the body with onlyIfIdle', () => {
+        const entry = document.getElementById(`photo-${PHOTO}`) as HTMLElement;
+        entry.focus();
+        expect(restoreReturn({ photoId: LEFT, opener: 'entry', scrollY: 0 }, { onlyIfIdle: true, heading: true })).toBeNull();
+        expect(document.activeElement).toBe(entry);
+    });
+
+    it('hands an immediate miss to the caller, with no heading, and uses the record up', () => {
+        window.history.replaceState({ ...NEXT_KEYS, [RETURN_KEY]: { photoId: LEFT, opener: 'entry', scrollY: 0 } }, '');
+        const missing = vi.fn();
+        scheduleRestore({ photoId: LEFT, opener: 'entry', scrollY: 0 }, SERIES, missing);
+        expect(missing).toHaveBeenCalledWith({ photoId: LEFT, opener: 'entry', scrollY: 0 });
+        expect(document.activeElement).toBe(document.body);
+        expect(window.history.state).toEqual(NEXT_KEYS);
+    });
+
+    it('hands a miss over only once #6\'s saved pages have loaded, not at the timeout', () => {
+        vi.useFakeTimers();
+        window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, '');
+        const missing = vi.fn();
+        scheduleRestore({ photoId: LEFT, opener: 'entry', scrollY: 0 }, SERIES, missing);
+        vi.advanceTimersByTime(RESTORE_WAIT_MS);
+        expect(missing).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(document.body);
+        restoredEvent();
+        expect(missing).toHaveBeenCalledTimes(1);
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('hands nothing over when #6\'s pages bring the photograph back', () => {
+        window.history.replaceState({ [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', loaded: 200 } }, '');
+        const missing = vi.fn();
+        scheduleRestore({ photoId: LEFT, opener: 'entry', scrollY: 0 }, SERIES, missing);
+        const late = document.createElement('a');
+        late.id = `photo-${LEFT}`;
+        late.href = `/work/harbor/photo/${LEFT}`;
+        document.querySelector('ol')?.append(late);
+        restoredEvent();
+        expect(missing).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(late);
+    });
+
+    it('focusHeading does nothing without a heading', () => {
+        heading().remove();
+        expect(focusHeading()).toBeNull();
+        expect(document.activeElement).toBe(document.body);
     });
 });
 

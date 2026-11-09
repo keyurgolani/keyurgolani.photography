@@ -2,10 +2,12 @@
 import { describe, expect, it } from 'vitest';
 import type { RevisionChanges } from '@/lib/catalog/history';
 import {
+    acceptedWords,
     blockedText,
     blockingReasons,
     doneView,
-    editorialText,
+    editorialView,
+    editorialWords,
     historyView,
     HISTORY_LEAD,
     impactLines,
@@ -22,6 +24,7 @@ import {
     type HistoryViewInput,
     type OutcomeFacts,
     type PlanStatus,
+    type RestoreAddresses,
 } from '../publish-history';
 
 // #15's 15-4: History's view and copy from 15-2's results, without a data
@@ -276,9 +279,101 @@ describe('the impact list', () => {
         expect(same.lines).toEqual([{ text: "Its series and photographs are the same as revision 6's." }]);
     });
 
-    it('names an editorial rule the restore accepts', () => {
-        expect(editorialText([{ code: 'accent.contrast', record: { kind: 'series', id: 'ser_s' } }], ['accent.contrast'], names.seriesName)).toBe("Today's checks flag Salt Roads' accent color: it's hard to read on the Viewer's dark bands.");
-        expect(editorialText([], [], names.seriesName)).toBeUndefined();
+    it('gives each editorial rule the restore must accept its own label, in plain words with no rule ID', () => {
+        const contrast = { code: 'accent.contrast', record: { kind: 'series' as const, id: 'ser_s' } };
+        const format = { code: 'accent.format', record: { kind: 'series' as const, id: 'ser_h' } };
+        expect(editorialView([contrast], ['accent.contrast'], names.seriesName, 4)).toEqual({
+            lead: "Today's checks flag one style on revision 4.",
+            rules: [{ id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" }],
+            note: 'Restoring brings it back as it was, and History records that you accepted it.',
+        });
+        const two = editorialView([contrast, format], ['accent.contrast', 'accent.format'], names.seriesName, 4);
+        expect(two).toEqual({
+            lead: "Today's checks flag 2 styles on revision 4.",
+            rules: [
+                { id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" },
+                { id: 'accent.format', label: "Accept Harbor Nights' accent color: it isn't a color the site can show" },
+            ],
+            note: 'Restoring brings them back as they were, and History records that you accepted them.',
+        });
+        // No rule ID reaches the words, even for a rule the copy doesn't know yet.
+        const unknown = editorialView([{ code: 'tone.mood', record: { kind: 'site', id: 'site' } }], ['tone.mood'], names.seriesName, 4);
+        expect(unknown?.rules[0].label).toBe("Accept a style today's checks flag");
+        for (const view of [two, unknown]) for (const rule of view?.rules ?? []) expect(rule.label).not.toContain(rule.id);
+        expect(editorialView([], [], names.seriesName, 4)).toBeUndefined();
+        // Two rules the copy doesn't know get distinct names: their series, or their place in the list.
+        const strange = editorialView([{ code: 'tone.mood', record: { kind: 'site', id: 'site' } }, { code: 'tone.grain', record: { kind: 'site', id: 'site' } }, { code: 'tone.hue', record: { kind: 'series', id: 'ser_s' } }], ['tone.grain', 'tone.hue', 'tone.mood'], names.seriesName, 4);
+        expect(strange?.rules.map((rule) => rule.label)).toEqual(["Accept a style today's checks flag, 1 of 2", "Accept Salt Roads' style, which today's checks flag", "Accept a style today's checks flag, 2 of 2"]);
+        expect(editorialWords([contrast, format], ['accent.format'], names.seriesName)).toEqual(["Harbor Nights' accent color: it isn't a color the site can show"]);
+    });
+
+    describe('a restore across a rename (#5)', () => {
+        // Live, Harbor Nights is at /work/harbor. Revision 4 renamed it to /work/harbor-nights without keeping
+        // /work/harbor, and gave /work/harbor to Salt Roads as an old address.
+        const addresses: RestoreAddresses = {
+            live: [{ id: 'ser_h', slug: 'harbor', slugAliases: [] }, { id: 'ser_s', slug: 'salt-roads', slugAliases: [] }],
+            target: [{ id: 'ser_h', slug: 'harbor-nights', slugAliases: [] }, { id: 'ser_s', slug: 'salt-roads', slugAliases: ['harbor'] }],
+        };
+        const renamed = { code: 'route.slug-change', record: { kind: 'series' as const, id: 'ser_h' }, field: 'slug' };
+        const taken = { code: 'route.alias-reassigned', record: { kind: 'series' as const, id: 'ser_s' }, field: 'slugAliases[0]' };
+
+        it('names each address change in plain words, from and to, and calls it an address change, not a style', () => {
+            expect(editorialView([renamed], ['route.slug-change'], names.seriesName, 4, addresses)).toEqual({
+                lead: "Today's checks flag one address change on revision 4.",
+                rules: [{ id: 'route.slug-change', label: "Accept Harbor Nights' address: it changes from /work/harbor to /work/harbor-nights without keeping the old one" }],
+                note: 'Restoring brings it back as it was, and History records that you accepted it.',
+            });
+            const both = editorialView([renamed, taken], ['route.alias-reassigned', 'route.slug-change'], names.seriesName, 4, addresses);
+            expect(both?.lead).toBe("Today's checks flag 2 address changes on revision 4.");
+            expect(both?.rules).toEqual([
+                { id: 'route.alias-reassigned', label: "Accept Salt Roads' address: it takes /work/harbor from Harbor Nights" },
+                { id: 'route.slug-change', label: "Accept Harbor Nights' address: it changes from /work/harbor to /work/harbor-nights without keeping the old one" },
+            ]);
+            for (const rule of both?.rules ?? []) expect(rule.label).not.toContain(rule.id);
+        });
+
+        it('counts styles and address changes apart when a restore brings back both', () => {
+            const contrast = { code: 'accent.contrast', record: { kind: 'series' as const, id: 'ser_s' } };
+            expect(editorialView([contrast, renamed], ['accent.contrast', 'route.slug-change'], names.seriesName, 4, addresses)?.lead).toBe("Today's checks flag one style and one address change on revision 4.");
+        });
+
+        it("still says what changes when the addresses aren't known, or several series change at once", () => {
+            expect(editorialWords([renamed, taken], ['route.slug-change', 'route.alias-reassigned'], names.seriesName)).toEqual([
+                "Harbor Nights' address: it changes without keeping the old one",
+                "Salt Roads' address: it takes one another series has now",
+            ]);
+            const two = [renamed, { ...renamed, record: { kind: 'series' as const, id: 'ser_s' } }];
+            expect(editorialWords(two, ['route.slug-change'], names.seriesName, addresses)).toEqual(["Harbor Nights and Salt Roads' addresses: they change without keeping the old ones"]);
+        });
+
+        it("gives a name that doesn't end in s its 's", () => {
+            const dawn = (id: string) => (id === 'ser_h' ? 'Dawn' : names.seriesName(id));
+            expect(editorialWords([renamed, taken], ['route.slug-change', 'route.alias-reassigned'], dawn, addresses)).toEqual([
+                "Dawn's address: it changes from /work/harbor to /work/harbor-nights without keeping the old one",
+                "Salt Roads' address: it takes /work/harbor from Dawn",
+            ]);
+        });
+
+        it('names every address a restore drops when it drops more than the one it renames from', () => {
+            const twice: RestoreAddresses = {
+                live: [{ id: 'ser_h', slug: 'harbor-at-night', slugAliases: ['harbor-nights', 'harbor'] }],
+                target: [{ id: 'ser_h', slug: 'harbor', slugAliases: [] }],
+            };
+            expect(editorialWords([renamed], ['route.slug-change'], names.seriesName, twice)).toEqual(["Harbor Nights' address: it changes from /work/harbor-at-night to /work/harbor without keeping /work/harbor-at-night and /work/harbor-nights"]);
+        });
+
+        it('reads the final s in any case, and puts the apostrophe inside a closing quote or bracket', () => {
+            const named = (title: string) => editorialWords([renamed], ['route.slug-change'], () => title)[0].split(' address')[0];
+            expect(named('FILMS')).toBe("FILMS'");
+            expect(named('"Tides"')).toBe('"Tides\'"');
+            expect(named('(Dawn)')).toBe("(Dawn's)");
+            expect(named('Night [II]')).toBe("Night [II's]");
+        });
+
+        it('says in History what a restore across a rename accepted', () => {
+            expect(acceptedWords(['route.slug-change'])).toBe("an address change that doesn't keep the old address");
+            expect(acceptedWords(['route.slug-change', 'route.alias-reassigned'])).toBe("an address change that doesn't keep the old address and an address taken from another series");
+        });
     });
 });
 
@@ -333,6 +428,16 @@ describe("the dialog's answers", () => {
         expect(local(restoreResult('DATA_ROOT_NOT_READY', facts())).heading).toBe("The catalog folder isn't ready");
     });
 
+    it('acceptance required: nothing restored, what is still unaccepted in owner words, and Load the updated page', () => {
+        expect(local(restoreResult('ACCEPTANCE_REQUIRED', facts({ reasons: ["Salt Roads' accent color: it's hard to read on the Viewer's dark bands"] })))).toEqual({
+            tone: 'alert',
+            heading: "Revision 5 needs you to accept what today's checks flag",
+            body: ['Nothing was restored. Revision 6 stays live.'],
+            list: ["Salt Roads' accent color: it's hard to read on the Viewer's dark bands."],
+            actions: ['close', 'reload'],
+        });
+    });
+
     it('already live: moved facts, nothing more to do, and Load the updated page', () => {
         const result = local(restoreResult('NO_CHANGES', facts({ pointer: { revisionId: rev(5), number: 5 }, liveBy: { actor: 'curator:web', kind: 'rollback', at: '2026-10-27T09:11:00.000Z' }, settled: true })));
         expect(result).toEqual({ tone: 'done', heading: 'Revision 5 is already live', body: ['You restored it from this screen at 09:11. Nothing more to do.', 'History now records the restore that was interrupted.'], actions: ['reload'], moved: { impact: 'hide' } });
@@ -365,5 +470,47 @@ describe('the done notice', () => {
         expect(doneView({ ...restore, live: false }, 6, null, 0)).toBeUndefined();
         expect(doneView(row({ sequence: 8, revision: 5, live: true }), 4, null, 0)).toBeUndefined();
         expect(doneView(undefined, null, null, 0)).toBeUndefined();
+    });
+});
+
+// #181's A7: a revision whose recorded photos verify failed can't come back from History. The CLI's
+// --accept verify.failed is the only override, so History offers no Restore and no box for it.
+describe('a revision a photos verify failed (A7)', () => {
+    const rows = [
+        row({ sequence: 1, revision: 1, previous: null }),
+        row({ sequence: 2, revision: 2 }),
+        row({ sequence: 3, revision: 3, live: true }),
+    ];
+
+    it('shows no Restore, and a reason that names photos verify', () => {
+        const history = view(rows, { 2: { outcome: 'VERIFY_FAILED', reason: 'last-verify' }, 1: { outcome: 'VERIFY_FAILED', reason: 'record-damaged' } });
+        const [, two, one] = history.entries;
+        expect(two.eligibility).toEqual({ type: 'text', text: "It failed its last check, so it can't come back from here. Run photos verify to see what to fix.", tone: 'alert' });
+        expect(one.eligibility).toEqual({ type: 'text', text: "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again.", tone: 'alert' });
+    });
+
+    it("answers a post that reached it anyway without restoring, and names photos verify", () => {
+        const facts: OutcomeFacts = { target: 5, active: 6, activeRevisionId: rev(6), pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false };
+        expect(local(restoreResult('VERIFY_FAILED', facts))).toEqual({
+            tone: 'alert',
+            heading: "Revision 5 failed its last check, so it can't come back",
+            body: ['Nothing was restored. Revision 6 stays live. Run photos verify to see what to fix.'],
+            actions: ['close', 'reload'],
+        });
+    });
+
+    it('says when the record of the last check is what refused it', () => {
+        const facts: OutcomeFacts = { target: 5, active: 6, activeRevisionId: rev(6), pointer: { revisionId: rev(6), number: 6 }, targetRevisionId: rev(5), liveBy: null, holderSince: null, reasons: [], settled: false, verify: 'record-damaged' };
+        expect(local(restoreResult('VERIFY_FAILED', facts))).toEqual({
+            tone: 'alert',
+            heading: "The record of the last check can't be read, so revision 5 can't come back",
+            body: ['Nothing was restored. Revision 6 stays live. Run photos verify to check it again.'],
+            actions: ['close', 'reload'],
+        });
+    });
+
+    it('words an override the command line recorded', () => {
+        expect(acceptedWords(['verify.failed'])).toBe('a failed check from photos verify');
+        expect(acceptedWords(['accent.contrast', 'verify.failed'])).toBe("an accent color that's hard to read on the Viewer's dark bands and a failed check from photos verify");
     });
 });

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react';
 import styles from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { orderSeries } from './actions';
 import Thumbnail from './Thumbnail';
 import { errorFor, offWhile, useOrder } from './useOrder';
@@ -24,6 +25,8 @@ type Pressed = { photoId: string; control: 'up' | 'down' };
  */
 export default function SequenceEditor({ seriesId, order, activeRevisionId }: { seriesId: string; order: SeriesOrderView; activeRevisionId: string | null }) {
     const { state, pending, send, submit, answerRef } = useOrder(orderSeries, { seriesId, version: String(order.version), base: activeRevisionId ?? 'none' });
+    // Add and Move to a position submit by hand, so each waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const listRef = useRef<HTMLOListElement>(null);
     const addRef = useRef<HTMLFormElement>(null);
     const addPhotoRef = useRef<HTMLSelectElement>(null);
@@ -113,7 +116,7 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
             )}
             <SeriesAnswer state={state} regionRef={answerRef} refreshHref={`/curation/series/${seriesId}`} />
 
-            <form ref={addRef} className={series.subform} method="post" onSubmit={submit('insert')} aria-labelledby="add-photo-heading">
+            <form ref={addRef} className={series.subform} method="post" onSubmit={submit('insert')} aria-labelledby="add-photo-heading" {...submitGate(ready)}>
                 <h3 id="add-photo-heading">Add a photograph</h3>
                 {order.addable.length === 0 ? (
                     <p className={styles.hint}>No approved photograph is free to add. Approve new ones in the Inbox first.</p>
@@ -179,7 +182,7 @@ export default function SequenceEditor({ seriesId, order, activeRevisionId }: { 
             </form>
 
             {count > 2 ? (
-                <form className={series.subform} method="post" onSubmit={submit('move')} aria-labelledby="move-photo-heading">
+                <form className={series.subform} method="post" onSubmit={submit('move')} aria-labelledby="move-photo-heading" {...submitGate(ready)}>
                     <h3 id="move-photo-heading">Move to a position</h3>
                     <label className={styles.label}>
                         Photograph

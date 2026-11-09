@@ -1,7 +1,9 @@
 import type { Locator, Page } from '@playwright/test';
 import { CATALOG_ORIGIN, HOME_SERIES } from '../support/catalog-home';
 import { waitForHydration } from '../support/hydration';
+import { measure } from '../support/measure';
 import { expect, test } from '../support/test';
+import { failImage } from '../support/failImage';
 
 // Black, OLED (the OLED spec, round 2, approved for build): the screen's own black and nothing else, on the pages next
 // has. The photographs meet the screen's edge on Work and a series' head, the nav has no bar or hairline, the KG mark
@@ -58,6 +60,24 @@ function expectRingOnScreenAndAbove(ring: Awaited<ReturnType<typeof ringOf>>, wh
     expect(ring.outline.style, `${what}'s outline is kept for forced colours`).not.toBe('none');
 }
 
+/**
+ * A Work entry's ring (#171, B3): the focus token on its title link's ::after, which covers the whole entry. The white
+ * outline sits inset at the target's edge over the black band inside it, in a layer above the print, so the screen's
+ * edge, which the cover meets, never clips it, and the link's own box draws nothing.
+ */
+async function expectStretchedRing(link: Locator, what: string) {
+    const target = await measure(link, { pseudo: '::after' });
+    const own = await measure(link);
+    expect(target.focusVisible, `${what} shows its ring`).toBe(true);
+    expect(target.box.left, `${what}'s ring starts on screen`).toBeGreaterThanOrEqual(0);
+    expect(target.box.right, `${what}'s ring ends on screen`).toBeLessThanOrEqual(target.viewport.width);
+    const layer = await link.evaluate((el) => ({ position: getComputedStyle(el, '::after').position, zIndex: getComputedStyle(el, '::after').zIndex }));
+    expect([layer.position, layer.zIndex], `${what}'s ring sits above the print`).toEqual(['absolute', '1']);
+    expect(target.outline, `${what}: the white line, inset`).toMatchObject({ style: 'solid', width: 3, offset: -3, alpha: 1 });
+    expect(target.boxShadow, `${what}: the dark band inside it (P1-1)`).toMatch(/^rgb\(0, 0, 0\) 0px 0px 0px 6px inset$/);
+    expect([own.outline.style, own.boxShadow], `${what}'s title draws no ring of its own`).toEqual(['none', 'none']);
+}
+
 const style = (page: Page, selector: string, prop: string) => page.locator(selector).first().evaluate((el, name) => getComputedStyle(el).getPropertyValue(name), prop);
 
 for (const viewport of VIEWPORTS) {
@@ -83,7 +103,7 @@ for (const viewport of VIEWPORTS) {
 
     test(`at ${viewport.width}, Work's covers and a series' cover meet the screen's edge, with no box`, async ({ page }) => {
         await openBlack(page, '/work', viewport);
-        const cover = page.getByRole('main').locator('ul > li > a').first().locator('[class*="frame"]').first();
+        const cover = page.getByRole('main').locator('ul > li').first().locator('[class*="frame"]').first();
         const box = await cover.boundingBox();
         expect(box?.x, "Work's first cover starts at the screen's edge").toBe(0);
         expect(await cover.evaluate((el) => getComputedStyle(el).borderRadius), 'square corners').toBe('0px');
@@ -95,10 +115,17 @@ for (const viewport of VIEWPORTS) {
 
     test(`at ${viewport.width}, the focus ring on a Work cover and the series cover stays on screen and above the print`, async ({ page }) => {
         await openBlack(page, '/work', viewport);
-        const entry = page.getByRole('main').locator('ul > li > a').first();
+        const entry = page.getByRole('main').locator('ul > li h2 > a').first();
         await page.keyboard.press('Tab');
         await entry.evaluate((el) => (el as HTMLElement).focus({ preventScroll: true }));
-        expectRingOnScreenAndAbove(await ringOf(entry), 'a Work entry');
+        await expectStretchedRing(entry, 'a Work entry');
+        // Forced colours drop the band, and the outline then shows, solid at 3 px, in the system's colour.
+        await page.emulateMedia({ forcedColors: 'active' });
+        const forced = await measure(entry, { pseudo: '::after' });
+        expect(forced.boxShadow, "a Work entry's band in forced colours").toBe('none');
+        expect(forced.outline, "a Work entry's ring in forced colours").toMatchObject({ style: 'solid', width: 3 });
+        expect(forced.outline.alpha, "a Work entry's ring in forced colours").toBeGreaterThan(0);
+        await page.emulateMedia({ forcedColors: 'none' });
         await page.goto(`/work/${HOME_SERIES.slug}`);
         await waitForHydration(page);
         const cover = page.locator('main figure a').first();
@@ -158,8 +185,9 @@ test("the series cover's hover mark draws above the print, and a missing photogr
     expect(hover.zIndex).toBe('1');
     expect(hover.shadow).toMatch(/rgba\(255, 255, 255, 0\.4\).*inset/);
     // A thumbnail whose image fails: the box keeps its edge and its diagonal in the strong rule (C2-6.5).
-    await page.locator('section[aria-labelledby="series-sequence"] ol li a img').first().dispatchEvent('error');
     const missing = page.locator('section[aria-labelledby="series-sequence"] [data-photo="unavailable"]').first();
+    // Its WebP retry fails too (#6).
+    await failImage(page, 'section[aria-labelledby="series-sequence"] ol li a img', missing);
     await expect(missing).toHaveCount(1);
     const paint = await missing.evaluate((el) => ({ image: getComputedStyle(el).backgroundImage, shadow: getComputedStyle(el).boxShadow }));
     expect(paint.image, 'the diagonal').toContain('rgba(255, 255, 255, 0.4)');

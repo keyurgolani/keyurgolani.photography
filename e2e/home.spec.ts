@@ -90,7 +90,7 @@ for (const viewport of [undefined, { width: 640, height: 400 }]) {
 
 test('Tab goes through SiteNav, its theme control last, then both arrows and Pause, and Shift+Tab walks back', async ({ page }) => {
     await openHome(page);
-    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Dark now)', 'Enter the series', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
+    const stops = ['KG, Keyur Golani', 'Home', 'Work', 'About', 'Theme: System (Dark now)', 'Enter the series', 'All bodies of work', 'Previous photograph', 'Next photograph', 'Pause slideshow'];
     const forward: (string | undefined)[] = [];
     for (let press = 0; press < stops.length; press++) {
         await page.keyboard.press('Tab');

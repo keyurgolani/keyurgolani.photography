@@ -51,23 +51,35 @@ describe('the public routes', () => {
         const preview = curator.filter((file) => file.startsWith('app/curation/preview/'));
         expect(preview).toEqual(expect.arrayContaining(['app/curation/preview/[draftId]/page.tsx', 'app/curation/preview/[draftId]/site/page.tsx']));
         expect(curator.filter((file) => !preview.includes(file))).toEqual([
+            // #14 (v2.0.0 A8): the summary the Inbox's poll reads, behind requireCurator().
+            'app/api/curation/inbox/summary/route.ts',
             'app/api/curation/login/route.ts',
             'app/api/curation/logout/route.ts',
             'app/api/curation/media/[photoId]/[assetRevision]/[profileId]/[variant]/route.ts',
             'app/curation/CuratorHeader.tsx',
             'app/curation/inbox/ArrivalStrip.tsx',
+            // #14 (v2.0.0 A8): the bulk form, the error summary, and the poll with its offline state.
+            'app/curation/inbox/BulkActions.tsx',
             'app/curation/inbox/EmptyArrival.tsx',
+            'app/curation/inbox/ErrorSummary.tsx',
             'app/curation/inbox/EventBadge.tsx',
             'app/curation/inbox/InboxDetailView.tsx',
             'app/curation/inbox/InboxList.tsx',
+            'app/curation/inbox/InboxWatch.tsx',
             'app/curation/inbox/ItemActions.tsx',
             'app/curation/inbox/LandOnItem.tsx',
+            // #17: the library banner, which only the Inbox page loads, beside the watcher warning.
+            'app/curation/inbox/LibraryNotice.tsx',
             'app/curation/inbox/LocalTime.tsx',
             'app/curation/inbox/ReturnToRow.tsx',
+            // #14 (v2.0.0 A2): the watcher warning and its item pointer, which only the Inbox page and its item view load.
+            'app/curation/inbox/WatcherNotice.tsx',
             'app/curation/inbox/actions.ts',
             'app/curation/inbox/journey.ts',
             'app/curation/inbox/loading.tsx',
             'app/curation/inbox/page.tsx',
+            // #14: the wait for hydration that the Inbox's bulk and item forms share.
+            'app/curation/inbox/useHydrated.ts',
             'app/curation/login/page.tsx',
             'app/curation/page.tsx',
             'app/curation/publish/HistoryContext.tsx',

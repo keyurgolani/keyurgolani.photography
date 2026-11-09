@@ -148,7 +148,7 @@
      copy's top (--home-copy-top, the copy block's top as a percentage of the stage, which HeroReveal measures with
      badgePlace.ts's homeCopyTop()), then ends at 0 16% higher, so it follows a long title or large text up the
      photograph and leaves the rest clear. Black takes it too, in pure black, at every text size. contrast-home.mjs
-     reads the title at the hold. Dark keeps today's at default text. */
+     reads the title at the hold. Dark keeps today's at default text from 380 px on a taller stage (below). */
   :global(html[data-theme='light']) .vignette,
   :global(html[data-theme='bright']) .vignette,
   :global(html[data-theme='black']) .vignette {
@@ -157,11 +157,28 @@
     background: linear-gradient(0deg, rgb(var(--gah-scrim-rgb) / 0.92) 0%, rgb(var(--gah-scrim-rgb) / var(--home-wash-hold)) var(--home-hold-at), rgb(var(--gah-scrim-rgb) / 0) calc(var(--home-hold-at) + 16%));
   }
 
-  /* Dark, at enlarged text only (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large text lifts
-     the title, 1.77:1. Once the visitor enlarges the text (HeroReveal sets data-text-enlarged on Home's root), the wash
-     holds at 0.86 up to the copy's top, as the other themes' does, then eases to today's 0.12 above it. At default text
-     none of this applies, so Dark stays today's, rule for rule. Black holds at every size, in its own black, above. */
-  :global(html[data-theme='dark']) .root[data-text-enlarged] .vignette {
+  /* Dark, at enlarged text (spec §10, a sanctioned departure): today's fixed wash is 0.28 where large text lifts the
+     title, 1.77:1. Once the visitor enlarges the text (HeroReveal sets data-text-enlarged on Home's root), the wash
+     holds at 0.86 up to the copy's top, as the other themes' does, then eases to today's 0.12 above it. The same on a
+     short stage at default text: today's wash is set in percentages of the stage, so where the copy starts higher than
+     it holds (HeroReveal sets data-copy-high, from badgePlace.ts's copyAboveDarkWash()), as on a phone in Safari with
+     its toolbars showing or with reduced motion's hint, the title read under 4.5:1 over a white photograph. On a taller
+     stage at default text from 380 px none of this applies, so Dark stays today's, rule for rule. Black holds at every
+     size, in its own black, above. */
+  :global(html[data-theme='dark']) .root[data-text-enlarged] .vignette,
+  :global(html[data-theme='dark']) .root[data-copy-high] .vignette {
+    --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
+    background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.86) var(--home-hold-at), rgb(8 10 9 / 0.12) calc(var(--home-hold-at) + 16%), rgb(8 10 9 / 0.12) 100%);
+  }
+}
+
+/* Dark under 380 px, at every text size: today's fixed wash thins where a narrow phone's title sits, so over a white
+   photograph the title read 4.32:1 at 360 px with reduced motion (its hint lifts the copy) and 2.33:1 at 320 by 568,
+   under rule 8's 4.5. So there Dark's wash follows the copy as it does at enlarged text, the same gradient. From 380 px
+   Dark stays today's at default text, except on a short stage (data-copy-high, above). Black's wash already holds at
+   every size (above). */
+@media (max-width: 23.74rem) {
+  :global(html[data-theme='dark']) .vignette {
     --home-hold-at: calc(100% - var(--home-copy-top, 66%) + 1.5rem);
     background: linear-gradient(0deg, rgb(8 10 9 / 0.92) 0%, rgb(8 10 9 / 0.86) var(--home-hold-at), rgb(8 10 9 / 0.12) calc(var(--home-hold-at) + 16%), rgb(8 10 9 / 0.12) 100%);
   }

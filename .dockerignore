@@ -31,6 +31,8 @@ playwright.config.ts
 public/assets/photos/*
 !public/assets/photos/README.md
 !public/assets/photos/.gitkeep
+# The legacy folders scripts/host/legacy-move-aside.sh moves beside the library
+public/assets/photos.legacy-derivatives-*
 portfolio-data
 # The site config folder, so a checkout holding the owner's portrait never
 # copies it into the image. web reads it from a read-only mount instead.

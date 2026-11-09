@@ -9,12 +9,14 @@ import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import { LockTimeoutError, withLock, type LockContext } from '../storage/lock';
-import { pendingMergeOf } from './binds';
+import { pendingMergeOf, pendingRestoreOf } from './binds';
 import { backAtItsPath, unplacedApproval, type CurationDecision, type CurationEvent, type CurationEventStatus, type CuratorDescription, type CuratorEdits, type Placement } from './events';
-import { photoHolders } from './holders';
+import { mergeBlockers, photoHolders } from './holders';
+import { ownerCopyOf } from './owner-copy';
 import { placementIndex } from './placement';
 import { draftPlanText, readDraftPlan, replacedBy } from './pins';
 import { EventMovedError, EventUnusableError, readEvent, withCurationLock, writeEvent } from './repository';
+import { PLACEMENT_PRODUCER, placementFor } from './suggest';
 
 /**
  * The curator's actions on an inbox event: edit, approve, defer, dismiss,
@@ -321,7 +323,7 @@ function altOf(description: CuratorDescription): AuthoredAlt {
 }
 
 /** The series and position an approval uses: the command's, then the saved edits, then the suggestion for that same series. */
-function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: string | null; placement: Placement | null; picked: boolean; description: CuratorDescription | null | undefined } {
+function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: string | null; placement: Placement | null; picked: boolean; suggested: boolean; description: CuratorDescription | null | undefined } {
     const edits = event.edits;
     let seriesId = choices.seriesId;
     let fromSuggestion = false;
@@ -335,15 +337,34 @@ function resolveChoices(event: CurationEvent, choices: Choices): { seriesId: str
     }
     if (seriesId === null) {
         if (choices.placement !== undefined) fail('needs-choice', 'A photograph left unassigned has no position.');
-        return { seriesId: null, placement: null, picked: false, description: choices.description !== undefined ? choices.description : edits?.description };
+        return { seriesId: null, placement: null, picked: false, suggested: false, description: choices.description !== undefined ? choices.description : edits?.description };
     }
     let placement = choices.placement;
     // Edits made without picking a series apply to the suggested one.
     if (placement === undefined && edits?.placement !== undefined && (edits.seriesId ?? event.suggestions.series?.value) === seriesId) placement = edits.placement;
     // Only the command or a saved edit picks a position. A generated one is a suggestion, never an authored move.
     const picked = placement !== undefined;
-    if (placement === undefined && (fromSuggestion || event.suggestions.series?.value === seriesId)) placement = event.suggestions.placement?.value;
-    return { seriesId, placement: placement ?? 'end', picked, description: choices.description !== undefined ? choices.description : edits?.description };
+    const suggested = placement === undefined && (fromSuggestion || event.suggestions.series?.value === seriesId) && event.suggestions.placement !== null;
+    if (suggested) placement = event.suggestions.placement?.value;
+    return { seriesId, placement: placement ?? 'end', picked, suggested, description: choices.description !== undefined ? choices.description : edits?.description };
+}
+
+/**
+ * A8 review S3: the suggested position, again, against the series now. A capture-date suggestion (placement@2) is
+ * worked out again among the series' dated photographs, the photograph itself left out; any other suggestion keeps
+ * its position while its anchor is still in the series, and goes at the end once it isn't.
+ */
+function suggestedPlacementNow(event: CurationEvent, series: AuthoredSeries, registry: Registry, stored: Placement, at: string): Placement {
+    const photoId = event.photoId as string;
+    const members = series.photoIds.filter((id) => id !== photoId);
+    if (event.suggestions.placement?.producedBy === PLACEMENT_PRODUCER) {
+        const dated = members.map((id) => {
+            const photo = Object.hasOwn(registry.photos, id) ? registry.photos[id] : undefined;
+            return { photoId: id, capturedDate: photo?.revisions[photo.source.observedRevision]?.derived.capturedDate?.value ?? null };
+        });
+        return placementFor(event.derivedFacts.capturedDate ?? null, dated, series.id, at, photoId).value;
+    }
+    return typeof stored === 'object' && !members.includes(stored.after) ? 'end' : stored;
 }
 
 /** The refusal for "unassigned" while a series that might hold the photo can't be read. The page words it through lib/curation/inbox-form.ts. */
@@ -373,12 +394,27 @@ export function approveEvent(
          * lookup reads once the series drops the photo.
          */
         keepPlaced?: boolean;
+        /**
+         * A8 review S2: refuse "unassigned" for an item with a series saved on it, which the inbox's bulk Leave
+         * unassigned would otherwise drop. Checked under the lock, so a series saved after the page loaded counts.
+         */
+        keepSavedSeries?: boolean;
+        /**
+         * The inbox's Restore: go through only as the archived restore below, never as a plain approval. Checked
+         * under the lock against the registry, so a photograph whose bytes are no archived photograph's by then,
+         * which a page loaded earlier offered Restore for, is stale and nothing is written.
+         */
+        restoreOnly?: boolean;
     },
 ): Promise<ActionOutcome> {
     return act(input, async (step) => {
         const { event } = step;
+        // A saved "Leave unassigned" (null) is the same choice, so only a saved series is refused.
+        if (input.keepSavedSeries && input.choices.seriesId === null && typeof event.edits?.seriesId === 'string') {
+            fail('refused', `${event.id} has the series ${event.edits.seriesId} saved on it, so leaving it unassigned would drop that choice. Approve it with that series, or change it first. Nothing was written.`);
+        }
         if (event.type !== 'new') {
-            const owner = event.type === 'ambiguous' ? 'photos identity bind or photos identity new' : event.type === 'replacement' || event.type === 'missing' ? "#17's confirm and archive steps" : 'dismiss';
+            const owner = event.type === 'ambiguous' ? 'curation resolve or curation bind --to' : event.type === 'replacement' || event.type === 'missing' ? "#17's confirm and archive steps" : 'dismiss';
             fail('refused', `Only a new photograph is approved into the draft. A ${event.type} event is settled with ${owner}.`);
         }
         requireStatus(event, ['open', 'deferred'], 'approved');
@@ -397,7 +433,7 @@ export function approveEvent(
         // pending decision is either seen here or already a merge in the registry read below, which is then stale.
         const merge = await pendingMergeOf(root, photoId).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
         if (merge) {
-            fail('refused', `${photoId} is merged into ${merge.into} by the bind decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the bind, approve it then. Nothing was written.`);
+            fail('refused', `${photoId} is merged into ${merge.into} by the ${merge.kind} decision ${merge.decisionId}, which the watcher applies on its next pass. A series would then list a retired photograph, so it can't be approved. If the watcher refuses the ${merge.kind}, approve it then. Nothing was written.`);
         }
         const registry = await readRegistry(root).catch((error: unknown) => fail('damaged', `The identity registry can't be read: ${(error as Error).message}. Nothing was written.`));
         const photo = registry.photos[photoId];
@@ -405,6 +441,12 @@ export function approveEvent(
             const now = !photo ? 'is not in the registry' : photo.mergedInto !== undefined ? `was merged into ${photo.mergedInto}` : photo.sourceHealth !== 'present' ? `is ${photo.sourceHealth}` : `is now ${photo.source.observedRevision}`;
             fail('stale', `The source changed since this event: ${photoId} ${now}. Review the newer event instead. Nothing was written.`);
         }
+        // #17, A5 (Decided 10): an archived photograph whose bytes came back returns under its old ID.
+        const original = photo.duplicateOf === null ? undefined : registry.photos[photo.duplicateOf];
+        if (original !== undefined && original.sourceHealth === 'archived' && original.mergedInto === undefined) {
+            return restoreArchived(step, input, root, photoId, original.photoId, photo.source.path);
+        }
+        if (input.restoreOnly) fail('stale', `${photoId}'s bytes are no archived photograph's now, so there is nothing to restore. Nothing was written.`);
 
         const writes: WrittenRecord[] = [];
         const notes: string[] = [];
@@ -430,7 +472,8 @@ export function approveEvent(
                     }
                 }
                 resolved = resolveChoices(event, choices);
-                const { seriesId, placement, picked, description } = resolved;
+                const { seriesId, picked, description } = resolved;
+                let placement = resolved.placement;
                 const existing = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
                 // Check the placement before writing anything, so a refused one leaves the working layer as it was.
                 let op: SeriesOp | null = null;
@@ -448,6 +491,13 @@ export function approveEvent(
                     series = await readAuthored<AuthoredSeries>(root, 'series', seriesId);
                     if (series === null) fail('refused', `There is no series ${seriesId}. Nothing was written.`);
                     const target = series as AuthoredSeries;
+                    // A8 review S3: a suggested position was worked out when the item opened, so it's worked out again
+                    // here, against the series as the authored lock holds it: a batch then lands in date order, and an
+                    // anchor that left the series falls back to the end. A position the curator picked is theirs.
+                    if (!picked && resolved.suggested) {
+                        placement = suggestedPlacementNow(event, target, registry, placement as Placement, step.at);
+                        resolved = { ...resolved, placement };
+                    }
                     const member = target.photoIds.includes(photoId);
                     if (member && !picked) {
                         // Already placed, and nobody picked a position: it keeps its place.
@@ -521,6 +571,56 @@ export function approveEvent(
         const next = decided(step, input, { action: 'approve', seriesId, ...(placement && !kept ? { placement } : {}), writes }, 'approved', { edits });
         return { event: next, notes };
     });
+}
+
+/**
+ * Approving a new photograph whose bytes or pixels are an archived
+ * photograph's (#17, A5): it writes #10's `restore` decision, which brings
+ * the archived one back under its old ID with this file and merges this
+ * photograph into it, and the event. It writes no photo record: the
+ * archived photograph keeps its own, copy and all. Its own new item opens
+ * again once the watcher applies the restore, to place it, and this item
+ * closes as `restored`. A photograph a series, the active revision, or a
+ * retained revision already shows can't be merged, so it is refused, as a
+ * bind's merge is.
+ */
+async function restoreArchived(step: Step, input: ActionInput & { choices: Choices }, root: string, photoId: string, archived: string, at: string): Promise<Change> {
+    const { choices } = input;
+    if (choices.seriesId !== undefined || choices.placement !== undefined || choices.description !== undefined) {
+        fail('needs-choice', `${photoId}'s bytes are the archived photograph ${archived}'s, so approving it restores ${archived} under its old ID, with its own photo record and copy. Approve it with no series, position, or description, then place ${archived} from its own item once the watcher restores it. Nothing was written.`);
+    }
+    // One restore of a photograph at a time: a second duplicate's would only be refused by the watcher.
+    const waiting = await pendingRestoreOf(root, archived).catch((error: unknown) => fail('damaged', `${(error as Error).message}. Nothing was written.`));
+    if (waiting) {
+        fail('refused', `A restore of ${archived} already waits for the watcher's next pass: the decision ${waiting.decisionId}, with ${waiting.path}. Wait for that pass. If the watcher refuses it, its item opens again and says why. Nothing was written.`);
+    }
+    const found = await mergeBlockers(root, photoId);
+    if ('unknown' in found) fail('damaged', `${found.unknown.message.replace(' Nothing was deleted.', '')} So nothing shows whether ${photoId} is in use. Nothing was written.`);
+    const { shown, retained, record } = found as Exclude<typeof found, { unknown: unknown }>;
+    if (shown.length > 0 || retained.length > 0) {
+        fail('refused', `${photoId} is in use (${[...shown, ...retained.map((id) => `the retained revision ${id}`)].join(', ')}), and restoring ${archived} would retire it. Take it out first. Nothing was written.`);
+    }
+    // As a bind's merge refuses it (lib/curation/resolutions.ts): the merge retires the duplicate and drops its record's copy.
+    if (record) {
+        const authored = await readAuthored<AuthoredPhoto>(root, 'photo', photoId);
+        const copy = authored ? ownerCopyOf(authored) : [];
+        if (copy.length > 0) {
+            fail('refused', `${photoId} has a photo record in the draft with the owner's ${copy.join(', ')}. Restoring ${archived} merges ${photoId} into it, which drops that copy. Move the copy to ${archived} once it is back, or clear it, then approve again. Nothing was written.`);
+        }
+    }
+    const edits = step.event.edits;
+    const saved = edits !== null && (edits.seriesId !== undefined || edits.placement !== undefined || edits.description !== undefined);
+    const decision = createDecision({ type: 'restore', path: at, photoId: archived, merge: photoId, actor: input.actor, reason: `curation ${step.event.id}` }, { clock: input.clock });
+    await writeDecision(root, decision);
+    return {
+        event: decided(step, input, { action: 'approve', restores: archived, path: at, identityDecisionId: decision.decisionId, writes: [] }, 'approved'),
+        notes: [
+            `Approved: the restore decision ${decision.decisionId} restores ${archived} under its old ID with ${at}, merging ${photoId} into it, on the watcher's next pass, unless the file is still changing.`,
+            `${archived} keeps its photo record. Its own new item opens again then, to place it in a series. Nothing is published until photos publish runs.`,
+            ...(saved ? [`The edits saved on this item are not used: ${archived} keeps its own photo record and copy.`] : []),
+            `If the watcher refuses it, as when the file moves first, this item opens again and says why.`,
+        ],
+    };
 }
 
 /** A working-layer record, or a damaged-data failure naming it. */

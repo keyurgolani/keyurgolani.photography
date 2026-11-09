@@ -10,6 +10,7 @@ import { DATA_ROOT_FILE, libraryRoot } from '../../storage/config';
 import { versionFile } from '../../storage/document';
 import { LockLostError, withLock } from '../../storage/lock';
 import { initDrafts, runDraftInit } from '../draft-init';
+import { globalSlot } from '../../globalSlot';
 import { CUTOVER_KEY } from '../mode';
 import { listPhotos, ownerStatus, runListCommand, runStatusCommand } from '../owner-status';
 import { publish, type PublishOptions } from '../publish';
@@ -74,14 +75,14 @@ describe('photos status', () => {
         expect(text).toContain('Unassigned: 1 photo in the library that no series lists');
         expect(text).toContain('Watcher heartbeat: 60 s ago (2026-10-24T12:00:00.000Z)');
         // #17: the inbox's open missing sources and failures, none here.
-        expect(text).toContain('Inbox: 0 missing sources, 0 failures open');
+        expect(text).toContain('Inbox: 0 need review, 0 missing sources, 0 failures, 0 ambiguous, 0 stale');
     });
 
     it('never says nothing is published on a data root that has published, even with no revision to name', async () => {
         const catalog = await fixture();
         // This process remembers a publish there (CUTOVER_KEY), as a web process that served the launch does, so it
         // answers active-unreadable while no revision can be read, never not-published.
-        const seen = (globalThis as typeof globalThis & { [CUTOVER_KEY]?: Set<string> })[CUTOVER_KEY] ??= new Set<string>();
+        const seen = globalSlot(CUTOVER_KEY, () => new Set<string>());
         const root = path.resolve(catalog.root);
         seen.add(root);
         cleanups.push(async () => void seen.delete(root));
@@ -98,7 +99,7 @@ describe('photos status', () => {
         const result = await runStatusCommand({ dataRoot: catalog.root }, { json: true });
         const status = JSON.parse(result.output) as Awaited<ReturnType<typeof ownerStatus>>;
         expect(Object.keys(status)).toEqual(['identity', 'catalog', 'working', 'inbox']);
-        expect(status.inbox).toEqual({ missing: [], failed: [], unreadable: 0 });
+        expect(status.inbox).toEqual({ counts: { needsReview: 0, missing: 0, held: 0, failed: 0, ambiguous: 0, stale: 0 }, library: null, missing: [], held: [], failed: [], ambiguous: [], stale: [], unreadable: 0, placementUnknown: false });
         expect(status.catalog).toMatchObject({ published: 'published', active: { revisionNumber: 1, status: 'committed', kind: 'publish', actor: 'test' }, lastPublish: { outcome: 'PUBLISHED' } });
         expect(status.working).toMatchObject({ site: true, photoRecords: 4, unassigned: [catalog.photos[3].id] });
     });

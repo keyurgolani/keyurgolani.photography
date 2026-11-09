@@ -3,10 +3,11 @@ import 'server-only';
 import type { VariantFormat, VariantWidth } from '../../identity/variants';
 import { decodeSeriesCursor, encodeSeriesCursor } from '../cursor';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
-import { sequenceSections, type SequenceSection } from '../series-sections';
+import { photoParamOf } from '../routes';
+import { SERIES_PAGE_SIZE, sequenceSections, type SequenceSection } from '../series-sections';
 import type { Crop, FocalPoint, SeriesRecord } from '../types';
 import { imageOf, type Ladder } from './ladder';
-import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
+import { CENTER, focal, openableSeries, routeSlug, seriesParams, text, type ScreenCatalog } from './shared';
 
 export { seriesParams } from './shared';
 
@@ -23,19 +24,16 @@ export { seriesParams } from './shared';
  * allowlist bounds those props too.
  *
  * The sequence comes in pages of SERIES_PAGE_SIZE (#6): the page model
- * holds the first, and seriesContinuationOf() each one after it, for
- * `/api/catalog/series/<slug>/pages/<cursor>`. Both build entries the same
- * way, so a continued entry is the entry the first page would have shown.
+ * holds one, the first, or with `?photo=` the one that holds that
+ * photograph (B5), and seriesContinuationOf() each one before or after it,
+ * for `/api/catalog/series/<slug>/pages/<cursor>`. Both build entries the
+ * same way, so a continued entry is the entry the page model would have
+ * shown.
  */
 
 type Photo = CatalogContent['photos'][number];
 
-/**
- * Entries per page, the first server-rendered one and each continuation.
- * Within #6's approved bound (at most 100 photo records or 100 KiB
- * compressed); lib/perf's budget tests hold every page to both.
- */
-export const SERIES_PAGE_SIZE = 100;
+export { SERIES_PAGE_SIZE } from '../series-sections';
 
 /** Where the catalog endpoints start on the public site. */
 const API_CATALOG = '/api/catalog/';
@@ -80,6 +78,8 @@ export interface SeriesCover {
     photoId: string;
     /** The cover's place in the sequence, 1-based. */
     position: number;
+    /** The photograph's authored title, or null, as its entry carries it, so the cover's name leads with it too. */
+    title: string | null;
     /** The cover's Viewer link. */
     href: string;
     image: SeriesImage;
@@ -155,12 +155,25 @@ export interface PublishedSeriesPage {
     facts: SeriesFacts;
     /** Null when the cover can't be shown, so the page opens text-led. */
     cover: SeriesCover | null;
-    /** The first page: up to SERIES_PAGE_SIZE of the members that resolve, in the series' `photoIds` order, from position 1. Never empty. */
+    /**
+     * One page: up to SERIES_PAGE_SIZE of the members that resolve, in the
+     * series' `photoIds` order. The first, from position 1, or the page that
+     * holds `focusPhotoId`. Never empty.
+     */
     entries: SeriesEntry[];
     /** How many members resolve: the whole sequence, the count #7's Viewer gives as "of N". */
     total: number;
-    /** The next page's continuation path, or null when `entries` is the whole sequence. */
+    /** The page before this one's continuation path (Show earlier, B5), or null when `entries` starts at position 1. */
+    prevHref: string | null;
+    /** The next page's continuation path, or null when `entries` runs to the end of the sequence. */
     nextHref: string | null;
+    /**
+     * The photograph a valid `?photo=` named, when it's one of this series'
+     * members in this revision, for the page to focus (B5). Null otherwise,
+     * and then the page is the plain one. It comes from the record, never
+     * from the request.
+     */
+    focusPhotoId: string | null;
     /** Authored chapters over the whole sequence, in order, each starting after the last. Never a second order. */
     chapters: SeriesChapter[];
     metadata: SeriesMetadataInputs;
@@ -172,6 +185,8 @@ export interface SeriesContinuation {
     revisionId: string;
     /** Up to SERIES_PAGE_SIZE entries, built as the first page's are, with their absolute positions. */
     entries: SeriesEntry[];
+    /** The page before this one, or null at the start of the sequence (Show earlier, B5). */
+    prevHref: string | null;
     /** The page after this one, or null at the end of the sequence. */
     nextHref: string | null;
 }
@@ -187,7 +202,11 @@ export type SeriesContinuationResult =
 
 export type SeriesPageResult =
     | { kind: 'ok'; page: PublishedSeriesPage }
-    /** The slug is a former one. The route answers 308 to `location`, the canonical series path. */
+    /**
+     * The slug is a former one, or a letter-case variant of the slug or a
+     * former one. The route answers 308 to `location`, the canonical series
+     * path, with the request's query after it.
+     */
     | { kind: 'redirect'; slug: string; location: string }
     /** Malformed, unknown, draft, hidden, removed, or empty. The route renders the one public not-found page. */
     | { kind: 'not-found' };
@@ -272,18 +291,20 @@ type Resolved =
  * The series `slug` names in one source, for the page and its continuation
  * alike: a malformed slug, an unknown one, and a series openableSeries()
  * refuses (a repeated ID, no positive published count, or no member that
- * resolves) are all not-found. Members are the ones that resolve, in
+ * resolves) are all not-found. A letter-case variant of a slug or a former
+ * one finds its series too, as not canonical, so the page redirects it and
+ * the continuation refuses it. Members are the ones that resolve, in
  * `photoIds` order, the list #7's Viewer counts, so positions agree.
  */
 function resolveSeries(source: SeriesSource, slug: unknown): Resolved {
-    const params = seriesParams(slug);
+    const params = routeSlug(slug);
     if (params === null) return NOT_FOUND;
     const hit = source.seriesBySlug(params.slug);
     if (hit === null) return NOT_FOUND;
     const { series } = hit;
     // Work's rule, so Work never links a page that is not-found and the page never serves a series Work leaves out.
     if (!openableSeries(source, series)) return NOT_FOUND;
-    return { kind: 'ok', series, canonical: hit.canonical, members: source.photosOf(series.id), photoCount: series.derived.photoCount };
+    return { kind: 'ok', series, canonical: hit.canonical && params.exact, members: source.photosOf(series.id), photoCount: series.derived.photoCount };
 }
 
 /** The entries of one page, from member `offset` on, with their absolute positions. */
@@ -304,18 +325,45 @@ function nextHrefOf(revisionId: string, series: SeriesRecord, offset: number, to
     return routes.catalogApiHref(seriesPagesPath(series.slug, encodeSeriesCursor({ revisionId, seriesId: series.id, offset })).slice(API_CATALOG.length));
 }
 
+/** The continuation path of the page before the one at member `offset`, or null when that one starts the sequence. */
+function prevHrefOf(revisionId: string, series: SeriesRecord, offset: number, total: number, routes: Routes): string | null {
+    return offset <= 0 ? null : nextHrefOf(revisionId, series, offset - SERIES_PAGE_SIZE, total, routes);
+}
+
+/**
+ * The member `?photo=` names and the offset of the page that holds it, or
+ * the first page and no photograph. The value has to be one photo ID as it
+ * stands (photoParamOf()), and one of these members, which come from the
+ * revision being served, so an unknown ID, another series' photograph, or a
+ * photograph that has left the series gets the plain page. Nothing from the
+ * request reaches the page but a member's own ID.
+ */
+function deepEntryOf(members: readonly Photo[], photoId: unknown): { offset: number; focusPhotoId: string | null } {
+    const wanted = photoParamOf(photoId);
+    const index = wanted === null ? -1 : members.findIndex((photo) => photo.id === wanted);
+    if (index === -1) return { offset: 0, focusPhotoId: null };
+    return { offset: index - (index % SERIES_PAGE_SIZE), focusPhotoId: members[index].id };
+}
+
+/** What a series page request asks for beyond its slug: `?photo=`'s value, unread until deepEntryOf() checks it. */
+export interface SeriesPageQuery {
+    photoId?: unknown;
+}
+
 /**
  * Resolve `/work/<slug>` in one source: resolveSeries()'s not-found cases,
  * then a former slug whose canonical slug the route would refuse, the series
  * #3's Work leaves out, so Work never links a missing page and the page never
- * serves a series Work hides; a former slug redirects; anything else is the
+ * serves a series Work hides; a former slug, or a letter-case variant of the
+ * slug or a former one, redirects to the canonical slug, which renders, so a
+ * redirect never loops; anything else is the
  * projection, with the first page of entries and the path to the next.
  * Hrefs come from `routes`: #13's `publicRoutes` on the site, a preview's own
  * builder in a preview. The continuation path comes from it too: the
  * public endpoint, which serves only the active revision, or a preview's
  * mirror of it.
  */
-export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes): SeriesPageResult {
+export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes, query: SeriesPageQuery = {}): SeriesPageResult {
     const resolved = resolveSeries(source, slug);
     if (resolved.kind === 'not-found') return NOT_FOUND;
     const { series, members, photoCount } = resolved;
@@ -323,11 +371,14 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes
         // Only route.slug-format, at render, checks a canonical slug's shape. If the route's own check would refuse it, the
         // 308 would be permanent and point at a page that is always not-found, so a series the route can't serve has no former slugs.
         if (seriesParams(series.slug) === null) return NOT_FOUND;
+        // A hand-written revision can give two series one slug, and the later takes it: the 308 would show the other series.
+        if (source.seriesBySlug(series.slug)?.series !== series) return NOT_FOUND;
         return { kind: 'redirect', slug: series.slug, location: routes.seriesHref(series.slug) };
     }
 
     const coverId = series.cover?.photoId;
-    const entries = pageOf(series, members, 0, routes);
+    const { offset, focusPhotoId } = deepEntryOf(members, query.photoId);
+    const entries = pageOf(series, members, offset, routes);
     // Members are the series' photoIds that resolve, so a cover from anywhere else finds nothing (#3's rule).
     const coverIndex = typeof coverId === 'string' ? members.findIndex((photo) => photo.id === coverId) : -1;
     const coverPhoto = coverIndex === -1 ? null : members[coverIndex];
@@ -336,6 +387,7 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes
         ? {
             photoId: coverPhoto.id,
             position: coverIndex + 1,
+            title: text(coverPhoto.title),
             href: routes.photoHref(series.slug, coverPhoto.id),
             image: coverImage,
             focalPoint: { ...(focal(series.cover.focalPoint) ?? focal(coverPhoto.focalPoint) ?? CENTER) },
@@ -360,7 +412,9 @@ export function seriesPageOf(source: SeriesSource, slug: unknown, routes: Routes
             cover,
             entries,
             total: members.length,
-            nextHref: nextHrefOf(source.revisionId, series, SERIES_PAGE_SIZE, members.length, routes),
+            prevHref: prevHrefOf(source.revisionId, series, offset, members.length, routes),
+            nextHref: nextHrefOf(source.revisionId, series, offset + SERIES_PAGE_SIZE, members.length, routes),
+            focusPhotoId,
             chapters: chaptersOf(series, members),
             metadata: {
                 canonicalPath: href,
@@ -402,6 +456,7 @@ export function seriesContinuationOf(source: SeriesSource, slug: unknown, cursor
         page: {
             revisionId: source.revisionId,
             entries: pageOf(series, members, position.offset, routes),
+            prevHref: prevHrefOf(source.revisionId, series, position.offset, members.length, routes),
             nextHref: nextHrefOf(source.revisionId, series, position.offset + SERIES_PAGE_SIZE, members.length, routes),
         },
     };
@@ -442,12 +497,13 @@ export async function seriesPageFrom<Reason extends string>(
     load: () => Promise<SeriesActiveCatalog<Reason>>,
     slug: unknown,
     routes: Routes,
+    query: SeriesPageQuery = {},
 ): Promise<SeriesPageResult | { kind: 'unavailable'; reason: Reason }> {
-    const params = seriesParams(slug);
-    if (params === null) return NOT_FOUND;
+    // A letter-case variant is in shape once folded, so it reads the catalog, and the projection answers its 308.
+    if (routeSlug(slug) === null) return NOT_FOUND;
     const catalog = await load();
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
-    return catalog.reader.getSeriesPage(params.slug, routes);
+    return catalog.reader.getSeriesPage(slug as string, routes, query);
 }
 
 /**

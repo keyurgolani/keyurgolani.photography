@@ -1,4 +1,5 @@
 import type { HistoryView } from './publish-history';
+import type { TextPart } from './text-diff';
 
 /**
  * #16's Publish screen (16-3): the view the page renders and the facts that
@@ -30,7 +31,8 @@ export interface OrderCompare {
 }
 
 export type Compare =
-    | { type: 'text'; before: string | null; after: string | null }
+    /** `diff`: the words kept, removed and added (A9), which the screen shows as `<del>` and `<ins>`. */
+    | { type: 'text'; before: string | null; after: string | null; diff?: TextPart[] }
     | { type: 'images'; before: Picture | null; after: Picture | null }
     | OrderCompare
     /** A new photograph's description, on its own: there is no published one to set it beside. */
@@ -66,6 +68,22 @@ export type Fix =
     /** `command`: the photos command with the record's full ID, which a rebase conflict's fix carries (15-4). */
     | { type: 'hint'; text: string; command?: string };
 
+/**
+ * A9's "Use the published value" on a row: the record and field the writer
+ * puts back, and exactly what the page read of it. `record` is the
+ * action's accessible name after the label ("the order of Salt Roads, from Pier lamps' move"), and
+ * `note` says when it puts back more than the row shows.
+ */
+export interface UsePublishedFix {
+    kind: 'site' | 'series' | 'photo';
+    id: string;
+    field: string;
+    version: number;
+    valueHash: string;
+    record: string;
+    note?: string;
+}
+
 export interface LedgerRow {
     id: string;
     kind: KindLabel;
@@ -75,6 +93,7 @@ export interface LedgerRow {
     blocks: boolean;
     compare?: Compare;
     fix?: Fix;
+    usePublished?: UsePublishedFix;
 }
 
 export interface Ledger {
@@ -93,6 +112,33 @@ export interface Blocker {
     field: string;
     message: string;
     link: BlockerLink;
+}
+
+/**
+ * Where a warning takes the curator: a series' own page, or for a photograph the fix its ledger row already offers,
+ * its description review on this screen or its Inbox item.
+ */
+export type WarningLink = { type: 'series'; href: string; name: string } | { type: 'description'; rowId: string; name: string } | { type: 'inbox'; eventId: string; name: string };
+
+/**
+ * A warning a check of the draft found: a rule of severity warning, which never blocks a publish. Its message and
+ * hint are the rule's own, as `photos validate` prints them; `record` names the series, with its slug, so two of one
+ * title read apart, or the photograph; `link` is where to fix it, where there's one.
+ */
+export interface PublishWarning {
+    key: string;
+    record: string;
+    field: string;
+    message: string;
+    hint: string | null;
+    link: WarningLink | null;
+}
+
+/** The answer's line about the warnings listed above it, where the focus lands, or none. */
+export function warningsLine(warnings: readonly PublishWarning[] | undefined): string[] {
+    const n = warnings?.length ?? 0;
+    if (n === 0) return [];
+    return [n === 1 ? "1 warning, listed above, which doesn't block publishing." : `${n} warnings, listed above, which don't block publishing.`];
 }
 
 /** A revision as the page names it. */
@@ -115,6 +161,21 @@ export interface PanelView {
     scrollToId?: string;
 }
 
+/**
+ * #117: whether the active revision is rollback-ready, from verify.ts's
+ * rollbackReadiness(), repeated here so this module stays client-safe.
+ * `verified`: the live checks pass and the last `photos verify` passed it.
+ * `live-ok`: the live checks pass and no verify has checked it. Both show
+ * the line. `failed`: evidence of a problem, which a warning that names the
+ * fix shows in its place: the live checks fail, a verify failed it, its
+ * record can't be read, or the pointer chain doesn't show it going live.
+ * `unknown`: the gate found no live revision to judge, which a page that
+ * loaded a live one never sees, so it shows neither.
+ */
+export type RollbackReadiness =
+    | { state: 'verified' | 'live-ok' | 'unknown' }
+    | { state: 'failed'; reason: 'live-check' | 'last-verify' | 'record-damaged' | 'chain' };
+
 /** Everything a page load knows: Unvalidated, or one of the Nothing states. */
 export interface ScreenView {
     draftId: string;
@@ -128,13 +189,18 @@ export interface ScreenView {
     ledger: Ledger;
     /** The blockers the review context shows on load, before any Validate. */
     blockers: Blocker[];
+    /** The warnings this load's own check of the draft found, current with the draft and the registry's source health. */
+    warnings?: PublishWarning[];
     panel: PanelView;
+    /** Whether the active revision is rollback-ready (#117), which the line while a draft is pending says. */
+    rollbackReady: RollbackReadiness;
 }
 
 export type Answer =
-    | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger }
-    | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger }
-    | { kind: 'valid'; stakes: string }
+    | { kind: 'blocked'; lead: string; blockers: Blocker[]; ledger: Ledger; warnings?: PublishWarning[] }
+    | { kind: 'blocked-at-publish'; lead: string; blockers: Blocker[]; ledger: Ledger; warnings?: PublishWarning[] }
+    /** `warnings`: what this check found that never blocks, in the rules' own words. */
+    | { kind: 'valid'; stakes: string; warnings?: PublishWarning[] }
     /** 15-4: `history` is History read again, on every answer that moved the pointer or found it moved. */
     | { kind: 'published'; live: RevisionFacts; previous: RevisionFacts | null; history?: HistoryView }
     | { kind: 'already-live'; live: RevisionFacts; previous: RevisionFacts | null; by: Publisher | null; history?: HistoryView }
@@ -145,6 +211,8 @@ export type Answer =
     | { kind: 'failed'; heading: string; body: string; live: RevisionFacts | null; previous: RevisionFacts | null; retry: 'validate' | 'publish'; history?: HistoryView }
     | { kind: 'not-validated' }
     | { kind: 'fixed'; rowId: string }
+    /** A9: Use the published value wrote the live value back; the row leaves the ledger, so this says what happened. */
+    | { kind: 'reverted'; text: string }
     | { kind: 'fix-refused'; rowId: string; text: string };
 
 /** Who made the active revision live, read from its activation: a publish or a rollback, by an actor, at a time. */
@@ -154,7 +222,21 @@ export interface Publisher {
     at: string;
 }
 
-export type Intent = 'validate' | 'publish' | 'mark-description' | 'mark-reviewed';
+export type Intent = 'validate' | 'publish' | 'mark-description' | 'mark-reviewed' | 'use-published';
+
+/**
+ * A9's watch (lib/curation/publish-watch.ts): what the server says when the
+ * open page asks again. `ok`: the rows stale now, by row ID with their
+ * summaries, and whether the draft compiles to another candidate than the
+ * page shows. `base-moved`: another revision is live. `unavailable`: the
+ * input wasn't the page's, or the catalog couldn't be read. The boundary
+ * refusing the check isn't an answer: the call rejects, as every curator
+ * action's refusal does (A9 CI fix).
+ */
+export type WatchAnswer =
+    | { kind: 'ok'; stale: { rowId: string; summary: string }[]; draftChanged: boolean }
+    | { kind: 'base-moved'; live: RevisionFacts }
+    | { kind: 'unavailable' };
 
 /**
  * What the screen's one action returns. `serial` grows with every answer, so
@@ -200,11 +282,15 @@ export interface DisplayFacts {
         count?: string;
         copyLine?: string;
         rollback: string | null;
+        /** #117: the rollback line is a warning, set in the alert tone. */
+        rollbackTone?: 'alert';
     };
     bar: { validate: ActionState; publish: ActionState; reason?: string; loadUpdated: boolean } | null;
     /** The ledger and blockers to show: the latest answer's when it carries a fresh join, else the page's. */
     ledger: Ledger;
     blockers: Blocker[];
+    /** The warnings to list while a draft is pending: the latest check's on this page, else the page load's own. None otherwise. */
+    warnings: PublishWarning[];
     /** True while Publish may go: a validation of this candidate passed on this page and still holds. */
     validated: boolean;
 }
@@ -301,15 +387,40 @@ export function orderRuns({ before, after, from, to }: Pick<OrderCompare, 'befor
 }
 
 /**
- * The rollback line: while a draft is pending, the active revision (approved
- * line); otherwise the activation before the active one, restored from
- * History below (15-4). `ready` is AC 14's seam: the deferred lastKnownGood()
- * gate sets it false when photos:verify fails for the active revision, and
- * nothing sets it yet, so the line always shows.
+ * #117's warning in place of the rollback-ready line, and of the Validate
+ * stakes clause, on evidence that revision `n` isn't rollback-ready. Each
+ * names the fix: `photos verify` says what fails and what to do about it.
  */
-function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null, ready = true): string | null {
-    if (pending) return ready ? `Last-known-good revision ${active.number} remains rollback-ready.` : null;
-    return previous ? `Revision ${previous.number} is kept. Restore it from History, below.` : null;
+export function rollbackWarning(n: number, reason: Extract<RollbackReadiness, { state: 'failed' }>['reason']): string {
+    switch (reason) {
+        case 'last-verify':
+            return `Revision ${n} failed its last check, so it isn't rollback-ready. Run \`photos verify\` to see what to fix.`;
+        case 'live-check':
+            return `Revision ${n} fails the checks a restore runs, so it isn't rollback-ready. Run \`photos verify\` to see what to fix.`;
+        case 'record-damaged':
+            return `Revision ${n} isn't rollback-ready: the record of its last check can't be read. Run \`photos verify\` in the watcher's container to write it again.`;
+        case 'chain':
+            return `Revision ${n} isn't rollback-ready: the activation records don't show it going live. Run \`photos verify\` to check the active pointer, or restore a revision from History, below.`;
+    }
+}
+
+/** The Validate answer's last clause about revision `n`, with its leading space, or nothing when the page can't say. */
+export function rollbackStakes(n: number, ready: RollbackReadiness): string {
+    if (ready.state === 'failed') return ` ${rollbackWarning(n, ready.reason)}`;
+    return ready.state === 'unknown' ? '' : ` Revision ${n} stays rollback-ready.`;
+}
+
+/**
+ * The rollback line: while a draft is pending, the active revision (approved
+ * line), gated by `ready` (#117, AC 14): the line while the live checks pass
+ * and no `photos verify` has failed it, a warning that names the fix on any
+ * evidence of a problem. Otherwise the activation before the active one,
+ * restored from History below (15-4), which the gate doesn't cover.
+ */
+function rollbackLine(pending: boolean, active: RevisionFacts, previous: RevisionFacts | null, ready: RollbackReadiness = { state: 'live-ok' }): Pick<DisplayFacts['panel'], 'rollback' | 'rollbackTone'> {
+    if (!pending) return { rollback: previous ? `Revision ${previous.number} is kept. Restore it from History, below.` : null };
+    if (ready.state === 'failed') return { rollback: rollbackWarning(active.number, ready.reason), rollbackTone: 'alert' };
+    return { rollback: ready.state === 'unknown' ? null : `Last-known-good revision ${active.number} remains rollback-ready.` };
 }
 
 const PREVIEW_PANEL_TITLE = 'Visitor preview';
@@ -319,13 +430,15 @@ const PREVIEW_PANEL_TITLE = 'Visitor preview';
  * from the page or the answer, and an answer that moved the pointer carries
  * the new one, so the page never shows a number it no longer believes.
  */
-export function displayFacts(view: ScreenView, answer: Answer | null, previewHref: string | null): DisplayFacts {
+export function displayFacts(view: ScreenView, answer: Answer | null, previewHref: string | null, baseMoved: RevisionFacts | null = null): DisplayFacts {
     const n = view.draftNumber;
     const fresh = answer && (answer.kind === 'blocked' || answer.kind === 'blocked-at-publish') ? answer : null;
     // A passing Validate is the gate's word: no row blocks then, whatever the page predicted on load.
     const cleared = (ledger: Ledger): Ledger => ({ authored: ledger.authored.map((row) => ({ ...row, blocks: false })), derived: ledger.derived.map((row) => ({ ...row, blocks: false })), health: ledger.health });
     const ledger = fresh?.ledger ?? (answer?.kind === 'valid' ? cleared(view.ledger) : view.ledger);
     const blockers = fresh?.blockers ?? (answer?.kind === 'valid' ? [] : view.blockers);
+    // A warning never blocks: the latest check's, when it carries them, else what the last check of this draft found.
+    const warnings = (fresh ?? (answer?.kind === 'valid' ? answer : null))?.warnings ?? view.warnings ?? [];
     const draftGroups = { authored: 'Authored · requires judgment', derived: 'Derived · recalculated automatically' };
     const liveGroups = { authored: 'Authored', derived: 'Derived' };
     const draftLabels = { before: 'Published', after: 'This draft' };
@@ -353,11 +466,12 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
                 frameSrc: view.panel.liveSrc,
                 count: view.panel.count,
                 copyLine: 'What visitors see now.',
-                rollback: rollbackLine(false, view.active, view.previous),
+                ...rollbackLine(false, view.active, view.previous),
             },
             bar: null,
             ledger,
             blockers: [],
+            warnings: [],
             validated: false,
         };
     }
@@ -383,11 +497,12 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             ...(view.panel.scrollToId ? { scrollToId: view.panel.scrollToId } : {}),
             count: view.panel.count.replace(/, was \d+$/, ''),
             copyLine: 'What visitors see now.',
-            rollback: rollbackLine(false, current, previous),
+            ...rollbackLine(false, current, previous),
         },
         bar,
         ledger,
         blockers: [],
+        warnings: [],
         validated: alert,
     });
 
@@ -402,16 +517,20 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
         }, true);
     }
 
-    if (answer?.kind === 'changed' || answer?.kind === 'someone-published') {
-        const pointer = answer.kind === 'someone-published' ? answer.live : view.active;
-        const previous = answer.kind === 'someone-published' ? answer.previous : null;
+    // A9: the watch found another revision live after the page loaded. An answer that says more about it reads first.
+    const moved = baseMoved && answer?.kind !== 'changed' && answer?.kind !== 'someone-published' ? baseMoved : null;
+    if (answer?.kind === 'changed' || answer?.kind === 'someone-published' || moved) {
+        const pointer = answer?.kind === 'someone-published' ? answer.live : moved ?? view.active;
+        const previous = answer?.kind === 'someone-published' ? answer.previous : null;
         return {
             mode: 'out-of-date',
             heading: 'Preview your draft',
             countLine: OUT_OF_DATE_COUNT,
             revision: { current: `Current public revision ${pointer.number}`, hashes: hashes(pointer, false) },
             ledgerHeading: 'Change ledger, out of date',
-            outOfDate: `This compares the draft this page loaded against revision ${view.active.number}.`,
+            outOfDate: moved
+                ? `Base moved. Revision ${moved.number} went live after this page loaded, so this compares the draft against revision ${view.active.number}.`
+                : `This compares the draft this page loaded against revision ${view.active.number}.`,
             groups: draftGroups,
             compareLabels: draftLabels,
             publishedLabels: false,
@@ -423,11 +542,12 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
                 frameTitle: 'Visitor preview of the draft catalog',
                 frameSrc: null,
                 frameNote: 'Load the updated ledger to preview the new draft.',
-                rollback: answer.kind === 'someone-published' ? rollbackLine(false, pointer, previous) : rollbackLine(true, view.active, null),
+                ...(answer?.kind === 'someone-published' ? rollbackLine(false, pointer, previous) : moved ? rollbackLine(false, pointer, null) : rollbackLine(true, view.active, null, view.rollbackReady)),
             },
             bar: { validate: 'hidden', publish: 'hidden', loadUpdated: true },
             ledger,
             blockers: [],
+            warnings: [],
             validated: false,
         };
     }
@@ -461,11 +581,12 @@ export function displayFacts(view: ScreenView, answer: Answer | null, previewHre
             ...(view.panel.scrollToId ? { scrollToId: view.panel.scrollToId } : {}),
             count: view.panel.count,
             copyLine: view.panel.copyLine,
-            rollback: rollbackLine(true, view.active, null),
+            ...rollbackLine(true, view.active, null, view.rollbackReady),
         },
         bar: { validate: 'available', publish: validated ? 'available' : 'unavailable', ...(reason ? { reason } : {}), loadUpdated: false },
         ledger,
         blockers,
+        warnings,
         validated,
     };
 }
@@ -475,11 +596,11 @@ export function resultCopy(answer: Answer, view: ScreenView, timeZone = 'UTC'): 
     const n = view.draftNumber;
     switch (answer.kind) {
         case 'blocked':
-            return { tone: 'alert', heading: 'Publication blocked', body: [answer.lead] };
+            return { tone: 'alert', heading: 'Publication blocked', body: [answer.lead, ...warningsLine(answer.warnings)] };
         case 'blocked-at-publish':
-            return { tone: 'alert', heading: 'Nothing was published', body: [answer.lead] };
+            return { tone: 'alert', heading: 'Nothing was published', body: [answer.lead, ...warningsLine(answer.warnings)] };
         case 'valid':
-            return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes] };
+            return { tone: 'done', heading: 'Catalog revision is valid', body: ['All references resolve. The previous public revision remains live.', answer.stakes, ...warningsLine(answer.warnings)] };
         case 'published':
             // The owner's words (v1.2.1), in place of the mockup's "published atomically" and its ETag line.
             return { tone: 'done', heading: `Revision ${answer.live.number} is live`, body: ['Visitors get it on their next page load.'] };

@@ -1,25 +1,32 @@
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries, RecordUnusableError } from '../catalog/working-layer';
 import { ASSET_REVISION_RE, PHOTO_ID_RE } from '../identity/ids';
+import { massMissing } from '../identity/library';
 import type { FactSink } from '../identity/pass';
 import { readRegistry } from '../identity/registry';
 import type { IdentityFact, Registry } from '../identity/types';
 import { dataRootStatus } from '../storage/config';
 import {
+    CLOSE_REASONS,
     CURATION_SCHEMA_VERSION,
     EVENT_TYPE_FOR_FACT,
     eventIdOf,
     eventKey,
     fingerprintOf,
+    closeCauseOf,
     KEPT_FACT_IDS,
+    REOPEN_REASONS,
     SAME_BYTES_BACK,
+    type Comparison,
+    type ComparisonSide,
     type CurationEvent,
     type CurationEventType,
     type DerivedFacts,
     type Suggestions,
 } from './events';
 import { photoHolders, type ReferenceCache } from './holders';
+import { boundSources, openMassMissing } from './library';
 import { EventUnusableError, InvalidEventError, listEvents, readEvent, readRulesFile, RulesFileError, withCurationLock, writeEvent } from './repository';
-import { loadRules, suggestForNew, type LoadedRules } from './suggest';
+import { loadRules, suggestForNew, type LoadedRules, type SeriesMember } from './suggest';
 
 /**
  * The watcher's curation sink: each of #10's committed facts opens or
@@ -52,7 +59,8 @@ export const SINK_WAIT_MS = 5_000;
 function derivedFactsOf(fact: IdentityFact, registry: Registry | null): DerivedFacts {
     const revision = fact.photoId === null ? undefined : registry?.photos[fact.photoId]?.revisions[fact.assetRevision];
     return {
-        factType: fact.type,
+        // Never `io-recovered`, which opens no item.
+        factType: fact.type as Exclude<IdentityFact['type'], 'io-recovered'>,
         sourcePath: fact.path,
         folder: fact.folder,
         ...(fact.fromPath === undefined ? {} : { fromPath: fact.fromPath }),
@@ -61,18 +69,72 @@ function derivedFactsOf(fact: IdentityFact, registry: Registry | null): DerivedF
         ...(fact.samePathAs === undefined ? {} : { samePathAs: fact.samePathAs }),
         ...(fact.revert === undefined ? {} : { revert: fact.revert }),
         ...(fact.reason === undefined ? {} : { failure: fact.reason }),
+        // #17, A5: a suggestion only, for the missing item's bind.
+        ...(typeof fact.suggestedFor === 'string' && PHOTO_ID_RE.test(fact.suggestedFor) && (fact.suggestedBy === 'basename' || fact.suggestedBy === 'capture-time')
+            ? { suggestedFor: fact.suggestedFor, suggestedBy: fact.suggestedBy }
+            : {}),
         // Only #10's public tier. GPS, the full timestamp, artist, and copyright stay in the registry.
         ...(revision ? { capturedDate: revision.derived.capturedDate?.value ?? null, width: revision.width, height: revision.height, sourceFormat: revision.sourceFormat } : {}),
     };
+}
+
+/** One side of a replacement's comparison, from #10's record of the revision, or null when the registry has none. */
+function sideOf(registry: Registry | null, photoId: string, assetRevision: string): ComparisonSide | null {
+    const revision = registry?.photos[photoId]?.revisions[assetRevision];
+    if (!revision) return null;
+    const { width, height } = revision;
+    const sized = width !== null && height !== null;
+    return {
+        assetRevision,
+        width,
+        height,
+        aspectRatio: sized ? Math.round((width / height) * 10_000) / 10_000 : null,
+        orientation: !sized ? null : width > height ? 'landscape' : width < height ? 'portrait' : 'square',
+        // The public tier's date only: the full timestamp is curator-only EXIF, which stays in the registry.
+        capturedAt: revision.derived.capturedDate?.value ?? null,
+        bytes: revision.sourceBytes,
+    };
+}
+
+/** How far the aspect ratio may move before a replacement's review is told to look (#17, A5): 1%. */
+export const ASPECT_CHANGE = 0.01;
+
+/**
+ * A replacement's bytes against the revision the photo record pins (#17,
+ * A5), with a note when the aspect ratio moves over 1% or the orientation
+ * flips between landscape and portrait. Null with no record, with the record
+ * on these bytes, as after a revert, or with either revision unknown.
+ */
+export function comparisonOf(registry: Registry | null, photoId: string, pinned: string | null, assetRevision: string): Comparison | null {
+    if (pinned === null || pinned === assetRevision) return null;
+    const before = sideOf(registry, photoId, pinned);
+    const after = sideOf(registry, photoId, assetRevision);
+    if (before === null || after === null) return null;
+    const notes: Comparison['notes'] = [];
+    // From the exact sizes, not the rounded ratios.
+    if (before.width && before.height && after.width && after.height && Math.abs((after.width / after.height) / (before.width / before.height) - 1) > ASPECT_CHANGE) notes.push('aspect-ratio');
+    const flat = (side: ComparisonSide) => (side.orientation === 'square' ? null : side.orientation);
+    if (flat(before) !== null && flat(after) !== null && flat(before) !== flat(after)) notes.push('orientation');
+    return { before, after, notes };
 }
 
 interface SuggestContext {
     rules: LoadedRules;
     knownSeries: Set<string>;
     seriesTitles: Map<string, string>;
+    seriesMembers: Map<string, SeriesMember[]>;
 }
 
-async function suggestContext(root: string, logger: Logger): Promise<SuggestContext> {
+/**
+ * #14 (A8): a series photograph's capture date for the insertion suggestion, from #10's public tier for the bytes its
+ * source holds now. Null when the registry can't say, which places it as undated.
+ */
+function memberDate(registry: Registry | null, photoId: string): string | null {
+    const photo = registry !== null && Object.hasOwn(registry.photos, photoId) ? registry.photos[photoId] : undefined;
+    return photo?.revisions[photo.source.observedRevision]?.derived.capturedDate?.value ?? null;
+}
+
+async function suggestContext(root: string, logger: Logger, registry: Registry | null): Promise<SuggestContext> {
     let rules: LoadedRules;
     try {
         rules = loadRules(await readRulesFile(root));
@@ -86,6 +148,7 @@ async function suggestContext(root: string, logger: Logger): Promise<SuggestCont
         rules,
         knownSeries: new Set(series.map((entry) => entry.id)),
         seriesTitles: new Map(series.filter((entry) => entry.title).map((entry) => [entry.id, entry.title])),
+        seriesMembers: new Map(series.map((entry) => [entry.id, entry.photoIds.map((photoId) => ({ photoId, capturedDate: memberDate(registry, photoId) }))])),
     };
 }
 
@@ -124,6 +187,22 @@ function shapeProblem(fact: IdentityFact): string | null {
 
 const STILL_OPEN = new Set(['open', 'deferred', 'failed']);
 
+/**
+ * Why the watcher reopens a resolved item that new evidence folds into, or null to leave it as it is: #10 holding
+ * an ambiguous item's bytes in doubt again after lib/curation/sources.ts closed it (#14), or a replacement's bytes
+ * back at the source after lib/curation/candidates.ts closed it because the source moved on (#17). Only the
+ * watcher's own close is undone.
+ */
+function reopenReasonOf(type: CurationEventType, event: CurationEvent): string | null {
+    if (event.status !== 'resolved') return null;
+    const close = event.decisions.at(-1);
+    if (close?.action !== 'close' || close.by !== 'watcher' || close.reason === undefined) return null;
+    const cause = closeCauseOf(close.reason);
+    if (type === 'ambiguous' && (cause === 'identified' || cause === 'unheld')) return REOPEN_REASONS.held;
+    if (type === 'replacement' && (cause === 'superseded' || cause === 'moved' || cause === 'reverted')) return REOPEN_REASONS.back;
+    return null;
+}
+
 export function createCurationSink(options: CurationSinkOptions = {}): FactSink {
     const { clock = Date.now, logger = console, waitMs = SINK_WAIT_MS } = options;
     /** A fact this sink can't use is logged by its factId and counted as delivered, so it never holds the others back. */
@@ -132,6 +211,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
     return async (facts) => {
         const relevant: { fact: IdentityFact; type: CurationEventType }[] = [];
         const renames: IdentityFact[] = [];
+        const recovered: IdentityFact[] = [];
         for (const fact of facts) {
             const type = Object.hasOwn(EVENT_TYPE_FOR_FACT, fact.type) ? EVENT_TYPE_FOR_FACT[fact.type] : undefined;
             if (type === undefined) {
@@ -143,18 +223,20 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 skip(fact, problem);
                 continue;
             }
-            if (type !== null) relevant.push({ fact, type });
+            // A6 review: a file that reads again closes its io-error item, and opens nothing.
+            if (fact.type === 'io-recovered') recovered.push(fact);
+            else if (type !== null) relevant.push({ fact, type });
             // A rename of a file with no photo ID matches no item by identity, so it changes nothing.
             else if (fact.photoId !== null) renames.push(fact);
         }
-        if (relevant.length === 0 && renames.length === 0) return;
+        if (relevant.length === 0 && renames.length === 0 && recovered.length === 0) return;
         const status = dataRootStatus({ versioned: true, ...(options.root === undefined ? {} : { root: options.root }) });
         if (status.state !== 'ready' || status.root === null) throw new Error(`The data root is ${status.state}, so the curation inbox can't be written.`);
         const root = status.root;
 
         const registry = await readRegistry(root).catch(() => null);
         // A replacement may move a new item to new bytes, and its suggestions with it.
-        const context = relevant.some(({ type }) => type === 'new' || type === 'replacement') ? await suggestContext(root, logger) : null;
+        const context = relevant.some(({ type }) => type === 'new' || type === 'replacement') ? await suggestContext(root, logger, registry) : null;
         const producedAt = new Date(clock()).toISOString();
         const referenceCache: ReferenceCache = {};
 
@@ -188,6 +270,11 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     throw error;
                 }
             };
+            /**
+             * The revision the photo record pins, or null for no record. The comparison it feeds is for the review
+             * only, so a record that can't be read, for any reason, gives none and fails nothing.
+             */
+            const pinnedOf = (photoId: string): Promise<string | null> => readAuthoredRecord(root, 'photo', photoId).then((record) => record?.assetRevision ?? null, () => null);
             const readOrSkip = (eventId: string) => readEvent(root, eventId).catch((error: unknown) => {
                 if (error instanceof EventUnusableError && error.problem.reason !== 'unreadable') return null;
                 throw error;
@@ -248,7 +335,7 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                         assetRevision: fact.assetRevision,
                         sourceFingerprint: fingerprintOf(fact.assetRevision),
                         derivedFacts,
-                        suggestions: context ? suggestForNew({ ...context, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFacts.capturedDate ?? null, producedAt }) : current.suggestions,
+                        suggestions: context ? suggestForNew({ ...context, photoId: fact.photoId, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFacts.capturedDate ?? null, producedAt }) : current.suggestions,
                         lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
                         factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
                     };
@@ -283,6 +370,21 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 return true;
             };
 
+            // A6 (#17): one pass that marks at least 20 bound sources missing, over 10% of them, looks like the library
+            // going, so the library-unavailable item opens before their missing items do, and holds them from the start
+            // (lib/curation/library.ts). Facts from one pass share its observedAt. Without the registry, nothing is held.
+            if (registry !== null) {
+                const byPass = new Map<string, Set<string>>();
+                for (const { fact, type } of relevant) {
+                    if (type === 'missing' && fact.photoId !== null) byPass.set(fact.observedAt, (byPass.get(fact.observedAt) ?? new Set<string>()).add(fact.photoId));
+                }
+                const present = boundSources(registry);
+                for (const [at, photos] of byPass) {
+                    const bound = present + photos.size;
+                    if (massMissing(photos.size, bound)) await openMassMissing(root, hold, { at, missing: photos.size, bound }, logger);
+                }
+            }
+
             for (const { fact, type } of relevant) {
                 if (type === 'replacement' && fact.photoId !== null && await foldIntoNew(fact)) continue;
                 if (type === 'reappeared' && fact.photoId !== null && await closeMissing(fact)) continue;
@@ -291,12 +393,17 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                 try {
                     id = eventIdOf(eventKey(type, fact));
                     const suggestions: Suggestions = type === 'new' && context
-                        ? suggestForNew({ ...context, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFactsOf(fact, registry).capturedDate ?? null, producedAt })
+                        ? suggestForNew({ ...context, photoId: fact.photoId, sourcePath: fact.path, folder: fact.folder, capturedDate: derivedFactsOf(fact, registry).capturedDate ?? null, producedAt })
                         : { series: null, placement: null };
                     fresh = newEvent(fact, type, registry, suggestions);
                 } catch {
                     skip(fact, 'it does not make a valid inbox event');
                     continue;
+                }
+                if (type === 'replacement' && fact.photoId !== null) {
+                    // #17, A5: what the review compares, against what the draft pins as the item opens.
+                    const comparison = comparisonOf(registry, fact.photoId, await pinnedOf(fact.photoId), fact.assetRevision);
+                    if (comparison !== null) fresh = { ...fresh, derivedFacts: { ...fresh.derivedFacts, comparison } };
                 }
                 let existing: CurationEvent | null;
                 try {
@@ -321,7 +428,15 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     lastObservedAt: fact.observedAt > existing.lastObservedAt ? fact.observedAt : existing.lastObservedAt,
                     factIds: [...existing.factIds, fact.factId].slice(-KEPT_FACT_IDS),
                 };
-                // One reopen rule only: a source missing again while something shows the photo can't stay silenced.
+                const reopenReason = reopenReasonOf(type, existing);
+                if (reopenReason !== null) {
+                    // The evidence the watcher closed it on is back. A superseded set's failure is over too: #10 queues it again.
+                    const active = await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
+                    const { candidate: _superseded, ...rest } = next;
+                    void _superseded;
+                    next = { ...rest, status: 'open', decisions: [...existing.decisions, { action: 'reopen', at: producedAt, by: 'watcher', baseRevisionId: active, reason: reopenReason }] };
+                }
+                // The one curator-facing reopen rule: a source missing again while something shows the photo can't stay silenced.
                 if (type === 'missing' && existing.photoId !== null && !STILL_OPEN.has(existing.status)) {
                     const found = await photoHolders(root, existing.photoId, referenceCache);
                     const holders = 'holders' in found ? found.holders : null;
@@ -337,6 +452,23 @@ export function createCurationSink(options: CurationSinkOptions = {}): FactSink 
                     if (next.status !== existing.status) reopened++;
                     else updated++;
                 }
+            }
+
+            for (const fact of recovered) {
+                const id = eventIdOf(eventKey('processing-failure', fact));
+                const current = await readOrSkip(id);
+                if (current === null || current.type !== 'processing-failure' || current.derivedFacts.failure !== 'io-error' || !STILL_OPEN.has(current.status) || current.factIds.includes(fact.factId)) continue;
+                const active = await readActivePointer(root).then((pointer) => pointer?.revisionId ?? null, () => null);
+                const closed: CurationEvent = {
+                    ...current,
+                    status: 'resolved',
+                    lastObservedAt: fact.observedAt > current.lastObservedAt ? fact.observedAt : current.lastObservedAt,
+                    factIds: [...current.factIds, fact.factId].slice(-KEPT_FACT_IDS),
+                    decisions: [...current.decisions, { action: 'close', at: producedAt, by: 'watcher', baseRevisionId: active, reason: CLOSE_REASONS.readable }],
+                    reviewedAt: producedAt,
+                    reviewedBy: 'watcher',
+                };
+                if (await write(fact, closed, current.version)) updated++;
             }
 
             if (renames.length > 0) {

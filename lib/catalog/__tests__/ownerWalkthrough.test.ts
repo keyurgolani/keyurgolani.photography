@@ -100,7 +100,7 @@ describe('the owner walkthrough', () => {
         // 6. The first publish stops for the launch, with the checklist and the exact command, then publishes.
         const unconfirmed = await photos('publish', '--actor', 'walkthrough');
         expect(unconfirmed.code).toBe(3);
-        expect(unconfirmed.stderr).toContain('Launch: this revision replaces the legacy Home and Gallery with 3 photographs. Every photograph the legacy site lists is in it.');
+        expect(unconfirmed.stderr).toContain('Launch: this first revision puts 3 photographs on the site.');
         expect(unconfirmed.stderr).toContain('Launch checklist');
         const candidate = /--confirm-launch --expect (rev_[0-9a-f]{64})\./.exec(unconfirmed.stderr)?.[1];
         expect(candidate).toBeDefined();

@@ -3,6 +3,7 @@ import path from 'node:path';
 import sharp, { type Metadata } from 'sharp';
 import { assetRevisionOf, pixelDigestOf, sha256, type Hasher } from './ids';
 import { extractMetadataTiers, type CuratorOnlyMetadata, type DerivedMetadata } from './metadata';
+import { MAX_SOURCE_PIXELS } from './profile';
 import type { ScanEntry } from './scan';
 
 export interface ImageInspection {
@@ -50,9 +51,13 @@ function errorText(error: unknown): string {
 /**
  * Read a scanned file once: digest its bytes, then for an image decode it
  * upright to digest its pixels, record its oriented dimensions and raw
- * orientation, and sort its metadata into tiers.
+ * orientation, and sort its metadata into tiers. A6 review: a file whose
+ * header says it is over `maxPixels` (MAX_SOURCE_PIXELS) is never decoded.
+ * It keeps its header's size and no pixel digest, so it matches by bytes
+ * only, and its build fails as `too-large`. Every raw decode gets the cap as
+ * `limitInputPixels`.
  */
-export async function inspectEntry(root: string, entry: ScanEntry, { hasher = sha256 }: { hasher?: Hasher } = {}): Promise<Inspection> {
+export async function inspectEntry(root: string, entry: ScanEntry, { hasher = sha256, maxPixels = MAX_SOURCE_PIXELS }: { hasher?: Hasher; maxPixels?: number } = {}): Promise<Inspection> {
     const absolute = path.join(root, entry.path);
     let bytes: Buffer;
     try {
@@ -76,18 +81,35 @@ export async function inspectEntry(root: string, entry: ScanEntry, { hasher = sh
 
     let metadata: Metadata | null = null;
     try {
-        metadata = await sharp(bytes).metadata();
+        // The header only: Sharp reads no pixels for metadata(), so the cap can wait for the size it gives.
+        metadata = await sharp(bytes, { limitInputPixels: false }).metadata();
     } catch {
         metadata = null;
     }
     const tiers = extractMetadataTiers(metadata?.exif);
     const sourceFormat = metadata?.format ?? FORMAT_BY_EXTENSION[path.extname(entry.path).toLowerCase()] ?? 'unknown';
 
+    if (metadata?.width && metadata.height && metadata.width * metadata.height > maxPixels) {
+        const turned = (metadata.orientation ?? 1) >= 5;
+        return {
+            kind: 'image',
+            assetRevision,
+            sourceBytes: bytes.length,
+            pixelDigest: null,
+            sourceFormat,
+            width: turned ? metadata.height : metadata.width,
+            height: turned ? metadata.width : metadata.height,
+            orientation: metadata.orientation ?? null,
+            ...tiers,
+            decodeError: `too-large: ${metadata.width}x${metadata.height} is over the ${maxPixels}-pixel cap`,
+        };
+    }
+
     try {
         // The pixels as stored. Without keepIccProfile() Sharp converts them to sRGB first, so a copy whose profile
         // was stripped would hash differently from its original. A CMYK JPEG is the exception: Sharp converts it to
         // sRGB whatever the flag, so its digest is of the converted pixels.
-        const { data, info } = await sharp(bytes).autoOrient().keepIccProfile().raw().toBuffer({ resolveWithObject: true });
+        const { data, info } = await sharp(bytes, { limitInputPixels: maxPixels }).autoOrient().keepIccProfile().raw().toBuffer({ resolveWithObject: true });
         return {
             kind: 'image',
             assetRevision,

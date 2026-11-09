@@ -61,12 +61,14 @@ function catalogDataRoot(): string {
 
 export default defineConfig({
   testDir: 'e2e',
-  // e2e/themes holds Dark's parity spec, which builds and serves two trees of its own (its own config).
-  testIgnore: '**/themes/**',
+  // e2e/themes holds Dark's parity spec, which builds and serves two trees of its own (its own config), and
+  // e2e/budgets #6's browser budgets, which npm run test:budgets serves a library of its own for.
+  testIgnore: ['**/themes/**', '**/budgets/**'],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  // The json reporter's stats tell CI a run was flaky, so it uploads the report, and the failed try's trace, then too.
+  reporter: [['list'], ['html', { open: 'never' }], ['json', { outputFile: 'test-results/results.json' }]],
   use: {
     baseURL: origin,
     trace: 'retain-on-failure',
@@ -83,7 +85,7 @@ export default defineConfig({
       name: 'mobile',
       use: { ...devices['Pixel 7'] },
       // The helper self-tests build their own pages, so they run on desktop only.
-      testIgnore: ['**/support/**', '**/themes/**'],
+      testIgnore: ['**/support/**', '**/themes/**', '**/budgets/**'],
     },
     {
       // WebKit targets the click after a tap differently from Chromium, so Home's first-tap rule runs on both,

@@ -1,17 +1,19 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { StrictMode } from 'react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { SeriesChapter, SeriesEntry } from '@/lib/catalog/projections/series';
 import SiteRoutesProvider from '@/components/site/SiteRoutes';
 import SeriesSequence, { type SeriesSequenceProps } from '../SeriesSequence';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
-import { allShownLabel, MORE_FAILED, RELOAD_SERIES, SERIES_UPDATED, SHOW_MORE, showingLabel, TRY_AGAIN } from '../seriesCopy';
+import { addedLabel, failedLabel, OFFLINE, RELOAD_SERIES, SERIES_UPDATED, SHOW_EARLIER, SHOW_MORE, showingLabel, tryAgainLabel } from '../seriesCopy';
 
 // #6's Show more on #5's sequence: appending pages in authored order,
 // keeping focus and scroll, every state, cancellation, and the Back restore.
 
 const REVISION = `rev_${'a'.repeat(64)}`;
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const PAGE_1 = '/api/catalog/series/fixture-long/pages/CURSOR1';
 const PAGE_2 = '/api/catalog/series/fixture-long/pages/CURSOR2';
 const PAGE_3 = '/api/catalog/series/fixture-long/pages/CURSOR3';
 
@@ -21,9 +23,10 @@ function entry(position: number): SeriesEntry {
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, n) => entry(from + n));
 const CHAPTERS: SeriesChapter[] = [{ id: 'ch-one', title: 'Fixture chapter one', startPosition: 150 }];
 
-const PAGES: Record<string, { entries: SeriesEntry[]; nextHref: string | null }> = {
-    [PAGE_2]: { entries: range(101, 200), nextHref: PAGE_3 },
-    [PAGE_3]: { entries: range(201, 250), nextHref: null },
+const PAGES: Record<string, { entries: SeriesEntry[]; prevHref: string | null; nextHref: string | null }> = {
+    [PAGE_1]: { entries: range(1, 100), prevHref: null, nextHref: PAGE_2 },
+    [PAGE_2]: { entries: range(101, 200), prevHref: PAGE_1, nextHref: PAGE_3 },
+    [PAGE_3]: { entries: range(201, 250), prevHref: PAGE_2, nextHref: null },
 };
 
 const props = (overrides: Partial<SeriesSequenceProps> = {}): SeriesSequenceProps => ({
@@ -32,6 +35,7 @@ const props = (overrides: Partial<SeriesSequenceProps> = {}): SeriesSequenceProp
     href: '/work/fixture-long',
     entries: range(1, 100),
     total: 250,
+    prevHref: null,
     nextHref: PAGE_2,
     chapters: CHAPTERS,
     ...overrides,
@@ -77,7 +81,10 @@ describe('SeriesSequence', () => {
         const view = show();
         expect(positions()).toEqual(range(1, 100).map((item) => item.position));
         expect(more()).toBeInTheDocument();
-        expect(status()).toBe(showingLabel(100, 250));
+        expect(status()).toBe(showingLabel(1, 100, 250));
+        expect(status()).toBe('Showing photographs 1 to 100 of 250.');
+        // No Show earlier on a page that starts at 1.
+        expect(screen.queryByRole('button', { name: SHOW_EARLIER })).toBeNull();
         // Entries are named against the whole series, not the loaded part.
         expect(link(1)).toHaveAttribute('aria-label', expect.stringContaining('250'));
         view.unmount();
@@ -86,20 +93,33 @@ describe('SeriesSequence', () => {
         expect(screen.queryByRole('status')).toBeNull();
     });
 
-    it('appends the next page in authored order, keeping focus on Show more and the earlier entries in place', async () => {
+    it('appends the next page in authored order, keeping the earlier entries in place, and moves focus to the first new entry (B5)', async () => {
         show();
         const first = link(1);
         more().focus();
         fireEvent.click(more());
         expect(more()).toHaveAttribute('aria-disabled', 'true');
         expect(document.activeElement).toBe(more());
+        expect(screen.getByText('Loading photographs 101 to 200')).toBeInTheDocument();
         await flush();
         expect(liveCalls()).toEqual([PAGE_2]);
         expect(positions()).toEqual(range(1, 200).map((item) => item.position));
         expect(link(1)).toBe(first);
-        expect(document.activeElement).toBe(more());
+        expect(document.activeElement).toBe(link(101));
         expect(more()).not.toHaveAttribute('aria-disabled');
-        expect(status()).toBe(showingLabel(200, 250));
+        expect(status()).toBe(addedLabel(101, 200, 250));
+        expect(status()).toBe('Added photographs 101 to 200 of 250.');
+    });
+
+    it('moves focus to the first new entry after an append from the body too, as Safari leaves a clicked button unfocused, but never from elsewhere', async () => {
+        show();
+        fireEvent.click(more());
+        await flush();
+        expect(document.activeElement).toBe(link(101));
+        link(5)?.focus();
+        fireEvent.click(more());
+        await flush();
+        expect(document.activeElement).toBe(link(5));
     });
 
     it('cuts chapters as pages arrive: a chapter shows once its first photograph has loaded, and the run before it stays one list', async () => {
@@ -120,20 +140,23 @@ describe('SeriesSequence', () => {
         more().focus();
         fireEvent.click(more());
         await flush();
+        // Focus went to the first new entry; a keyboard visitor comes back to the control for the next page.
+        more().focus();
         fireEvent.click(more());
         await flush();
         expect(positions().at(-1)).toBe(250);
         expect(screen.queryByRole('button')).toBeNull();
-        expect(status()).toBe(allShownLabel(250));
+        expect(status()).toBe('Added photographs 201 to 250 of 250. End of series.');
         expect(document.activeElement).toBe(link(201));
     });
 
-    it('leaves focus alone at the end when the control didn\'t have it', async () => {
+    it('leaves focus alone at the end when something else had it', async () => {
         show({ entries: range(1, 200), nextHref: PAGE_3 });
+        link(3)?.focus();
         fireEvent.click(more());
         await flush();
-        expect(status()).toBe(allShownLabel(250));
-        expect(document.activeElement).toBe(document.body);
+        expect(status()).toBe('Added photographs 201 to 250 of 250. End of series.');
+        expect(document.activeElement).toBe(link(3));
     });
 
     it('keeps what loaded and offers Try again after a network error or a server error, which asks for the same page', async () => {
@@ -144,16 +167,18 @@ describe('SeriesSequence', () => {
         more().focus();
         fireEvent.click(more());
         await flush();
-        expect(status()).toBe(MORE_FAILED);
-        const retry = screen.getByRole('button', { name: TRY_AGAIN });
+        expect(status()).toBe(failedLabel(101, 200));
+        expect(status()).toBe('Couldn’t load photographs 101 to 200.');
+        const retry = screen.getByRole('button', { name: tryAgainLabel(101, 200) });
+        expect(retry).toHaveAccessibleName('Try again: photographs 101 to 200');
         expect(document.activeElement).toBe(retry);
         expect(positions()).toHaveLength(100);
         fetch.mockImplementation(async () => json({ reason: 'internal' }, 500));
         fireEvent.click(retry);
         await flush();
-        expect(status()).toBe(MORE_FAILED);
+        expect(status()).toBe(failedLabel(101, 200));
         fetch.mockImplementation(async (url) => pageAnswer(String(url)));
-        fireEvent.click(screen.getByRole('button', { name: TRY_AGAIN }));
+        fireEvent.click(screen.getByRole('button', { name: tryAgainLabel(101, 200) }));
         await flush();
         expect(liveCalls()).toEqual([PAGE_2, PAGE_2, PAGE_2]);
         expect(positions()).toHaveLength(200);
@@ -164,11 +189,11 @@ describe('SeriesSequence', () => {
         show();
         fireEvent.click(more());
         await flush();
-        expect(status()).toBe(MORE_FAILED);
+        expect(status()).toBe(failedLabel(101, 200));
         fetch.mockImplementation(async () => pageAnswer(PAGE_3));
-        fireEvent.click(screen.getByRole('button', { name: TRY_AGAIN }));
+        fireEvent.click(screen.getByRole('button', { name: tryAgainLabel(101, 200) }));
         await flush();
-        expect(status()).toBe(MORE_FAILED);
+        expect(status()).toBe(failedLabel(101, 200));
         expect(positions()).toHaveLength(100);
     });
 
@@ -208,13 +233,13 @@ describe('SeriesSequence', () => {
     });
 
     it.each(['https://elsewhere.test/x', '/api/other', '//elsewhere.test/api/catalog/series/x'])('never follows a next page the server didn\'t mint (%s): the page is an error and nothing goes there', async (foreign) => {
-        fetch.mockImplementation(async (url) => (String(url) === PAGE_2 ? json({ revisionId: REVISION, entries: range(101, 200), nextHref: foreign }) : json({}, 500)));
+        fetch.mockImplementation(async (url) => (String(url) === PAGE_2 ? json({ revisionId: REVISION, entries: range(101, 200), prevHref: PAGE_1, nextHref: foreign }) : json({}, 500)));
         show();
         fireEvent.click(more());
         await flush();
-        expect(status()).toBe(MORE_FAILED);
+        expect(status()).toBe(failedLabel(101, 200));
         expect(positions()).toHaveLength(100);
-        fireEvent.click(screen.getByRole('button', { name: TRY_AGAIN }));
+        fireEvent.click(screen.getByRole('button', { name: tryAgainLabel(101, 200) }));
         await flush();
         expect(fetch.mock.calls.map(([url]) => String(url)).filter((url) => url !== PAGE_2)).toEqual([]);
     });
@@ -223,7 +248,7 @@ describe('SeriesSequence', () => {
         const base = `/curation/preview/${REVISION}/site`;
         const mirror2 = `${base}${PAGE_2}`;
         const mirror3 = `${base}${PAGE_3}`;
-        const preview: Record<string, unknown> = { [mirror2]: { revisionId: REVISION, entries: range(101, 200), nextHref: mirror3 }, [mirror3]: { revisionId: REVISION, entries: range(201, 250), nextHref: PAGE_3 } };
+        const preview: Record<string, unknown> = { [mirror2]: { revisionId: REVISION, entries: range(101, 200), prevHref: null, nextHref: mirror3 }, [mirror3]: { revisionId: REVISION, entries: range(201, 250), prevHref: null, nextHref: PAGE_3 } };
         fetch.mockImplementation(async (url) => (String(url) in preview ? json(preview[String(url)]) : json({}, 500)));
         window.history.replaceState(null, '', `${base}/work/fixture-long`);
         render(
@@ -237,7 +262,7 @@ describe('SeriesSequence', () => {
         // The second mirror page names the public endpoint next: refused, so nothing leaves the preview.
         fireEvent.click(more());
         await flush();
-        expect(status()).toBe(MORE_FAILED);
+        expect(status()).toBe(failedLabel(201, 250));
         expect(positions()).toHaveLength(200);
         expect(fetch.mock.calls.map(([url]) => String(url)).every((url) => url.startsWith(`${base}/api/catalog/series/`))).toBe(true);
     });
@@ -261,14 +286,66 @@ describe('SeriesSequence', () => {
             await popped;
         });
         expect(window.location.pathname).toBe('/work/fixture-long');
-        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', loaded: 200 } });
+        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 200 } });
+    });
+
+    // #6 gap 28 (mutation d28): the held extent is cleared once it's written, so a later Back never writes it again
+    // over a newer extent the series entry has since been given.
+    it('clears an extent it held once the series entry has it, so a later Back never puts it back over a newer one', async () => {
+        let resolve: (response: Response) => void = () => undefined;
+        fetch.mockImplementation(() => new Promise<Response>((done) => (resolve = done)));
+        show();
+        const back = () =>
+            act(async () => {
+                const popped = new Promise((done) => window.addEventListener('popstate', done, { once: true }));
+                window.history.back();
+                await popped;
+            });
+        const extent = () => (window.history.state as Record<string, { loaded: number }>)[SERIES_PAGES_KEY]?.loaded;
+        // Page 2 arrives while the modal Viewer's entry is current, so it's held, and written on the Back to the series.
+        fireEvent.click(more());
+        await flush();
+        window.history.pushState({ __NA: true, viewer: true }, '', `/work/fixture-long/photo/${id(150)}`);
+        resolve(pageAnswer(PAGE_2));
+        await flush();
+        await back();
+        expect(extent()).toBe(200);
+        // Page 3 arrives with the series entry current, so it's written at once.
+        fireEvent.click(more());
+        await flush();
+        resolve(pageAnswer(PAGE_3));
+        await flush();
+        expect(positions()).toHaveLength(250);
+        expect(extent()).toBe(250);
+        // The modal Viewer opens again and closes with nothing new: the series entry keeps its 250.
+        window.history.pushState({ __NA: true, viewer: true }, '', `/work/fixture-long/photo/${id(220)}`);
+        await back();
+        expect(window.location.pathname).toBe('/work/fixture-long');
+        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 250 } });
     });
 
     it('records the loaded extent in the history entry, keeping the keys already there', async () => {
         show();
         fireEvent.click(more());
         await flush();
-        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', loaded: 200 } });
+        expect(window.history.state).toEqual({ __NA: true, kept: 'yes', [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 200 } });
+    });
+
+    it('says when it\'s offline as well as which photographs couldn\'t load', async () => {
+        fetch.mockImplementation(async () => {
+            throw new TypeError('Failed to fetch');
+        });
+        vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+        show();
+        fireEvent.click(more());
+        await flush();
+        expect(status()).toBe(`${failedLabel(101, 200)} ${OFFLINE}`);
+        expect(status()).toBe('Couldn’t load photographs 101 to 200. You appear to be offline.');
+    });
+
+    it('formats counts past a thousand with a comma', () => {
+        expect(showingLabel(1001, 1100, 1200)).toBe('Showing photographs 1,001 to 1,100 of 1,200.');
+        expect(tryAgainLabel(1101, 1200)).toBe('Try again: photographs 1,101 to 1,200');
     });
 });
 
@@ -289,7 +366,7 @@ describe('SeriesSequence on Back', () => {
             expect(section).not.toHaveAttribute('aria-busy');
             expect(seen).toEqual([250]);
             expect(link(250)).not.toBeNull();
-            expect(status()).toBe(allShownLabel(250));
+            expect(status()).toBe(showingLabel(1, 250, 250));
         } finally {
             document.removeEventListener(SERIES_RESTORED_EVENT, listener);
         }
@@ -300,7 +377,7 @@ describe('SeriesSequence on Back', () => {
         show();
         await flush();
         expect(liveCalls()).toEqual([PAGE_2]);
-        expect(status()).toBe(showingLabel(200, 250));
+        expect(status()).toBe(showingLabel(1, 200, 250));
     });
 
     it.each([
@@ -329,14 +406,209 @@ describe('SeriesSequence on Back', () => {
             await flush();
             expect(positions()).toHaveLength(200);
             expect(fired).toHaveBeenCalledTimes(1);
-            expect(status()).toBe(MORE_FAILED);
+            expect(status()).toBe(failedLabel(201, 250));
             fetch.mockImplementation(async (url) => pageAnswer(String(url)));
-            fireEvent.click(screen.getByRole('button', { name: TRY_AGAIN }));
+            fireEvent.click(screen.getByRole('button', { name: tryAgainLabel(201, 250) }));
             await flush();
             expect(liveCalls().at(-1)).toBe(PAGE_3);
             expect(positions()).toHaveLength(250);
         } finally {
             document.removeEventListener(SERIES_RESTORED_EVENT, fired);
         }
+    });
+});
+
+describe('SeriesSequence on a deep entry (?photo=, B5)', () => {
+    /** The server's page for ?photo= of photograph 150: 101 to 200, with the pages on either side. */
+    const deep = (overrides: Partial<SeriesSequenceProps> = {}) => show({ entries: range(101, 200), prevHref: PAGE_1, nextHref: PAGE_3, ...overrides });
+    const earlier = () => screen.getByRole('button', { name: SHOW_EARLIER });
+    beforeEach(() => {
+        // Each entry's top in the view follows its place in the list, 50 px apart from 120, so 100 entries put in above push the old ones down by 5000.
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const index = [...document.querySelectorAll('[id^="photo-"]')].indexOf(this);
+            const top = index === -1 ? 0 : 120 + 50 * index;
+            return { top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+        });
+        window.scrollBy = vi.fn() as unknown as typeof window.scrollBy;
+        Element.prototype.scrollIntoView = vi.fn();
+    });
+
+    it('serves Show earlier as a link to the plain series page with JavaScript off, and the script takes it over as a button', () => {
+        const html = renderToString(<SeriesSequence {...props({ entries: range(101, 200), prevHref: PAGE_1, nextHref: PAGE_3 })} />);
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const link = [...doc.querySelectorAll('a')].find((node) => node.textContent === SHOW_EARLIER);
+        expect(link?.getAttribute('href')).toBe('/work/fixture-long');
+        deep();
+        expect(earlier().tagName).toBe('BUTTON');
+        expect(screen.queryByRole('link', { name: SHOW_EARLIER })).toBeNull();
+    });
+
+    it('shows Show earlier above the entries and Show more below, with the range it shows', () => {
+        deep();
+        const button = earlier();
+        expect(button.compareDocumentPosition(link(101) as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(more().compareDocumentPosition(link(200) as Node) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(positions()).toEqual(range(101, 200).map((item) => item.position));
+        expect(link(101)?.closest('ol')).toHaveAttribute('start', '101');
+        expect(status()).toBe('Showing photographs 101 to 200 of 250.');
+    });
+
+    it('puts a chapter that started before the loaded pages over them, then joins them up when the earlier page arrives', async () => {
+        deep({ chapters: [{ id: 'ch-early', title: 'Fixture chapter early', startPosition: 50 }] });
+        const heading = screen.getByRole('heading', { name: 'Fixture chapter early' });
+        expect(link(101)?.closest('section')).toBe(heading.closest('section'));
+        fireEvent.click(earlier());
+        await flush();
+        expect(screen.getAllByRole('heading', { name: 'Fixture chapter early' })).toHaveLength(1);
+        expect(link(49)?.closest('ol')).toHaveAttribute('start', '1');
+        expect(link(50)?.closest('ol')).toHaveAttribute('start', '50');
+        expect(link(150)?.closest('ol')).toBe(link(50)?.closest('ol'));
+    });
+
+    it('loads the page before, keeping the old first entry where it was in the view, and moves focus to the last new entry', async () => {
+        deep();
+        earlier().focus();
+        fireEvent.click(earlier());
+        expect(earlier()).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByText('Loading photographs 1 to 100')).toBeInTheDocument();
+        await flush();
+        expect(liveCalls()).toEqual([PAGE_1]);
+        expect(positions()).toEqual(range(1, 200).map((item) => item.position));
+        expect(window.scrollBy).toHaveBeenCalledWith({ top: 5000, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(link(100));
+        expect(status()).toBe('Added photographs 1 to 100 of 250. Start of series.');
+        expect(screen.queryByRole('button', { name: SHOW_EARLIER })).toBeNull();
+        expect(window.history.state[SERIES_PAGES_KEY]).toEqual({ revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 200 });
+    });
+
+    it('holds the old first entry at its offset from the press to the page landing, across the loading line that goes in above it', async () => {
+        // A layout with what sits above the entries: Show earlier's block (75 px), its loading line while
+        // it loads (31 px, LoadingState's hidden label keeps its line box), and the window's own scroll.
+        let scrolled = 0;
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const index = [...document.querySelectorAll('[id^="photo-"]')].indexOf(this);
+            const block = document.querySelector('[data-continuation-earlier]') === null ? 0 : 75;
+            const loadingLine = document.querySelector('[data-continuation-earlier] [role="status"]') === null ? 0 : 31;
+            const top = index === -1 ? 0 : 120 + block + loadingLine + 50 * index - scrolled;
+            return { top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+        });
+        window.scrollBy = vi.fn(({ top }: ScrollToOptions) => {
+            scrolled += top ?? 0;
+        }) as unknown as typeof window.scrollBy;
+        deep();
+        const before = link(101)?.getBoundingClientRect().top;
+        earlier().focus();
+        fireEvent.click(earlier());
+        expect(screen.getByText('Loading photographs 1 to 100')).toBeInTheDocument();
+        expect(link(101)?.getBoundingClientRect().top, 'while the page loads').toBe(before);
+        await flush();
+        expect(positions()).toHaveLength(200);
+        expect(link(101)?.getBoundingClientRect().top, 'once the page is in').toBe(before);
+    });
+
+    it('holds the old first entry when the loading line goes and Try again comes in its place', async () => {
+        let scrolled = 0;
+        vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const index = [...document.querySelectorAll('[id^="photo-"]')].indexOf(this);
+            const loadingLine = document.querySelector('[data-continuation-earlier] [role="status"]') === null ? 0 : 31;
+            const top = index === -1 ? 0 : 195 + loadingLine + 50 * index - scrolled;
+            return { top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+        });
+        window.scrollBy = vi.fn(({ top }: ScrollToOptions) => {
+            scrolled += top ?? 0;
+        }) as unknown as typeof window.scrollBy;
+        fetch.mockImplementation(async () => json({}, 500));
+        deep();
+        const before = link(101)?.getBoundingClientRect().top;
+        earlier().focus();
+        fireEvent.click(earlier());
+        await flush();
+        expect(screen.getByRole('button', { name: 'Try again: photographs 1 to 100' })).toBeInTheDocument();
+        expect(link(101)?.getBoundingClientRect().top).toBe(before);
+    });
+
+    it('takes only the page before from an earlier page, never its next', async () => {
+        fetch.mockImplementation(async (url) => (String(url) === PAGE_1 ? json({ revisionId: REVISION, entries: range(1, 100), prevHref: null, nextHref: '/api/catalog/series/fixture-long/pages/ELSEWHERE' }) : pageAnswer(String(url))));
+        deep();
+        fireEvent.click(earlier());
+        await flush();
+        fireEvent.click(more());
+        await flush();
+        expect(liveCalls()).toEqual([PAGE_1, PAGE_3]);
+        expect(positions().at(-1)).toBe(250);
+    });
+
+    it('drops an earlier page that doesn\'t end where the loaded ones start, and names its range on Try again', async () => {
+        fetch.mockImplementation(async () => pageAnswer(PAGE_3));
+        deep();
+        earlier().focus();
+        fireEvent.click(earlier());
+        await flush();
+        expect(positions()).toHaveLength(100);
+        expect(status()).toBe('Couldn’t load photographs 1 to 100.');
+        const retry = screen.getByRole('button', { name: 'Try again: photographs 1 to 100' });
+        expect(document.activeElement).toBe(retry);
+        // Show more still says Show more.
+        expect(more()).toBeInTheDocument();
+    });
+
+    it.each(['https://elsewhere.test/x', '/api/other', '//elsewhere.test/api/catalog/series/x'])('never follows a page before that the server didn\'t mint (%s): the page is an error and nothing goes there', async (foreign) => {
+        fetch.mockImplementation(async (url) => (String(url) === PAGE_2 ? json({ revisionId: REVISION, entries: range(101, 200), prevHref: foreign, nextHref: PAGE_3 }) : json({}, 500)));
+        show({ entries: range(201, 250), prevHref: PAGE_2, nextHref: null });
+        fireEvent.click(earlier());
+        await flush();
+        expect(positions()).toEqual(range(201, 250).map((item) => item.position));
+        fireEvent.click(screen.getByRole('button', { name: 'Try again: photographs 101 to 200' }));
+        await flush();
+        expect(liveCalls()).toEqual([PAGE_2, PAGE_2]);
+    });
+
+    it('asks once however often either control is pressed while one loads', async () => {
+        deep();
+        fireEvent.click(earlier());
+        fireEvent.click(more());
+        fireEvent.click(earlier());
+        await flush();
+        expect(liveCalls()).toEqual([PAGE_1]);
+    });
+
+    it('keeps Show earlier on the last page, where Show more has ended', () => {
+        show({ entries: range(201, 250), prevHref: PAGE_2, nextHref: null });
+        expect(earlier()).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: SHOW_MORE })).toBeNull();
+        expect(status()).toBe('Showing photographs 201 to 250 of 250.');
+    });
+
+    it('restores an extent on both sides of the deep page on Back, then fires the restored event once', async () => {
+        window.history.replaceState({ __NA: true, [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', first: 1, loaded: 250 } }, '');
+        const fired = vi.fn();
+        document.addEventListener(SERIES_RESTORED_EVENT, fired);
+        try {
+            deep();
+            await flush();
+            expect(liveCalls().sort()).toEqual([PAGE_1, PAGE_3]);
+            expect(positions()).toEqual(range(1, 250).map((item) => item.position));
+            expect(fired).toHaveBeenCalledTimes(1);
+        } finally {
+            document.removeEventListener(SERIES_RESTORED_EVENT, fired);
+        }
+    });
+
+    it.each([
+        ['a first past the last', { first: 201, loaded: 200 }],
+        ['a first below 1', { first: 0, loaded: 200 }],
+        ['a fractional first', { first: 1.5, loaded: 200 }],
+    ])('ignores an extent with %s', async (_case, extent) => {
+        window.history.replaceState({ __NA: true, [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', ...extent } }, '');
+        deep();
+        await flush();
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('reads an extent written before B5, with no first, as starting at 1', async () => {
+        window.history.replaceState({ __NA: true, [SERIES_PAGES_KEY]: { revisionId: REVISION, slug: 'fixture-long', loaded: 200 } }, '');
+        show();
+        await flush();
+        expect(liveCalls()).toEqual([PAGE_2]);
     });
 });

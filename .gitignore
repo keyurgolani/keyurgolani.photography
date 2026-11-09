@@ -36,6 +36,9 @@ test-results/
 playwright-report/
 blob-report/
 
+# npm run test:budgets' report (#6)
+/.perf/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -55,6 +58,9 @@ public/assets/photos/*
 # Generated image variants (thumbnails/optimized)
 public/assets/photos/thumbnails/
 public/assets/photos/optimized/
+
+# The legacy folders scripts/host/legacy-move-aside.sh moves beside the library
+public/assets/photos.legacy-derivatives-*/
 
 # TypeScript build info
 *.tsbuildinfo

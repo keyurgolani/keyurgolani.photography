@@ -25,6 +25,8 @@
 # test/fixtures/makeLibrary.ts, which its node runs with the types stripped,
 # so the runner needs no Node and no fixture binaries are committed.
 # WATCHER_CMD overrides the watcher command. Binds a random port on 127.0.0.1.
+# The temp root goes under $RUNNER_TEMP, the job's own temp folder in CI, or
+# $TMPDIR elsewhere.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,7 +35,7 @@ IMAGE=${IMAGE:-ghcr.io/keyurgolani/keyurgolani.photography:ci-smoke}
 WATCHER_CMD=${WATCHER_CMD:-node dist/scripts/imageWatcher.mjs}
 read -r -a WATCHER <<<"$WATCHER_CMD"
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-watcher-once.XXXXXX")
 LIB=$TMP/library
 # The watcher's data root, which the migration initializes.
 ROOT=$TMP/root
@@ -82,6 +84,14 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+
+# Hands data root <dir>, inside this run's temp root, to uid 1001, the
+# image's user, as docs/data-root.md's setup does (chown -R 1001:1001, chmod
+# 700), so the owner gate lets the image's commands write it on any runner.
+hand_to_image() {
+  docker run --rm --pull never --network none --user 0 --entrypoint sh -v "$1:/d" "$IMAGE" -c 'chown -R 1001:1001 /d && chmod 700 /d' ||
+    fail "Could not hand $1 to uid 1001."
+}
 
 # Runs a command in the image as image-watcher does: the library read-only at
 # /data/library, and the data root read-write.
@@ -166,7 +176,7 @@ problems=$(docker run --rm --pull never "$IMAGE" node -e '
   for (const source of ["scripts", "utils", "lib", "tsconfig.json"]) {
     if (fs.existsSync(source)) problems.push(source);
   }
-  for (const script of ["imageWatcher", "photos", "watcherHealth"]) {
+  for (const script of ["imageWatcher", "photos", "watcherHealth", "budgets-cli"]) {
     if (!fs.existsSync("dist/scripts/" + script + ".mjs")) problems.push("no dist/scripts/" + script + ".mjs");
   }
   console.log(problems.join(", "));
@@ -178,7 +188,8 @@ echo "The image ships dist/scripts and no dev dependencies, tsx, or script sourc
 #    fixtures mounted read-only, and a data root uid 1001 can write, which
 #    the migration initializes as docs/data-root.md runs it.
 mkdir "$LIB" "$ROOT"
-chmod 777 "$LIB" "$ROOT"
+chmod 777 "$LIB"
+hand_to_image "$ROOT"
 docker run --rm --pull never -v "$PWD/test/fixtures:/app/test/fixtures:ro" -v "$LIB:/library" \
   "$IMAGE" node test/fixtures/makeLibrary.ts /library || fail "Generating the fixture library in $IMAGE failed."
 for base in landscape portrait square; do
@@ -189,6 +200,13 @@ plan=$(sed -n 's/^Plan: //p' <<<"$dry_run")
 [ -n "$plan" ] || fail "The dry run printed no plan: $dry_run"
 in_watcher node dist/scripts/photos.mjs migrate --apply --plan "$plan" >/dev/null || fail "Applying $plan failed."
 library_listing >"$TMP/listing-start.txt" || fail "Could not list the library."
+
+# photos validate measures the candidate's budgets in dist/scripts/budgets-cli.mjs, the second bundle (#6). With
+# nothing authored yet it exits 1 on its errors, and prints the sizes either way, on stderr then. It writes nothing.
+validate=$(in_watcher node dist/scripts/photos.mjs validate 2>&1) || true
+grep -qF 'Budgets (gzip' <<<"$validate" || fail "photos validate printed no budget sizes from budgets-cli.mjs: $validate"
+if grep -qF 'Budgets: not measured' <<<"$validate"; then fail "photos validate couldn't run budgets-cli.mjs: $validate"; fi
+echo "photos validate printed the candidate's budget sizes from dist/scripts/budgets-cli.mjs."
 
 # 2. --once builds a set, with its manifest.json, for each fixture, says
 #    legacyDerivatives: false, and writes nothing in the library.
@@ -305,7 +323,7 @@ check_unpublished() {
 #    no library at all since v1.7.0. This one does, so a file Next would serve
 #    from public/ is there to be refused.
 mkdir "$DATA"
-chmod 755 "$DATA"
+hand_to_image "$DATA"
 docker run -d --pull never --name "$WEB" -p 127.0.0.1::3000 -e PHOTOGRAPHY_DATA_DIR=/data/portfolio \
   -v "$PUBLIC:/app/public/assets/photos:ro" -v "$DATA:/data/portfolio:ro" "$IMAGE" >/dev/null
 WEB_STARTED=true

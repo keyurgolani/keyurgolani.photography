@@ -156,11 +156,15 @@ const PRIVATE: [string, string][] = [
         ['an encoded dot-dot segment in a sibling folder', '/assets/sibling/%2e%2e/photos/landscape.jpg'],
         ['a nested original reached through a sibling folder', '/assets/sibling/%2E%2E/photos/series/x.jpg'],
         ['an encoded slash outside /assets/photos', '/gallery%2Fx'],
+        // scripts/host/legacy-move-aside.sh's default folder sits beside the library, in public/assets on a checkout.
+        ['the legacy move-aside folder beside the library', '/assets/photos.legacy-derivatives-2026-11-05/optimized/landscape.webp'],
+        ['the move-aside folder in another case', '/Assets/Photos.Legacy-Derivatives-2026-11-05/move-back.sh'],
+        ['any folder whose name starts with photos', '/assets/photosets/x.jpg'],
 ];
 
 /** Paths outside /assets/photos, which pass whatever the data root holds. /gallery is the one that moved. */
 const OUTSIDE = [
-    '/', '/work', '/about', '/api/photos', '/api/ready', '/assets/sibling/x.png', '/favicon.ico', '/assets/photosets/x.jpg',
+    '/', '/work', '/about', '/api/photos', '/api/ready', '/assets/sibling/x.png', '/favicon.ico', '/assets/photo/x.jpg', '/assets/my-photos/x.jpg',
     '/assets/photos/../sibling/x.png', '/galleryx', '/gallery/x', '/Gallery', '/_next/static/chunks/%5Broot-of-the-server%5D__0a1b2c._.js',
 ];
 
@@ -168,6 +172,7 @@ const OUTSIDE = [
 const IMAGE_URLS = [
     ...DERIVATIVES.filter((pathname) => !pathname.endsWith('.txt')).map((pathname) => decodeURIComponent(pathname)),
     '/assets/photos/landscape.jpg',
+    '/assets/photos.legacy-derivatives-2026-11-05/optimized/landscape.webp',
     '/assets/photos/optimized/landscape%2Ewebp',
     '/assets%2Fphotos%2Foptimized%2Flandscape.webp',
     '/assets/sibling/../photos/optimized/landscape.webp',

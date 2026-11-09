@@ -4,7 +4,7 @@ import { photoImageAlt } from '../../a11y/photoName';
 import { PHOTO_ID_RE } from '../../identity/ids';
 import type { CatalogContent, CatalogReader, RouteBuilder } from '../reader';
 import { REVISION_ID_RE, SERIES_ID_RE } from '../schema';
-import type { FocalPoint, SeriesRecord, SiteRecord } from '../types';
+import type { Crop, FocalPoint, SeriesRecord, SiteRecord } from '../types';
 import { imageOf, type Ladder } from './ladder';
 import { CENTER, focal, openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
 
@@ -53,8 +53,10 @@ export interface HomePhoto {
     id: string;
     /** The described text, or empty for a decorative photo or one whose description is pending (a draft only). */
     alt: string;
-    /** The photo's authored focal point, else the center. 0 to 1. */
+    /** The photo's authored focal point, else the center. 0 to 1. Home cuts a cover crop on it. */
     focalPoint: FocalPoint;
+    /** The photo's authored crop, `cover` by default. Home shows a `contain` one whole, on the theme's mat (#4). */
+    crop: Crop;
     /** Null when the set can't be shown (a hand-built revision or a partial set), so Home shows its missing-image state, never another file. */
     image: HomeImage | null;
 }
@@ -251,6 +253,7 @@ function recordOf({ photo, entry }: Slot, withLqip: boolean): HomePhoto {
         id: photo.id,
         alt: altOf(photo.alt, entry.members.indexOf(photo) + 1, entry.members.length),
         focalPoint: { ...(focal(photo.focalPoint) ?? CENTER) },
+        crop: photo.crop === 'contain' ? 'contain' : 'cover',
         image: imageOf(photo, withLqip),
     };
 }

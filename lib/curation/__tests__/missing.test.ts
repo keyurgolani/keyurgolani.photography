@@ -20,14 +20,15 @@ import { withCurationLock } from '../repository';
 import { inboxAlertLines, inboxAlerts } from '../alerts';
 import { pageWording, runInboxAction } from '../inbox-form';
 import { loadInbox } from '../inbox';
-import { BIND_WAITING_NEXT, seriesName, systemResponse, type InboxDetail, type InboxView } from '../inbox-view';
+import { BIND_WAITING_NEXT, resolvedResponse, seriesName, systemResponse, type InboxDetail, type InboxView } from '../inbox-view';
 import { rollback } from '../../catalog/rollback';
 import { parseCurationArgs, runCurationCli } from '../commands';
-import type { CurationEvent } from '../events';
+import { CLOSE_REASONS, closeCauseOf, type CurationEvent } from '../events';
 import { listEvents } from '../repository';
 import { archiveMissing, bindReplacement, holdRefusal, MANAGED_PHOTO_FIELDS, OWNER_FIELDS } from '../resolutions';
 import { authoredPhotoSchema } from '../../catalog/schema';
 import { publish, validateWorkingLayer } from '../../catalog/publish';
+import { createCurationSink } from '../sink';
 import { createSourcesSink, failureEventId, recordingFailuresAfterBuild, settleSources } from '../sources';
 import { clock, createMissingWorld, missingEventId, removeMissingTemplate, type MissingWorld } from './missingWorld';
 import { makeImages, P_PATH, Q_PATH, quiet, replacementEventId, SERIES, served, treeBytes, type Images } from './replacementWorld';
@@ -242,24 +243,33 @@ describe('the same bytes back', { timeout: 60_000 }, () => {
     it.each([
         ['at its path', 'harbor/third.jpg'],
         ['at a new path', 'harbor/third-moved.jpg'],
-    ])('open the item again for a draft photo nothing shows, back %s and then gone again', async (_label, back) => {
+    ])('withdraw a draft photo nothing lists each time it goes, and open its new item when it is back %s', async (_label, back) => {
         const w = await world();
         const R_PATH = 'harbor/third.jpg';
         fs.writeFileSync(w.lib.file(R_PATH), images.third);
         const r = (await w.pass()).find((fact) => fact.type === 'new')?.photoId as string;
         const id = missingEventId(r, (await w.registry()).photos[r].source.observedRevision);
+        const fresh = (await listEvents(w.root)).events.find((event) => event.type === 'new' && event.photoId === r) as CurationEvent;
         fs.rmSync(w.lib.file(R_PATH));
         await w.pass();
-        expect(await w.event(id)).toMatchObject({ status: 'open', photoId: r });
+        // A5: no revision or series lists R, so its going takes nothing down, and there is nothing to place.
+        const withdrawn = await w.event(id);
+        expect(withdrawn).toMatchObject({ status: 'resolved', photoId: r });
+        expect(withdrawn.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', resolution: 'withdrawn' });
+        expect((await w.event(fresh.id)).decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', resolution: 'withdrawn' });
         fs.writeFileSync(w.lib.file(back), images.third);
         await w.pass();
-        expectClosedAsBack(await w.event(id));
-        // Nothing shows R, so only the sources sink's rule opens its item again.
+        expect(await w.event(id)).toMatchObject({ status: 'resolved', version: withdrawn.version });
+        const reopened = await w.event(fresh.id);
+        expect(reopened).toMatchObject({ status: 'open' });
+        expect(reopened.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher' });
         fs.rmSync(w.lib.file(back));
         await w.pass();
-        const item = await w.event(id);
-        expect(item.status).toBe('open');
-        expect(item.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: 'The source went missing again.' });
+        // The same evidence again folds into the withdrawn item, which stays as it was.
+        const again = await w.event(id);
+        expect(again).toMatchObject({ status: 'resolved' });
+        expect(again.decisions).toEqual(withdrawn.decisions);
+        expect((await w.event(fresh.id)).decisions.at(-1)).toMatchObject({ action: 'close', resolution: 'withdrawn' });
     });
 });
 
@@ -724,11 +734,14 @@ describe('a file copied over another photo', { timeout: 60_000 }, () => {
         expect(registry.photos[r]).toMatchObject({ sourceHealth: 'missing' });
         expect(registry.photos[r].mergedInto).toBeUndefined();
         expect((await w.event(w.missingId)).status).toBe('resolved');
-        // R keeps its own items: none closes saying a bind gave its bytes away, and its disappearance gets one.
+        // R keeps its own items: none closes saying a bind gave its bytes away. Nothing lists R, so its going
+        // withdraws them (A5) instead of asking for a bind or an archive.
         const rNew = await w.event(rItem.id);
-        expect(rNew.status).not.toBe('resolved');
         expect(JSON.stringify(rNew.decisions)).not.toContain('A bind gave these bytes');
-        expect(await w.event(missingEventId(r, rRevision))).toMatchObject({ status: 'open', photoId: r });
+        expect(rNew.decisions.at(-1)).toMatchObject({ action: 'close', resolution: 'withdrawn' });
+        const rMissing = await w.event(missingEventId(r, rRevision));
+        expect(rMissing).toMatchObject({ status: 'resolved', photoId: r });
+        expect(rMissing.decisions.at(-1)).toMatchObject({ action: 'close', resolution: 'withdrawn' });
     });
 });
 
@@ -824,6 +837,142 @@ describe('a bind to a path #10 holds in doubt', { timeout: 60_000 }, () => {
         expect(pendingDecisions(w)).toEqual([]);
         expect((await w.event(w.missingId)).version).toBe(item.version);
         expect((await w.registry()).photos[r].mergedInto).toBeUndefined();
+    });
+});
+
+describe('an ambiguous item (#14)', { timeout: 60_000 }, () => {
+    const COPY_PATH = 'harbor/copy.jpg';
+    const ambiguousItems = async (w: MissingWorld) => (await listEvents(w.root)).events.filter((event) => event.type === 'ambiguous');
+    const itemAt = async (w: MissingWorld, at: string) => (await ambiguousItems(w)).find((event) => event.derivedFacts.sourcePath === at) as CurationEvent;
+    const photoAt = (registry: Registry, at: string) => Object.values(registry.photos).find((photo) => photo.source.path === at && photo.sourceHealth === 'present')?.photoId;
+
+    /** Other bytes at P's path while P's own bytes sit at a new one: #10 holds both paths in doubt, with P the candidate. */
+    async function inDoubt(w: MissingWorld): Promise<void> {
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        fs.writeFileSync(w.lib.file(COPY_PATH), images.original);
+        await w.pass();
+        expect((await w.registry()).holds.map((held) => held.path).sort()).toEqual([COPY_PATH, P_PATH].sort());
+        expect((await ambiguousItems(w)).map((event) => [event.derivedFacts.sourcePath, event.status]).sort()).toEqual([[COPY_PATH, 'open'], [P_PATH, 'open']].sort());
+    }
+
+    /** Every ambiguous item is open exactly while #10 still holds its bytes in doubt. */
+    async function inStep(w: MissingWorld): Promise<void> {
+        const held = new Set((await w.registry()).holds.map((hold) => hold.assetRevision));
+        for (const event of await ambiguousItems(w)) expect([event.derivedFacts.sourcePath, event.status]).toEqual([event.derivedFacts.sourcePath, held.has(event.assetRevision as string) ? 'open' : 'resolved']);
+    }
+
+    it('closes once its photos identity new is applied, and the other path stays open until its bind is', async () => {
+        const w = await world();
+        await inDoubt(w);
+        await writeDecision(w.root, createDecision({ type: 'new', path: P_PATH, actor: ACTOR, reason: 'Fixture split' }, { clock }));
+        await w.pass();
+        const n = photoAt(await w.registry(), P_PATH) as string;
+        expect(n).toBeDefined();
+        expect(n).not.toBe(w.p);
+        const split = await itemAt(w, P_PATH);
+        expect(split.status).toBe('resolved');
+        expect(split.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.identified(n) });
+        expect((await itemAt(w, COPY_PATH)).status).toBe('open');
+        await inStep(w);
+
+        await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+        await w.pass();
+        const bound = await itemAt(w, COPY_PATH);
+        expect(bound.status).toBe('resolved');
+        expect(bound.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.identified(w.p) });
+        await inStep(w);
+
+        // The page counts both settled, says what closed them, and drops the identity question.
+        const { detail, response } = await pageItem(bound.id);
+        expect(detail).toMatchObject({ group: 'settled', resolvedBy: { kind: 'identified' } });
+        expect(response).toBe(resolvedResponse({ kind: 'identified' }, 'ambiguous'));
+        expect(response).toBe("The watcher now knows whose file this is, so there's nothing left to decide here.");
+        expect(closeCauseOf(CLOSE_REASONS.identified(w.p))).toBe('identified');
+        // Applying it again changes nothing.
+        const before = (await listEvents(w.root)).events;
+        await w.pass();
+        expect((await listEvents(w.root)).events).toEqual(before);
+    });
+
+    it('closes once its photos identity bind is applied, and so does the other path once the bind leaves it unheld', async () => {
+        const w = await world();
+        await inDoubt(w);
+        const [copyId, otherId] = [(await itemAt(w, COPY_PATH)).id, (await itemAt(w, P_PATH)).id];
+        await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+        await w.pass();
+        const registry = await w.registry();
+        expect(registry.photos[w.p].source).toMatchObject({ path: COPY_PATH, observedRevision: w.a });
+        expect(registry.holds).toEqual([]);
+        expect(await w.event(copyId)).toMatchObject({ status: 'resolved', derivedFacts: { sourcePath: COPY_PATH } });
+        expect((await w.event(copyId)).decisions.at(-1)).toMatchObject({ reason: CLOSE_REASONS.identified(w.p) });
+        // With P gone from its old path, the other bytes there are a photograph of their own.
+        const other = photoAt(registry, P_PATH) as string;
+        expect(other).toBeDefined();
+        expect(other).not.toBe(w.p);
+        expect((await w.event(otherId)).decisions.at(-1)).toMatchObject({ action: 'close', reason: CLOSE_REASONS.identified(other) });
+        await inStep(w);
+    });
+
+    it('closes when the file it doubted changes, saying nothing is in doubt', async () => {
+        const w = await world();
+        await inDoubt(w);
+        fs.writeFileSync(w.lib.file(COPY_PATH), images.fresh);
+        await w.pass();
+        const changed = await itemAt(w, COPY_PATH);
+        expect(changed.status).toBe('resolved');
+        expect(changed.decisions.at(-1)).toMatchObject({ action: 'close', by: 'watcher', reason: CLOSE_REASONS.unheld });
+        expect(closeCauseOf(CLOSE_REASONS.unheld)).toBe('unheld');
+        expect(resolvedResponse({ kind: 'unheld' }, 'ambiguous')).toBe("The file changed or left the library, so there's nothing left to decide here.");
+        await inStep(w);
+    });
+
+    /** The hold #10 starts for the copy, while P's own path holds other bytes. Nothing delivered sees it. */
+    const doubt = (w: MissingWorld) => {
+        fs.writeFileSync(w.lib.file(P_PATH), images.third);
+        fs.writeFileSync(w.lib.file(COPY_PATH), images.original);
+    };
+    const bindCopy = (w: MissingWorld) => writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+
+    it('closes when the hold starts and ends between two of the sources sink\'s deliveries, after only the inbox sink saw it', async () => {
+        const w = await world();
+        await w.pass();
+        doubt(w);
+        // The inbox sink opens the items, and the sources sink misses that delivery, as on a busy lock: the facts stay pending.
+        const outcome = await runReconcilePass({ clock, logger: quiet, sinks: [createCurationSink({ logger: quiet, clock })], clearDelivered: false });
+        expect(outcome.status).toBe('committed');
+        expect((await itemAt(w, COPY_PATH)).status).toBe('open');
+        await bindCopy(w);
+        await w.pass();
+        expect((await w.registry()).holds).toEqual([]);
+        expect(await itemAt(w, COPY_PATH)).toMatchObject({ status: 'resolved' });
+        await inStep(w);
+    });
+
+    it('closes when every sink missed the pass that started the hold', async () => {
+        const w = await world();
+        await w.pass();
+        doubt(w);
+        await w.bareRegistryPass();
+        expect((await ambiguousItems(w))).toEqual([]);
+        await bindCopy(w);
+        await w.pass();
+        expect((await w.registry()).holds).toEqual([]);
+        expect((await ambiguousItems(w)).map((event) => event.status)).toEqual(['resolved', 'resolved']);
+        await inStep(w);
+    });
+
+    it('is settled by the first pass after the upgrade when a decision already left it stuck open', async () => {
+        const w = await world();
+        await inDoubt(w);
+        await writeDecision(w.root, createDecision({ type: 'bind', path: COPY_PATH, photoId: w.p, actor: ACTOR, reason: 'Fixture bind' }, { clock }));
+        // A watcher before this fix: the decision applies and its facts are delivered, and the item stays open.
+        const outcome = await runReconcilePass({ clock, logger: quiet, sinks: [createCurationSink({ logger: quiet, clock })], clearDelivered: true });
+        expect(outcome.status).toBe('committed');
+        expect((await w.registry()).holds.map((held) => held.path)).not.toContain(COPY_PATH);
+        expect((await itemAt(w, COPY_PATH)).status).toBe('open');
+        await w.restartPass();
+        expect(await itemAt(w, COPY_PATH)).toMatchObject({ status: 'resolved' });
+        await inStep(w);
     });
 });
 
@@ -1274,7 +1423,9 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
         const { r, job } = await failedR(w);
         fs.rmSync(w.lib.file(R_PATH));
         await w.pass();
+        // A failed build still asks for judgment, so R's missing item isn't withdrawn (A5 review) and archive still settles it.
         const missing = await w.event(missingEventId(r, job.assetRevision));
+        expect(missing.status).toBe('open');
         expect(await archiveMissing({ root: w.root, eventId: missing.id, expectedVersion: missing.version, expectedBase: w.revisionId, actor: ACTOR })).toMatchObject({ ok: true });
         expect((await w.event(failureEventId(r, job.assetRevision))).status).toBe('failed');
         expect(await w.pass()).toEqual([]);
@@ -1301,7 +1452,7 @@ describe('a build that stays failed', { timeout: 60_000 }, () => {
 describe('photos status lines', { timeout: 60_000 }, () => {
     it('list each open missing source and failure, what still shows it, and no host path', async () => {
         const w = await world();
-        expect(inboxAlertLines(await inboxAlerts(w.root))).toEqual(['Inbox: 0 missing sources, 0 failures open']);
+        expect(inboxAlertLines(await inboxAlerts(w.root))).toEqual(['Inbox: 0 need review, 0 missing sources, 0 failures, 0 ambiguous, 0 stale']);
         removeP(w);
         await w.pass();
         fs.writeFileSync(w.lib.file('harbor/third.jpg'), images.third);
@@ -1314,7 +1465,7 @@ describe('photos status lines', { timeout: 60_000 }, () => {
         expect(alerts.missing).toEqual([expect.objectContaining({ eventId: w.missingId, photoId: w.p, sourcePath: P_PATH, shownBy: [`the active revision ${w.revisionId}`, `the series ${SERIES}`] })]);
         expect(alerts.failed).toEqual([expect.objectContaining({ eventId: failureEventId(r, assetRevision), failure: 'derivative set build' })]);
         const lines = inboxAlertLines(alerts);
-        expect(lines[0]).toBe('Inbox: 1 missing source, 1 failure open');
+        expect(lines[0]).toBe('Inbox: 3 need review, 1 missing source, 1 failure, 0 ambiguous, 0 stale');
         expect(lines[1]).toMatch(new RegExp(`^  missing  ${w.p.slice(0, 11)}  ${P_PATH}  since .+, open; the active revision ${w.revisionId} and the series ${SERIES} still show it  \\(${w.missingId}@\\d+\\)$`));
         expect(lines[2]).toContain('failed   ');
         expect(lines.join('\n')).not.toContain(w.root);

@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isHighestRelease, planRelease } from './release-plan.mjs';
 
 // The repository's tags before the first gated release, stray v1.0.0 included.
@@ -71,9 +71,14 @@ describe('planRelease', () => {
 });
 
 describe('release-plan.mjs run directly', () => {
-  const script = fileURLToPath(new URL('./release-plan.mjs', import.meta.url));
-  const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  // A copy of the script beside a package.json of its own, at a release
+  // version, since it reads ../package.json from where it sits. The repository's
+  // package.json can hold a pre-release version, such as 2.0.0-rc.1 while a
+  // release candidate is out, and that is no release tag.
+  const source = fileURLToPath(new URL('./release-plan.mjs', import.meta.url));
+  const packageVersion = '1.2.3';
   const tag = `v${packageVersion}`;
+  let script;
   // These point git at some other repository, such as the one a git hook runs
   // in. Dropping them keeps every git call on the throwaway repository.
   const gitLocationVars = [
@@ -108,6 +113,14 @@ describe('release-plan.mjs run directly', () => {
     dirs.push(dir);
     return dir;
   }
+
+  beforeEach(() => {
+    const copy = tempDir();
+    mkdirSync(path.join(copy, 'ci'));
+    script = path.join(copy, 'ci', 'release-plan.mjs');
+    copyFileSync(source, script);
+    writeFileSync(path.join(copy, 'package.json'), `${JSON.stringify({ version: packageVersion })}\n`);
+  });
 
   // A repository with one empty commit carrying `tags`. Plumbing commands
   // only, so no hooks or signing settings get involved.

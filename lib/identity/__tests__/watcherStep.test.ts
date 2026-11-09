@@ -8,7 +8,7 @@ import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempL
 import { assetsRoot } from '../../media/path';
 import { withLock } from '../../storage/lock';
 import { createDecision, writeDecision } from '../decisions';
-import { watcherStatusFile } from '../heartbeat';
+import { WATCHER_STALLED_AFTER_MS, watcherStatusFile } from '../heartbeat';
 import { runReconcilePass } from '../pass';
 import { currentProfileId } from '../profile';
 import { readRegistry, writeRegistry } from '../registry';
@@ -16,6 +16,7 @@ import type { Registry } from '../types';
 import type { DerivativeWorker, WorkerStart } from '../worker';
 import {
     createIdentityStep,
+    PERIODIC_PASS_MS,
     runIdentityOnce,
     watchIdentity,
     type IdentityStepOptions,
@@ -145,7 +146,7 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(profileStates(registry)).toEqual(['ready', 'ready']);
         expect(registry.pendingFacts).toEqual([]);
         expect(Object.keys(assetStore(s.data.root)).filter((file) => file.endsWith('manifest.json'))).toHaveLength(2);
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW), legacyDerivatives: false });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW), lastProgressAt: iso(NOW), legacyDerivatives: false });
         expect(s.lines).toContain(`[identity] Identity step on: data root ${s.data.root}.`);
         expect(s.lines.filter((line) => line.includes('"event":"identity-fact"'))).toHaveLength(2);
         expect(s.requests).toEqual([]);
@@ -246,6 +247,20 @@ describe('an identity pass', { timeout: 60_000 }, () => {
         expect(s.heartbeat()).toMatchObject({ lastPassResult: 'locked' });
     });
 
+    it('records when it last finished a pass, from its start, and a locked pass moves nothing (v2.0.0 A2)', async () => {
+        let now = NOW;
+        const s = await setup({ options: { clock: () => now, pass: { lock: { waitMs: 0 } } } });
+        await s.step.pass('startup');
+        await s.step.idle();
+        expect(s.heartbeat()).toMatchObject({ lastPassResult: 'committed', lastPassAt: iso(NOW), lastProgressAt: iso(NOW) });
+        now = NOW + 20 * 60_000;
+        expect(await withLock('registry', { root: s.data.root }, () => s.step.pass('timer'))).toEqual({ status: 'locked' });
+        // The try is recorded, but photos status --check measures the stall from the last pass that got through.
+        expect(s.heartbeat()).toMatchObject({ lastPassResult: 'locked', lastPassAt: iso(NOW + 20 * 60_000), lastProgressAt: iso(NOW) });
+        // --check's stall bound is three of the periodic passes an idle watcher makes.
+        expect(WATCHER_STALLED_AFTER_MS).toBe(3 * PERIODIC_PASS_MS);
+    });
+
     it('asks for another pass once a file still being written has had time to settle', async () => {
         const s = await setup({ photos: 0, options: { pass: { clock: Date.now } } });
         fs.writeFileSync(s.lib.file('fresh.jpg'), images[0]);
@@ -342,7 +357,8 @@ describe('an identity pass', { timeout: 60_000 }, () => {
     });
 
     it('drops what the builds did at the next pass, and keeps only the error text until then', async () => {
-        const s = await setup({ options: { worker: { faults: { afterEncode: () => { throw new Error('encoder exploded'); } } } } });
+        // A6's retries are off, so each failure is recorded at once.
+        const s = await setup({ options: { worker: { retry: false, faults: { afterEncode: () => { throw new Error('encoder exploded'); } } } } });
 
         await s.step.pass('startup');
         await s.step.idle();
@@ -377,7 +393,7 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
         now += 30_000;
         await s.step.check();
 
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW + 30_000), legacyDerivatives: false });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: iso(NOW), lastPassResult: 'committed', passStartedAt: null, heartbeatAt: iso(NOW + 30_000), lastProgressAt: iso(NOW), legacyDerivatives: false });
         expect(s.requests).toEqual([]);
     });
 
@@ -416,7 +432,7 @@ describe('the 30 s check', { timeout: 60_000 }, () => {
 
         expect(fs.statSync(s.data.file('status')).mode & 0o777).toBe(0o700);
         expect(fs.statSync(watcherStatusFile(s.data.root)).mode & 0o777).toBe(0o600);
-        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: iso(NOW), legacyDerivatives: false });
+        expect(s.heartbeat()).toEqual({ pid: 4242, hostname: 'test-host', lastPassAt: null, lastPassResult: null, passStartedAt: null, heartbeatAt: iso(NOW), lastProgressAt: iso(NOW), legacyDerivatives: false });
     });
 
     it('asks for a pass when a decision is waiting', async () => {

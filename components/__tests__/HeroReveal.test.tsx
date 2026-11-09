@@ -1,10 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { act, render } from '@testing-library/react';
+import postcss from 'postcss';
 import { Activity, StrictMode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
 import { setPrefersReducedMotion } from '@/test/matchMedia';
-import { badgePlace, chromeOverflows, copyTone, coverSource, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box } from '../badgePlace';
+import { badgePlace, chromeOverflows, copyAboveDarkWash, copyTone, coverSource, DARK_WASH_STATEMENT_TOP, DARK_WASH_TITLE_TOP, homeCopyTop, luminance, positionOf, regionLevel, textEnlarged, TONE_LIGHT_FLOOR, toneFor, unionOf, V110_LANE, type Box, type StoryBox } from '../badgePlace';
 import HeroReveal, { BADGE_LINGER_MS, type HeroRevealPhase } from '../HeroReveal';
 import { HOME_LOADING_TIMEOUT_MS } from '../home/homeChromeConfig';
 
@@ -470,7 +473,7 @@ describe('badgePlace', () => {
    * The title's panel, as CatalogHome.module.css draws it from 640 px wide: from the screen's left edge, 3rem above
    * the title, 6rem right of the longer of the title and statement (its fade included), and 1.5rem below the statement.
    */
-  const panel = (title: Box, statement: Box) => box(0, title.top - 48, Math.max(title.right, statement.right) + 96, statement.bottom + 24);
+  const panel = (title: Box, statement: Box) => ({ ...box(0, title.top - 48, Math.max(title.right, statement.right) + 96, statement.bottom + 24), panel: true as const });
   const story = (title: Box, statement: Box, link: Box, wide: boolean) => (wide ? [title, statement, link, panel(title, statement)] : [title, statement, link]);
   /** The oval's box, ring included, for a place, as the browser paints it. */
   const oval = (view: { width: number; height: number }, card: number, place: ReturnType<typeof badgePlace>) => {
@@ -565,6 +568,238 @@ describe('badgePlace', () => {
   it('leaves the place alone before there is a card to measure', () => {
     expect(badgePlace({ width: 390, height: 844 }, 0, nav(390), [])).toBeNull();
   });
+
+  // A short phone held upright: the story spans the screen, so there is no room beside it. 320 x 568 in Dark, from
+  // CatalogHome.module.css: a two-line title, the statement, then Enter the series with All bodies of work under it
+  // (below 360 px), above the slideshow's controls. 164 px between the nav's and the title's 16 px is too short for the
+  // badge at 0.6, and beside the story, a quarter of the width right of the center, the oval lies on the title.
+  const short = { width: 320, height: 568 };
+  const shortStory = (lift = 0) =>
+    [box(16, 252, 274, 320), box(16, 332, 266, 352), box(16, 372, 155, 416), box(16, 424, 169, 468)].map((b) => ({ ...b, top: b.top - lift, bottom: b.bottom - lift }));
+  /** The painted oval's height at `scale` on the 256 px card, ring included. */
+  const ovalHeight = (scale: number) => oval(short, 256, { kind: 'clear', dx: 0, dy: 0, scale }).bottom - oval(short, 256, { kind: 'clear', dx: 0, dy: 0, scale }).top;
+
+  it('on a short phone held upright, shrinks the badge above the story rather than put it on the title', () => {
+    const place = badgePlace(short, 256, nav(320), shortStory())!;
+    expect(place).toMatchObject({ kind: 'clear', dx: 0 });
+    expect(place.scale).toBeLessThan(0.6);
+    const painted = oval(short, 256, place);
+    for (const blocker of [nav(320), ...shortStory()]) expect(gap(painted, blocker)).toBeGreaterThanOrEqual(16 - 0.01);
+    // The largest that fits, to the hundredth: a hundredth more no longer fits between the nav and the title.
+    expect(ovalHeight(place.scale)).toBeLessThanOrEqual(252 - 16 - (56 + 16) + 0.01);
+    expect(ovalHeight(place.scale + 0.01)).toBeGreaterThan(252 - 16 - (56 + 16));
+    // Reduced motion's hint under the controls lifts the copy about 25 px: the badge gets smaller, still clear.
+    const lifted = badgePlace(short, 256, nav(320), shortStory(25))!;
+    expect(lifted.kind).toBe('clear');
+    expect(lifted.scale).toBeLessThan(place.scale);
+    for (const blocker of [nav(320), ...shortStory(25)]) expect(gap(oval(short, 256, lifted), blocker)).toBeGreaterThanOrEqual(16 - 0.01);
+  });
+
+  /** `from` to `to` in `step`s, both ends included. */
+  const range = (from: number, to: number, step: number) => Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i) => from + i * step);
+  /** The least room the painted oval keeps from the screen's edges. */
+  const edgeRoom = (view: { width: number; height: number }, painted: Box) => Math.min(painted.left, painted.top, view.width - painted.right, view.height - painted.bottom);
+  // Phones held sideways and screens zoomed to 200%, scaled from CI's 844 x 390 boxes: the title's type is 1.5rem +
+  // 3.5vw, so its two lines and its width follow the width; the statement's 0.9rem + 0.4vw; the gutter 3.3vw. Where the
+  // copy fits the screen it sits 115 px above the bottom, and where it doesn't, as at 360 px tall, the title sits 24 px
+  // under the nav. 863 x 360 is Pixel 7 held sideways; 640 x 400 is 1280 x 800 at 200%; 683 x 384, 720 x 450 and 768 x
+  // 432 are 1366 x 768, 1440 x 900 and 1536 x 864 at 200%. The card is 320 px from 768 px wide, the panel drawn from 640.
+  const sidewaysStage = (width: number, height: number) => {
+    const type = Math.min(76, Math.max(38, 24 + 0.035 * width));
+    const statementType = Math.min(19, Math.max(16, 14.4 + 0.004 * width));
+    const gutter = Math.min(48, Math.max(16, 0.033 * width));
+    const right = gutter + (360 * type) / 53.54;
+    const linkBottom = Math.max(80 + 1.8 * type + 12 + 1.25 * statementType + 20 + 44, height - 115.41);
+    const link = box(gutter, linkBottom - 44, gutter + 138, linkBottom);
+    const statement = box(gutter, link.top - 20 - 1.25 * statementType, right, link.top - 20);
+    const title = box(gutter, statement.top - 12 - 1.8 * type, right, statement.top - 12);
+    return { view: { width, height }, card: width >= 768 ? 320 : 256, story: story(title, statement, link, width >= 640) };
+  };
+  /** The sweep's most screens, so it stays a unit test's size: 14,570 now. */
+  const SWEEP_LIMIT = 15_000;
+  /**
+   * Where the sweep's screens put the badge under this rule, by place: v1.1.0's, above the story, beside it, and
+   * out of sight. A rule that hides the badge more often, or moves it off today's place beside the story, changes them.
+   */
+  const SWEEP_PLACES = { 'v1.1.0': 0, clear: 8060, side: 2644, none: 3866 };
+
+  it('never puts the badge on the copy of a phone held upright or sideways: it is clear of it, or it is out of sight, and hides it no more often than this rule does', () => {
+    // Phones held upright: the copy sits as low as it does at 320 x 568, lifted by a longer title, larger text or the
+    // hint. Phones held sideways and zoomed screens, from 568 x 320 to 928 x 440.
+    const upright = [320, 360, 375, 390].flatMap((width) =>
+      range(480, 900, 4).flatMap((height) =>
+        range(0, 240, 8).map((lift) => ({ view: { width, height }, card: 256, story: shortStory(568 - height + lift).map((b) => ({ ...b, right: Math.min(b.right, width - 16) })) as StoryBox[] })),
+      ),
+    );
+    const sideways = range(568, 928, 8).flatMap((width) => range(320, 440, 4).map((height) => sidewaysStage(width, height)));
+    const screens = [...upright, ...sideways];
+    expect(screens.length).toBeGreaterThan(0);
+    expect(screens.length).toBeLessThanOrEqual(SWEEP_LIMIT);
+    const places = { 'v1.1.0': 0, clear: 0, side: 0, none: 0 };
+    for (const { view, card, story } of screens) {
+      const place = badgePlace(view, card, nav(view.width), [...story]);
+      places[place?.kind ?? 'v1.1.0'] += 1;
+      // Out of sight: neither clear above the story nor beside it.
+      if (place?.kind === 'none') continue;
+      const painted = oval(view, card, place);
+      const where = `${view.width} x ${view.height}`;
+      const text = story.filter((b) => !('panel' in b));
+      for (const blocker of text) expect(gap(painted, blocker), where).toBeGreaterThanOrEqual(16 - 0.01);
+      // Beside the story keeps clear of the text alone, as it always has; above it keeps clear of the nav, the panel
+      // and the edges too.
+      if (place?.kind === 'side') continue;
+      for (const blocker of [nav(view.width), ...story]) expect(gap(painted, blocker), `${where}: the nav and the panel`).toBeGreaterThanOrEqual(16 - 0.01);
+      expect(edgeRoom(view, painted), `${where}: the edges`).toBeGreaterThanOrEqual(16 - 0.01);
+    }
+    expect(places).toEqual(SWEEP_PLACES);
+  });
+
+  it("stays out of sight only where no badge fits even at 0.4, and lands where the intro took it before", () => {
+    // A 0.4 badge needs 119 px between the nav's and the title's 16 px.
+    const fits = 252 - 16 - (56 + 16) - Math.ceil(ovalHeight(0.4));
+    const smallest = badgePlace(short, 256, nav(320), shortStory(fits))!;
+    expect(smallest.kind).toBe('clear');
+    expect(smallest.scale).toBeCloseTo(0.4, 9);
+    const none = badgePlace(short, 256, nav(320), shortStory(fits + 1))!;
+    expect(none).toEqual({ kind: 'none', dx: 320 / 4, dy: -10, scale: 0.6 });
+  });
+
+  it('goes beside the story only where that clears it, as on a phone held sideways', () => {
+    const sideways = badgePlace({ width: 844, height: 390 }, 320, nav(844), [...screens[7].story])!;
+    expect(sideways).toEqual({ kind: 'side', dx: 844 / 4, dy: -10, scale: 0.6 });
+    // The same screen with the copy reaching under the oval beside it: that place no longer clears.
+    const reaching = [...screens[7].story, box(28, 100, 700, 200)];
+    expect(badgePlace({ width: 844, height: 390 }, 320, nav(844), reaching)!.kind).not.toBe('side');
+  });
+
+  const SIDEWAYS = [
+    [863, 360],
+    [640, 360],
+    [640, 400],
+    [683, 384],
+    [720, 450],
+    [768, 432],
+  ] as const;
+
+  it.each(SIDEWAYS)("keeps today's place beside the story at %i x %i, clear of the title, the statement and the link", (width, height) => {
+    const { view, card, story } = sidewaysStage(width, height);
+    const place = badgePlace(view, card, nav(width), [...story]);
+    expect(place).toEqual({ kind: 'side', dx: width / 4, dy: -10, scale: 0.6 });
+    const painted = oval(view, card, place);
+    for (const text of story.slice(0, 3)) expect(gap(painted, text)).toBeGreaterThanOrEqual(16 - 0.01);
+  });
+
+  it("keeps the place beside the story near the nav and on the panel's fade, as today, and leaves it only where it meets the text", () => {
+    // 863 x 360: the oval's top is 12.8 px under the nav, and at 640 x 360 it lies on the panel's fade. Both are today's.
+    const pixel = sidewaysStage(863, 360);
+    expect(gap(oval(pixel.view, 320, badgePlace(pixel.view, 320, nav(863), [...pixel.story])), nav(863))).toBeCloseTo(12.8, 9);
+    const narrow = sidewaysStage(640, 360);
+    expect(gap(oval(narrow.view, 256, badgePlace(narrow.view, 256, nav(640), [...narrow.story])), narrow.story[3])).toBeLessThan(0);
+    // A nav that reaches into the place, or none at all, leaves it where it is.
+    for (const tall of [null, box(0, 0, 863, 120)]) expect(badgePlace(pixel.view, 320, tall, [...pixel.story])).toEqual({ kind: 'side', dx: 863 / 4, dy: -10, scale: 0.6 });
+    // A statement that reaches under it: beside the story meets the text, and nothing above the story fits under the
+    // panel there, so the badge is out of sight.
+    const reaching = [...pixel.story.slice(0, 3), { ...pixel.story[1], right: 863 * 0.75 - 101.2 - 15 }, pixel.story[3]];
+    expect(badgePlace(pixel.view, 320, nav(863), reaching)!.kind).toBe('none');
+    // On a short phone held upright the place beside the story meets the title, so the badge goes above the story.
+    expect(badgePlace(short, 256, nav(320), shortStory())!).toMatchObject({ kind: 'clear', dx: 0 });
+  });
+});
+
+describe("the badge with no clear place (HeroReveal.module.css)", () => {
+  const sheet = postcss.parse(fs.readFileSync(path.join(process.cwd(), 'components/HeroReveal.module.css'), 'utf8'));
+  const rules = (selector: string) => {
+    const found: Record<string, string> = {};
+    sheet.walkRules((rule) => {
+      if (rule.parent?.type === 'root' && rule.selectors.includes(selector)) rule.walkDecls((decl) => void (found[decl.prop] = decl.value));
+    });
+    return found;
+  };
+
+  it('stays out of sight at default text, so it never lies on the copy', () => {
+    expect(rules("main:not([data-text-enlarged]) .badge[data-badge-place='none']")).toEqual({ visibility: 'hidden' });
+  });
+
+  it('with the text enlarged, sits beside the story under the scrim, as beside the story does', () => {
+    expect(rules("main[data-text-enlarged] .badge:is([data-badge-place='side'], [data-badge-place='none'])")).toEqual({ 'z-index': '42' });
+  });
+});
+
+describe("the badge's place once the fonts are in", () => {
+  // Pixel 7 held sideways, 863 x 360: before the fonts are in the story has no boxes yet, and v1.1.0's place clears;
+  // once they are, the title takes its own face and its boxes, which no ResizeObserver here reports.
+  const home = () => (
+    <main>
+      <nav data-chrome-region="nav" />
+      <div data-chrome-region="story">
+        <span data-chrome-panel="" />
+        <h1>Coastline, early</h1>
+        <p>A fixture statement, in plain text.</p>
+        <a href="/series/coastline">Enter the series</a>
+      </div>
+      <HeroReveal isLoading={false} onSettled={() => undefined} portrait={PORTRAIT} />
+    </main>
+  );
+  const at = (left: number, top: number, right: number, bottom: number) => DOMRect.fromRect({ x: left, y: top, width: right - left, height: bottom - top });
+  /** Pixel 7 held sideways's boxes, once the fonts are in. */
+  const pixel7Sideways = () => ({
+    NAV: at(0, 0, 863, 56),
+    SPAN: at(0, 32, 489, 235.9),
+    H1: at(28.48, 80, 393, 177.6),
+    P: at(28.48, 189.6, 393, 211.9),
+    A: at(28.48, 231.9, 166.48, 275.9),
+  });
+  let fontsIn: Record<string, DOMRect> = pixel7Sideways();
+  let loaded = false;
+  let fontsReady: () => void = () => undefined;
+  const original = { width: window.innerWidth, height: window.innerHeight };
+
+  beforeEach(() => {
+    loaded = false;
+    fontsIn = pixel7Sideways();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 863 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 360 });
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => (fontsReady = resolve)) } });
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(320);
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return (loaded && fontsIn[this.tagName]) || at(0, 0, 0, 0);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(document, 'fonts');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: original.width });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: original.height });
+  });
+
+  it("tells the title's panel from the text, so beside the story stands on the panel's fade, as today", () => {
+    // 640 x 360 on the 256 px card: the panel's fade reaches under the place beside the story, the text doesn't.
+    loaded = true;
+    Object.assign(fontsIn, { SPAN: at(0, 32, 429.11, 220.72), H1: at(21.12, 80, 333.11, 163.52), P: at(21.12, 175.52, 333.11, 196.72), A: at(21.12, 216.72, 159.12, 260.72), NAV: at(0, 0, 640, 56) });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 640 });
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(256);
+    const view = render(home());
+    const badge = view.container.querySelector<HTMLElement>('[data-badge-place]')!;
+    expect(badge.getAttribute('data-badge-place')).toBe('side');
+    expect(badge.style.getPropertyValue('--badge-dx')).toBe('160px');
+    expect(badge.style.getPropertyValue('--badge-dy')).toBe('-10px');
+    view.unmount();
+  });
+
+  it('measures the place again once the fonts are in', async () => {
+    const view = render(home());
+    const badge = () => view.container.querySelector<HTMLElement>('[data-badge-place]')!;
+    expect(badge().getAttribute('data-badge-place')).toBe('v1.1.0');
+    loaded = true;
+    await act(async () => {
+      fontsReady();
+      await Promise.resolve();
+    });
+    expect(badge().getAttribute('data-badge-place')).toBe('side');
+    expect(badge().style.getPropertyValue('--badge-dx')).toBe(`${863 / 4}px`);
+    view.unmount();
+  });
 });
 
 describe('homeCopyTop', () => {
@@ -619,6 +854,211 @@ describe("Home's root and the text size", () => {
     document.documentElement.style.fontSize = '16px';
     const view = render(home());
     expect(view.getByTestId('home').hasAttribute('data-text-enlarged')).toBe(false);
+  });
+});
+
+describe("Home's root and the copy's height on the stage", () => {
+  // Dark's phone stages from 380 px, as CI measured them over a white photograph: 390 x 664, an iPhone in Safari with
+  // its toolbars showing; 380 x 800 with reduced motion and a one-line title; and 390 x 844, Dark parity's phone, at
+  // default motion and with reduced motion. The title's and the statement's tops in px down the stage.
+  const home = () => (
+    <main data-testid="home">
+      <div data-home-vignette="" />
+      <div data-chrome-region="story">
+        <h1>Coastline, early</h1>
+        <p>A fixture statement, in plain text.</p>
+      </div>
+      <HeroReveal isLoading={false} onSettled={() => undefined} />
+    </main>
+  );
+  const stageAt = (height: number, titleTop: number, statementTop: number) =>
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.hasAttribute('data-home-vignette')) return DOMRect.fromRect({ x: 0, y: 0, width: 390, height });
+      if (this.tagName === 'H1') return DOMRect.fromRect({ x: 16, y: titleTop, width: 258, height: 34 });
+      if (this.tagName === 'P') return DOMRect.fromRect({ x: 16, y: statementTop, width: 258, height: 20 });
+      return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+    });
+  /** A stage whose height can change: the copy keeps its distance from the bottom, the title 264 px up, the statement 184. */
+  const stageAtHeight = (height: () => number) =>
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.hasAttribute('data-home-vignette')) return DOMRect.fromRect({ x: 0, y: 0, width: 390, height: height() });
+      if (this.tagName === 'H1') return DOMRect.fromRect({ x: 16, y: height() - 264, width: 258, height: 34 });
+      if (this.tagName === 'P') return DOMRect.fromRect({ x: 16, y: height() - 184, width: 258, height: 20 });
+      return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+    });
+  const copyHigh = (height: number, titleTop: number, statementTop: number) => {
+    stageAt(height, titleTop, statementTop);
+    const view = render(home());
+    const high = view.getByTestId('home').hasAttribute('data-copy-high');
+    view.unmount();
+    return high;
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("says so on Home's root where the title sits above Dark's fixed wash, and stops saying so when Home goes", () => {
+    stageAt(664, 400, 480);
+    const view = render(home());
+    const root = view.getByTestId('home');
+    expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('60.24%');
+    expect(root.hasAttribute('data-copy-high')).toBe(true);
+    view.unmount();
+    expect(root.hasAttribute('data-copy-high')).toBe(false);
+  });
+
+  it('says so for a one-line title under the title line whose statement sits above the statement line', () => {
+    // 380 x 800 with reduced motion: the title's top 68.13% down, the statement's 73.88%.
+    expect(copyHigh(800, 545, 591)).toBe(true);
+  });
+
+  it("says nothing where the title and the statement both sit under their lines, so Dark keeps today's wash", () => {
+    // 390 x 844 at default motion, Pixel 7's kind of stage: 68.72% and 78.20%.
+    expect(copyHigh(844, 580, 660)).toBe(false);
+    // 390 x 844 with reduced motion, Dark parity's phone: 65.69% and 75.20%, under both lines.
+    expect(copyHigh(844, 554.42, 634.7)).toBe(false);
+  });
+
+  it('stops saying so when the stage grows and the copy sits under both lines again', async () => {
+    // 390 x 664, then the toolbars go and the stage is 844 tall: the copy stays as far above the bottom.
+    let height = 664;
+    stageAtHeight(() => height);
+    let fontsReady: () => void = () => undefined;
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => (fontsReady = resolve)) } });
+    try {
+      const view = render(home());
+      const root = view.getByTestId('home');
+      expect(root.hasAttribute('data-copy-high')).toBe(true);
+      height = 844;
+      // jsdom has no ResizeObserver; the fonts' measure stands in for the one the stage's resize makes in a browser.
+      await act(async () => {
+        fontsReady();
+        await Promise.resolve();
+      });
+      expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('68.72%');
+      expect(root.hasAttribute('data-copy-high')).toBe(false);
+      view.unmount();
+    } finally {
+      Reflect.deleteProperty(document, 'fonts');
+    }
+  });
+
+  it("says nothing where the chrome scrolls at default text with both tops under their lines, so Dark keeps today's wash", () => {
+    // 390 x 844 at default text, the chrome 1,000 px tall in its 844: the title 68.72% down, the statement 78.20%.
+    stageAt(844, 580, 660);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-home-chrome') ? 1000 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-home-chrome') ? 844 : 0;
+    });
+    const view = render(
+      <main data-testid="home">
+        <div data-home-vignette="" />
+        <div data-home-chrome="">
+          <div data-chrome-region="story">
+            <h1>Coastline, early</h1>
+            <p>A fixture statement, in plain text.</p>
+          </div>
+        </div>
+        <HeroReveal isLoading={false} onSettled={() => undefined} />
+      </main>,
+    );
+    const root = view.getByTestId('home');
+    // The copy moves under a fixed scrim, so the hold still covers the whole print.
+    expect(root.querySelector<HTMLElement>('[data-home-vignette]')!.style.getPropertyValue('--home-copy-top')).toBe('0%');
+    expect(root.hasAttribute('data-text-enlarged')).toBe(false);
+    expect(root.hasAttribute('data-copy-high')).toBe(false);
+    view.unmount();
+  });
+});
+
+describe('copyAboveDarkWash', () => {
+  // Dark's fixed phone wash (HomeChrome.module.css): rgb(8 10 9) at 0.92 at the stage's bottom and 0.28 at 66% up it.
+  const washAt = (up: number) => 0.92 + ((0.28 - 0.92) * up) / 0.66;
+  const ratio = (a: number[], b: number[]) => {
+    const [lighter, darker] = [luminance(a[0], a[1], a[2]), luminance(b[0], b[1], b[2])].sort((x, y) => y - x);
+    return (lighter + 0.05) / (darker + 0.05);
+  };
+  // The measure's own reading (e2e's worstTextContrast()): the pixel behind the text is the wash over a white
+  // photograph in whole 8-bit channels, as the screenshot gives it, and the ink is what the canvas reads Dark's as:
+  // the title #f4f6f5, the statement rgba(244, 246, 245, 0.76), which it reads as (244, 246, 244) at 194/255.
+  const behind = (down: number) => {
+    const wash = washAt(1 - down / 100);
+    return [8, 10, 9].map((channel) => Math.round(255 * (1 - wash) + channel * wash));
+  };
+  /** The ink's reading over the pixel `down`% down the stage. */
+  const reading = (ink: number[], alpha: number) => (down: number) => {
+    const pixel = behind(down);
+    return ratio(ink.map((channel, i) => channel * alpha + pixel[i] * (1 - alpha)), pixel);
+  };
+  const title = reading([244, 246, 245], 1);
+  const statement = reading([244, 246, 244], 194 / 255);
+  /** The highest point, to a thousandth of a percent, from which `ink` reads at least `min` all the way down. */
+  const from = (ink: (down: number) => number, min: number) => {
+    for (let step = 0; step <= 50_000; step += 1) if (ink(50 + step / 1000) >= min) return 50 + step / 1000;
+    return Number.NaN;
+  };
+  // CI's worst pixel at 390 x 844 with reduced motion: the title's top 65.69% down, 4.577:1, and the statement's
+  // 75.20%, 4.615:1. Where the reading gives those is where each line box's top sits: the title's above its box (its
+  // leading is 0.9), the statement's below its own (1.25).
+  const TITLE_LINE_BOX = from(title, 4.577) - 65.69;
+  const STATEMENT_LINE_BOX = from(statement, 4.615) - 75.2;
+  /** Where a box's top first holds 4.5:1 under today's wash, from its line box's. */
+  const titleHolds = from(title, 4.5) - TITLE_LINE_BOX;
+  const statementHolds = from(statement, 4.5) - STATEMENT_LINE_BOX;
+
+  it('finds the line boxes where the measure puts them', () => {
+    expect(TITLE_LINE_BOX).toBeLessThan(0);
+    expect(STATEMENT_LINE_BOX).toBeGreaterThan(0);
+  });
+
+  it("draws the title's line where today's wash holds the title at 4.5:1, 0.4 of a point inside it", () => {
+    expect(titleHolds).toBeCloseTo(65.09, 2);
+    expect(DARK_WASH_TITLE_TOP).toBe(65.5);
+    expect(DARK_WASH_TITLE_TOP - titleHolds).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it("draws the statement's line where today's wash holds the statement at 4.5:1, a quarter of a point inside it", () => {
+    // The statement holds from 74.50% down, so a line at 74.5 had no margin.
+    expect(statementHolds).toBeCloseTo(74.5, 2);
+    expect(74.5 - statementHolds).toBeLessThan(0.01);
+    expect(DARK_WASH_STATEMENT_TOP).toBe(74.75);
+    expect(DARK_WASH_STATEMENT_TOP - statementHolds).toBeGreaterThanOrEqual(0.25);
+    // Still under Dark parity's statement at 390 x 844 with reduced motion (75.20%, 75.21% in the gate) and Pixel 7's
+    // (about 78.1%), so both keep today's wash.
+    expect(DARK_WASH_STATEMENT_TOP).toBeLessThan(75.2);
+  });
+
+  it("keeps today's wash at 390 x 844 with reduced motion, where CI read the title at 4.577:1 and the statement at 4.615:1", () => {
+    expect(copyAboveDarkWash(65.69, 75.2)).toBe(false);
+    expect(title(65.69 + TITLE_LINE_BOX)).toBeGreaterThanOrEqual(4.5);
+    expect(statement(75.2 + STATEMENT_LINE_BOX)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("holds the copy far above 4.5:1 where the wash follows it, as CI read Dark under 380 px after the copy-following wash: 12.954 and 8.504 to 8.595", () => {
+    // The wash that follows holds at 0.86 up to the copy's top. The title, at the hold, reads 12.917 here, against
+    // CI's 12.954; the statement sits lower, in deeper wash, so it reads more than at the hold: CI's 8.504 to 8.595.
+    const hold = [8, 10, 9].map((channel) => Math.round(255 * 0.14 + channel * 0.86));
+    expect(Math.abs(ratio([244, 246, 245], hold) - 12.954)).toBeLessThan(0.05);
+    expect(ratio([244, 246, 244].map((channel, i) => channel * (194 / 255) + hold[i] * (61 / 255)), hold)).toBeLessThanOrEqual(8.504);
+  });
+
+  it('is a title whose top sits above the title line, or a statement whose top sits above the statement line', () => {
+    for (const top of [0, 40, 54.98, 60.24, 63.8, 65.49]) expect(copyAboveDarkWash(top, 90), `the title ${top}%`).toBe(true);
+    for (const top of [0, 60, 72.29, 73.88, 74.5, 74.74]) expect(copyAboveDarkWash(90, top), `the statement ${top}%`).toBe(true);
+    // A one-line title under the title line, its statement above the statement line.
+    expect(copyAboveDarkWash(68.13, 73.88)).toBe(true);
+    for (const [top, below] of [[65.5, 74.75], [65.69, 75.2], [68.72, 78.2], [80, 90], [100, 100]]) expect(copyAboveDarkWash(top, below), `${top}% and ${below}%`).toBe(false);
+  });
+
+  it("isn't, with nothing measured, so Dark keeps its wash", () => {
+    expect(copyAboveDarkWash(null, null)).toBe(false);
+    expect(copyAboveDarkWash(null, 80)).toBe(false);
+    expect(copyAboveDarkWash(70, null)).toBe(false);
+    expect(copyAboveDarkWash(null, 70)).toBe(true);
+    expect(copyAboveDarkWash(60, null)).toBe(true);
   });
 });
 

@@ -23,7 +23,7 @@ const STYLE = [
     // Dark (the default, and System on a dark device) is today's 503, exactly. Black is the screen's own black.
     ':root,html[data-theme=dark]{color-scheme:dark;--g:#080a09;--i:#f4f6f5;--s:rgba(244,246,245,0.76);--h:#171a18;--r:#343936;--m:rgba(255,255,255,0.38)}',
     'html[data-theme=black]{color-scheme:dark;--g:#000;--i:#f5f5f5;--s:rgba(255,255,255,0.76);--h:#000;--r:transparent;--m:rgba(255,255,255,0.4)}',
-    'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#8c7f6f}',
+    'html[data-theme=light]{color-scheme:light;--g:#ebe5d9;--i:#29231d;--s:#4d443a;--h:#e2dbcd;--r:#c9bfae;--m:#847767}',
     'html[data-theme=bright]{color-scheme:light;--g:#fff;--i:#0b0b0b;--s:#333;--h:#fff;--r:#d4d4d4;--m:#767676}',
     // Black's KG mark is filled, a white disc with black letters (the OLED review's P2-1).
     'html[data-theme=black] .mark{border-color:#fff;background:#fff;color:#000}',
@@ -65,7 +65,10 @@ export const UNAVAILABLE_HTML = `<!doctype html>
 `;
 
 const STYLE_HASH = `'sha256-${createHash('sha256').update(STYLE).digest('base64')}'`;
-/** The theme script, allowed by its hash too, so the 503 paints in the visitor's stored theme like every other page. */
+/**
+ * The theme script, allowed by its hash too, so the 503 paints in the visitor's stored theme like every other page. The
+ * 503 holds no form, so it carries no submit gate script; a page that does and sends script-src allows both alike.
+ */
 const SCRIPT_HASH = `'sha256-${createHash('sha256').update(THEME_INIT_SCRIPT).digest('base64')}'`;
 
 /** Allows the one inline stylesheet and the theme script, by their hashes, and nothing else, and no framing, like every curator response. */

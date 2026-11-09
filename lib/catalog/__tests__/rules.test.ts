@@ -7,7 +7,7 @@ import { cameraSettingsCaption } from '../legacy-photos';
 import { ORDER_RULES } from '../order-rules';
 import { BAND_COLORS, registeredRules, registerRule, runRules, rulesetVersion } from '../rules';
 import { createTestCatalog, type TestCatalog } from '../testing';
-import type { Issue, RuleContext } from '../types';
+import type { Issue, RevisionFile, RuleContext } from '../types';
 
 let catalog: TestCatalog;
 let clean: RuleContext;
@@ -36,6 +36,24 @@ const describe0 = (ctx: RuleContext, text: string) => {
     photoAt(ctx, 0).alt = { kind: 'described', text };
     return { kind: 'photo' as const, id: photoAt(ctx, 0).id };
 };
+
+/** The candidate as it stands, as the live revision a publish compares against. Change the candidate after this. */
+function goLive(ctx: RuleContext, change: (live: RevisionFile) => void = () => undefined): RevisionFile {
+    const live = { revisionId: `rev_${'a'.repeat(43)}`, content: structuredClone(ctx.candidate) } as unknown as RevisionFile;
+    change(live);
+    ctx.active = live;
+    return live;
+}
+
+/** Give the series at `index` new addresses in both the candidate and the working layer. */
+function readdress(ctx: RuleContext, index: number, slug: string, slugAliases: string[] = []): string {
+    const series = ctx.candidate.series[index];
+    const old = series.slug;
+    Object.assign(series, { slug, slugAliases });
+    const authored = ctx.authored?.series.find((entry) => entry.id === series.id);
+    if (authored) Object.assign(authored, { slug, slugAliases });
+    return old;
+}
 
 interface Row {
     code: string;
@@ -109,6 +127,11 @@ const rows: Row[] = [
         if (series) series.shortStatement = ' ';
         return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'shortStatement' };
     } },
+    { code: 'series.duplicate-title', gate: 'publish', severity: 'warning', rollbackClass: 'integrity', breakIt: (ctx) => {
+        const [first, second] = ctx.authored?.series ?? [];
+        second.title = first.title;
+        return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'title' };
+    } },
     { code: 'route.slug-format', gate: 'render', severity: 'error', rollbackClass: 'integrity', breakIt: (ctx) => {
         const series = ctx.authored?.series[0];
         if (series) series.slugAliases = ['Fixture_One'];
@@ -122,6 +145,19 @@ const rows: Row[] = [
     { code: 'route.collision', gate: 'render', severity: 'error', rollbackClass: 'integrity', breakIt: (ctx) => {
         const [first, second] = ctx.authored?.series ?? [];
         second.slugAliases = [first.slug];
+        return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'slugAliases[0]' };
+    } },
+    { code: 'route.slug-change', gate: 'publish', severity: 'error', rollbackClass: 'editorial', breakIt: (ctx) => {
+        goLive(ctx);
+        readdress(ctx, 0, 'fixture-renamed');
+        return { record: { kind: 'series', id: 'ser_fixture-01' }, field: 'slug' };
+    } },
+    { code: 'route.alias-reassigned', gate: 'publish', severity: 'error', rollbackClass: 'editorial', breakIt: (ctx) => {
+        // Live, the first series keeps an old address. The draft drops it, and the second series takes it.
+        goLive(ctx, (live) => {
+            live.content.series[0].slugAliases = ['fixture-old'];
+        });
+        readdress(ctx, 1, ctx.candidate.series[1].slug, ['fixture-old']);
         return { record: { kind: 'series', id: 'ser_fixture-02' }, field: 'slugAliases[0]' };
     } },
     { code: 'accent.format', gate: 'publish', severity: 'error', rollbackClass: 'editorial', breakIt: (ctx) => {
@@ -366,6 +402,112 @@ describe('the edges of the checks', () => {
     });
 });
 
+describe("a slug change against the live site (#5)", () => {
+    const routeIssues = (ctx: RuleContext) => runRules(ctx).filter((issue) => issue.code.startsWith('route.'));
+
+    it('route.slug-change: spells out the fix, and passes once the old slug is an alias', () => {
+        const ctx = context();
+        goLive(ctx);
+        const old = readdress(ctx, 0, 'fixture-renamed');
+        expect(routeIssues(ctx)).toEqual([{
+            code: 'route.slug-change',
+            severity: 'error',
+            record: { kind: 'series', id: 'ser_fixture-01' },
+            field: 'slug',
+            message: `The address changes from /work/${old} to /work/fixture-renamed, and nothing keeps /work/${old}, so every link to it would break.`,
+            hint: `Add ${old} to slugAliases with photos edit ser_fixture-01, so /work/${old} leads to the new address.`,
+        }]);
+        readdress(ctx, 0, 'fixture-renamed', [old]);
+        expect(routeIssues(ctx)).toEqual([]);
+    });
+
+    it('route.slug-change: a second rename keeps every older alias too, and dropping one with no rename stays allowed', () => {
+        // Live: /work/fixture-01, with /work/fixture-old kept from an earlier rename.
+        const ctx = context();
+        goLive(ctx, (live) => {
+            live.content.series[0].slugAliases = ['fixture-old'];
+        });
+        const old = readdress(ctx, 0, 'fixture-renamed', ['fixture-01']);
+        expect(routeIssues(ctx)).toEqual([{
+            code: 'route.slug-change',
+            severity: 'error',
+            record: { kind: 'series', id: 'ser_fixture-01' },
+            field: 'slugAliases',
+            message: `The rename drops /work/fixture-old, an old address of this series, so every link to it would break.`,
+            hint: `Keep fixture-old in slugAliases beside ${old} with photos edit ser_fixture-01.`,
+        }]);
+        readdress(ctx, 0, 'fixture-renamed', ['fixture-old', old]);
+        expect(routeIssues(ctx)).toEqual([]);
+
+        // The same slug with the old alias gone: the first step of moving an address to another series.
+        const dropped = context();
+        goLive(dropped, (live) => {
+            live.content.series[0].slugAliases = ['fixture-old'];
+        });
+        readdress(dropped, 0, dropped.candidate.series[0].slug, []);
+        expect(routeIssues(dropped)).toEqual([]);
+    });
+
+    it('route.slug-change: has nothing to say before the first publish, for a new series, or for a series the draft takes off the site', () => {
+        const first = context();
+        readdress(first, 0, 'fixture-renamed');
+        expect(routeIssues(first)).toEqual([]);
+
+        const added = context();
+        goLive(added, (live) => {
+            live.content.series = live.content.series.filter((series) => series.id !== 'ser_fixture-02');
+        });
+        readdress(added, 1, 'fixture-brand-new');
+        expect(routeIssues(added)).toEqual([]);
+
+        const gone = context();
+        goLive(gone);
+        gone.candidate.series = gone.candidate.series.filter((series) => series.id !== 'ser_fixture-01');
+        expect(routeIssues(gone)).toEqual([]);
+    });
+
+    it('route.alias-reassigned: a live slug can become neither the slug nor an alias of another series, even once its series leaves', () => {
+        const ctx = context();
+        goLive(ctx);
+        const old = ctx.candidate.series[0].slug;
+        // The draft hides the first series under another slug, and the second series takes the first one's.
+        ctx.candidate.series = ctx.candidate.series.filter((series) => series.id !== 'ser_fixture-01');
+        const hidden = ctx.authored?.series.find((series) => series.id === 'ser_fixture-01');
+        if (hidden) Object.assign(hidden, { slug: 'fixture-retired', visibility: 'hidden' });
+        readdress(ctx, 0, old, [ctx.candidate.series[0].slug]);
+        expect(routeIssues(ctx)).toEqual([{
+            code: 'route.alias-reassigned',
+            severity: 'error',
+            record: { kind: 'series', id: 'ser_fixture-02' },
+            field: 'slug',
+            message: `/work/${old} belongs to ser_fixture-01 on the live site. Giving it to this series would send every link to ser_fixture-01 here instead.`,
+            hint: `Choose another slug. An address moves to another series only once a publish has taken it off ser_fixture-01.`,
+        }]);
+    });
+
+    it('both rules flag a rename whose old slug goes to another series', () => {
+        const ctx = context();
+        goLive(ctx);
+        const old = readdress(ctx, 0, 'fixture-renamed');
+        readdress(ctx, 1, ctx.candidate.series[1].slug, [old]);
+        expect(routeIssues(ctx).map((issue) => [issue.code, issue.record.id, issue.field])).toEqual([
+            ['route.slug-change', 'ser_fixture-01', 'slug'],
+            ['route.alias-reassigned', 'ser_fixture-02', 'slugAliases[0]'],
+        ]);
+    });
+
+    it("compare a stored revision against the one it would replace, as a rollback passes it, and stay quiet when nothing is given", () => {
+        const ctx = context();
+        const live = goLive(ctx);
+        const old = readdress(ctx, 0, 'fixture-renamed');
+        const self = { ...live, content: structuredClone(ctx.candidate) } as RevisionFile;
+        // A stored revision's check names the stored revision as active, so only `replaces` says what's live.
+        expect(routeIssues({ ...ctx, authored: null, active: self, replaces: live })).toEqual([expect.objectContaining({ code: 'route.slug-change', field: 'slug', message: expect.stringContaining(`from /work/${old} to /work/fixture-renamed`) })]);
+        expect(routeIssues({ ...ctx, authored: null, active: self })).toEqual([]);
+        expect(routeIssues({ ...ctx, authored: null, active: self, replaces: null })).toEqual([]);
+    });
+});
+
 describe('a stored revision, with no working layer', () => {
     it('skips the authored-record rules and the reviewed check, and still checks the rest', () => {
         const ctx = context();
@@ -421,6 +563,95 @@ describe("photos carry-over's marker", () => {
         // The title is never optional.
         Object.assign(authored, { statement: '', title: ' ' });
         expect(codes(ctx)).toEqual([`description.series-copy ${authored.id} title`]);
+    });
+});
+
+describe('two published series with one title, which Work would show as two links with the same name', () => {
+    const findings = (ctx: RuleContext) => runRules(ctx).filter((issue) => issue.code === 'series.duplicate-title');
+    const titled = (ctx: RuleContext, first: string, second: string) => {
+        const [a, b] = ctx.authored!.series;
+        Object.assign(a, { title: first });
+        Object.assign(b, { title: second });
+        return [a, b];
+    };
+
+    it.each([
+        ['the same title', 'Fixture harbor', 'Fixture harbor'],
+        ['another case', 'Fixture harbor', 'FIXTURE HARBOR'],
+        ['spaces around one', 'Fixture harbor', '  Fixture harbor\t'],
+        ['another Unicode form of the same letters', 'Fixture caf\u00e9', 'Fixture cafe\u0301'],
+        ['a sharp s that folds to ss', 'Fixture stra\u00dfe', 'FIXTURE STRASSE'],
+        // Work's titles have no white-space rule, so a run of spaces, or a non-breaking one, renders as one space.
+        ['a doubled space inside one', 'Fixture harbor light', 'Fixture harbor  light'],
+        ['a non-breaking space inside one', 'Fixture harbor light', 'Fixture harbor\u00a0light'],
+    ])('warns on %s, on each series, naming both by slug', (_label, first, second) => {
+        const ctx = context();
+        const [a, b] = titled(ctx, first, second);
+        const issues = findings(ctx);
+        expect(issues.map((issue) => [issue.severity, issue.record, issue.field])).toEqual([
+            ['warning', { kind: 'series', id: a.id }, 'title'],
+            ['warning', { kind: 'series', id: b.id }, 'title'],
+        ]);
+        for (const issue of issues) {
+            expect(issue.message).toContain(a.slug);
+            expect(issue.message).toContain(b.slug);
+        }
+        // A warning only: nothing else is wrong, and no error comes with it.
+        expect(runRules(ctx).filter((issue) => issue.severity === 'error')).toEqual([]);
+    });
+
+    it.each([
+        ['different titles', 'Fixture harbor', 'Fixture harbour'],
+        ['a space inside one', 'Fixture harbor', 'Fixture har bor'],
+    ])('says nothing for %s', (_label, first, second) => {
+        const ctx = context();
+        titled(ctx, first, second);
+        expect(findings(ctx)).toEqual([]);
+    });
+
+    it.each([
+        ['empty', '', ''],
+        ['only whitespace', '   ', '\u00a0\t'],
+    ])('says nothing for two titles that are both %s, which description.series-copy reports', (_label, first, second) => {
+        const ctx = context();
+        titled(ctx, first, second);
+        expect(findings(ctx)).toEqual([]);
+        expect(runRules(ctx).some((issue) => issue.code === 'description.series-copy' && issue.field === 'title')).toBe(true);
+    });
+
+    it('names every series that shares the title by its slug, never its ID, in one message each, with the hint', () => {
+        const ctx = context();
+        const [a, b] = ctx.authored!.series;
+        const c = { ...structuredClone(b), id: 'ser_fixture-03' };
+        ctx.authored!.series.push(c);
+        // Slugs that the IDs don't hold, so a message built from IDs shows.
+        Object.assign(a, { slug: 'harbor-east', title: 'Fixture harbor' });
+        Object.assign(b, { slug: 'harbor-west', title: 'fixture harbor' });
+        Object.assign(c, { slug: 'harbor-north', title: ' FIXTURE  HARBOR ' });
+        const issues = findings(ctx);
+        expect(issues.map((issue) => issue.record.id)).toEqual(['ser_fixture-01', 'ser_fixture-02', 'ser_fixture-03']);
+        for (const issue of issues) {
+            expect(issue).toMatchObject({
+                severity: 'warning',
+                field: 'title',
+                message: 'The series harbor-east, harbor-west and harbor-north share this title, so Work shows 3 links with the same name.',
+                hint: 'Give each series its own title. This is a warning only; nothing is blocked.',
+            });
+        }
+    });
+
+    it("says nothing for a draft series, which Work doesn't show", () => {
+        const ctx = context();
+        const [, b] = titled(ctx, 'Fixture harbor', 'Fixture harbor');
+        b.visibility = 'draft';
+        expect(findings(ctx)).toEqual([]);
+    });
+
+    it('reads a stored revision too, which holds only published series', () => {
+        const ctx = context();
+        const [first, second] = ctx.candidate.series;
+        second.title = first.title.toUpperCase();
+        expect(findings({ ...ctx, authored: null }).map((issue) => issue.record.id)).toEqual([first.id, second.id]);
     });
 });
 

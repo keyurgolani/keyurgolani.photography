@@ -41,7 +41,8 @@
 # SMOKE_IMAGE_PORT, 3000 by default. That is the only change to
 # docker-compose.prod.yml, made with an override that needs Docker Compose
 # 2.24.4 or later for its !override tag. ci/smoke-catalog.sh checks /media on
-# a published catalog.
+# a published catalog. The temp root goes under $RUNNER_TEMP, the job's own
+# temp folder in CI, or $TMPDIR elsewhere.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
@@ -62,7 +63,7 @@ BASE_URL=http://127.0.0.1:$PORT
 OUTPUT_TIMEOUT=120
 # One Compose project per run, so concurrent runs never share containers.
 PROJECT=photography-smoke-$$
-TMP=$(mktemp -d)
+TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/photography-smoke-image.XXXXXX")
 PHOTOS=$TMP/public/assets/photos
 DATA=$TMP/portfolio-data
 UNSET=$TMP/unset-library
@@ -71,6 +72,14 @@ OVERRIDE=$TMP/smoke.override.yml
 
 compose() {
   docker compose -f "$ROOT/docker-compose.prod.yml" -f "$OVERRIDE" --project-directory "$TMP" -p "$PROJECT" "$@"
+}
+
+# Hands data root <dir>, inside this run's temp root, to uid 1001, the
+# image's user, as docs/data-root.md's setup does (chown -R 1001:1001, chmod
+# 700), so the owner gate lets the image's commands write it on any runner.
+hand_to_image() {
+  docker run --rm --pull never --network none --user 0 --entrypoint sh -v "$1:/d" "$IMAGE" -c 'chown -R 1001:1001 /d && chmod 700 /d' ||
+    fail "Could not hand $1 to uid 1001."
 }
 
 # A one-off command in image-watcher, the way docs/data-root.md runs one.
@@ -290,7 +299,8 @@ for fixture in ci/fixtures/library/*.jpg; do
   fixtures+=("$(basename "$fixture" .jpg)")
 done
 plant_legacy "$PHOTOS" "${fixtures[@]}"
-chmod -R a+rwX "$PHOTOS" "$DATA" "$UNSET"
+chmod -R a+rwX "$PHOTOS" "$UNSET"
+hand_to_image "$DATA"
 library_listing "$PHOTOS" >"$TMP/listing-start.txt" || fail "Could not list the library."
 grep -q "^optimized/${fixtures[0]}.webp f " "$TMP/listing-start.txt" ||
   fail "The library listing names no planted legacy derivative, so the checks on it would prove nothing."
@@ -642,7 +652,7 @@ echo "With PHOTOGRAPHY_DATA_DIR unset, the watcher exited 1, said why, and wrote
 #     and the CLI exit 1 naming the variable, and never read the old path,
 #     so no pass sees an empty or wrong folder and writes nothing.
 mkdir "$TMP/old-path-data"
-chmod a+rwX "$TMP/old-path-data"
+hand_to_image "$TMP/old-path-data"
 for command in "node dist/scripts/imageWatcher.mjs --once" "node dist/scripts/photos.mjs migrate --dry-run"; do
   set +e
   # shellcheck disable=SC2086 # the command is ours, split on purpose
@@ -656,6 +666,9 @@ for command in "node dist/scripts/imageWatcher.mjs --once" "node dist/scripts/ph
     fail "'$command' with PHOTOGRAPHY_LIBRARY_DIR unset did not name the variable."
   }
 done
-[ -z "$(ls -A "$TMP/old-path-data")" ] || fail "With PHOTOGRAPHY_LIBRARY_DIR unset, something wrote the data root: $(ls -A "$TMP/old-path-data")"
+# Listed as its owner, uid 1001, since the runner's user may not read a root that is 0700 to it.
+old_path_entries=$(docker run --rm --pull never --network none --user 1001:1001 --entrypoint ls -v "$TMP/old-path-data:/d:ro" "$IMAGE" -A /d) ||
+  fail "Could not list the old-path data root as uid 1001."
+[ -z "$old_path_entries" ] || fail "With PHOTOGRAPHY_LIBRARY_DIR unset, something wrote the data root: $old_path_entries"
 require_library_unchanged "$UNSET" "$TMP/listing-unset.txt" "With PHOTOGRAPHY_LIBRARY_DIR unset"
 echo "With PHOTOGRAPHY_LIBRARY_DIR unset and the library at its old path, the watcher and photos.mjs exited 1 naming the variable, and wrote nothing."

@@ -75,12 +75,12 @@ export async function createCurationFixture({ published = false, fresh = 2, seed
                     derived: {
                         extractorVersion: 1,
                         technical: { Make: { value: 'Fixture Make', source: 'fixture' }, Model: { value: `Fixture Model ${SERIAL}`, source: 'fixture' } },
-                        capturedDate: { value: `2024-06-0${index + 1}`, source: 'fixture' },
+                        capturedDate: { value: `2024-06-${String((index % 28) + 1).padStart(2, '0')}`, source: 'fixture' },
                     },
                     curatorOnly: {
                         extractorVersion: 1,
                         gps: { value: GPS, source: 'fixture' },
-                        dateTimeOriginal: { value: `2024-06-0${index + 1}T05:06:07`, source: 'fixture' },
+                        dateTimeOriginal: { value: `2024-06-${String((index % 28) + 1).padStart(2, '0')}T05:06:07`, source: 'fixture' },
                         artist: { value: 'Fixture Artist', source: 'fixture' },
                     },
                     profiles: { [catalog.profileId]: { state: 'pending', attempts: 0 } },

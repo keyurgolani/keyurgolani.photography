@@ -336,7 +336,38 @@
 }
 
 .editorial {
+  min-width: 0;
   font-size: var(--gah-type-label);
+}
+
+/* #117's accept boxes: the legend reads as the notice's first line, inside its border, not on it. */
+.editorial legend {
+  float: left;
+  width: 100%;
+  margin: 0 0 0.25rem;
+  padding: 0;
+  color: var(--gah-ink);
+  font-weight: 500;
+}
+
+.editorial legend + * {
+  clear: both;
+}
+
+/* Each box's whole row is its target: 44 px tall, the words beside the box wrapping under themselves. */
+.accept {
+  align-items: flex-start;
+  padding: 0.6rem 0;
+  color: var(--gah-ink);
+}
+
+.accept input {
+  flex: none;
+  margin: 0;
+}
+
+.editorial .fieldError {
+  margin-top: 0.375rem;
 }
 
 .field {

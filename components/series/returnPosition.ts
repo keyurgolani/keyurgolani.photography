@@ -8,6 +8,15 @@ import { readSeriesPages, SERIES_RESTORED_EVENT } from './seriesContinuation';
 export const RETURN_KEY = 'kgSeriesReturn';
 /** The cover's link. Entries are `photo-<photoId>`. */
 export const COVER_ID = 'series-cover';
+/** The series page's h1, where focus goes when the photograph to return to is gone (#5, B5). */
+export const SERIES_TITLE_ID = 'series-title';
+/**
+ * The key in `history.state` that says this entry's `?photo=` has had its
+ * one focus (B5): set when a deep link's arrival focuses its entry, and when
+ * an activation writes `?photo=`, so a later Back to the entry from Work or
+ * another site leaves the visitor where the browser puts them, as before.
+ */
+export const ARRIVAL_KEY = 'kgSeriesArrival';
 /** How long a restore waits for #6's event before it restores with what's there, so focus is never left waiting. */
 export const RESTORE_WAIT_MS = 10_000;
 
@@ -28,6 +37,8 @@ export interface SeriesOnPage {
     revisionId: string;
     /** Every member that resolves. */
     total: number;
+    /** The first position of the server's page: 1, or later for `?photo=` (B5). */
+    first?: number;
 }
 
 /** Photo IDs as #13 mints them, and nothing that could reach outside `photo-<photoId>`. */
@@ -79,8 +90,56 @@ export function openerOf(link: { id: string; href: string }, seriesPath: string,
 }
 
 /** The link `record` returns to: the cover when it opened the Viewer and is still there, else the photograph's entry. */
-function openerElement(record: SeriesReturn, doc: Document): HTMLElement | null {
+export function openerElement(record: SeriesReturn, doc: Document = document): HTMLElement | null {
     return (record.opener === 'cover' ? doc.getElementById(COVER_ID) : null) ?? doc.getElementById(entryId(record.photoId));
+}
+
+/** The entry's state with the arrival mark for `photoId` added, keeping every other key. */
+export function withArrival(state: unknown, photoId: string): Record<string, unknown> {
+    return { ...(isRecord(state) ? state : {}), [ARRIVAL_KEY]: photoId };
+}
+
+/** The photograph whose `?photo=` focus this entry has had, or null. */
+export function arrivalOf(state: unknown): string | null {
+    const value = isRecord(state) ? state[ARRIVAL_KEY] : undefined;
+    return typeof value === 'string' && PHOTO_ID.test(value) ? value : null;
+}
+
+/**
+ * Lets the series heading take focus from script only: `tabindex="-1"`
+ * while it has focus, taken off again when focus leaves, so the server HTML
+ * and the Tab order stay as they were.
+ */
+function focusableHeading(heading: HTMLElement): HTMLElement {
+    if (!heading.hasAttribute('tabindex')) {
+        heading.setAttribute('tabindex', '-1');
+        heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true });
+    }
+    return heading;
+}
+
+/** The series heading, ready to take focus, or null when the page has none. */
+function headingOf(doc: Document): HTMLElement | null {
+    const heading = doc.getElementById(SERIES_TITLE_ID);
+    return heading === null ? null : focusableHeading(heading);
+}
+
+/** Focuses the series heading, as #5's fallback does, and returns it. Null when there's none. */
+export function focusHeading(doc: Document = document): HTMLElement | null {
+    const heading = headingOf(doc);
+    heading?.focus();
+    return heading;
+}
+
+/**
+ * Focuses `target` and brings it to the middle of the view, for a return or
+ * an arrival with no offset of its own to put back: a deep link's entry
+ * (B5), or the photograph after a refresh replaced the page it came back to.
+ */
+export function focusInView(target: HTMLElement): HTMLElement {
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    return target;
 }
 
 export interface RestoreOptions {
@@ -88,6 +147,12 @@ export interface RestoreOptions {
     scroll?: boolean;
     /** Focus the opener only when nothing else has focus, so a late restore never takes it from where the visitor went. */
     onlyIfIdle?: boolean;
+    /**
+     * Fall back to the series heading when neither the cover nor the entry
+     * is on the page. Off by default: only a caller that knows the
+     * photograph left the revision (the server said so) turns it on.
+     */
+    heading?: boolean;
 }
 
 /** Whether focus is on nothing in particular: the body, or no element at all. */
@@ -101,14 +166,16 @@ function focusIsIdle(doc: Document): boolean {
  * If the layout changed so that link isn't wholly in view at that offset
  * (another viewport size after a reload), it's scrolled the least distance
  * that shows it, within the page's scroll padding. A cover link that's gone
- * falls back to the photograph's entry. When neither is on the page (the
- * photograph left the revision) only the scroll offset comes back; the
- * heading fallback is deferred.
+ * falls back to the photograph's entry. When neither is on the page, focus
+ * stays where it is, unless `heading` says the photograph is known to have
+ * left the revision: then it goes to the series heading, `#series-title`,
+ * the same way (B5).
  */
-export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle = false }: RestoreOptions = {}, doc: Document = document): HTMLElement | null {
+export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle = false, heading = false }: RestoreOptions = {}, doc: Document = document): HTMLElement | null {
     const view = doc.defaultView;
     if (scroll) view?.scrollTo({ top: record.scrollY, left: 0, behavior: 'instant' });
-    const target = openerElement(record, doc);
+    const opener = openerElement(record, doc);
+    const target = opener ?? (heading && !(onlyIfIdle && !focusIsIdle(doc)) ? headingOf(doc) : null);
     if (target === null) return null;
     if (onlyIfIdle && !focusIsIdle(doc)) return null;
     const box = target.getBoundingClientRect();
@@ -135,20 +202,28 @@ export function clearReturn(): void {
 const INPUT_EVENTS = ['keydown', 'pointerdown', 'wheel'] as const;
 
 /**
- * Restores `record` and uses it up. It restores at once unless its opener
- * isn't on the page yet and #6 is loading this history entry's pages again
- * (the entry holds an extent readSeriesPages() accepts for this series,
- * which #6 starts loading in the same commit). Then it waits for #6's
+ * Restores `record` and uses it up. It restores at once unless #6 is
+ * loading this history entry's pages again (the entry holds an extent
+ * readSeriesPages() accepts for this series, which #6 starts loading in the
+ * same commit) and either its opener isn't on the page yet or the extent
+ * starts before the server's page (B5's deep entry), whose earlier pages
+ * would move the page under a restored offset. Then it waits for #6's
  * SERIES_RESTORED_EVENT. RESTORE_WAIT_MS caps that wait with what's there,
- * and a later event still focuses the opener. Either way a delayed restore
+ * and a later event still focuses the opener. When the restore is done (at
+ * once, or on the event, never at the timeout) and the photograph still
+ * isn't on the page, it hands the record to `onMissing`: the saved pages
+ * couldn't bring it back, and only the server can say whether it's in the
+ * revision at all (B5). Either way a delayed restore
  * skips the scroll once the visitor has pressed a key, pressed a pointer or
  * turned the wheel, and moves focus only from the body. Returns the cancel.
  */
-export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage): () => void {
-    const restoring = readSeriesPages(window.history.state, series.revisionId, series.slug, series.total) !== null;
-    if (openerElement(record, document) !== null || !restoring) {
+export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage, onMissing: (record: SeriesReturn) => void = () => undefined): () => void {
+    const extent = readSeriesPages(window.history.state, series.revisionId, series.slug, series.total);
+    const prepends = extent !== null && extent.first < (series.first ?? 1);
+    if (extent === null || (openerElement(record, document) !== null && !prepends)) {
         restoreReturn(record);
         clearReturn();
+        if (openerElement(record, document) === null) onMissing(record);
         return () => undefined;
     }
     let moved = false;
@@ -165,6 +240,7 @@ export function scheduleRestore(record: SeriesReturn, series: SeriesOnPage): () 
         stop();
         late();
         clearReturn();
+        if (openerElement(record, document) === null) onMissing(record);
     }
     // The timeout restores what it can and keeps listening, so #6 finishing later still brings focus back.
     function onTimeout() {

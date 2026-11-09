@@ -8,6 +8,7 @@ import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
 import { deferEvent } from '../lib/curation/actions';
 import { eventIdOf, eventKey } from '../lib/curation/events';
 import { ARCHIVE_TAKEDOWN, archiveQuestion, bindAnswer, DONE_ANSWER, humanTime, REPLACEMENT_HINT } from '../lib/curation/inbox-view';
+import { watcherStatusFile } from '../lib/identity/heartbeat';
 import { identityPaths } from '../lib/identity/registry';
 import { listEvents, readEvent } from '../lib/curation/repository';
 import { confirmReplacement } from '../lib/curation/resolutions';
@@ -89,8 +90,10 @@ const webOrigin = () => {
 
 const eventOf = (photoId: string) => eventIdOf(eventKey('new', { photoId, assetRevision: data().revisionOf(photoId), key: `new:${photoId}:${data().revisionOf(photoId)}` }));
 const layers = () => ({ catalog: folderBytes(path.join(data().root, 'catalog')) });
-/** The answer the last action gave, in the page's polite status region. */
-const answer = (page: Page, state: 'done' | 'stale' | 'invalid' | 'refused') => page.getByRole('status').locator(`[data-state="${state}"]`);
+/** The answer the last action gave, in the page's polite status region, or for a stale one the alert beside it (#14, A8). */
+const answer = (page: Page, state: 'done' | 'stale' | 'invalid' | 'refused') =>
+    // Inside the item, so Next's own route announcer, also an alert, never matches (A8 review B3).
+    state === 'stale' ? page.locator('#item [role="alert"][data-state="stale"]') : page.getByRole('status').locator(`[data-state="${state}"]`);
 /** What the last approval or Decide later did, in the strip at the top of the item it opened. */
 const arrival = (page: Page) => page.locator('#item > [role="status"] [data-state="done"]');
 /** The strip is on the first screen, above the photograph and the item's heading. */
@@ -287,6 +290,35 @@ async function openShortWide(page: Page) {
     return { list, form };
 }
 
+test("warns when the watcher has no heartbeat, above the list and from inside an item, and stops once it beats (#14)", async ({ page }) => {
+    const { watcher, root } = data();
+    watcher.stop();
+    fs.rmSync(watcherStatusFile(root), { force: true });
+    try {
+        await openInbox(page);
+        const notice = page.getByRole('region', { name: 'Watcher' });
+        await expect(notice).toBeVisible();
+        await expect(notice).toHaveText("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
+        await expect(notice).not.toHaveAttribute('aria-live');
+        await expectNoA11yViolations(page, { include: '#watcher' });
+        // The items the test above opened. A deep link lands on the item, past the strip, so a phone gets a pointer back to it there. A wide screen shows both.
+        await openInbox(page, eventOf(FRESH.approve), { landed: true });
+        const pointer = page.locator('#item').getByRole('link', { name: "The watcher isn't checking in" });
+        if ((page.viewportSize()?.width ?? 0) < 768) {
+            await expect(pointer).toBeInViewport();
+            await pointer.click();
+            await expect(notice).toBeInViewport();
+        } else {
+            await expect(pointer).toHaveCount(0);
+            await expect(notice).toBeInViewport();
+        }
+    } finally {
+        await watcher.start();
+    }
+    await openInbox(page);
+    await expect(page.getByRole('region', { name: 'Watcher' })).toHaveCount(0);
+});
+
 test('scrolls the list alone under the wheel, to its end, and the form and the photograph stay where they are (#145)', async ({ page, isMobile }) => {
     test.skip(isMobile, 'A phone shows one side at a time');
     const { list, form } = await openShortWide(page);
@@ -303,10 +335,15 @@ test('scrolls the form alone under the wheel, to its end, and the list and the p
     test.skip(isMobile, 'A phone shows one side at a time');
     const { list, form } = await openShortWide(page);
     const photo = await photoTop(page);
+    // The list opens where it shows the open item's row (ReturnToRow's keepListPlace). Since A8 its filters and bulk
+    // actions sit above the rows, so at this height that's scrolled already (124 px on CI), not the top: it stays there.
+    const listPlace = await settledTop(list);
+    // Short of its end, so a wheel that reached the list would move it, and the check below can fail (the review of bbf1e280).
+    expect(await atEnd(list)).toBe(false);
     await form.hover();
     await page.mouse.wheel(0, 5_000);
     await expect.poll(() => atEnd(form)).toBe(true);
-    expect(await scrollTop(list)).toBe(0);
+    expect(await scrollTop(list)).toBe(listPlace);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
     expect(await photoTop(page)).toBe(photo);
 });
@@ -374,7 +411,12 @@ test("reads times in the browser's zone with no hydration error, from server HTM
     // The HTML the server sends: every stored time in UTC, with the zone named. (Without JavaScript the inbox stays on its loading
     // state, since the page streams in behind it, so this reads the server's HTML rather than a page with JavaScript off.)
     const html = await (await page.request.get(url.replace(/#item$/, ''))).text();
-    const times = [...html.matchAll(/<time datetime="([^"]+T[^"]+)">([^<]+)<\/time>/gi)].map(([, at, text]) => ({ at, text }));
+    const all = [...html.matchAll(/<time datetime="([^"]+T[^"]+)">([^<]+)<\/time>/gi)].map(([, at, text]) => ({ at, text }));
+    // A8's row ages ("Opened 3 h ago") are relative, counted on the server from its read, so they name no zone, and the
+    // browser keeps the server's words. Every other time is a stored time, in UTC with the zone named.
+    const age = /^Opened (under a minute|\d+ (min|h|days)) ago$/;
+    expect(all.some(({ text }) => age.test(text))).toBe(true);
+    const times = all.filter(({ text }) => !age.test(text));
     expect(times.length).toBeGreaterThan(0);
     for (const { at, text } of times) {
         expect(text).toBe(humanTime(at));
@@ -475,6 +517,9 @@ test('keeps the curator where they were after Save edits from the plain inbox UR
     test.skip(isMobile, 'a wide screen shows an item on the plain inbox URL');
     await openInbox(page);
     await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
+    // #145: on a wide screen the window has no room to scroll at all, so no scroll into view can move it (A8's review).
+    const room = () => page.evaluate(() => document.scrollingElement!.scrollHeight - window.innerHeight);
+    expect(await room()).toBe(0);
     await page.getByRole('textbox', { name: 'Draft description' }).fill('A harbor wall, saved from the plain inbox URL.');
     const save = page.getByRole('button', { name: 'Save edits' });
     // On a wide screen the form scrolls on its own (#145), so its place is the one to keep.
@@ -490,6 +535,7 @@ test('keeps the curator where they were after Save edits from the plain inbox UR
     await expect(itemHeading(page, FRESH.unassigned)).toBeVisible();
     await expect.poll(() => form.evaluate((element) => element.scrollTop)).toBeCloseTo(before, 0);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(await room()).toBe(0);
     await expect(answer(page, 'done')).toBeInViewport();
     expect((await readEvent(data().root, eventOf(FRESH.unassigned)))?.edits?.description).toMatchObject({ text: 'A harbor wall, saved from the plain inbox URL.' });
 });
@@ -660,7 +706,7 @@ test('Decide later moves on to the next item too, and the last decision, from th
     await openInbox(page, missing.id, { landed: true });
     // The active revision holds it, so its published statement is kept, and the page says so.
     await expect(page.getByText('Published statement remains unchanged.')).toBeVisible();
-    await pressWhileHeld(page, page.getByRole('button', { name: 'Decide later' }));
+    await pressWhileHeld(page, page.getByRole('button', { name: 'Decide later', exact: true }));
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox?item=${failed.id}#item`);
     await waitForHydration(page);
     await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeFocused();
@@ -674,7 +720,7 @@ test('Decide later moves on to the next item too, and the last decision, from th
         await waitForHydration(page);
     }
     await expect(page.getByRole('heading', { level: 2, name: path.posix.basename(FAILED_SOURCE) })).toBeVisible();
-    await page.getByRole('button', { name: 'Decide later' }).click();
+    await page.getByRole('button', { name: 'Decide later', exact: true }).click();
     // Nothing else needs a decision, so the inbox opens on its empty state and says so.
     await expect(page).toHaveURL(`${curatorOrigin()}/curation/inbox`);
     await waitForHydration(page);
@@ -753,7 +799,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
     };
     /** What Decide later did, on the page it opened: the next item's strip, or the empty state's answer. */
     const decidedLater = async (text: string) => {
-        await page.getByRole('button', { name: 'Decide later' }).click();
+        await page.getByRole('button', { name: 'Decide later', exact: true }).click();
         await expect(page).not.toHaveURL(new RegExp(eventId));
         await waitForHydration(page);
         await expect(page.locator('[data-state="done"]').filter({ hasText: `Left ${file} for later.` })).toHaveText(`${text}Open ${file} again`);
@@ -769,7 +815,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
     await expect(page.getByText('The draft uses the new version. Visitors keep the current one until you publish.')).toBeVisible();
     await expect(page.getByText(/^Live in the active revision/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Confirm new asset revision' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Decide later' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Decide later', exact: true })).toHaveCount(0);
     await expect(page.getByText(/choose Decide later|series or description/)).toHaveCount(0);
     await expect(page.getByText('Reopen it to leave the new version out of the draft. Decide later then puts the earlier version back.')).toBeVisible();
 
@@ -800,7 +846,7 @@ test('says what a replacement\'s draft holds before and after Reopen and Decide 
         await openInbox(page, eventId);
         await expect(hint).toHaveText(moved);
         const before = await readEvent(root, eventId);
-        const later = page.getByRole('button', { name: 'Decide later' });
+        const later = page.getByRole('button', { name: 'Decide later', exact: true });
         await expect(later).toBeDisabled();
         await expect(later).toHaveAccessibleDescription(moved);
         // Confirm can still work, so it's live, and the hint about Decide later isn't its description.

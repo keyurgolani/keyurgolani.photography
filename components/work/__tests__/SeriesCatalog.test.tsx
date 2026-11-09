@@ -5,7 +5,7 @@ import { mediaUrl } from '@/lib/media/url';
 import type { WorkCatalog, WorkCover, WorkSeriesSummary } from '@/lib/catalog/projections/work';
 import SeriesCatalog, { WORK_TITLE } from '../SeriesCatalog';
 import WorkCoverImage from '../WorkCoverImage';
-import { COVER_SIZES, coverSpan } from '../coverSizes';
+import { coverSizes, coverSpan } from '../coverSizes';
 import { preloadsIn, serverHtml } from '@/test/helpers/serverHtml';
 
 const REF = (n: number) => ({ photoId: `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, assetRevision: `sha256-${String(n % 10).repeat(64)}`, profileId: 'p_0123456789abcdef' });
@@ -70,49 +70,112 @@ describe('SeriesCatalog', () => {
         expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual(['Entry 3', 'Entry 1', 'Entry 2']);
     });
 
-    it('names each link by its visible text, title first, so every name is unique and starts with the label', () => {
+    // #171 (B3): the title alone names the link, so a screen reader's list of links reads the series, and the
+    // statement and count follow it as the link's description.
+    it('names each link by its series title alone, inside the h2, with the statement and count as its description', () => {
         render(<SeriesCatalog work={work([series(1), series(2)])} />);
-        const names = screen.getAllByRole('link').map((link) => link.textContent);
-        expect(names).toEqual(['Entry 1Short statement 1.1 photograph', 'Entry 2Short statement 2.2 photographs']);
+        const links = screen.getAllByRole('link');
+        expect(links.map((link) => link.textContent)).toEqual(['Entry 1', 'Entry 2']);
+        expect(links[0]).toHaveAccessibleName('Entry 1');
+        expect(links[1]).toHaveAccessibleName('Entry 2');
+        expect(links[0]).toHaveAccessibleDescription('Short statement 1. 1 photograph');
+        expect(links[1]).toHaveAccessibleDescription('Short statement 2. 2 photographs');
+        const headings = screen.getAllByRole('heading', { level: 2 });
+        for (const [index, link] of links.entries()) {
+            expect(link.parentElement).toBe(headings[index]);
+            expect(headings[index].children).toHaveLength(1);
+        }
+    });
+
+    it('describes each link by its own entry, with ids no other entry shares', () => {
+        render(<SeriesCatalog work={work([series(1), series(2), series(3)])} />);
+        const ids = screen.getAllByRole('link').flatMap((link) => (link.getAttribute('aria-describedby') ?? '').split(' '));
+        expect(ids).toHaveLength(6);
+        expect(new Set(ids).size).toBe(6);
+        for (const id of ids) expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+        // Each link's description comes from its own list item.
+        for (const item of within(screen.getByRole('list')).getAllByRole('listitem')) {
+            const link = within(item).getByRole('link');
+            for (const id of (link.getAttribute('aria-describedby') ?? '').split(' ')) expect(item).toContainElement(document.getElementById(id));
+        }
+    });
+
+    it('keeps the cover outside the link, with an empty alt, so the cover adds nothing to its name', () => {
+        render(<SeriesCatalog work={work([series(1)])} />);
+        const item = within(screen.getByRole('list')).getByRole('listitem');
+        const link = within(item).getByRole('link');
+        const image = item.querySelector('img');
+        expect(image).toHaveAttribute('alt', '');
+        expect(link).not.toContainElement(image);
+        expect(link.querySelector('[data-cover]')).toBeNull();
     });
 
     it('keeps the derived count in its own element, apart from the authored title and statement', () => {
         render(<SeriesCatalog work={work([series(7)])} />);
-        const link = screen.getByRole('link');
-        const count = within(link).getByText('7 photographs');
-        const title = within(link).getByRole('heading', { level: 2 });
-        const statement = within(link).getByText('Short statement 7.');
+        const item = within(screen.getByRole('list')).getByRole('listitem');
+        const count = within(item).getByText('7 photographs');
+        const title = within(item).getByRole('heading', { level: 2 });
+        const statement = within(item).getByText('Short statement 7.');
         expect(count.tagName).toBe('P');
         expect(count.className).not.toBe(statement.className);
         expect(count).not.toContainElement(title);
         expect(statement).not.toContainElement(count);
+        expect(title).not.toContainElement(count);
+        expect(title).not.toContainElement(statement);
     });
 
-    it('leaves the statement out when it is null, and keeps the title and count', () => {
+    it('leaves the statement out when it is null, and keeps the title and count, the count alone describing the link', () => {
         render(<SeriesCatalog work={work([series(1, { shortStatement: null })])} />);
+        const item = within(screen.getByRole('list')).getByRole('listitem');
+        expect(item.querySelectorAll('p')).toHaveLength(1);
+        expect(item).toHaveTextContent('Entry 11 photograph');
         const link = screen.getByRole('link');
-        expect(link.querySelectorAll('p')).toHaveLength(1);
-        expect(link).toHaveTextContent('Entry 11 photograph');
+        expect(link).toHaveAccessibleName('Entry 1');
+        expect(link).toHaveAccessibleDescription('1 photograph');
+        expect((link.getAttribute('aria-describedby') ?? '').split(' ')).toHaveLength(1);
+    });
+
+    // Work's revision marker (#171, B3), as Home's main (B6) and the series page's main (B4) carry theirs: the
+    // revision every entry came from, for B12's freshness rows.
+    it('marks the series list with the revision its entries came from', () => {
+        render(<SeriesCatalog work={work([series(1), series(2)])} />);
+        expect(screen.getByRole('list')).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
+        expect(screen.getByRole('main').querySelectorAll('[data-catalog-revision]')).toHaveLength(1);
+    });
+
+    it('marks the empty state with the revision too, so the marker is there whatever the revision holds', () => {
+        render(<SeriesCatalog work={work([])} />);
+        expect(screen.getByText('No series are published right now.')).toHaveAttribute('data-catalog-revision', `rev_${'a'.repeat(64)}`);
     });
 
     it('shows the empty state with no list and no links when nothing is published', () => {
         render(<SeriesCatalog work={work([])} />);
         expect(screen.queryByRole('list')).toBeNull();
         expect(screen.queryByRole('link')).toBeNull();
-        expect(screen.getByText('No series are published yet.')).toBeInTheDocument();
+        expect(screen.getByText('No series are published right now.')).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(WORK_TITLE);
+        // The heading and the one line: no placeholder, skeleton, or cover.
+        expect(document.querySelectorAll('img, [data-cover]')).toHaveLength(0);
+        expect([...screen.getByRole('main').querySelectorAll('h1, p')].map((el) => el.textContent)).toEqual([WORK_TITLE, 'No series are published right now.']);
     });
 
-    it('loads the first cover at once and the rest lazily', () => {
-        render(<SeriesCatalog work={work([series(1), series(2), series(3)])} />);
+    it('loads the first two covers at once, only the first at high priority and preloaded, and the rest lazily (#3)', () => {
+        const entries = work([series(1), series(2), series(3), series(4)]);
+        render(<SeriesCatalog work={entries} />);
         const images = [...document.querySelectorAll('img')];
-        expect(images.map((image) => image.getAttribute('loading'))).toEqual(['eager', 'lazy', 'lazy']);
+        expect(images.map((image) => image.getAttribute('loading'))).toEqual(['eager', 'eager', 'lazy', 'lazy']);
+        // The second at low priority, so the lead has the link to itself first on a slow phone (#172's LCP bar).
+        expect(images.map((image) => image.getAttribute('fetchpriority'))).toEqual(['high', 'low', null, null]);
+        const links = preloadsIn(serverHtml(<SeriesCatalog work={entries} />));
+        expect(links).toHaveLength(1);
+        expect(links[0].getAttribute('imagesrcset')).toContain(REF(1).photoId);
     });
 
     it('renders a series with no cover text-led, with its link intact and no image', () => {
         render(<SeriesCatalog work={work([series(1, { cover: null }), series(2)])} />);
-        const [first, second] = screen.getAllByRole('link');
-        expect(first).toHaveAttribute('href', '/work/entry-1');
+        const [first, second] = within(screen.getByRole('list')).getAllByRole('listitem');
+        expect(within(first).getByRole('link')).toHaveAttribute('href', '/work/entry-1');
+        expect(within(first).getByRole('link')).toHaveAccessibleName('Entry 1');
         expect(first.querySelector('img')).toBeNull();
         expect(first.querySelector('[data-cover="unavailable"]')).not.toBeNull();
         expect(second.querySelector('img')).not.toBeNull();
@@ -131,19 +194,27 @@ describe('SeriesCatalog', () => {
         render(<Catalog work={work([series(1), series(2, { cover: null })])} />);
         vi.doUnmock('../WorkCoverImage');
         expect(seen.map((props) => Object.keys(props).sort())).toEqual([
-            ['cover', 'eager', 'span'],
-            ['cover', 'eager', 'span'],
+            ['cover', 'loading', 'span'],
+            ['cover', 'loading', 'span'],
         ]);
         expect(Object.keys(seen[0].cover as object).sort()).toEqual(['crop', 'focalPoint', 'height', 'photoId', 'variants', 'width']);
         expect(seen[1].cover).toBeNull();
     });
 
     // The stylesheet's 768 px grid: the 1st and 4th of every four entries span 7 of 12 columns, the 2nd and 3rd span 5.
-    it('gives each cover the sizes of its own span, wide for the 1st and 4th of every four, narrow for the 2nd and 3rd', () => {
+    it('gives each cover the sizes of its own span and its own crop, wide for the 1st and 4th of every four, narrow for the 2nd and 3rd', () => {
         expect([0, 1, 2, 3, 4, 5, 6, 7].map(coverSpan)).toEqual(['wide', 'narrow', 'narrow', 'wide', 'wide', 'narrow', 'narrow', 'wide']);
-        render(<SeriesCatalog work={work([1, 2, 3, 4, 5].map((n) => series(n)))} />);
+        const entries = [
+            series(1),
+            series(2, { cover: cover(2, { width: 1600, height: 2400 }) }),
+            series(3, { cover: cover(3, { width: 1600, height: 2400, crop: 'contain' }) }),
+            series(4, { cover: cover(4, { width: 3000, height: 1000 }) }),
+            series(5),
+        ];
+        render(<SeriesCatalog work={work(entries)} />);
         const sizes = [...document.querySelectorAll('picture')].map((picture) => picture.querySelector('source')?.getAttribute('sizes'));
-        expect(sizes).toEqual([COVER_SIZES.wide, COVER_SIZES.narrow, COVER_SIZES.narrow, COVER_SIZES.wide, COVER_SIZES.wide]);
+        expect(sizes).toEqual(entries.map((entry, index) => coverSizes(entry.cover!, coverSpan(index))));
+        expect(new Set(sizes).size, 'each shape, crop and span its own').toBe(4);
     });
 
     it('drops a failed cover\'s fallback when a refresh brings the series a new cover, and keeps it for the same one', () => {
@@ -169,7 +240,7 @@ describe('WorkCoverImage', () => {
         expect(image).toHaveAttribute('width', '2400');
         expect(image).toHaveAttribute('height', '1600');
         expect(image).toHaveAttribute('loading', 'lazy');
-        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES.wide);
+        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', coverSizes(cover(4), 'wide'));
         const frame = container.firstElementChild as HTMLElement;
         expect(frame.style.getPropertyValue('--focal-x')).toBe('25%');
         expect(frame.style.getPropertyValue('--focal-y')).toBe('75%');
@@ -177,7 +248,7 @@ describe('WorkCoverImage', () => {
     });
 
     it('marks a contain crop for the stylesheet', () => {
-        const { container } = render(<WorkCoverImage cover={cover(4, { crop: 'contain' })} eager />);
+        const { container } = render(<WorkCoverImage cover={cover(4, { crop: 'contain' })} loading="lead" />);
         expect(container.firstElementChild).toHaveAttribute('data-cover', 'contain');
         expect(container.querySelector('img')).toHaveAttribute('loading', 'eager');
     });
@@ -186,19 +257,51 @@ describe('WorkCoverImage', () => {
         const lazy = render(<WorkCoverImage cover={cover(6)} />).container;
         expect(lazy.querySelector('img')?.hasAttribute('fetchpriority')).toBe(false);
         expect(preloadsIn(serverHtml(<WorkCoverImage cover={cover(6)} />))).toHaveLength(0);
-        const eager = render(<WorkCoverImage cover={cover(7)} eager />).container;
+        const eager = render(<WorkCoverImage cover={cover(7)} loading="lead" />).container;
         expect(eager.querySelector('img')).toHaveAttribute('fetchpriority', 'high');
-        const links = preloadsIn(serverHtml(<WorkCoverImage cover={cover(7)} eager />));
+        const links = preloadsIn(serverHtml(<WorkCoverImage cover={cover(7)} loading="lead" />));
         expect(links).toHaveLength(1);
         expect(links[0].getAttribute('imagesrcset')).toBe(eager.querySelector('source[type="image/avif"]')?.getAttribute('srcset'));
-        expect(links[0].getAttribute('imagesizes')).toBe(COVER_SIZES.wide);
+        expect(links[0].getAttribute('imagesizes')).toBe(coverSizes(cover(7), 'wide'));
     });
 
     it('sizes a narrow cover for its 5 of 12 columns, and never asks a phone for less than its width', () => {
         const { container } = render(<WorkCoverImage cover={cover(8)} span="narrow" />);
-        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', COVER_SIZES.narrow);
-        expect(COVER_SIZES.narrow).toBe('(min-width: 768px) 42vw, 100vw');
-        expect(COVER_SIZES.wide).toBe('(min-width: 768px) 59vw, 100vw');
+        for (const source of container.querySelectorAll('source')) expect(source).toHaveAttribute('sizes', coverSizes(cover(8), 'narrow'));
+    });
+
+    // #6's size rule, per crop: a cover crop asks for the wider of the box and the photograph at the box's height, a
+    // contain one for the narrower. Boxes: 7 or 5 of the 12 columns at 3:2 or 4:5 above 768 px, less their share of the
+    // column gaps, and the column at 4:3 below, the column being the window less its two gutters (2rem under 485 px,
+    // 6.6vw over it). Under 768 px Work then takes the one rung smaller the rule allows (rule 5): two thirds of what
+    // the box needs, under the next rung down but never two, since each rung is at least 1.5 times the one before.
+    it('sizes each cover by its crop and its box, a rung under the rule\'s only under 768 px (#6)', () => {
+        // A 3:2 photograph fills a wide 3:2 box exactly, and is 1.125 times a phone's 4:3 box wide.
+        expect(coverSizes(cover(1), 'wide')).toBe('(min-width: 768px) calc(53.44vw - 0.63rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
+        // In a narrow 4:5 box it's 1.875 boxes wide, so it asks for more than the box.
+        expect(coverSizes(cover(1), 'narrow')).toBe('(min-width: 768px) calc(70.23vw - 1.64rem), (min-width: 485px) 70.05vw, calc(75vw - 1.5rem)');
+        // A 2:3 photograph shown whole sits at the box's height: five sixths of the 4:5 box, half the 4:3 one.
+        expect(coverSizes(cover(1, { width: 1600, height: 2400, crop: 'contain' }), 'narrow')).toBe(
+            '(min-width: 768px) calc(31.22vw - 0.73rem), (min-width: 485px) 31.13vw, calc(33.33vw - 0.67rem)',
+        );
+        // A 2:3 photograph cropped to cover is cut to the box's width.
+        expect(coverSizes(cover(1, { width: 1600, height: 2400 }), 'wide')).toBe('(min-width: 768px) calc(53.44vw - 0.63rem), (min-width: 485px) 62.27vw, calc(66.67vw - 1.33rem)');
+    });
+
+    // The rung-down pays for 3x phones (#172's LCP bar). On a 1x desktop a cover asks for at least its box's own width,
+    // so a 2:3 cover in a 542 px box never comes from the 400 px file.
+    it('asks a desktop-width cover crop for at least its box\'s width, whatever its shape and span', () => {
+        for (const span of ['wide', 'narrow'] as const) {
+            for (const shape of [{ width: 2400, height: 1600 }, { width: 1600, height: 2400 }, { width: 3000, height: 1000 }]) {
+                const desktop = coverSizes(cover(1, shape), span).split(', ')[0];
+                const box = span === 'wide' ? 'calc(53.44vw - 0.63rem)' : 'calc(37.46vw - 0.88rem)';
+                const [vw, rem] = (/calc\(([\d.]+)vw - ([\d.]+)rem\)/.exec(desktop) ?? []).slice(1).map(Number);
+                const [boxVw, boxRem] = (/calc\(([\d.]+)vw - ([\d.]+)rem\)/.exec(box) ?? []).slice(1).map(Number);
+                expect(vw, `${span} ${shape.width}x${shape.height}: ${desktop}`).toBeGreaterThanOrEqual(boxVw);
+                // The same box scaled up, not shrunk somewhere else: its vw and rem keep their proportions, to rounding.
+                expect(Math.abs(vw / rem / (boxVw / boxRem) - 1), `${span} ${shape.width}x${shape.height}: the box's own proportions`).toBeLessThan(0.02);
+            }
+        }
     });
 
     it('swaps in the text fallback when the image fails, never leaving a broken image', () => {
@@ -212,6 +315,25 @@ describe('WorkCoverImage', () => {
         const fallback = container.querySelector('[data-cover="unavailable"]');
         expect(fallback).toHaveTextContent('Cover unavailable');
         expect(fallback?.querySelector('[aria-hidden="true"]')).toHaveTextContent('Cover unavailable');
+    });
+
+    it('retries a failed AVIF cover with WebP before it shows the fallback (#6)', () => {
+        const ref = REF(4);
+        imageState({ complete: false, naturalWidth: 0, currentSrc: `http://localhost${mediaUrl(ref, 'w800', 'avif')}` });
+        const { container } = render(<WorkCoverImage cover={cover(4)} />);
+        fireEvent.error(container.querySelector('img') as HTMLImageElement);
+        expect(container.querySelector('[data-cover="unavailable"]')).toBeNull();
+        expect(container.querySelector('source[type="image/avif"]')).toBeNull();
+        imageState({ complete: false, naturalWidth: 0, currentSrc: `http://localhost${mediaUrl(ref, 'w800', 'webp')}` });
+        fireEvent.error(container.querySelector('img') as HTMLImageElement);
+        expect(container.querySelector('[data-cover="unavailable"]')).not.toBeNull();
+    });
+
+    it('retries an AVIF cover that failed before hydration with WebP, and keeps it', () => {
+        imageState({ complete: true, naturalWidth: 0, currentSrc: `http://localhost${mediaUrl(REF(4), 'w1200', 'avif')}` });
+        const { container } = render(<WorkCoverImage cover={cover(4)} />);
+        expect(container.querySelector('img')).not.toBeNull();
+        expect(container.querySelector('source[type="image/avif"]')).toBeNull();
     });
 
     it('swaps in the fallback at mount for an image that failed before hydration', () => {

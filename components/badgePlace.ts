@@ -13,9 +13,17 @@ export interface Box {
   bottom: number;
 }
 
-/** Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. */
+/** One of the story's boxes: its title, statement or a link, or, flagged `panel`, the dark panel behind them. */
+export type StoryBox = Box & { panel?: true };
+
+/**
+ * Where the badge lands when it isn't v1.1.0's place: px from the viewport's center, and its scale. 'none' is where
+ * neither above the story nor beside it fits: it lands beside the story, as the intro always took it there, and stays
+ * out of sight at default text (HeroReveal.module.css). That loses nothing: it's About's portrait, and the nav reaches
+ * About.
+ */
 export interface BadgePlace {
-  kind: 'clear' | 'side';
+  kind: 'clear' | 'side' | 'none';
   dx: number;
   dy: number;
   scale: number;
@@ -24,12 +32,17 @@ export interface BadgePlace {
 /** v1.1.0's place: centered, 280 px above the bottom, at 0.85. */
 const V110_RISE = 280;
 const V110_SCALE = 0.85;
-/** The least room the painted oval keeps from the nav, from the series title, statement and link, and from the title's panel. */
+/**
+ * The least room the painted oval keeps: from the nav, the series title, its statement and links, and the title's
+ * panel in v1.1.0's place and above the story; from the title, statement and links alone beside the story.
+ */
 const BADGE_CLEARANCE = 16;
 /** The ring around the oval. */
 const RING = 4;
-/** The smallest the badge gets above the story, and its size beside the story on a short landscape screen. */
+/** The smallest the badge gets in the first lift above the story, and its size beside the story. */
 const MIN_SCALE = 0.6;
+/** The smallest it gets above the story where beside it doesn't clear either, as on a short phone held upright. */
+const UPRIGHT_MIN_SCALE = 0.4;
 /** ProfilePicture.module.css's frame: v1.1.0's 3394 x 3620 shape. */
 const FACE_HEIGHT_PER_WIDTH = 3620 / 3394;
 
@@ -62,43 +75,57 @@ const within = (a: Box, b: Box, gap: number) => a.left < b.right + gap && b.left
 
 /**
  * The badge's place for a `view`-sized screen, from the measured boxes of the
- * nav and the story's title, statement and link, and the dark panel behind
+ * nav and the story's title, statement and links, and the dark panel behind
  * the title and statement from 640 px wide (CatalogHome's `data-chrome-panel`,
- * its fade included). Null keeps v1.1.0's exact place, wherever it clears all
- * of them by BADGE_CLEARANCE. Otherwise the
- * badge stays centered and moves the least from v1.1.0's place that clears
- * them: up above the story (or down, under a nav it reached behind), at 0.85,
- * scaled down toward 0.6 only when the room between the nav and the story is
- * too short for it. With no room even at 0.6, as on a phone held sideways, it
- * goes beside the story instead: a quarter of the width right of the center,
- * 10 px above the middle, at 0.6.
+ * its fade included, flagged `panel`). Null keeps v1.1.0's exact place,
+ * wherever it clears all of them by BADGE_CLEARANCE. Otherwise the badge stays
+ * centered and moves the least from v1.1.0's place that clears them: up above
+ * the story (or down, under a nav it reached behind), at 0.85, scaled down
+ * toward 0.6 only when the room between the nav and the story is too short for
+ * it. With no room even at 0.6, as on a phone held sideways, it goes beside the
+ * story instead, as it always has: a quarter of the width right of the center,
+ * 10 px above the middle, at 0.6, wherever that keeps BADGE_CLEARANCE from the
+ * title, the statement and the links. That place looks at the text alone, so
+ * it may sit nearer the nav, or on the panel's fade, as it always has. Where it
+ * meets the text, as on a short phone held upright, the badge shrinks further
+ * above the story, toward 0.4, and with no room even at 0.4 it is 'none'.
  */
-export function badgePlace(view: { width: number; height: number }, card: number, nav: Box | null, story: Box[]): BadgePlace | null {
+export function badgePlace(view: { width: number; height: number }, card: number, nav: Box | null, story: StoryBox[]): BadgePlace | null {
   if (card <= 0 || view.width <= 0 || view.height <= 0) return null;
   const cx = view.width / 2;
   const home = view.height - V110_RISE;
   const blockers = nav ? [nav, ...story] : story;
-  const clears = (cy: number, scale: number) => {
+  const text = story.filter((box) => !box.panel);
+  const clearOf = (boxes: Box[], x: number, cy: number, scale: number) => {
     const reach = ovalReach(card, scale);
-    const oval = { left: cx - reach.half, right: cx + reach.half, top: cy - reach.above, bottom: cy + reach.below };
-    return blockers.every((box) => !within(oval, box, BADGE_CLEARANCE - 0.01));
+    const oval = { left: x - reach.half, right: x + reach.half, top: cy - reach.above, bottom: cy + reach.below };
+    return boxes.every((box) => !within(oval, box, BADGE_CLEARANCE - 0.01));
   };
-  if (clears(home, V110_SCALE)) return null;
+  const clears = (x: number, cy: number, scale: number) => clearOf(blockers, x, cy, scale);
+  if (clears(cx, home, V110_SCALE)) return null;
   const ceiling = (nav ? nav.bottom : 0) + BADGE_CLEARANCE;
-  for (let step = 0; V110_SCALE - step / 100 >= MIN_SCALE - 1e-9; step += 1) {
-    const scale = V110_SCALE - step / 100;
-    const reach = ovalReach(card, scale);
-    // The story in the badge's column, or near it, sets how low it may sit.
-    const floor = Math.min(
-      view.height - BADGE_CLEARANCE,
-      ...story.filter((box) => box.left < cx + reach.half + BADGE_CLEARANCE && cx - reach.half < box.right + BADGE_CLEARANCE).map((box) => box.top - BADGE_CLEARANCE),
-    );
-    if (floor - ceiling < reach.above + reach.below) continue;
-    // As close to v1.1.0's center as the room allows.
-    const cy = Math.min(Math.max(home, ceiling + reach.above), floor - reach.below);
-    if (clears(cy, scale)) return { kind: 'clear', dx: 0, dy: cy - view.height / 2, scale };
-  }
-  return { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+  // Centered above the story, at the largest scale from `from` hundredths below 0.85 down to `least` that clears.
+  const above = (from: number, least: number): BadgePlace | null => {
+    for (let step = from; V110_SCALE - step / 100 >= least - 1e-9; step += 1) {
+      const scale = V110_SCALE - step / 100;
+      const reach = ovalReach(card, scale);
+      // The story in the badge's column, or near it, sets how low it may sit.
+      const floor = Math.min(
+        view.height - BADGE_CLEARANCE,
+        ...story.filter((box) => box.left < cx + reach.half + BADGE_CLEARANCE && cx - reach.half < box.right + BADGE_CLEARANCE).map((box) => box.top - BADGE_CLEARANCE),
+      );
+      if (floor - ceiling < reach.above + reach.below) continue;
+      // As close to v1.1.0's center as the room allows.
+      const cy = Math.min(Math.max(home, ceiling + reach.above), floor - reach.below);
+      if (clears(cx, cy, scale)) return { kind: 'clear', dx: 0, dy: cy - view.height / 2, scale };
+    }
+    return null;
+  };
+  const lifted = above(0, MIN_SCALE);
+  if (lifted) return lifted;
+  const side: BadgePlace = { kind: 'side', dx: view.width / 4, dy: -10, scale: MIN_SCALE };
+  if (clearOf(text, cx + side.dx, view.height / 2 + side.dy, side.scale)) return side;
+  return above(Math.round((V110_SCALE - MIN_SCALE) * 100) + 1, UPRIGHT_MIN_SCALE) ?? { ...side, kind: 'none' };
 }
 
 /**
@@ -115,6 +142,27 @@ export function homeCopyTop(stage: Box, story: Box[]): number | null {
   return Math.round(Math.min(100, Math.max(0, (top / height) * 100)) * 100) / 100;
 }
 
+/**
+ * Where Dark's fixed phone wash stops holding its title and its statement over a white photograph, as tops in
+ * homeCopyTop()'s percentages of the stage, each with some margin. That wash (HomeChrome.module.css) is set in
+ * percentages of the stage: 0.92 at its bottom, 0.28 at 66% up it. CI measured the worst pixel under each line box at
+ * 390 x 844 with reduced motion, the title's top 65.69% down and the statement's 75.20%: 4.577 and 4.615:1. Read as the
+ * measure reads it, in whole 8-bit pixels, the title holds 4.5:1 from 65.09% down and the statement from 74.50%, so the
+ * lines are 65.5 and 74.75, both still above 390 x 844's own tops.
+ */
+export const DARK_WASH_TITLE_TOP = 65.5;
+export const DARK_WASH_STATEMENT_TOP = 74.75;
+
+/**
+ * Whether the title's top sits higher on the stage than Dark's fixed phone wash holds it, or the statement's does, as
+ * on a short stage (a phone in Safari with its toolbars showing), with reduced motion's hint lifting the copy, or under
+ * a one-line title, whose statement sits as high as a longer title's. Dark's wash then follows the copy; otherwise Dark
+ * keeps today's. Null is a top that wasn't measured.
+ */
+export function copyAboveDarkWash(titleTop: number | null, statementTop: number | null): boolean {
+  return (titleTop !== null && titleTop < DARK_WASH_TITLE_TOP) || (statementTop !== null && statementTop < DARK_WASH_STATEMENT_TOP);
+}
+
 /** Whether Home's chrome scrolls, as large text can make it: then the copy moves under a fixed scrim (M1). */
 export function chromeOverflows(scrollHeight: number, clientHeight: number): boolean {
   return scrollHeight > clientHeight + 1;
@@ -124,8 +172,8 @@ export function chromeOverflows(scrollHeight: number, clientHeight: number): boo
 export const DEFAULT_REM_PX = 16;
 
 /**
- * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy only then (spec §10), so
- * at default text Dark is today's exactly.
+ * Whether the visitor enlarged the text, from 1rem in px. Dark's phone wash follows the copy then (spec §10); at
+ * default text it follows only where the copy sits above its fixed wash (copyAboveDarkWash()), and is today's elsewhere.
  */
 export function textEnlarged(remPx: number): boolean {
   return Number.isFinite(remPx) && remPx > DEFAULT_REM_PX;
@@ -220,16 +268,57 @@ export const unionOf = (boxes: Box[]): Box | null =>
         bottom: Math.max(...boxes.map((box) => box.bottom)),
       };
 
-/** Returns the pixels of `source` (natural pixels) of `image`, or null with no canvas; it throws on a tainted canvas. */
-export type ToneSampler = (image: HTMLImageElement, source: Source) => Promise<ArrayLike<number> | null>;
+/**
+ * Returns the pixels of `source` (natural pixels) of `image`, or null when it can't sample; a throw also means it can't.
+ * Once `signal` aborts, the measure is stale: it stops what it's doing and returns null.
+ */
+export type ToneSampler = (image: HTMLImageElement, source: Source, signal?: AbortSignal) => Promise<ArrayLike<number> | null>;
+
+/** How long the sampler waits for an idle moment before it fetches anyway. */
+export const TONE_IDLE_TIMEOUT_MS = 2000;
+
+/** Where the browser can't say when it's idle (WebKit has no requestIdleCallback), how long after the page's load it waits. */
+export const TONE_IDLE_FALLBACK_MS = 1000;
+
+/** When the page's load ended, in performance.now() time, or 0 where the browser can't say. */
+const pageLoadEnd = () => (performance.getEntriesByType?.('navigation')[0] as PerformanceNavigationTiming | undefined)?.loadEventEnd || 0;
 
 /**
- * The browser's sampler (H1). The whole image is scaled to TONE_SAMPLE_WIDTH, with no crop rectangle, so its pixel
- * density can't enter: createImageBitmap's and drawImage's crop rectangles count the image's intrinsic pixels, and a
- * srcset candidate's intrinsic size isn't its natural size. The region is then read from the small copy, in natural
- * pixels scaled by the same factor. createImageBitmap scales off the main thread where the browser can.
+ * Resolves once the browser is idle, or after TONE_IDLE_TIMEOUT_MS. Where it can't say, as in WebKit, it waits for
+ * the page's load and until TONE_IDLE_FALLBACK_MS after it, so the first sample stays clear of the slide's own load
+ * and of LCP; a later slide, long after the load, samples at once.
  */
-export const canvasSampler: ToneSampler = async (image, source) => {
+const idle = () =>
+  new Promise<void>((resolve) => {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => resolve(), { timeout: TONE_IDLE_TIMEOUT_MS });
+      return;
+    }
+    const after = (loadEnd: number) => setTimeout(resolve, Math.max(0, loadEnd + TONE_IDLE_FALLBACK_MS - performance.now()));
+    if (document.readyState === 'complete') after(pageLoadEnd());
+    else window.addEventListener('load', () => after(performance.now()), { once: true });
+  });
+
+/**
+ * The browser's sampler (H1, v2.0.0 TBT). It never decodes the image on screen: drawing an <img> into a canvas, or
+ * createImageBitmap() of one, decodes it whole on the main thread, and the slide is w1920 on a 3x phone under #6's
+ * size rule, a long task of about 90 ms at 4x CPU. Once the browser is idle, so after the slide's own load, it fetches
+ * the file the slide shows (currentSrc) again, same origin and from the cache only (`only-if-cached`): public /media
+ * is immutable for a year (lib/media/handler.ts), so on the site that's a cache hit and no bytes, and a browser with
+ * no copy to share, as WebKit's private browsing, skips rather than download the slide again. Any other same-origin
+ * file, as a curator's preview's `private, no-store` media, is fetched again (`force-cache`). It decodes that Blob at TONE_SAMPLE_WIDTH, which the
+ * browser does off the main thread, from the same pixels the slide shows, so the tone is the one the image itself
+ * gave. Home makes no other fetch() of /media, which is how ci/perf/measure.mjs finds it. The whole photograph is
+ * scaled, with no crop rectangle, so the file's pixel density can't enter; the region is then read from the small
+ * copy, in natural pixels scaled by the same factor. With no createImageBitmap, no same-origin currentSrc, a fetch or
+ * decode that fails, or a decode that ignored the resize, it skips (null), and the theme keeps its own scrim. A measure
+ * aborted by `signal` fetches nothing once the browser is idle, stops a fetch it started, and decodes and reads nothing
+ * more (null).
+ */
+export const canvasSampler: ToneSampler = async (image, source, signal) => {
+  const url = image.currentSrc;
+  if (!url || typeof createImageBitmap !== 'function' || typeof fetch !== 'function') return null;
+  if (new URL(url, document.baseURI).origin !== window.location.origin) return null;
   const width = TONE_SAMPLE_WIDTH;
   const height = Math.max(1, Math.round((width * image.naturalHeight) / image.naturalWidth));
   const k = width / image.naturalWidth;
@@ -238,13 +327,31 @@ export const canvasSampler: ToneSampler = async (image, source) => {
   canvas.height = height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return null;
-  if (typeof createImageBitmap === 'function') {
-    const bitmap = await createImageBitmap(image, { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
-    context.drawImage(bitmap, 0, 0);
+  await idle();
+  if (signal?.aborted) return null;
+  let bitmap: ImageBitmap;
+  try {
+    // Public /media is immutable for a year, so it's read from the cache only: a browser with no copy to share, as
+    // WebKit's private browsing, rejects with no request and the tone skips, so it never downloads the slide again.
+    // Any other same-origin file, as a curator's preview's media, served `private, no-store` under its own path, is
+    // fetched again. Keyed on the file, not the page: shipped visitor code never names the preview's routes (#16).
+    const cache = new URL(url, document.baseURI).pathname.startsWith('/media/') ? 'only-if-cached' : 'force-cache';
+    const response = await fetch(url, { cache, mode: 'same-origin', credentials: 'same-origin', priority: 'low', signal });
+    if (!response.ok || signal?.aborted) return null;
+    bitmap = await createImageBitmap(await response.blob(), { resizeWidth: width, resizeHeight: height, resizeQuality: 'low' });
+  } catch {
+    return null;
+  }
+  // A browser that ignored the resize gives the file's own size, and drawing that at 0, 0 would read its corner. An
+  // aborted measure reads nothing either.
+  if (signal?.aborted || bitmap.width !== width || bitmap.height !== height) {
     bitmap.close();
-  } else {
-    // The five-argument form draws the whole image.
-    context.drawImage(image, 0, 0, width, height);
+    return null;
+  }
+  try {
+    context.drawImage(bitmap, 0, 0);
+  } finally {
+    bitmap.close();
   }
   const x = Math.min(width - 1, Math.floor(source.x * k));
   const y = Math.min(height - 1, Math.floor(source.y * k));
@@ -264,11 +371,12 @@ export const positionOf = (value: string) => {
  * `copy`, the union of the story's boxes and the title's panel.
  * - Null when it can't measure now (the image not in, as mid-swap to a larger srcset candidate, or not under the
  *   copy), so the caller keeps what it has and measures again when the image loads (M5).
- * - 'light', the theme's own scrim, when it can't measure at all: no canvas, or a tainted one. Home's media is
- *   same-origin, so it isn't tainted; media moved to another origin would need `crossOrigin` and CORS, or the tone
- *   would stay 'light'.
+ * - 'light', the theme's own scrim, when it can't measure at all: no canvas, no createImageBitmap, no currentSrc,
+ *   or a fetch or decode that fails (canvasSampler()). Home's media is same-origin; media moved to another origin
+ *   would leave the tone 'light' until the sampler fetched it with CORS.
+ * - Null, too, once `signal` aborts: a newer measure has started, or Home moved on, so this one is stale.
  */
-export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 } }: { sample?: ToneSampler; position?: { x: number; y: number } } = {}): Promise<CopyTone | null> {
+export async function copyTone(image: HTMLImageElement, copy: Box, { sample = canvasSampler, position = { x: 0.5, y: 0.5 }, signal }: { sample?: ToneSampler; position?: { x: number; y: number }; signal?: AbortSignal } = {}): Promise<CopyTone | null> {
   if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) return null;
   try {
     await image.decode?.();
@@ -277,12 +385,13 @@ export async function copyTone(image: HTMLImageElement, copy: Box, { sample = ca
   }
   const shown = boxOf(image);
   const source = shown && coverSource({ width: image.naturalWidth, height: image.naturalHeight }, shown, copy, position);
-  if (!source) return null;
+  if (!source || signal?.aborted) return null;
   try {
-    const pixels = await sample(image, source);
+    const pixels = await sample(image, source, signal);
+    if (signal?.aborted) return null;
     const level = pixels ? regionLevel(pixels) : null;
     return level === null ? 'light' : toneFor(level);
   } catch {
-    return 'light';
+    return signal?.aborted ? null : 'light';
   }
 }

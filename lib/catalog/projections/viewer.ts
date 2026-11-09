@@ -10,7 +10,7 @@ import type { CatalogContent, CatalogReader } from '../reader';
 import { REVISION_ID_RE } from '../schema';
 import type { SeriesRecord } from '../types';
 import { imageOf, type Ladder } from './ladder';
-import { openableSeries, seriesParams, text, type ScreenCatalog } from './shared';
+import { foldLetterCase, openableSeries, routeSlug, seriesParams, text, type ScreenCatalog } from './shared';
 
 /**
  * #7's Viewer read model: one photograph in one series, from one compiled
@@ -104,10 +104,21 @@ export interface PublishedViewerPhoto {
     nextPhotoId: string | null;
 }
 
+export type ViewerRedirectReason = 'case' | 'alias' | 'moved';
+
 export type ViewerPhotoResult =
     | { kind: 'ok'; viewer: PublishedViewerPhoto }
-    /** The slug is a prior alias of the series holding the photo. The route answers 308 to the canonical URL. */
-    | { kind: 'redirect'; slug: string; photoId: string }
+    /**
+     * The URL names the photo another way: a prior alias of its series, a
+     * letter-case variant of the slug or the photo ID, or another published
+     * series it has moved out of. The route answers 308 to the canonical URL,
+     * `slug` and `photoId` as the revision holds them, with the query after it.
+     * `reason` says which (#178): `case`, a letter-case variant; `alias`, a
+     * former slug of the series that holds it (a rename); `moved`, another
+     * series' slug, or one the revision doesn't publish. The Viewer's
+     * intercepted route reads it: only `moved` takes the photograph away.
+     */
+    | { kind: 'redirect'; slug: string; photoId: string; reason: ViewerRedirectReason }
     /**
      * Malformed, unknown, unpublished, outside that series, or in a series the
      * series page answers not-found. The route renders the one public
@@ -131,14 +142,34 @@ const ACCENT_RE = /^#[0-9a-f]{6}$/i;
 
 /**
  * The route params when both are well formed: a series slug that
- * seriesParams() accepts, the series page's own check, and a photo ID in
- * #10's shape. Exact, so a letter-case variant fails. Nothing here reads the
- * catalog, and a param never reaches a path.
+ * seriesParams() accepts, and a photo ID in #10's shape. Exact, so a
+ * letter-case variant fails: the peek endpoint takes only the canonical URL's
+ * params, and viewerRouteParams() is the route's own check. Nothing here
+ * reads the catalog, and a param never reaches a path.
  */
 export function viewerParams(slug: unknown, photoId: unknown): { slug: string; photoId: string } | null {
     const series = seriesParams(slug);
     if (series === null || typeof photoId !== 'string' || !PHOTO_ID_RE.test(photoId)) return null;
     return { slug: series.slug, photoId };
+}
+
+/**
+ * The route params, letter case aside (#7, decided): viewerParams() on the
+ * slug and photo ID with their ASCII letters lowered, and whether both were
+ * already that. Null for anything viewerParams() refuses once folded, so a
+ * malformed param still never reads the catalog. A UUID's hex digits fold
+ * like any letter: `ph_ABCDEF…` is the same photo as `ph_abcdef…`.
+ */
+export function viewerRouteParams(slug: unknown, photoId: unknown): { slug: string; photoId: string; exact: boolean } | null {
+    const series = routeSlug(slug);
+    if (series === null || typeof photoId !== 'string') return null;
+    const params = viewerParams(series.slug, foldLetterCase(photoId));
+    return params === null ? null : { ...params, exact: series.exact && params.photoId === photoId };
+}
+
+/** Whether the photo is one of the series' members that resolve. */
+function holds(source: ViewerSource, series: SeriesRecord, photoId: string): boolean {
+    return source.photosOf(series.id).some((member) => member.id === photoId);
 }
 
 function accent(value: unknown): string | null {
@@ -196,11 +227,16 @@ function shareOf(photo: Photo): NonNullable<PublishedViewerPhoto['photo']['share
 
 /**
  * Resolve `/work/<slug>/photo/<photoId>` in one source, in this order:
- * malformed params, an unknown slug, a series ID that appears more than
- * once, a series with no positive published count, an unknown photo, and a
- * photo the series doesn't hold are all not-found, and so is a prior slug
- * whose canonical slug the route would refuse; a prior slug redirects;
- * anything else is the projection. The series guards are #5's series page
+ * malformed params (letter case aside) and an unknown photo are not-found.
+ * Then the series: the one the slug names, when it opens and holds the
+ * photo; else, for any slug in shape, the photo's one published home (#7,
+ * decided: moved photos 308), so long as that one opens and holds it. A photo neither holds, and one whose
+ * only series a guard refuses (a series ID that appears more than once, no
+ * positive published count, no member that resolves), is not-found. A prior
+ * slug, a letter-case variant, or a move redirects, and only to a canonical
+ * URL that renders: a canonical slug the route would refuse, or one that
+ * another series' record has taken, is not-found instead, so a redirect
+ * never loops. Anything else is the projection. The series guards are #5's series page
  * guards, openableSeries() and the same redirect rule, so a photo URL is
  * not-found exactly when its series page is, and #3's Work never links
  * either. A photo without positive dimensions
@@ -212,21 +248,41 @@ function shareOf(photo: Photo): NonNullable<PublishedViewerPhoto['photo']['share
  * two always agree.
  */
 export function viewerPhotoOf(source: ViewerSource, slug: unknown, photoId: unknown): ViewerPhotoResult {
-    const params = viewerParams(slug, photoId);
+    const params = viewerRouteParams(slug, photoId);
     if (params === null) return NOT_FOUND;
-    const hit = source.seriesBySlug(params.slug);
-    if (hit === null) return NOT_FOUND;
-    const { series } = hit;
-    if (!openableSeries(source, series)) return NOT_FOUND;
     const record = source.photo(params.photoId);
     if (record === null) return NOT_FOUND;
-    const position = sequencePosition({ photoIds: source.photosOf(series.id).map((member) => member.id) }, record.id);
-    if (position === null) return NOT_FOUND;
-    if (!hit.canonical) {
+    const hit = source.seriesBySlug(params.slug);
+    let series: SeriesRecord;
+    let canonical: boolean;
+    let reason: ViewerRedirectReason;
+    if (hit !== null && openableSeries(source, hit.series) && holds(source, hit.series, record.id)) {
+        series = hit.series;
+        canonical = hit.canonical && params.exact;
+        reason = hit.canonical ? 'case' : 'alias';
+    } else {
+        // Moved, or shared from a series since hidden or removed: the URL follows the photo to its one published home,
+        // whatever slug it names. An unknown, draft, hidden, or removed slug gets the same answer, since none is in the
+        // content, so the answer says nothing about which slugs exist. refs.membership keeps a published photo in one
+        // published series; a hand-written revision with two has no one home, and moves to neither.
+        const homes = source.listSeries().filter((candidate) => Array.isArray(candidate.photoIds) && candidate.photoIds.includes(record.id));
+        if (homes.length !== 1) return NOT_FOUND;
+        const [home] = homes;
+        if (home === hit?.series || !openableSeries(source, home) || !holds(source, home, record.id)) return NOT_FOUND;
+        series = home;
+        canonical = false;
+        reason = 'moved';
+    }
+    if (!canonical) {
         // The series page's rule: a 308 to a canonical slug the route refuses would point at a page that is always not-found.
         if (seriesParams(series.slug) === null) return NOT_FOUND;
-        return { kind: 'redirect', slug: series.slug, photoId: record.id };
+        // A hand-written revision can give two series one slug, and the later takes it: the 308 would land on the other
+        // series, which doesn't hold the photo, and come straight back here.
+        if (source.seriesBySlug(series.slug)?.series !== series) return NOT_FOUND;
+        return { kind: 'redirect', slug: series.slug, photoId: record.id, reason };
     }
+    const position = sequencePosition({ photoIds: source.photosOf(series.id).map((member) => member.id) }, record.id);
+    if (position === null) return NOT_FOUND;
     const image = viewerImageOf(record);
     return {
         kind: 'ok',
@@ -268,11 +324,11 @@ export async function viewerPhotoFrom<Reason extends string>(
     slug: unknown,
     photoId: unknown,
 ): Promise<ViewerPhotoResult | { kind: 'unavailable'; reason: Reason }> {
-    const params = viewerParams(slug, photoId);
-    if (params === null) return NOT_FOUND;
+    // A letter-case variant is in shape once folded, so it reads the catalog, and the projection answers its 308.
+    if (viewerRouteParams(slug, photoId) === null) return NOT_FOUND;
     const catalog = await load();
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
-    return catalog.reader.getViewerPhoto(params.slug, params.photoId);
+    return catalog.reader.getViewerPhoto(slug as string, photoId as string);
 }
 
 /**
@@ -290,14 +346,20 @@ export interface ViewerPeek {
     accent: string | null;
 }
 
+export type PeekPhotoState = 'kept' | 'renamed' | 'gone';
+
 export type ViewerPeekResult =
     | { kind: 'ok'; peek: ViewerPeek }
     /** Whatever the Viewer route answers not-found, and a former slug too: the Viewer only asks with the canonical one. */
     | { kind: 'not-found' }
     /** No `revision`, more than one, or a malformed one. */
     | { kind: 'bad-request' }
-    /** The revision isn't the one being served, so the Viewer never peeks at a photo from another one. */
-    | { kind: 'revision-changed' };
+    /**
+     * The revision isn't the one being served, so the Viewer never peeks at a photo from another one. `photo` says what
+     * the served revision holds for the slug and photo asked for (#178): `kept`, the same; `renamed`, under its series'
+     * new slug; `gone`, unpublished, or moved to another series. The Viewer's revision check picks how to catch up by it.
+     */
+    | { kind: 'revision-changed'; photo: PeekPhotoState };
 
 /** The peek of one Viewer answer: the set and the accent, field by field from the projection, which checked both. */
 export function viewerPeekOf(viewer: PublishedViewerPhoto): ViewerPeek {
@@ -315,12 +377,21 @@ export function viewerPeekOf(viewer: PublishedViewerPhoto): ViewerPeek {
  * homeSeriesPhotosFrom() does: malformed params are not-found and a missing or
  * malformed revision a bad request, both before the catalog is read; an
  * unavailable catalog, one that has published nothing too, is unavailable,
- * for a 503; a revision other than the one served is revision-changed, checked before
- * the photo, so neither answer says whether a photo it doesn't publish
- * exists. Anything else is viewerPhotoOf()'s answer on the served revision,
+ * for a 503; a revision other than the one served is revision-changed, with
+ * whether the served revision still has the photo there (#178). That only
+ * tells a published photo from everything else, which the Viewer route
+ * tells anyone too: an unpublished photo and an unknown one are both `gone`,
+ * so no answer says whether a photo it doesn't publish exists. Anything else is viewerPhotoOf()'s answer on the served revision,
  * so a peek is not-found exactly when the photo's Viewer is (a former slug
  * included, which the Viewer never asks with).
  */
+/** What a revision holds for a Viewer URL, as the 409 tells the Viewer: a letter-case variant is still the same photograph. */
+function peekPhotoState(result: ViewerPhotoResult): PeekPhotoState {
+    if (result.kind === 'ok') return 'kept';
+    if (result.kind === 'redirect' && result.reason !== 'moved') return result.reason === 'alias' ? 'renamed' : 'kept';
+    return 'gone';
+}
+
 export async function viewerPeekFrom<Reason extends string>(
     load: () => Promise<ScreenCatalog<Pick<CatalogReader, 'revision' | 'getViewerPhoto'>, Reason>>,
     slug: unknown,
@@ -333,8 +404,8 @@ export async function viewerPeekFrom<Reason extends string>(
     const catalog = await load();
     if (catalog.state === 'unavailable') return { kind: 'unavailable', reason: catalog.reason };
     const { reader } = catalog;
-    if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed' };
     const result = reader.getViewerPhoto(params.slug, params.photoId);
+    if (reader.revision().revisionId !== revisionId) return { kind: 'revision-changed', photo: peekPhotoState(result) };
     if (result.kind !== 'ok') return { kind: 'not-found' };
     return { kind: 'ok', peek: viewerPeekOf(result.viewer) };
 }

@@ -36,6 +36,7 @@ vi.mock('@/lib/catalog/public-reader', async (importOriginal) => {
 
 const route = await import('../work/[slug]/photo/[photoId]/page');
 const { default: ViewerRoute, generateMetadata } = route;
+const { default: InterceptedRoute } = await import('../work/[slug]/@modal/(.)photo/[photoId]/page');
 const { CatalogUnavailableError } = await import('@/lib/catalog/public-reader');
 
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -112,11 +113,12 @@ const served = (servedState: 'ok' | 'degraded', content: CandidateContent = cata
         active: { revisionId: catalog.revisionId, revisionNumber: 1, activationId: 'act_fixture', activatedAt: null },
     }) as unknown as ActiveCatalog;
 
-const props = (slug: string, photoId: string) => ({ params: Promise.resolve({ slug, photoId }) });
+type Query = Record<string, string | string[] | undefined>;
+const props = (slug: string, photoId: string, query: Query = {}) => ({ params: Promise.resolve({ slug, photoId }), searchParams: Promise.resolve(query) });
 
-async function answer(slug: string, photoId: string): Promise<{ html: string } | { redirect: string } | { notFound: true } | { thrown: unknown }> {
+async function answer(slug: string, photoId: string, query: Query = {}): Promise<{ html: string } | { redirect: string } | { notFound: true } | { thrown: unknown }> {
     try {
-        return { html: renderToStaticMarkup(await ViewerRoute(props(slug, photoId))) };
+        return { html: renderToStaticMarkup(await ViewerRoute(props(slug, photoId, query))) };
     } catch (error) {
         if (error instanceof Redirected) return { redirect: error.location };
         if (error instanceof NotFound) return { notFound: true };
@@ -151,19 +153,28 @@ describe('the Viewer route', () => {
         const page = html(await answer('route-a', P[0]));
         expect(page.match(/data-surface="viewer"/g)).toHaveLength(1);
         expect(page).not.toContain('aria-label="Primary"');
-        expect(page).toMatch(/<h1[^>]*>Route A<\/h1>/);
-        expect(page).toContain('01 / 03');
-        expect(page).toContain('Photograph 1 of 3');
+        // "{series title}, photograph 1 of 3" (#7), with the padded numbers for the eye only.
+        expect(page).toMatch(/<h1[^>]*aria-label="Route A, photograph 1 of 3"[^>]*><span aria-hidden="true">Route A<\/span><\/h1>/);
+        expect(page).toMatch(/<span aria-hidden="true">01 \/ 03<\/span>/);
+        // With a caption the reading area shows only the caption, and the image's alt says the description.
+        expect(page).toMatch(/<img[^>]*alt="Route description one\."/);
+        expect(page).not.toMatch(/>Route description one\.</);
         expect(page).toMatch(/<h2[^>]*>Route title one<\/h2>/);
         expect(page).toContain('Route caption one.');
         expect(page).toContain('Route description one.');
-        expect(page).toContain('href="/work/route-a"');
+        // Close goes back to this photograph in its series (B5): seriesHref(slug, { focusPhotoId }).
+        expect(page).toContain(`href="/work/route-a?photo=${P[0]}"`);
+        expect(page).not.toContain('href="/work/route-a"');
         expect(page).toContain(`href="/work/route-a/photo/${P[1]}"`);
         expect(page).toContain('--cc-accent:#c08040');
         // The camera facts ship collapsed.
         expect(page).toMatch(/aria-expanded="false"[^>]*>.*Show technical details/);
         expect(page).toMatch(/<div[^>]*hidden=""[^>]*>.*Route Model/);
         expect(page).toMatch(/<img[^>]*src="\/media\/[^"]+\/w1200\.webp"/);
+    });
+
+    it('names the photograph shown in Close\'s link at every position (B5)', async () => {
+        for (const photoId of [P[1], P[2]]) expect(html(await answer('route-a', photoId)), photoId).toContain(`href="/work/route-a?photo=${photoId}"`);
     });
 
     it('passes the pending copy only for a pending description, never for a decorative photo', async () => {
@@ -227,6 +238,8 @@ describe('the Viewer route', () => {
             title: 'Route A, photograph 2 of 3',
             description: 'Route caption two.',
             alternates: { canonical: `/work/route-a/photo/${P[1]}` },
+            // The revision the page came from, for #12's freshness checks.
+            other: { 'catalog-revision': catalog.revisionId },
             openGraph: { siteName: 'Keyur Golani Photography', type: 'website', url: `/work/route-a/photo/${P[1]}` },
         });
     });
@@ -235,19 +248,81 @@ describe('the Viewer route', () => {
         expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
     });
 
+    it.each([
+        ['an uppercase slug', 'Route-A', P[0], `/work/route-a/photo/${P[0]}`],
+        ['an uppercase photo ID', 'route-a', P[0].toUpperCase(), `/work/route-a/photo/${P[0]}`],
+        ['an uppercase former slug', 'SENTINEL-OLD-SLUG', P[1], `/work/route-a/photo/${P[1]}`],
+        ['a photo moved to another series', 'route-b', P[0], `/work/route-a/photo/${P[0]}`],
+        ['a photo moved, under a former slug', 'sentinel-old-slug', P[3], `/work/route-b/photo/${P[3]}`],
+        ['a photo moved, under an uppercase slug', 'Route-A', P[3], `/work/route-b/photo/${P[3]}`],
+        ['a published photo, under an unknown slug', 'no-such-series', P[0], `/work/route-a/photo/${P[0]}`],
+        ['a published photo, under a draft series\' slug', 'route-draft', P[0], `/work/route-a/photo/${P[0]}`],
+        ['a published photo, under a hidden series\' slug', 'route-hidden', P[3], `/work/route-b/photo/${P[3]}`],
+    ])('answers %s 308 to the canonical URL (#7, decided)', async (_name, slug, photoId, location) => {
+        expect(await answer(slug, photoId)).toEqual({ redirect: location });
+        expect(await generateMetadata(props(slug, photoId))).toEqual({});
+    });
+
+    it('through the intercepted route, answers a photo moved out of the series not-found, for ViewerUnavailable, renders one under a former slug, and still redirects a letter-case variant (#178)', async () => {
+        const through = async (slug: string, photoId: string): Promise<Awaited<ReturnType<typeof answer>>> => {
+            try {
+                return { html: renderToStaticMarkup(await InterceptedRoute(props(slug, photoId))) };
+            } catch (error) {
+                if (error instanceof Redirected) return { redirect: error.location };
+                if (error instanceof NotFound) return { notFound: true };
+                return { thrown: error };
+            }
+        };
+        // Moved to another series, under the old series' slug and under an uppercase one.
+        expect(await through('route-b', P[0])).toEqual({ notFound: true });
+        expect(await through('Route-A', P[3])).toEqual({ notFound: true });
+        // The same series, another case: the 308 as on the page.
+        expect(await through('Route-A', P[0])).toEqual({ redirect: `/work/route-a/photo/${P[0]}` });
+        // A former slug of the same series (a rename mid-visit) keeps the visitor on the photograph: rendered, never a 308.
+        // Under interception Next takes the slug from the visitor's own URL, so a 308 to the canonical URL would come
+        // straight back here (#178 review). The Viewer moves the address to the canonical URL itself.
+        const renamed = html(await through('sentinel-old-slug', P[1]));
+        expect(renamed).toContain('data-surface="viewer"');
+        expect(renamed).toContain(`href="/work/route-a/photo/${P[0]}"`);
+        expect(html(await through('route-a', P[0]))).toContain('data-surface="viewer"');
+        // The page itself keeps every 308 (#7, decided).
+        expect(await answer('route-b', P[0])).toEqual({ redirect: `/work/route-a/photo/${P[0]}` });
+        expect(await answer('sentinel-old-slug', P[1])).toEqual({ redirect: `/work/route-a/photo/${P[1]}` });
+    });
+
+    it('keeps the query on every redirect, re-encoded after the canonical path', async () => {
+        const query = { utm_source: 'mail', tag: ['one', 'two'] };
+        for (const [slug, photoId, path] of [
+            ['sentinel-old-slug', P[1], `/work/route-a/photo/${P[1]}`],
+            ['Route-A', P[0], `/work/route-a/photo/${P[0]}`],
+            ['route-b', P[0], `/work/route-a/photo/${P[0]}`],
+        ]) {
+            expect(await answer(slug, photoId, query), `${slug} ${photoId}`).toEqual({ redirect: `${path}?utm_source=mail&tag=one&tag=two` });
+        }
+    });
+
+    it('builds the Location from the canonical path only, and it never loops', async () => {
+        const result = await answer('Route-B', P[0], { next: '//evil.example/x' });
+        if (!('redirect' in result)) throw new Error(`Expected a redirect, got ${JSON.stringify(result)}`);
+        expect(result.redirect).toBe(`/work/route-a/photo/${P[0]}?next=%2F%2Fevil.example%2Fx`);
+        const target = new URL(result.redirect, 'https://photos.example.test');
+        expect(target.origin).toBe('https://photos.example.test');
+        const [, , slug, , photoId] = target.pathname.split('/');
+        expect('html' in (await answer(slug, photoId, Object.fromEntries(target.searchParams)))).toBe(true);
+    });
+
     it('answers the one not-found for anything it can\'t serve', async () => {
         const cases: [string, string][] = [
-            ['route-a', P[3]],
-            ['route-b', P[0]],
+            ['route-a', P[4]],
             ['route-draft', P[4]],
             ['route-hidden', P[5]],
             ['route-a', id(99)],
-            ['no-such-series', P[0]],
-            ['Route-A', P[0]],
-            ['route-a', P[0].toUpperCase()],
+            ['no-such-series', P[4]],
+            ['Route-Draft', P[4]],
+            ['route-a', id(99).toUpperCase()],
             ['..', P[0]],
             ['route-a', 'IMG_0001.jpg'],
-            ['sentinel-old-slug', P[3]],
+            ['Route--A', P[0]],
         ];
         for (const [slug, photoId] of cases) expect(await answer(slug, photoId), `${slug} ${photoId}`).toEqual({ notFound: true });
     });
@@ -272,6 +347,8 @@ describe('the Viewer\'s share metadata', () => {
             title: 'Route title one, Route A',
             description: 'Route caption one.',
             alternates: { canonical: `/work/route-a/photo/${P[0]}` },
+            // The revision the page came from, for #12's freshness checks.
+            other: { 'catalog-revision': catalog.revisionId },
             openGraph: {
                 siteName: 'Keyur Golani Photography',
                 type: 'website',
@@ -299,6 +376,8 @@ describe('the Viewer\'s share metadata', () => {
             expect(metadata, String(value)).toEqual({
                 title: 'Route title one, Route A',
                 description: 'Route caption one.',
+                // The revision the page came from, for #12's freshness checks.
+                other: { 'catalog-revision': catalog.revisionId },
                 openGraph: { siteName: 'Keyur Golani Photography', type: 'website' },
             });
         }

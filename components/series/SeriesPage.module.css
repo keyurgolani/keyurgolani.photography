@@ -14,6 +14,11 @@
   padding: clamp(3rem, 9vw, 7.5rem) 0 clamp(2rem, 4vw, 3.5rem);
 }
 
+/* The All work link above the title (#5), the same link as the one at the end. */
+.back {
+  margin: 0 0 clamp(1rem, 2.5vw, 1.75rem);
+}
+
 /* The serif and its weight come from the global heading rule. */
 .title {
   margin: 0;
@@ -151,8 +156,10 @@
   object-position: var(--focal-x, 50%) var(--focal-y, 50%);
 }
 
+/* A contain photograph is shown whole, so there's no crop for the focal point to steer: centred, as on Home. */
 .coverFrame[data-photo='contain'] .image {
   object-fit: contain;
+  object-position: center;
 }
 
 .coverFrame.fallback {
@@ -381,6 +388,15 @@
 
 .moreLoading {
   flex-basis: 100%;
+}
+
+/* B5's Show earlier, after a deep entry (?photo=): above the first loaded entry, under the Sequence heading. */
+.earlier {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: clamp(1.5rem, 4vw, 2.5rem);
 }
 
 .moreStatus {

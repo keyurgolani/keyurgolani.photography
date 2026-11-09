@@ -53,6 +53,12 @@ export const SINGLE_LEAD = 'Revision 1 is the first, and the only one so far. Ea
 export const LIVE_TEXT = "This is what visitors see, so there's nothing to restore.";
 export const UNREADABLE_TEXT = "Its saved copy can't be read, so it can't come back. The server log names what failed.";
 export const UNCHECKED_TEXT = "It can't be checked right now, so it can't come back yet. The server log names what failed.";
+/** #181's A7: the verify record refuses it. Only the command line's --accept verify.failed overrides that, so no Restore here. */
+export const VERIFY_FAILED_TEXT = "It failed its last check, so it can't come back from here. Run photos verify to see what to fix.";
+export const VERIFY_DAMAGED_TEXT = "The record of the last check can't be read, so it can't come back from here. Run photos verify to check it again.";
+
+/** Why the verify record refused a plan: a failed entry for it, or a record that can't be read. */
+export type VerifyRefusal = 'last-verify' | 'record-damaged';
 
 export type EntryKind = 'Publish' | 'Restore';
 
@@ -96,8 +102,17 @@ export interface PlanView {
     impact: ImpactLine[];
     /** "The live revision can't be read, so this lists everything revision 5 publishes." */
     impactNote?: string;
-    editorial?: string;
+    /** #117: the editorial rules the restore brings back, one box each to accept. */
+    editorial?: EditorialView;
     draftNote?: string;
+}
+
+/** The dialog's accept boxes: the fieldset's legend, one box per flagged rule in plain words, and the note under them. */
+export interface EditorialView {
+    lead: string;
+    /** `id` is the rule ID the box posts as `accept`; `label` names it without it. */
+    rules: { id: string; label: string }[];
+    note: string;
 }
 
 export interface DoneView {
@@ -220,7 +235,11 @@ export interface EntryInput {
 }
 
 /** What one planRollback() said about a revision, for its entry. */
-export type PlanStatus = { outcome: 'READY' } | { outcome: 'VALIDATION_FAILED'; reasons: string[] } | { outcome: Exclude<RollbackOutcome, 'READY' | 'VALIDATION_FAILED'> };
+export type PlanStatus =
+    | { outcome: 'READY' }
+    | { outcome: 'VALIDATION_FAILED'; reasons: string[] }
+    | { outcome: 'VERIFY_FAILED'; reason: VerifyRefusal }
+    | { outcome: Exclude<RollbackOutcome, 'READY' | 'VALIDATION_FAILED' | 'VERIFY_FAILED'> };
 
 /**
  * The revisions the shown entries could restore, newest first, each once:
@@ -257,7 +276,8 @@ export function blockedText(reasons: readonly string[]): string {
 export function blockingReasons(issues: readonly Pick<Issue, 'code' | 'record'>[], photoName: (photoId: string) => string): string[] {
     const families = new Map<string, Set<string>>();
     for (const issue of issues) {
-        const family = issue.code.startsWith('assets.') ? 'assets' : issue.code;
+        // A takedown isn't a missing file, so #15's purge has its own words.
+        const family = issue.code === 'assets.tombstoned' ? issue.code : issue.code.startsWith('assets.') ? 'assets' : issue.code;
         const ids = families.get(family) ?? new Set<string>();
         if (issue.record.kind === 'photo') ids.add(issue.record.id);
         families.set(family, ids);
@@ -268,6 +288,13 @@ export function blockingReasons(issues: readonly Pick<Issue, 'code' | 'record'>[
                 const names = [...ids].map(photoName);
                 const n = names.length;
                 return n ? `${n} of its photographs no longer ${n === 1 ? 'has its' : 'have their'} image files: ${names.slice(0, 5).join(', ')}${n > 5 ? `, and ${n - 5} more` : ''}` : 'its image files are missing';
+            }
+            case 'assets.tombstoned': {
+                const names = [...ids].map(photoName);
+                const n = names.length;
+                return n
+                    ? `${n} of its photographs ${n === 1 ? 'was' : 'were'} taken down with photos purge: ${names.slice(0, 5).join(', ')}${n > 5 ? `, and ${n - 5} more` : ''}`
+                    : "a takedown record in the data root can't be read, so nobody can tell what it takes down";
             }
             case 'privacy.path':
                 return 'a description in it names a file on this computer';
@@ -350,6 +377,7 @@ function entryOf(row: EntryInput, index: Map<string, EntryInput>, liveRow: Entry
         if (!plan) return { type: 'check', revision: activation.revisionNumber, href: input.hrefs.check(activation.revisionNumber, activation.sequence) };
         if (plan.outcome === 'READY') return { type: 'restore', revision: activation.revisionNumber };
         if (plan.outcome === 'VALIDATION_FAILED') return { type: 'text', text: blockedText(plan.reasons), tone: 'alert' };
+        if (plan.outcome === 'VERIFY_FAILED') return { type: 'text', text: plan.reason === 'record-damaged' ? VERIFY_DAMAGED_TEXT : VERIFY_FAILED_TEXT, tone: 'alert' };
         return { type: 'text', text: UNCHECKED_TEXT, tone: 'alert' };
     })();
 
@@ -452,10 +480,17 @@ export function impactLines(input: ImpactInput): { lines: ImpactLine[]; note?: s
 export const draftNoteFor = (target: number) =>
     `Your draft stays, and this screen then compares it against revision ${target}. If a change in it clashes with revision ${target}, Publish stays locked until you settle that change.`;
 
-/** The editorial rules a restore accepted, in the owner's words, with no rule IDs (spec, copy rules). */
+/**
+ * What a restore accepted, in the owner's words, with no rule IDs (spec,
+ * copy rules): its editorial rules, and #181's `verify.failed`, which only
+ * the command line accepts.
+ */
 const ACCEPTED_WORDS: Record<string, string> = {
     'accent.contrast': "an accent color that's hard to read on the Viewer's dark bands",
     'accent.format': "an accent color the site can't show",
+    'route.slug-change': "an address change that doesn't keep the old address",
+    'route.alias-reassigned': 'an address taken from another series',
+    'verify.failed': 'a failed check from photos verify',
 };
 
 export function acceptedWords(codes: readonly string[]): string {
@@ -468,15 +503,123 @@ const ACCENT_WORDS: Record<string, string> = {
     'accent.format': "accent color: it isn't a color the site can show",
 };
 
-/** The editorial notice: "Today's checks flag Salt Roads' accent color: …". */
-export function editorialText(issues: readonly Pick<Issue, 'code' | 'record'>[], editorial: readonly string[], seriesName: (id: string) => string): string | undefined {
-    if (editorial.length === 0) return undefined;
-    const parts = editorial.map((code) => {
-        const records = issues.filter((issue) => issue.code === code && issue.record.kind === 'series').map((issue) => seriesName(issue.record.id));
-        const owner = records.length ? `${records.join(' and ')}' ` : 'an ';
-        return `${owner}${ACCENT_WORDS[code] ?? `style (${code})`}`;
+/** A series' addresses in one revision: its slug and its old ones. */
+export interface SeriesAddresses {
+    id: string;
+    slug: string;
+    slugAliases: readonly string[];
+}
+
+/** The series' addresses on both sides of a restore, for #5's route rules: what's live, and what the restore brings back. */
+export interface RestoreAddresses {
+    live: readonly SeriesAddresses[];
+    target: readonly SeriesAddresses[];
+}
+
+const NO_ADDRESSES: RestoreAddresses = { live: [], target: [] };
+
+/** "Salt Roads'", "FILMS'", "Dawn's", and inside a closing quote or bracket, "(Dawn's)". */
+function possessive(name: string): string {
+    const [, base, closing] = /^([\s\S]*?)(["'\u2019\u201d)\]}\u00bb]*)$/.exec(name) ?? [name, name, ''];
+    return `${base}${/s$/i.test(base) ? "'" : "'s"}${closing}`;
+}
+
+type FlaggedIssue = Pick<Issue, 'code' | 'record'> & Partial<Pick<Issue, 'field'>>;
+
+/**
+ * #5's address changes in plain words: "Harbor Nights' address: it changes
+ * from /work/harbor to /work/harbor-nights without keeping the old one", or
+ * "Salt Roads' address: it takes /work/harbor from Harbor Nights". Where the
+ * addresses aren't known, or several series share the rule, the words say
+ * what changes without the addresses.
+ */
+function addressWords(code: string, issues: readonly FlaggedIssue[], seriesName: (id: string) => string, addresses: RestoreAddresses): string | undefined {
+    if (code !== 'route.slug-change' && code !== 'route.alias-reassigned') return undefined;
+    const flagged = issues.filter((issue) => issue.code === code && issue.record.kind === 'series');
+    const ids = [...new Set(flagged.map((issue) => issue.record.id))];
+    const renamed = code === 'route.slug-change';
+    if (ids.length === 0) return renamed ? 'an address that changes without keeping the old one' : 'an address another series has now';
+    if (ids.length > 1) {
+        const owners = possessive(ids.map(seriesName).join(' and '));
+        return renamed ? `${owners} addresses: they change without keeping the old ones` : `${owners} addresses: they take ones other series have now`;
+    }
+    const [id] = ids;
+    const owner = `${possessive(seriesName(id))} address`;
+    const live = addresses.live.find((series) => series.id === id);
+    const target = addresses.target.find((series) => series.id === id);
+    if (renamed) {
+        if (!live || !target || live.slug === target.slug) return `${owner}: it changes without keeping the old one`;
+        const change = `${owner}: it changes from /work/${live.slug} to /work/${target.slug}`;
+        // Every live address the target holds neither as its slug nor as an old one.
+        const dropped = [live.slug, ...live.slugAliases].filter((slug) => slug !== target.slug && !target.slugAliases.includes(slug));
+        if (dropped.length === 1 && dropped[0] === live.slug) return `${change} without keeping the old one`;
+        if (dropped.length === 0) return `${change} without keeping an old one`;
+        const list = dropped.map((slug) => `/work/${slug}`);
+        return `${change} without keeping ${list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list.at(-1)}` : list[0]}`;
+    }
+    // The address the flagged field holds on the target, and the series that has it live.
+    const fields = flagged.map((issue) => issue.field);
+    const slug = fields.length === 1 && target ? addressAt(target, fields[0]) : undefined;
+    const holder = slug === undefined ? undefined : addresses.live.find((series) => series.id !== id && (series.slug === slug || series.slugAliases.includes(slug)));
+    return slug !== undefined && holder ? `${owner}: it takes /work/${slug} from ${seriesName(holder.id)}` : `${owner}: it takes one another series has now`;
+}
+
+/** The address a field such as `slug` or `slugAliases[1]` holds. */
+function addressAt(series: SeriesAddresses, field: string | undefined): string | undefined {
+    if (field === 'slug') return series.slug;
+    const index = /^slugAliases\[(\d+)\]$/.exec(field ?? '')?.[1];
+    return index === undefined ? undefined : series.slugAliases[Number(index)];
+}
+
+/**
+ * Each editorial rule in `codes`, in the owner's words with no rule ID:
+ * "Salt Roads' accent color: it's hard to read on the Viewer's dark bands".
+ * #5's route rules name the addresses from `addresses`. A rule the copy
+ * doesn't know yet names its series, "Salt Roads' style, which today's
+ * checks flag", or reads "a style today's checks flag". Words two rules
+ * would share get their place among them, ", 1 of 2", so every box has a
+ * name of its own.
+ */
+export function editorialWords(issues: readonly FlaggedIssue[], codes: readonly string[], seriesName: (id: string) => string, addresses: RestoreAddresses = NO_ADDRESSES): string[] {
+    const words = codes.map((code) => {
+        const address = addressWords(code, issues, seriesName, addresses);
+        if (address !== undefined) return address;
+        const records = [...new Set(issues.filter((issue) => issue.code === code && issue.record.kind === 'series').map((issue) => seriesName(issue.record.id)))];
+        const owner = records.length ? possessive(records.join(' and ')) : '';
+        const known = ACCENT_WORDS[code];
+        if (known !== undefined) return `${owner ? `${owner} ` : 'an '}${known}`;
+        return owner ? `${owner} style, which today's checks flag` : "a style today's checks flag";
     });
-    return `Today's checks flag ${parts.join('; and ')}.`;
+    const seen = new Map<string, number>();
+    return words.map((text) => {
+        const total = words.filter((other) => other === text).length;
+        if (total === 1) return text;
+        const place = (seen.get(text) ?? 0) + 1;
+        seen.set(text, place);
+        return `${text}, ${place} of ${total}`;
+    });
+}
+
+/** What the dialog's lead counts a rule as: #5's route rules are address changes, and the rest styles. */
+const nounOf = (code: string) => (code.startsWith('route.') ? 'address change' : 'style');
+
+/** "one style", "2 address changes", "one style and one address change". */
+function flaggedCount(codes: readonly string[]): string {
+    const counts = new Map<string, number>();
+    for (const code of codes) counts.set(nounOf(code), (counts.get(nounOf(code)) ?? 0) + 1);
+    return [...counts].map(([noun, n]) => (n === 1 ? `one ${noun}` : `${n} ${noun}s`)).join(' and ');
+}
+
+/** The dialog's accept boxes for a restore of revision `target` that brings back `editorial`, or nothing when it brings back none. */
+export function editorialView(issues: readonly FlaggedIssue[], editorial: readonly string[], seriesName: (id: string) => string, target: number, addresses: RestoreAddresses = NO_ADDRESSES): EditorialView | undefined {
+    if (editorial.length === 0) return undefined;
+    const words = editorialWords(issues, editorial, seriesName, addresses);
+    const one = editorial.length === 1;
+    return {
+        lead: `Today's checks flag ${flaggedCount(editorial)} on revision ${target}.`,
+        rules: editorial.map((id, index) => ({ id, label: `Accept ${words[index]}` })),
+        note: one ? 'Restoring brings it back as it was, and History records that you accepted it.' : 'Restoring brings them back as they were, and History records that you accepted them.',
+    };
 }
 
 // The restore's answers.
@@ -492,9 +635,12 @@ export interface OutcomeFacts {
     /** Who made the revision that's live now, and when, for "You published it from the command line at 09:10." */
     liveBy: { actor: string; kind: 'publish' | 'rollback'; at: string } | null;
     holderSince: string | null;
+    /** VALIDATION_FAILED's refusal reasons, or ACCEPTANCE_REQUIRED's unaccepted rules, in the owner's words. */
     reasons: string[];
     /** NO_CHANGES settled an interrupted record on the way. */
     settled: boolean;
+    /** VERIFY_FAILED's cause. A failed entry when absent. */
+    verify?: VerifyRefusal;
 }
 
 /**
@@ -542,6 +688,20 @@ export function restoreResult(outcome: RollbackOutcome, facts: OutcomeFacts): Re
                 ...(facts.reasons.length ? { list: facts.reasons.slice(0, 5).map((reason) => `${capitalised(reason)}.`) } : {}),
                 actions: ['close', 'reload'],
             };
+        case 'ACCEPTANCE_REQUIRED':
+            // Only a post that skipped the dialog's boxes, or rules that changed after the page loaded (a deploy), gets here.
+            return {
+                tone: 'alert',
+                heading: `Revision ${n} needs you to accept what today's checks flag`,
+                body: [`Nothing was restored. Revision ${m} stays live.`],
+                ...(facts.reasons.length ? { list: facts.reasons.map((reason) => `${capitalised(reason)}.`) } : {}),
+                actions: ['close', 'reload'],
+            };
+        case 'VERIFY_FAILED':
+            // A post that skipped History's missing Restore, or a check that failed after the page loaded. No accept here.
+            return facts.verify === 'record-damaged'
+                ? { tone: 'alert', heading: `The record of the last check can't be read, so revision ${n} can't come back`, body: [`Nothing was restored. Revision ${m} stays live. Run photos verify to check it again.`], actions: ['close', 'reload'] }
+                : { tone: 'alert', heading: `Revision ${n} failed its last check, so it can't come back`, body: [`Nothing was restored. Revision ${m} stays live. Run photos verify to see what to fix.`], actions: ['close', 'reload'] };
         case 'NOT_ELIGIBLE':
             return { tone: 'alert', heading: `Revision ${n} never went live, so it can't come back`, body: ['Nothing was restored. Load the page again for the current list.'], actions: ['close', 'reload'] };
         case 'NOTHING_ACTIVE':

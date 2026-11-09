@@ -1,7 +1,8 @@
 import { readActivePointer, readAuthoredRecord, readAuthoredSeries } from '../catalog/working-layer';
+import { heartbeatStale, watcherHeartbeatAge } from '../identity/heartbeat';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
-import type { Registry } from '../identity/types';
+import type { ProfileEntry, Registry } from '../identity/types';
 import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
 import { pendingArchiveOf, pendingBindOf, pendingMergeOf } from './binds';
 import { candidateOf } from './candidates';
@@ -11,6 +12,7 @@ import { photoHolderEntries, type ReferenceCache } from './holders';
 import {
     bindWaitingText,
     CONFIRM_UNAVAILABLE,
+    fileParts,
     humanDate,
     itemTitle,
     MISSING_HINT,
@@ -18,20 +20,27 @@ import {
     seriesName,
     settledMissingTitle,
     shortIdOf,
+    SUPERSEDED_TITLE,
     type HolderRef,
     type InboxDetail,
     type InboxItem,
+    type InboxLibrary,
+    type InboxSummary,
     type InboxView,
+    type InboxWatcher,
     type BindWaiting,
     type ItemGroup,
     type ReplacementDraft,
     type ResolvedCause,
     type SeriesOption,
 } from './inbox-view';
+import { cursorIssued, readArrivals } from './arrivals';
+import { ANY_QUERY, matchesQuery, type InboxQuery } from './inbox-list';
+import { heldMissingIds, LIBRARY_EVENT_ID, libraryCauseText, libraryOpen } from './library';
 import { readDraftPlan } from './pins';
 import { placedItems } from './placement';
 import { listEvents } from './repository';
-import { linkedNewItems } from './resolutions';
+import { bindSuggestions, linkedNewItems } from './resolutions';
 
 /**
  * Reads the inbox for the curator's page (#14's 14-3): every event, grouped
@@ -63,7 +72,7 @@ function groupOf(event: CurationEvent, waiting: string | null, placed: boolean, 
 
 const GROUP_ORDER: Record<ItemGroup, number> = { judgment: 0, unplaced: 1, waiting: 2, deferred: 3, placed: 4, settled: 5 };
 
-function itemOf(event: CurationEvent, registry: Registry | null, waiting: string | null, placed: string | null, unplaced: string | null): InboxItem {
+function itemOf(event: CurationEvent, registry: Registry | null, waiting: string | null, placed: string | null, unplaced: string | null, held: boolean): InboxItem {
     const ready = readyProfile(event, registry);
     return {
         id: event.id,
@@ -71,7 +80,9 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         type: event.type,
         status: event.status,
         group: groupOf(event, waiting, placed !== null, unplaced !== null),
-        title: unplaced !== null ? 'Approved, no longer placed' : ((event.type === 'missing' ? settledMissingTitle(event.status, resolvedCauseOf(event, registry)) : null) ?? itemTitle(event.type, waiting !== null)),
+        title: unplaced !== null
+            ? 'Approved, no longer placed'
+            : ((event.type === 'missing' ? settledMissingTitle(event.status, resolvedCauseOf(event, registry)) : null) ?? (supersededBy(event, registry) ? SUPERSEDED_TITLE : itemTitle(event.type, waiting !== null))),
         photoId: event.photoId,
         shortId: shortIdOf(event.photoId),
         sourcePath: printable(event.derivedFacts.sourcePath),
@@ -79,6 +90,10 @@ function itemOf(event: CurationEvent, registry: Registry | null, waiting: string
         waiting,
         placedBy: placed,
         unplacedSeries: unplaced,
+        observedAt: event.observedAt,
+        // A saved series, not a saved "Leave unassigned", which Leave unassigned keeps.
+        seriesChosen: typeof event.edits?.seriesId === 'string',
+        held,
     };
 }
 
@@ -155,15 +170,29 @@ function readyProfile(event: CurationEvent, registry: Registry | null): string |
 }
 
 /** Each profile's state, and how many tries a failed one took. A build's error text may name a host path, so it never shows. */
+/**
+ * #17: a replacement whose set the writer refused because the source moved on, while the source still holds other
+ * bytes. The watcher closes an open one; one left in draft stays, and reads as superseded, not failed, as
+ * `photos status` counts it (lib/curation/alerts.ts).
+ */
+function supersededBy(event: CurationEvent, registry: Registry | null): boolean {
+    if (event.type !== 'replacement' || event.candidate?.state !== 'failed' || event.candidate.failure !== 'superseded' || event.photoId === null) return false;
+    const photo = registry?.photos[event.photoId];
+    return photo !== undefined && photo.source.observedRevision !== event.assetRevision;
+}
+
+/** How a profile's entry reads: a refusal because the source moved on is no build failure (#17). */
+const entryText = (id: string, entry: ProfileEntry) => entry.state === 'failed' && entry.error === 'source-superseded'
+    ? `${id} superseded by a newer file`
+    : `${id} ${entry.state}${entry.state === 'failed' ? ` after ${entry.attempts} attempt${entry.attempts === 1 ? '' : 's'}` : ''}`;
+
 function derivativeText(event: CurationEvent, registry: Registry | null): { text: string; ready: string | null } {
     if (event.photoId === null || event.assetRevision === null) return { text: 'None. Nothing was made from it.', ready: null };
     const revision = registry?.photos[event.photoId]?.revisions[event.assetRevision];
     const profiles = revision ? Object.entries(revision.profiles) : [];
     if (profiles.length === 0) return { text: 'None built yet.', ready: null };
     const ready = readyProfile(event, registry);
-    const text = profiles
-        .map(([id, entry]) => `${id} ${entry.state}${entry.state === 'failed' ? ` after ${entry.attempts} attempt${entry.attempts === 1 ? '' : 's'}` : ''}`)
-        .join(', ');
+    const text = profiles.map(([id, entry]) => entryText(id, entry)).join(', ');
     return { text, ready };
 }
 
@@ -176,6 +205,11 @@ function factsOf(event: CurationEvent): InboxDetail['facts'] {
     if (facts.sourceFormat) rows.push({ label: 'Format', value: facts.sourceFormat });
     if (facts.folder) rows.push({ label: 'Folder', value: printable(facts.folder) });
     if (facts.duplicateOf) rows.push({ label: 'Same bytes as', value: facts.duplicateOf });
+    // A6's library item (#14, A8): what the watcher found, in words that name no path.
+    if (event.type === 'library-unavailable') {
+        const cause = libraryCauseText(facts.library);
+        rows.push({ label: 'Cause', value: `${cause[0].toUpperCase()}${cause.slice(1)}` });
+    }
     return rows;
 }
 
@@ -297,6 +331,29 @@ async function linkedFilesOf(root: string, event: CurationEvent, can: InboxDetai
 }
 
 /**
+ * #17: the files the watcher suggests for an open missing source, which Bind offers after the linked ones, from
+ * bindSuggestions(), the function `curation show` lists them with. The form sends the path itself, as
+ * `curation bind --path` takes it, so `libraryPath` is the path unescaped and `path` the page's copy.
+ */
+async function suggestedFilesOf(root: string, event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): Promise<InboxDetail['suggestedFiles']> {
+    if (event.type !== 'missing' || event.photoId === null || !can.bind) return [];
+    return (await bindSuggestions(root, event.photoId, registry)).map(({ item, by }) => ({ id: item.id, path: printable(item.derivedFacts.sourcePath), libraryPath: item.derivedFacts.sourcePath, by }));
+}
+
+/**
+ * #17: the archived photograph an approval of this new photograph restores, as approveEvent() decides it: the
+ * registry says its bytes are a copy of a photograph that is archived and not merged. Its file name, as the page names
+ * files, or null for any other item and while the item can't be approved.
+ */
+function restoresOf(event: CurationEvent, can: InboxDetail['can'], registry: Registry | null): InboxDetail['restores'] {
+    if (event.type !== 'new' || event.photoId === null || !can.approve || registry === null) return null;
+    const photo = Object.hasOwn(registry.photos, event.photoId) ? registry.photos[event.photoId] : undefined;
+    const archived = photo?.duplicateOf ? (Object.hasOwn(registry.photos, photo.duplicateOf) ? registry.photos[photo.duplicateOf] : undefined) : undefined;
+    if (!archived || archived.sourceHealth !== 'archived' || archived.mergedInto !== undefined) return null;
+    return { name: fileParts(printable(archived.source.path)).name };
+}
+
+/**
  * #17: a replacement's draft, and what Decide later does with it, from the plan leaveInDraft() acts on. `cache` holds
  * the references() scan photoHolderEntries() already made, whose active-revision entry says which bytes are live. Null
  * for any other item, and when the photo record or the inbox's pins can't be read: the page then claims nothing.
@@ -370,7 +427,6 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
     return {
         ...item,
         assetRevision: event.assetRevision,
-        observedAt: event.observedAt,
         lastObservedAt: event.lastObservedAt,
         capturedDate: event.derivedFacts.capturedDate ?? null,
         fromPath: event.derivedFacts.fromPath ? printable(event.derivedFacts.fromPath) : null,
@@ -404,6 +460,10 @@ async function detailOf(root: string, event: CurationEvent, item: InboxItem, reg
         primaryUnavailable: primaryUnavailable(event, can, replacement, bindWaiting, archiveWaiting, registry),
         confirmUnavailable,
         linkedFiles: await linkedFilesOf(root, event, can, registry),
+        suggestedFiles: await suggestedFilesOf(root, event, can, registry),
+        restores: restoresOf(event, can, registry),
+        // #17: `curation confirm-missing`, which releases a held item, takes one whose photograph is still missing.
+        release: item.held && missingSettles(event, registry).bind,
         replacement,
         resolvedBy: resolvedCauseOf(event, registry),
         bindWaiting,
@@ -422,43 +482,84 @@ async function seriesOptions(root: string): Promise<{ series: SeriesOption[]; pr
     return { series: options, problem: unreadable.length > 0 ? `Some series can't be read (${unreadable.join(', ')}), so they aren't offered.` : null };
 }
 
+/** #14: the watcher's heartbeat as the Inbox's warning reads it. A reason names the data root, so it stays out. */
+async function watcherOf(root: string): Promise<InboxWatcher> {
+    const heartbeat = await watcherHeartbeatAge(root);
+    if (!heartbeat.found) return { state: 'missing' };
+    return heartbeatStale(heartbeat.ageMs) ? { state: 'stale', heartbeatAt: heartbeat.heartbeatAt, ageMs: heartbeat.ageMs } : { state: 'running' };
+}
+
 /**
- * The inbox as the page shows it, with `selectedId`'s event in full. With no
- * selection, the first item that needs judgment is selected, and none when
- * nothing does, so the page shows its empty state (as it does once the last
- * decision opens no next item). A data root that isn't ready is
- * `not-ready`, and nothing else is read.
+ * Every event as a list row, in the list's order, with the counts the summary line and `curation list` share. The
+ * page and the summary route (#14, A8) both read the inbox through this, so they count alike.
  */
-export async function loadInbox(selectedId: string | null): Promise<InboxView> {
-    const status = dataRootStatus();
-    if (status.state !== 'ready' || status.root === null) {
-        return { state: 'not-ready', message: `The data root is ${status.state}, so the inbox can't be read. Nothing was written.` };
-    }
-    const root = status.root;
-    const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
+async function readItems(root: string) {
+    // The sequence first: an item that arrives between the two reads is counted on the next check, never skipped.
+    const arrivals = await readArrivals(root);
     const { events, problems } = await listEvents(root);
+    // #17: the missing items the open library item holds, as `photos status` counts them (lib/curation/alerts.ts).
+    const library = events.find((event) => event.id === LIBRARY_EVENT_ID) ?? null;
+    const held = new Set(heldMissingIds(events, library));
     const registry = events.length > 0 ? await readRegistry(root).catch(() => null) : null;
     const profileId = currentProfileId();
     // The same lookup `curation list` and `show` use, so the page and the CLI count alike.
     const placements = await placedItems(root, events);
     const items = events
-        .map((event) => itemOf(event, registry, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null))
+        .map((event) => itemOf(event, registry, waitingReason(event, registry, profileId), placements.placed.get(event.id) ?? null, placements.unplaced.get(event.id) ?? null, held.has(event.id)))
         .sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]);
+    const counts = {
+        // A held item waits for the library, so it's left out of the judgment count, here and in the summary.
+        needsJudgment: items.filter((item) => item.group === 'judgment' && !item.held).length,
+        waiting: items.filter((item) => item.group === 'waiting').length,
+        placed: placements.placed.size,
+        unplaced: placements.unplaced.size,
+    };
+    // The held count and the banner are the page's alone: the summary the poll reads carries neither.
+    const banner: InboxLibrary | null = libraryOpen(library) ? { cause: libraryCauseText(library.derivedFacts.library), held: held.size, itemId: library.id } : null;
+    return { events, problems, registry, placements, items, counts, arrivals, held: held.size, banner };
+}
+
+export interface LoadInboxOptions {
+    /** The list's filters (#14, A8): with no item in the URL, the first item they keep that needs judgment opens. */
+    query?: Pick<InboxQuery, 'status' | 'type'> & Partial<Pick<InboxQuery, 'page'>>;
+    /** When the inbox is read, for the age labels. */
+    now?: () => number;
+}
+
+/**
+ * The inbox as the page shows it, with `selectedId`'s event in full. With no
+ * selection, the first item that needs judgment, and that the list's filters
+ * keep, is selected, and none when nothing does, so the page shows its empty
+ * state (as it does once the last decision opens no next item). A data root
+ * that isn't ready is `not-ready`, and nothing else is read.
+ */
+export async function loadInbox(selectedId: string | null, options: LoadInboxOptions = {}): Promise<InboxView> {
+    const status = dataRootStatus();
+    if (status.state !== 'ready' || status.root === null) {
+        return { state: 'not-ready', message: `The data root is ${status.state}, so the inbox can't be read. Nothing was written.` };
+    }
+    const root = status.root;
+    const readAt = new Date((options.now ?? Date.now)()).toISOString();
+    const scrubbed = (text: string) => scrub(text, [root, configuredLibraryRoot()]);
+    const { events, problems, registry, placements, items, counts, arrivals, held, banner } = await readItems(root);
     const active = (await readActivePointer(root))?.revisionId ?? null;
     const { series, problem } = await seriesOptions(root);
 
     const wanted = selectedId !== null && EVENT_ID_RE.test(selectedId) ? selectedId : null;
-    const fallback = items.find((item) => item.group === 'judgment') ?? null;
+    const query = options.query ?? ANY_QUERY;
+    const fallback = items.find((item) => item.group === 'judgment' && matchesQuery(item, query)) ?? null;
     const chosen = selectedId === null ? fallback : wanted === null ? null : (items.find((item) => item.id === wanted) ?? null);
     const event = chosen ? events.find((entry) => entry.id === chosen.id) ?? null : null;
 
     return {
         state: 'ready',
+        watcher: await watcherOf(root),
+        readAt,
+        cursor: arrivals.cursor,
         activeRevisionId: active,
-        needsJudgment: items.filter((item) => item.group === 'judgment').length,
-        waiting: items.filter((item) => item.group === 'waiting').length,
-        placed: placements.placed.size,
-        unplaced: placements.unplaced.size,
+        ...counts,
+        held,
+        library: banner,
         placementUnknown: placements.unknown !== null,
         items,
         problems: problems.map((entry) => ({ id: entry.id, message: scrubbed(printable(`${entry.reason}: ${entry.message}`)) })),
@@ -466,5 +567,35 @@ export async function loadInbox(selectedId: string | null): Promise<InboxView> {
         seriesProblem: problem,
         selected: event && chosen ? await detailOf(root, event, chosen, registry, scrubbed, series) : null,
         missingSelection: selectedId !== null && chosen === null ? (wanted ?? 'that item') : null,
+    };
+}
+
+/**
+ * #14 (A8): the summary the Inbox's poll reads through /api/curation/inbox/summary, counted as loadInbox() counts:
+ * the counts, the watcher, how many items there are and how many can't be read, and for `itemId`, the item the page
+ * has open, its version and status, so the page can tell it changed. It names no path, file or photo, and writes
+ * nothing. A data root that isn't ready is `not-ready`, with nothing else read.
+ */
+export async function loadInboxSummary(itemId: string | null, options: Pick<LoadInboxOptions, 'now'> & { since?: number | null } = {}): Promise<InboxSummary> {
+    const status = dataRootStatus();
+    if (status.state !== 'ready' || status.root === null) return { state: 'not-ready' };
+    const root = status.root;
+    const readAt = new Date((options.now ?? Date.now)()).toISOString();
+    const { events, problems, counts, items, arrivals } = await readItems(root);
+    const since = options.since ?? null;
+    // A8 review, 4a: only a cursor this server issued, so a forged or future one is refused, not read as zero arrivals.
+    if (since !== null && !cursorIssued(since, arrivals)) return { state: 'bad-cursor' };
+    const arrived = since === null ? null : items.filter((item) => item.group === 'judgment' && !item.held && (arrivals.seqOf.get(item.id) ?? 0) > since).length;
+    const open = itemId !== null && EVENT_ID_RE.test(itemId) ? events.find((event) => event.id === itemId) : undefined;
+    return {
+        state: 'ready',
+        readAt,
+        cursor: arrivals.cursor,
+        arrived,
+        ...counts,
+        total: events.length,
+        unreadable: problems.length,
+        watcher: await watcherOf(root),
+        item: open ? { id: open.id, version: open.version, status: open.status } : null,
     };
 }

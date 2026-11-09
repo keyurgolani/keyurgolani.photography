@@ -5,7 +5,7 @@ import { useDocumentVisible } from '../motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '../motion/usePrefersReducedMotion';
 import { HOME_CHROME_FADE_MS, HOME_CHROME_IDLE_MS, HOME_LOADING_TIMEOUT_MS } from './homeChromeConfig';
 import { HOVER, initialChrome, KEYBOARD_FOCUS, PRESS, reduceChrome, type ChromeEvent, type ChromeState, type IntroPhase } from './homeChrome';
-import { ChromeContext, useChromeContext, type ChromeContextValue, type HomeChromeApi } from './useHomeChrome';
+import { ChromeContext, useChromeContext, type ChromeContextValue, type HomeChromeApi, type HomeState } from './useHomeChrome';
 import styles from './HomeChrome.module.css';
 
 /** The chrome's controls, for the hover and press holds. */
@@ -37,6 +37,8 @@ type HomeChromeControllerProps = {
   /** Only a first visit in the tab starts loading. */
   initialLoading: boolean;
   initialIntro: IntroPhase;
+  /** #4's state, from the server render; the Home inside reports changes through reportHomeState(). */
+  initialHomeState?: HomeState;
   idleMs?: number;
 } & { [attribute: `data-${string}`]: string | undefined };
 
@@ -53,12 +55,14 @@ export default function HomeChromeController({
   children,
   initialLoading,
   initialIntro,
+  initialHomeState,
   idleMs = HOME_CHROME_IDLE_MS,
   ...dataAttributes
 }: HomeChromeControllerProps) {
   const reducedMotion = usePrefersReducedMotion();
   const documentVisible = useDocumentVisible();
   const [state, setState] = useState<ChromeState>(() => initialChrome({ loading: initialLoading, intro: initialIntro }));
+  const [homeState, setHomeState] = useState<HomeState | undefined>(initialHomeState);
   const stateRef = useRef(state);
   const rootRef = useRef<HTMLElement>(null);
   const chromeRef = useRef<HTMLDivElement | null>(null);
@@ -390,6 +394,7 @@ export default function HomeChromeController({
   const release = useCallback((reason: string) => setHeld(reason, false), [setHeld]);
   const reportPhoto = useCallback((status: 'shown' | 'none') => send({ type: 'photoReported', status }), [send]);
   const reportIntro = useCallback((phase: IntroPhase) => send({ type: 'introReported', phase }), [send]);
+  const reportHomeState = useCallback((next: HomeState) => setHomeState(next), []);
 
   const api = useMemo<HomeChromeApi>(
     () => ({
@@ -401,8 +406,9 @@ export default function HomeChromeController({
       release,
       reportPhoto,
       reportIntro,
+      reportHomeState,
     }),
-    [state.visibility, state.loading, state.holds, hold, release, reportPhoto, reportIntro],
+    [state.visibility, state.loading, state.holds, hold, release, reportPhoto, reportIntro, reportHomeState],
   );
   const context = useMemo<ChromeContextValue>(() => ({ api, registerChrome }), [api, registerChrome]);
 
@@ -415,6 +421,7 @@ export default function HomeChromeController({
         data-chrome-holds={holdsKey}
         data-home-loading={String(state.loading)}
         data-home-intro={state.intro}
+        data-home-state={homeState}
         {...dataAttributes}
       >
         {children}

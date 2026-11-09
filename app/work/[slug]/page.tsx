@@ -5,8 +5,10 @@ import SeriesPage from '@/components/series/SeriesPage';
 import SiteNav from '@/components/site/SiteNav';
 import { seriesPageFrom } from '@/lib/catalog/projections/series';
 import { CatalogUnavailableError, getActiveCatalog, publicRoutes } from '@/lib/catalog/public-reader';
+import { PHOTO_PARAM, photoParamOf } from '@/lib/catalog/routes';
 import { getSiteOrigin } from '@/lib/site/config';
 import { siteOpenGraph } from '@/lib/site/metadata';
+import { redirectLocation, type PageSearchParams } from '@/lib/site/redirect';
 
 // Per request, never at build: the image builds with no data root, so a build-time read would freeze the series.
 // Dynamic responses also go out uncacheable, so a 308 doesn't stick in a browser after a rollback.
@@ -16,14 +18,21 @@ export const dynamic = 'force-dynamic';
 
 interface SeriesRouteProps {
     params: Promise<{ slug: string }>;
+    /** `?photo=` (B5), and the whole query for a redirect, which keeps it. Optional, since the tests don't always pass it. */
+    searchParams?: Promise<PageSearchParams>;
 }
 
 /**
- * The page's one answer for `slug` in this request. getActiveCatalog() reads
- * one revision per request, and cache() shares the projection between the
- * page and generateMetadata, so the two never disagree.
+ * The page's one answer for `slug` and `?photo=` in this request.
+ * getActiveCatalog() reads one revision per request, and cache() shares the
+ * projection between the page and generateMetadata, so the two never
+ * disagree. The photo ID is checked as one before it's a cache key or
+ * reaches the projection, which then looks it up in the served revision.
  */
-const seriesFor = cache((slug: string) => seriesPageFrom(getActiveCatalog, slug, publicRoutes));
+const seriesFor = cache((slug: string, photoId: string | null) => seriesPageFrom(getActiveCatalog, slug, publicRoutes, { photoId }));
+
+/** `?photo=`'s value when it's one photo ID, else null: the plain page. */
+const photoOf = (query: PageSearchParams | undefined) => photoParamOf(query?.[PHOTO_PARAM]);
 
 /**
  * Share metadata from the published series record only. Every not-found,
@@ -34,8 +43,9 @@ const seriesFor = cache((slug: string) => seriesPageFrom(getActiveCatalog, slug,
  * localhost, so the canonical link, og:url, and the share image are left out
  * instead.
  */
-export async function generateMetadata({ params }: SeriesRouteProps): Promise<Metadata> {
-    const result = await seriesFor((await params).slug);
+export async function generateMetadata({ params, searchParams }: SeriesRouteProps): Promise<Metadata> {
+    // The same answer as the page's, so `?photo=` is read here too; nothing below depends on it, and the canonical path never carries it.
+    const result = await seriesFor((await params).slug, photoOf(await searchParams));
     if (result.kind !== 'ok') return {};
     const { metadata } = result.page;
     const hasOrigin = getSiteOrigin() !== null;
@@ -44,6 +54,8 @@ export async function generateMetadata({ params }: SeriesRouteProps): Promise<Me
         title: metadata.title,
         ...(metadata.description !== null && { description: metadata.description }),
         ...(hasOrigin && { alternates: { canonical: metadata.canonicalPath } }),
+        // The revision the page came from, the same one main carries: <meta name="catalog-revision">, for #12's freshness checks.
+        other: { 'catalog-revision': result.page.catalogRevision },
         // Next replaces openGraph whole, so the site's fields go first.
         openGraph: {
             ...siteOpenGraph,
@@ -55,16 +67,22 @@ export async function generateMetadata({ params }: SeriesRouteProps): Promise<Me
 
 /**
  * A published series (#5). The canonical slug renders the series, a former
- * slug answers 308 to the canonical one, and everything else (malformed,
- * unknown, draft, hidden, removed) is the one public not-found. While the
- * catalog is unavailable, nothing published included, it throws, so #21's
- * error page answers 500 with Try again, never a 404.
+ * slug or a letter-case variant answers 308 to the canonical one with the
+ * query kept, and everything else (malformed, unknown, draft, hidden,
+ * removed) is the one public not-found. `?photo=<photoId>` (B5) opens it on
+ * the page that holds that photograph, which the page then focuses; a value
+ * that isn't one of the series' photographs in this revision gets the plain
+ * page, never an error, and the value itself never reaches the HTML. The Location is the projection's
+ * canonical path, never the requested one, so no request can send it off
+ * the site. While the catalog is unavailable, nothing published included, it
+ * throws, so #21's error page answers 500 with Try again, never a 404.
  */
-export default async function SeriesRoute({ params }: SeriesRouteProps) {
-    const result = await seriesFor((await params).slug);
+export default async function SeriesRoute({ params, searchParams }: SeriesRouteProps) {
+    const query = await searchParams;
+    const result = await seriesFor((await params).slug, photoOf(query));
     switch (result.kind) {
         case 'redirect':
-            return permanentRedirect(result.location);
+            return permanentRedirect(redirectLocation(result.location, query));
         case 'not-found':
             return notFound();
         case 'unavailable':

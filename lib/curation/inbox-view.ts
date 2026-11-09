@@ -9,7 +9,8 @@
 import type { CurationEventStatus, CurationEventType, Placement } from './events';
 
 /** The watcher's reasons for making nothing from a file, as lib/curation/events.ts's FAILURE_REASONS names them. */
-export type FailureCode = 'unsupported-format' | 'digest-collision' | 'undecodable';
+/** A6 adds `io-error`. */
+export type FailureCode = 'unsupported-format' | 'digest-collision' | 'undecodable' | 'io-error';
 
 export const BADGE_LABELS: Record<CurationEventType, string> = {
     new: 'New photograph',
@@ -18,9 +19,13 @@ export const BADGE_LABELS: Record<CurationEventType, string> = {
     reappeared: 'Source reappeared',
     ambiguous: 'Ambiguous match',
     'processing-failure': 'Processing failure',
+    'library-unavailable': 'Library unavailable',
 };
 
 /** The item's title in the list, by type. */
+/** #17: a replacement left in draft whose set the writer refused because the source moved on to a newer file. */
+export const SUPERSEDED_TITLE = 'Superseded by a newer file';
+
 export function itemTitle(type: CurationEventType, waiting: boolean): string {
     switch (type) {
         case 'new':
@@ -35,6 +40,8 @@ export function itemTitle(type: CurationEventType, waiting: boolean): string {
             return 'Identity needs a choice';
         case 'processing-failure':
             return 'Processing failed';
+        case 'library-unavailable':
+            return 'Library unavailable';
     }
 }
 
@@ -59,6 +66,7 @@ export const SYSTEM_RESPONSE: Record<CurationEventType, string> = {
     reappeared: 'The source is back. Nothing a visitor sees changed.',
     ambiguous: 'It matches more than one photograph, so no identity is bound until you choose one.',
     'processing-failure': "The watcher couldn't process it, so nothing was made from it.",
+    'library-unavailable': "The watcher can't see the library, so it changes nothing and marks nothing missing until it can. The site keeps serving what it published.",
 };
 
 /**
@@ -208,6 +216,20 @@ export interface InboxItem {
     placedBy: string | null;
     /** The series its last approval named, for an approval whose photo nothing holds now, or null. */
     unplacedSeries: string | null;
+    /** When the watcher first saw what the item reports, for its age label (#14, A8). */
+    observedAt: string;
+    /** A series is saved on the item (`edits.seriesId`, not null), so Leave unassigned would drop it (A8 review S2). */
+    seriesChosen: boolean;
+    /**
+     * #17: a missing item the open library item holds (heldMissingIds()), since its file went missing while the
+     * library couldn't be reached. It counts as held, not as needing judgment, and the Status filter's Held lists it.
+     */
+    held: boolean;
+}
+
+/** What names an item's file in the list and its heading. A6's library item has no file: it's the library (#14, A8). */
+export function itemName(item: Pick<InboxItem, 'type' | 'sourcePath'>): string {
+    return item.type === 'library-unavailable' ? 'The photo library' : fileParts(item.sourcePath).name;
 }
 
 /** One thing that holds a photograph: the active revision, or a working-layer series, by ID. */
@@ -227,7 +249,6 @@ export interface SeriesOption {
 
 export interface InboxDetail extends InboxItem {
     assetRevision: string | null;
-    observedAt: string;
     lastObservedAt: string;
     /** The capture date the file holds, or null when it holds none or nothing was read. */
     capturedDate: string | null;
@@ -279,6 +300,21 @@ export interface InboxDetail extends InboxItem {
      * ID, which the form sends, and its library path, escaped for the page. Empty for every other item.
      */
     linkedFiles: { id: string; path: string }[];
+    /**
+     * #17: for an open missing source, the new files the watcher suggests, as `curation show` lists them
+     * (bindSuggestions()): each one's item ID, its library path escaped for the page (`path`), the path itself as
+     * `curation bind --path` takes it (`libraryPath`), which the form sends, and why it's suggested. Never chosen
+     * for the curator. Empty for every other item.
+     */
+    suggestedFiles: { id: string; path: string; libraryPath: string; by: 'basename' | 'capture-time' }[];
+    /**
+     * #17: for a new photograph whose bytes are an archived photograph's, which an approval restores (approveEvent()),
+     * that photograph's file name. The page offers Restore in Approve's place then, with no series, position or
+     * description. Null for every other item.
+     */
+    restores: { name: string } | null;
+    /** #17: a held missing item that `curation confirm-missing` would take, so the page offers Release. */
+    release: boolean;
     /** For a replacement of a known photo and revision, what its draft holds and what Decide later does with it. Null otherwise. */
     replacement: ReplacementDraft | null;
     /**
@@ -295,10 +331,42 @@ export interface InboxDetail extends InboxItem {
  * source back, `bound` one back through a bind, `merged` a new photograph a bind gave to another, whose file is
  * `into` (library-relative, or null when the registry can't say), `archived` an archived photograph, and `built`,
  * `gone` and `moved` a failed build that built, whose photograph the registry dropped, or whose file moved on.
+ * `identified` and `unheld` are an ambiguous item #10 no longer holds in doubt (#14), because a photograph has its
+ * bytes or because the file changed or left, and `superseded` a replacement whose source changed again first.
+ * A5's: `reverted` a replacement whose source went back to earlier bytes, `withdrawn` a missing photograph nothing
+ * lists, `split` a replacement whose file became its own photograph, and `restored` a new photograph whose bytes
+ * brought an archived one back.
  */
 export type ResolvedCause =
-    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' }
+    | { kind: 'same-file' | 'other-bytes' | 'bound' | 'archived' | 'built' | 'gone' | 'moved' | 'identified' | 'unheld' | 'superseded' | 'reverted' | 'withdrawn' | 'split' | 'restored' | 'available' | 'readable' }
     | { kind: 'merged'; into: string | null };
+
+/** #17: what a restored item's system response says, once the watcher has applied the restore. */
+export const RESTORED_TEXT = 'This file brought the archived photograph back under its old ID, so its own item places it.';
+
+/**
+ * #17: what Restore answers. It only records the restore, which the watcher applies on its next pass, so it says it
+ * waits, as Bind's answer does (bindAnswer()). `name` is the archived photograph's file name.
+ */
+export function restoreAnswer(name: string): string {
+    return `Restore recorded, and waiting for the watcher. On its next pass, ${name} comes back with its original details, outside any series.`;
+}
+
+/** #17: the hint beside Restore, which takes Approve's place on a new photograph whose bytes are an archived one's. */
+export function restoreHint(name: string): string {
+    return `This file matches ${name}, an archived photograph. Restore brings it back with its original details, outside any series. Add it to a series from the Series screen afterwards.`;
+}
+
+/** #17: a file the watcher suggests in Bind's choices, by its path and why: its file name, or its capture time. */
+export function suggestedFileLabel(path: string, by: 'basename' | 'capture-time'): string {
+    return by === 'capture-time' ? `${path}: taken at the same moment, different pixels` : `${path}: same file name, different pixels`;
+}
+
+/** #17: the hint beside Release, on a missing item the library item holds. */
+export const RELEASE_HINT = "This item is on hold because the library can't be reached. Release it only if its file is really gone: it then counts as missing, and Bind or Archive settles it.";
+
+/** #17: what Release answers once confirm-missing went through. */
+export const RELEASED_ANSWER = 'Released.';
 
 /**
  * #17: a pending bind for the item's photograph. `merge`: it makes this new photograph's file the new version of the
@@ -349,6 +417,24 @@ export function resolvedResponse(cause: ResolvedCause | null, type: CurationEven
             return 'The registry no longer holds the photograph, so nothing needs retrying.';
         case 'moved':
             return "The file holds other bytes now, and the photograph's newer items cover them.";
+        case 'identified':
+            return "The watcher now knows whose file this is, so there's nothing left to decide here.";
+        case 'unheld':
+            return "The file changed or left the library, so there's nothing left to decide here.";
+        case 'superseded':
+            return 'The file changed again before this version was built, so the newer replacement item reviews it instead.';
+        case 'reverted':
+            return 'The file went back to an earlier version, so there is nothing new here to confirm.';
+        case 'withdrawn':
+            return 'No published revision or draft series lists the photograph, so its file going takes nothing down.';
+        case 'split':
+            return "The file is its own photograph now, and that photograph's new item reviews it.";
+        case 'restored':
+            return RESTORED_TEXT;
+        case 'readable':
+            return 'The watcher can read the file again, so it processes it as usual.';
+        case 'available':
+            return 'The library is available again. A source it held that is still gone now shows as missing.';
         default:
             return 'The watcher closed it. History says what it found.';
     }
@@ -430,13 +516,50 @@ export function replacementHint(replacement: ReplacementDraft | null): string {
 /** What Decide later answers when the draft moved after the confirm (the `refuses` plan): what changed, and what to do. */
 export const MOVED_ANSWER = "This photograph's draft moved to another version after the new one was confirmed, so Decide later can't tell which one to put back. Nothing was written. Set its version with photos edit, or dismiss this item.";
 
+/**
+ * #14: whether the watcher checks in, from its heartbeat in the data root.
+ * `stale` is over 5 minutes old, or stamped that far ahead of the server's
+ * clock (negative `ageMs`). `missing` is no heartbeat, or one that can't be
+ * used. The Inbox warns on either, since new photographs don't arrive then.
+ */
+export type InboxWatcher = { state: 'running' } | { state: 'stale'; heartbeatAt: string; ageMs: number } | { state: 'missing' };
+
+/**
+ * #17: the open library item, as the Inbox's banner says it: the cause in words that name no path
+ * (libraryCauseText()), how many missing items it holds, and the item's ID, which the banner links to.
+ */
+export interface InboxLibrary {
+    cause: string;
+    held: number;
+    itemId: string;
+}
+
+/**
+ * #17: the Inbox's banner while the library item is open. Its lead links to that item; the rest follows it. With
+ * nothing held it keeps its first sentence alone.
+ */
+export const LIBRARY_BANNER = {
+    lead: "The library can't be reached",
+    rest: (cause: string, held: number) => ` (${cause}), so nothing changes until it's back.${held === 0 ? '' : ` ${held} missing ${held === 1 ? 'item is' : 'items are'} on hold.`}`,
+} as const;
+
 export type InboxView =
     | { state: 'not-ready'; message: string }
     | {
           state: 'ready';
+          watcher: InboxWatcher;
+          /** When the server read the inbox, which the list's age labels count from, so the server and the browser agree (#14, A8). */
+          readAt: string;
+          /** The arrival sequence as the page read it, which the poll sends back as `since` (A8 review, 4a). */
+          cursor: number;
           /** The active revision every action is checked against. Null before the first publish. */
           activeRevisionId: string | null;
+          /** Items that need judgment, the held ones left out. */
           needsJudgment: number;
+          /** #17: missing items the open library item holds, which need no judgment until it closes or they're released. */
+          held: number;
+          /** #17: the open library item, for the banner, or null while the library is available. */
+          library: InboxLibrary | null;
           waiting: number;
           /** Items settled by placement, and approvals no longer placed, as `curation list` counts them. */
           placed: number;
@@ -454,13 +577,15 @@ export type InboxView =
           missingSelection: string | null;
       };
 
-/** "N items require judgment" (or "N of M items", once other items are listed too), then what waits, what's already placed, and what's no longer placed, counted as `curation list` counts them. */
-export function summaryText(view: { needsJudgment: number; waiting: number; placed?: number; unplaced?: number; items?: readonly unknown[] }): string {
+/** "N items require judgment" (or "N of M items", once other items are listed too), then what's held, what waits, what's already placed, and what's no longer placed, counted as `curation list` counts them. */
+export function summaryText(view: { needsJudgment: number; held?: number; waiting: number; placed?: number; unplaced?: number; items?: readonly unknown[] }): string {
     // Once the list holds more than the items needing judgment (settled ones too), the summary names both counts.
     const n = view.needsJudgment;
     const total = view.items?.length ?? n;
     const judgment = total === n ? `${n} ${n === 1 ? 'item requires' : 'items require'} judgment` : `${n} of ${total} ${total === 1 ? 'item requires' : n === 1 ? 'items requires' : 'items require'} judgment`;
     const rest = [
+        // #17: held items are left out of the judgment count, and said apart: "5 items require judgment, 3 held".
+        ...((view.held ?? 0) > 0 ? [`${view.held} held`] : []),
         ...(view.waiting > 0 ? [`${view.waiting} waiting`] : []),
         ...((view.placed ?? 0) > 0 ? [`${view.placed} already placed`] : []),
         ...((view.unplaced ?? 0) > 0 ? [`${view.unplaced} approved but no longer placed`] : []),
@@ -582,6 +707,20 @@ export function humanDate(date: string): string | null {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
     const month = match ? MONTHS[Number(match[2]) - 1] : undefined;
     return match && month ? `${Number(match[3])} ${month} ${match[1]}` : null;
+}
+
+/**
+ * How long ago, in the CLI's and the Inbox's short words: `under a minute`,
+ * `N min` below an hour, `N h` below two days, then `N days`. Rounded down,
+ * so a stale heartbeat never reads younger than it is.
+ */
+export function ageText(ms: number): string {
+    const minutes = Math.floor(Math.abs(ms) / 60_000);
+    if (minutes < 1) return 'under a minute';
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours} h`;
+    return `${Math.floor(hours / 24)} days`;
 }
 
 /**
@@ -765,6 +904,8 @@ export function failureNotice(
         case 'digest-collision':
             // The failure doesn't record the other file, so the step can't name it.
             return { reason, next: `Find the other copy in the library and keep the one you mean, or dismiss this one with a reason.${keep}` };
+        case 'io-error':
+            return { reason, next: `Check the file's permissions, or the disk it is on. The watcher reads it again on every pass; once it can, dismiss this one with a reason.${keep}` };
         case 'undecodable':
             return {
                 reason,
@@ -854,8 +995,8 @@ export function nextItemId(seen: readonly string[], currentId: string, open: rea
     return open.find((id) => waiting.has(id)) ?? null;
 }
 
-/** What a curator action answered, as the page shows it. #118 added confirm, bind and archive. */
-export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen' | 'confirm' | 'bind' | 'archive';
+/** What a curator action answered, as the page shows it. #118 added confirm, bind and archive, and #17 restore and release. */
+export type InboxActionKind = 'approve' | 'edit' | 'defer' | 'dismiss' | 'retry' | 'reopen' | 'confirm' | 'bind' | 'archive' | 'restore' | 'release';
 
 export type InboxActionState =
     | { status: 'idle' }
@@ -872,3 +1013,64 @@ export type InboxActionState =
       };
 
 export const IDLE: InboxActionState = { status: 'idle' };
+
+/**
+ * #14 (A8): what /api/curation/inbox/summary answers, which the Inbox's poll reads. Only what the page already shows:
+ * the counts, the watcher, and for the open item its ID, version and status, which its forms carry. Never a path.
+ */
+export interface ReadyInboxSummary {
+    state: 'ready';
+    readAt: string;
+    /** The newest arrival sequence the server issued (lib/curation/arrivals.ts). The poll sends it back as `since`. */
+    cursor: number;
+    /** How many items that need judgment now arrived after `since`, or null when no `since` was asked. */
+    arrived: number | null;
+    needsJudgment: number;
+    waiting: number;
+    placed: number;
+    unplaced: number;
+    /** Every item the inbox holds, settled ones too. */
+    total: number;
+    /** Item folders that can't be read. */
+    unreadable: number;
+    watcher: InboxWatcher;
+    item: { id: string; version: number; status: CurationEventStatus } | null;
+}
+
+/** `bad-cursor`: a `since` the server didn't issue, which the route answers with a 400. */
+export type InboxSummary = ReadyInboxSummary | { state: 'not-ready' } | { state: 'bad-cursor' };
+
+/** #14 (A8): the two bulk actions. `defer` is Decide later (the mockup's "Leave in draft"), `unassigned` approves with no series. */
+export type BulkKind = 'defer' | 'unassigned';
+
+/** One item's answer inside a bulk action, in the page's words. */
+export interface BulkResult {
+    eventId: string;
+    status: Exclude<InboxActionState, { status: 'idle' }>['status'];
+    message: string;
+    /** It went through with an answer of its own, such as an approval that says publishing waits (A8 review S1). */
+    note?: boolean;
+}
+
+/**
+ * #14 (A8): what a bulk action answered. `done`: every item went through. `partial`: some did. `refused`: none did,
+ * each with its own answer. `invalid`: the form itself was refused, and nothing ran (`field` is the checkboxes).
+ */
+export type InboxBulkState =
+    | { status: 'idle' }
+    | {
+          status: 'done' | 'partial' | 'refused' | 'invalid';
+          kind: BulkKind;
+          message: string;
+          results: BulkResult[];
+          field?: 'items';
+          serial: number;
+      };
+
+export const BULK_IDLE: InboxBulkState = { status: 'idle' };
+
+/**
+ * The bulk form's ID. The rows stay in the list's own lists, as before A8, so each row's checkbox names the form it
+ * belongs to with this, by its `form` attribute (A8's CI: Dark parity compares the list against next by position).
+ */
+export const BULK_FORM_ID = 'inbox-bulk';

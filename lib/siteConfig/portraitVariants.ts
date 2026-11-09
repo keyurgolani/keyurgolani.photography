@@ -3,6 +3,7 @@ import { LQIP_RE } from '../catalog/schema';
 import { encodeLqip, encodeVariant, lqipDataUri, variantWidthFor } from '../identity/profile';
 import { VARIANT_FILE_RE, VARIANT_FORMATS, VARIANT_PIXELS, VARIANT_WIDTHS, type VariantFormat, type VariantWidth } from '../identity/variants';
 import { PORTRAIT_LIMITS, PORTRAIT_TOKEN_RE, readAboutPortrait, readPortraitSource, type AboutPortraitState, type FocalPoint } from './aboutPortrait';
+import { globalSlot, slotKey } from '../globalSlot';
 
 /**
  * About's portrait derivatives: the same widths and formats as a `/media`
@@ -62,12 +63,10 @@ interface Kept {
     queue: Promise<unknown>;
 }
 
-const SETS = Symbol.for('keyurgolani.photography.aboutPortrait.sets');
+const SETS = slotKey<Kept>(Symbol.for('keyurgolani.photography.aboutPortrait.sets'));
 
 function kept(): Kept {
-    const holder = globalThis as typeof globalThis & { [SETS]?: Kept };
-    holder[SETS] ??= { set: null, loggedFailure: null, queue: Promise.resolve() };
-    return holder[SETS];
+    return globalSlot<Kept>(SETS, () => ({ set: null, loggedFailure: null, queue: Promise.resolve() }));
 }
 
 /** Drop the kept set and what was logged, once the encodes under way are done. For tests. */

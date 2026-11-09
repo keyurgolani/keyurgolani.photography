@@ -327,7 +327,8 @@ test.describe("when the Viewer's styles can't load, a photo opens as its own pag
         await viewer.getByRole('link', { name: 'Previous photograph' }).click();
         await opened(P[1]);
         await viewer.getByRole('link', { name: 'Close' }).click();
-        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        // Close names the photograph shown (B5).
+        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${P[1]}`);
         expect(errors.filter((text) => /hydrat|did not match|mismatch/i.test(text)), 'no hydration mismatch').toEqual([]);
     });
 

@@ -4,8 +4,27 @@ import { folderOf, isUnder, keyOf, type LibraryScan, type ScanEntry } from './sc
 import type { DecisionFile, DecisionOutcome, IdentityDecision } from './decisions';
 import type { AssetRevisionRecord, DerivativeJob, Hold, IdentityFact, PhotoRecord, ProfileEntry, Registry, SourceHealth } from './types';
 
+/**
+ * Whether a revision can't be decoded: no pixel digest and no size. One over
+ * the pixel cap (A6 review) has its header's size and no digest, so it is
+ * queued, and its build fails as `too-large`.
+ */
+export function isUndecodable(revision: Pick<AssetRevisionRecord, 'pixelDigest' | 'width'>): boolean {
+    return revision.pixelDigest === null && revision.width === null;
+}
+
 /** A file changed this recently waits for the next pass. */
 export const STABILITY_MS = 5_000;
+
+/**
+ * A6 (#17): a file that reads EACCES, EPERM or EIO this many passes in a row
+ * is reported as `processing-failed` with `io-error` (lib/identity/pass.ts).
+ * Until then it is skipped, and its photo, if it has one, stays as it was.
+ */
+export const IO_ERROR_AFTER_PASSES = 3;
+
+/** A6 review: and those passes must span this long, so a flap across a few quick passes reports nothing. */
+export const IO_ERROR_MIN_SPAN_MS = 10 * 60_000;
 
 /**
  * Whether a file changed within STABILITY_MS of `observedAt`, either way, so
@@ -327,7 +346,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
 
     function addRevision(photo: PhotoRecord, item: ImageSeen): void {
         const inspection = item.inspection;
-        const undecodable = inspection.pixelDigest === null;
+        const undecodable = isUndecodable(inspection);
         const record: AssetRevisionRecord = {
             assetRevision: inspection.assetRevision,
             pixelDigest: inspection.pixelDigest,
@@ -356,7 +375,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
 
     /** The current profile's first entry for a revision another photo gives up: built afresh under its new photo. */
     function freshProfile(revision: AssetRevisionRecord): ProfileEntry {
-        return revision.pixelDigest === null ? { state: 'failed', attempts: 0, error: 'undecodable' } : { state: 'pending', attempts: 0 };
+        return isUndecodable(revision) ? { state: 'failed', attempts: 0, error: 'undecodable' } : { state: 'pending', attempts: 0 };
     }
 
     /**
@@ -597,6 +616,30 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         return decided.applied(`archived ${photoId}`);
     }
 
+    /**
+     * restore (A5, #17): bring an archived photo back under its old ID. The
+     * path its bytes came back to is bound to it as bind() binds one, with
+     * the duplicate a pass made of them named to merge, so its own bytes
+     * come back as a rename or a reappearance, and other bytes with the same
+     * pixels as a replacement. Only `archive` retires a photo this can bring
+     * back: one merged into another gave its bytes away. Refused, by bind's
+     * rules too, the photo stays archived.
+     */
+    function restore(target: string, photoId: string, merge: string | undefined): Decided {
+        const x = photos[photoId];
+        if (!x) return decided.rejected(`there is no photo ${photoId}`);
+        if (x.mergedInto !== undefined) return decided.rejected(`${photoId} was merged into ${x.mergedInto}, so it can't be restored`);
+        if (x.sourceHealth !== 'archived') return decided.rejected(`${photoId} is not archived, so there is nothing to restore`);
+        // bind() refuses a retired photo. Every refusal comes before it changes anything, so a refused one is put back.
+        x.sourceHealth = 'missing';
+        const bound = bind(target, photoId, merge);
+        if (bound.status !== 'applied') {
+            x.sourceHealth = 'archived';
+            return bound;
+        }
+        return decided.applied(`restored ${photoId}: ${bound.detail}`);
+    }
+
     /** retry: put failed entries for the current profile back to pending, but not source-superseded unless the bytes are back. */
     function retryFailed(photoId: string, assetRevision: string | undefined): Decided {
         const x = photos[photoId];
@@ -631,7 +674,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             const photo = photos[id];
             if (isRetired(photo) || photo.sourceHealth !== 'present' || !photo.source.present) continue;
             const revision = photo.revisions[photo.source.observedRevision];
-            if (!revision || revision.reassignedTo || revision.pixelDigest === null || revision.profiles[context.profileId]) continue;
+            if (!revision || revision.reassignedTo || isUndecodable(revision) || revision.profiles[context.profileId]) continue;
             revision.profiles[context.profileId] = { state: 'pending', attempts: 0 };
             queue(photo, revision.assetRevision, photo.source.path);
             queued++;
@@ -651,6 +694,8 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
                 return retryFailed(decision.photoId, decision.assetRevision);
             case 'reprofile':
                 return reprofile(decision.photoId);
+            case 'restore':
+                return restore(decision.path, decision.photoId, decision.merge);
         }
     }
 
@@ -860,6 +905,29 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         return matches.sort((a, b) => (photos[a].source.lastSeenAt < photos[b].source.lastSeenAt ? 1 : -1))[0];
     }
 
+    /** The last segment of a key, so a file name compares as the key does: NFC and case-folded. */
+    const baseOf = (key: string) => key.slice(key.lastIndexOf('/') + 1);
+    const captureOf = (revision: { curatorOnly?: { dateTimeOriginal?: { value: string } } }) => revision.curatorOnly?.dateTimeOriginal?.value;
+
+    /**
+     * A5 (#17): the missing photo a new file with other pixels may be: one
+     * whose path was gone before this pass or went this pass, not retired or
+     * rebound, with the same file name, else one of its revisions taken at
+     * the same moment, the most recently seen first. Only a suggestion, for
+     * the curator's bind.
+     */
+    function suggestedMissing(item: ImageSeen): { photoId: string; by: 'basename' | 'capture-time' } | undefined {
+        const gone = originalIds.filter((id) => !isRetired(photos[id]) && !rebound.has(id) && (previousHealth.get(id) === 'missing' || sourceless.has(id)))
+            .sort((a, b) => (photos[a].source.lastSeenAt < photos[b].source.lastSeenAt ? 1 : photos[a].source.lastSeenAt > photos[b].source.lastSeenAt ? -1 : a < b ? -1 : 1));
+        const name = baseOf(item.entry.key);
+        const byName = gone.find((id) => baseOf(photos[id].source.key) === name);
+        if (byName !== undefined) return { photoId: byName, by: 'basename' };
+        const taken = captureOf(item.inspection);
+        if (taken === undefined) return undefined;
+        const byTime = gone.find((id) => Object.values(photos[id].revisions).some((revision) => !revision.reassignedTo && captureOf(revision) === taken));
+        return byTime === undefined ? undefined : { photoId: byTime, by: 'capture-time' };
+    }
+
     // 8, 11, 12. New photos, in path order, so a later identical file points at an earlier one.
     for (const item of fresh) {
         const { assetRevision, pixelDigest } = item.inspection;
@@ -869,6 +937,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
         if ([...(byBytes ?? []), ...(byPixels ?? [])].some((owner) => unsettled.has(owner))) continue;
         const duplicateOf = byBytes?.size ? original(byBytes) : byPixels?.size ? original(byPixels) : null;
         const samePathAs = duplicateOf === null ? missingAt(item.entry.key) : undefined;
+        const suggested = duplicateOf === null && samePathAs === undefined ? suggestedMissing(item) : undefined;
 
         const photoId = mintPhotoId(context.idGen);
         if (photos[photoId]) throw new Error(`The ID generator repeated ${photoId}. Photo IDs are never reissued.`);
@@ -888,6 +957,7 @@ export function reconcile(scan: LibraryScan, registry: Registry, inspect: Inspec
             path: item.entry.path,
             ...(duplicateOf ? { duplicateOf } : {}),
             ...(samePathAs ? { samePathAs } : {}),
+            ...(suggested ? { suggestedFor: suggested.photoId, suggestedBy: suggested.by } : {}),
         });
         addRevision(photo, item);
         addTo(byteOwners, assetRevision, photoId);

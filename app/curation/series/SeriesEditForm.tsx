@@ -3,6 +3,7 @@
 import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { Save } from 'lucide-react';
 import styles from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { saveSeries } from './actions';
 import SeriesAnswer from './SeriesAnswer';
 import series from './series.module.css';
@@ -152,6 +153,8 @@ function Fields({ detail, activeRevisionId, state, refs }: { detail: SeriesDetai
  */
 export default function SeriesEditForm({ detail, activeRevisionId }: { detail: SeriesDetail; activeRevisionId: string | null }) {
     const [state, dispatch, pending] = useActionState(saveSeries, IDLE_SERIES);
+    // The form submits by hand, so it waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const refs: Refs = { title: useRef(null), statement: useRef(null), shortStatement: useRef(null), visibility: useRef(null) };
     const answerRef = useRef<HTMLDivElement>(null);
     // Submitting by hand, not through <form action>, so React never resets the form after a refusal, which would lose what was typed.
@@ -175,7 +178,7 @@ export default function SeriesEditForm({ detail, activeRevisionId }: { detail: S
                     This series was carried over from the legacy Gallery at the launch, so it may go without a statement until you write one. Writing either statement ends that, and then a publish needs both.
                 </p>
             ) : null}
-            <form method="post" onSubmit={submit} aria-label="Edit series">
+            <form method="post" onSubmit={submit} aria-label="Edit series" {...submitGate(ready)}>
                 <Fields key={JSON.stringify([detail.title, detail.statement, detail.shortStatement, detail.visibility])} detail={detail} activeRevisionId={activeRevisionId} state={state} refs={refs} />
                 <p className={styles.hint}>Saving changes the draft only. {NOTHING_PUBLIC}</p>
                 <div className={styles.actions}>

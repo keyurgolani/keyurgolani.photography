@@ -56,12 +56,17 @@ const next = (page: Page) => page.getByRole('button', { name: 'Next photograph',
 const previous = (page: Page) => page.getByRole('button', { name: 'Previous photograph', exact: true });
 const position = (page: Page) => page.getByRole('group', { name: 'Slideshow' }).getByText(/^\d{2,} \/ \d{2,}$/);
 const status = (page: Page) => page.locator('[data-chrome-region="sequence"] [role="status"]');
+/** The carousel's visually hidden live region: Home's one announcement, the series' name only at a crossing (#4). */
+const said = (page: Page) => page.locator('[data-home-carousel] > p[aria-live]');
 const stage = (page: Page) => page.locator('[data-playback]');
 const shownSlide = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"]');
 const pad = (n: number) => String(n).padStart(2, '0');
 /** An attribute of one HTML tag, by its lowercase name, unescaped as far as the checks here need. */
 const attribute = (tag: string, name: string) => tag.match(new RegExp(`\\s${name}="([^"]*)"`, 'i'))?.[1]?.replaceAll('&amp;', '&');
 const at = (series: Series, photoId: string) => `${pad((series.photoIds as readonly string[]).indexOf(photoId) + 1)} / ${pad(series.photoIds.length)}`;
+/** What the carousel's live region says with `photoId` on screen: the slide and its description, after the series' name if it crossed. */
+const line = (series: Series, photoId: string, { crossed = false } = {}) =>
+    `${crossed ? `Now showing ${series.title}. ` : ''}${(series.photoIds as readonly string[]).indexOf(photoId) + 1} of ${series.photoIds.length}, ${varietyAltOf(photoId)}`;
 
 /** Expects `photoId` of `series` on screen, loaded, with the chrome naming that series. */
 async function expectOn(page: Page, series: Series, photoId: string) {
@@ -134,21 +139,28 @@ test('Next past a series\' last photograph shows the next series\' opening photo
         await page.keyboard.press('Enter');
         await expectOn(page, ONE, photoId);
     }
+    await expect(said(page)).toHaveText(line(ONE, ONE.photoIds[0]));
     await expect(status(page)).toHaveText('');
+    // One message at each crossing, in the carousel's polite region: the series' name, then the slide. The status
+    // region keeps only failures.
     await page.keyboard.press('Enter');
     await expectOn(page, TWO, TWO.openingPhotoId);
-    await expect(status(page)).toHaveText(`Now showing ${TWO.title}`);
+    await expect(said(page)).toHaveAttribute('aria-live', 'polite');
+    await expect(said(page)).toHaveText(line(TWO, TWO.openingPhotoId, { crossed: true }));
+    await expect(status(page)).toHaveText('');
     await page.keyboard.press('Enter');
     await expectOn(page, TWO, TWO.photoIds[1]);
-    await expect(status(page)).toHaveText(`Now showing ${TWO.title}`);
+    await expect(said(page)).toHaveText(line(TWO, TWO.photoIds[1]));
     await page.keyboard.press('Enter');
     await expectOn(page, THREE, THREE.openingPhotoId);
-    await expect(status(page)).toHaveText(`Now showing ${THREE.title}`);
+    await expect(said(page)).toHaveText(line(THREE, THREE.openingPhotoId, { crossed: true }));
+    await expect(status(page)).toHaveText('');
     // Previous steps back across the same boundary.
     await previous(page).focus();
     await page.keyboard.press('Enter');
     await expectOn(page, TWO, TWO.photoIds[1]);
-    await expect(status(page)).toHaveText(`Now showing ${TWO.title}`);
+    await expect(said(page)).toHaveText(line(TWO, TWO.photoIds[1], { crossed: true }));
+    await expect(status(page)).toHaveText('');
     // Enter the series goes to the series on screen.
     await enter(page).focus();
     await page.keyboard.press('Enter');

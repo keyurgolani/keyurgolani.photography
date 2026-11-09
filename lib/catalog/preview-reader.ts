@@ -12,6 +12,7 @@ import { createRouteBuilder, type RouteBuilder } from './routes';
 import { REVISION_ID_RE } from './schema';
 import type { CandidatePhotoRecord } from './types';
 import { readActivePointer, readWorkingLayer } from './working-layer';
+import { globalSlot, slotKey } from '../globalSlot';
 
 /**
  * #16's draft preview reader: the working layer compiled now, as a publish
@@ -100,12 +101,10 @@ interface PreviewReaderState {
  * and lib/catalog/__tests__/previewBoundary.test.ts checks no public module
  * reaches it.
  */
-const PREVIEW_READER_STATE_KEY = Symbol.for('kg.catalog.previewReader');
+const PREVIEW_READER_STATE_KEY = slotKey<PreviewReaderState>(Symbol.for('kg.catalog.previewReader'));
 
 function sharedState(): PreviewReaderState {
-    const global = globalThis as typeof globalThis & { [PREVIEW_READER_STATE_KEY]?: PreviewReaderState };
-    global[PREVIEW_READER_STATE_KEY] ??= { kept: new Map(), compiling: new Map() };
-    return global[PREVIEW_READER_STATE_KEY];
+    return globalSlot<PreviewReaderState>(PREVIEW_READER_STATE_KEY, () => ({ kept: new Map(), compiling: new Map() }));
 }
 
 const { kept, compiling } = sharedState();

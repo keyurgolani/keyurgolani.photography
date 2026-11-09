@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { ArrowLeft, Check } from 'lucide-react';
 import styles from '../curator.module.css';
 import ArrivalStrip from './ArrivalStrip';
+import { WatcherPointer } from './WatcherNotice';
 import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
 import LandOnItem from './LandOnItem';
@@ -11,6 +12,7 @@ import {
     fileParts,
     hasPublishedStatement,
     identityLine,
+    itemName,
     referencedByText,
     seriesMembershipText,
     seriesName,
@@ -132,15 +134,32 @@ function TypeBox({ view, detail }: { view: ReadyView; detail: InboxDetail }) {
             </section>
         );
     }
-    if (detail.type === 'ambiguous') {
+    // Settled once #10 holds the file in doubt no more (#14): there's no question left to ask.
+    if (detail.type === 'ambiguous' && detail.group !== 'settled') {
         return (
             <section className={styles.box} aria-labelledby="type-box">
                 <h3 className={styles.boxTitle} id="type-box">
                     Identity question
                 </h3>
                 <p>
-                    Bind it to one of the candidates with <code>photos identity bind</code>, or make it a new photograph with <code>photos identity new</code>. The next
-                    watcher pass updates this item.
+                    Bind it to one of the candidates or make it a new photograph: <code>curation bind --to</code> or <code>curation resolve --as new</code> records
+                    the decision, and the watcher&apos;s next pass applies it and closes this item. It stays open while the same bytes are still in doubt at another
+                    path.
+                </p>
+            </section>
+        );
+    }
+    // A6's library item (#14, A8): what it holds back, and the two ways it ends.
+    if (detail.type === 'library-unavailable' && detail.group !== 'settled') {
+        return (
+            <section className={styles.box} aria-labelledby="type-box">
+                <h3 className={styles.boxTitle} id="type-box">
+                    Library unavailable
+                </h3>
+                <p>
+                    While the watcher can&apos;t see the library, or can&apos;t read its files, it changes nothing, and the missing items it found since the
+                    outage began wait here instead of counting as missing. A pass that reads the library again closes this item and releases them.
+                    Release each held item, or run <code>curation confirm-missing</code>, to release one that&apos;s really gone.
                 </p>
             </section>
         );
@@ -191,7 +210,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         );
     }
     const labelOf = (seriesId: string) => seriesName(view.series, seriesId);
-    const file = fileParts(detail.sourcePath);
+    const file = { ...fileParts(detail.sourcePath), name: itemName(detail) };
     const status = statusLabel(detail);
     const failure = failureNotice(detail);
     return (
@@ -199,6 +218,8 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         <section className={styles.detail} id="item" aria-labelledby="item-heading">
             <LandOnItem targetId="item" focusId="item-heading" />
             <BackToInbox itemId={detail.id} />
+            {/* #14: on a phone a deep link lands here, past the watcher warning, so the item points back to it. */}
+            <WatcherPointer watcher={view.watcher} />
             {/* What the last approval or Decide later did, above the photograph and the form, when it opened this item. */}
             <ArrivalStrip key={detail.id} itemId={detail.id} />
             <div className={styles.photo}>
@@ -221,7 +242,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
                         <h2 id="item-heading" tabIndex={-1}>
                             {file.name}
                         </h2>
-                        <p className={styles.identityLine}>{identityLine(detail.sourcePath, detail.capturedDate)}</p>
+                        <p className={styles.identityLine}>{detail.type === 'library-unavailable' ? 'The whole library, as the watcher reads it' : identityLine(detail.sourcePath, detail.capturedDate)}</p>
                     </div>
                     {status.text === null ? null : (
                         <span className={styles.status} data-tone={status.tone ?? undefined}>

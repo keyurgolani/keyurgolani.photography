@@ -3,6 +3,7 @@
 import { startTransition, useActionState, useEffect, useRef, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
 import styles from '../curator.module.css';
+import { submitGate, useHydrated } from '../inbox/useHydrated';
 import { createSeries } from './actions';
 import SeriesAnswer from './SeriesAnswer';
 import series from './series.module.css';
@@ -21,6 +22,8 @@ const offWhile = (pending: boolean) => ({ 'aria-disabled': pending || undefined,
  */
 export default function NewSeriesForm({ activeRevisionId }: { activeRevisionId: string | null }) {
     const [state, dispatch, pending] = useActionState(createSeries, IDLE_SERIES);
+    // The form submits by hand, so it waits at the submit gate until it has mounted.
+    const ready = useHydrated();
     const formRef = useRef<HTMLFormElement>(null);
     const titleRef = useRef<HTMLInputElement>(null);
     const slugRef = useRef<HTMLInputElement>(null);
@@ -50,7 +53,7 @@ export default function NewSeriesForm({ activeRevisionId }: { activeRevisionId: 
                 New series
             </h2>
             <p className={styles.hint}>It starts as a draft with no photographs. {NOTHING_PUBLIC}</p>
-            <form ref={formRef} method="post" onSubmit={submit} aria-labelledby="new-series-heading">
+            <form ref={formRef} method="post" onSubmit={submit} aria-labelledby="new-series-heading" {...submitGate(ready)}>
                 <input type="hidden" name="base" value={activeRevisionId ?? 'none'} />
                 <label className={styles.label}>
                     Title

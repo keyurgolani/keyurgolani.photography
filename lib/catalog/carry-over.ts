@@ -358,7 +358,7 @@ function changesOf(carried: AuthoredSeries, planned: AuthoredSeries, records: Re
 function changedRefusal(carried: AuthoredSeries, planned: AuthoredSeries, records: ReadonlyMap<string, AuthoredPhoto>): string {
     const { owner, legacy } = changesOf(carried, planned, records);
     const since = legacy.length > 0 ? `The legacy Gallery changed since the carry-over: ${legacy.join('; ')}.` : '';
-    if (owner.length === 0) return `${since} The carry-over doesn't change a Gallery it already made, so place those photos yourself. photos publish --dry-run counts any that would leave the site. Nothing was written.`;
+    if (owner.length === 0) return `${since} The carry-over doesn't change a Gallery it already made, so place those photos yourself. photos list --unassigned names each photo no series lists, which the launch leaves off the site. Nothing was written.`;
     return `${CARRY_OVER_SERIES.id} has changed since the carry-over made it: ${owner.join('; ')}.${since ? ` ${since}` : ''} It's yours now, so the carry-over doesn't put it back. Nothing was written.`;
 }
 

@@ -4,8 +4,9 @@
    reference. The --lts-* tokens live under [data-surface='about'] in
    styles/surfaces/light-takes-shape.css, which main and the Primary nav carry
    here, so nothing below reaches another route, even after a client-side move.
-   Paper and ink are the same in both themes: no theme variable or dark:
-   variant paints inside main. */
+   Each theme paints its own paper, ink, and frame through those tokens: Dark
+   is the paper in light-takes-shape.css, and Light, Bright, and Black set
+   theirs in aboutThemes.ts. Nothing below names a theme. */
 
 /* The body under About is paper too, so overscroll and the strip below a short
    page don't flash the theme's ground, and it doesn't fade in from it. The
@@ -70,16 +71,29 @@
   box-shadow: var(--lts-shadow);
 }
 
+/* #179's frame: 4:3 stacked, under a cap of min(45svh, 28rem), and 4:5 side
+   by side. On a short window the cap wins over the ratio: at 640 by 400 (a
+   landscape phone, or 1280 by 800 at 200% zoom) the photo is 180 px tall, so
+   the heading still starts inside the first viewport. On a tablet the 28rem
+   cap holds the photo to 448 px for the same reason. Side by side the figure
+   keeps to its own height at the top of the grid row, so a taller statement
+   can't stretch the photo out of 4:5. The fallback panel's sizer takes this
+   box too, so a failed photo leaves the same frame. */
 .photo {
   position: relative;
-  flex: 1 1 auto;
-  height: clamp(250px, 42svh, 380px);
+  flex: 0 0 auto;
+  aspect-ratio: 4 / 3;
+  max-height: min(45svh, 28rem);
 }
 
 @media (min-width: 64rem) {
+  .portrait {
+    align-self: start;
+  }
+
   .photo {
-    height: auto;
-    min-height: 420px;
+    aspect-ratio: 4 / 5;
+    max-height: none;
   }
 }
 

@@ -5,19 +5,22 @@ import { viewerTitle } from '@/components/viewer/viewerLabels';
 import { requireCurator } from '@/lib/curation/auth';
 import { previewMediaUrls } from '@/lib/catalog/preview-reader';
 import { DESCRIPTION_PENDING_COPY, viewerPhotoFrom } from '@/lib/catalog/projections/viewer';
+import { redirectLocation, type PageSearchParams } from '@/lib/site/redirect';
 import { openPreview, peekPreview, previewMetadata } from '../../../../../../preview';
 
 /**
  * One photograph in the draft preview (#16): #7's projection and
  * StoryViewer on the candidate, in page mode, with Close, Previous, and
  * Next from the preview's routes. A photo whose description is pending
- * shows #7's pending copy. A former slug redirects inside the preview, with
- * a 307.
+ * shows #7's pending copy. A former slug, a letter-case variant, or a moved
+ * photo redirects inside the preview with the query kept, as on the site,
+ * but with a 307.
  */
 export const dynamic = 'force-dynamic';
 
 interface PreviewViewerProps {
     params: Promise<{ draftId: string; slug: string; photoId: string }>;
+    searchParams?: Promise<PageSearchParams>;
 }
 
 export async function generateMetadata({ params }: PreviewViewerProps): Promise<Metadata> {
@@ -31,14 +34,14 @@ export async function generateMetadata({ params }: PreviewViewerProps): Promise<
     return previewMetadata(viewerTitle(photo.title, series.title, position, total));
 }
 
-export default async function PreviewViewer({ params }: PreviewViewerProps) {
+export default async function PreviewViewer({ params, searchParams }: PreviewViewerProps) {
     await requireCurator({ read: true });
     const { draftId, slug, photoId } = await params;
     const { routes, catalog } = await openPreview(draftId);
     const result = await viewerPhotoFrom(async () => catalog, slug, photoId);
     switch (result.kind) {
         case 'redirect':
-            return redirect(routes.photoHref(result.slug, result.photoId));
+            return redirect(redirectLocation(routes.photoHref(result.slug, result.photoId), await searchParams));
         case 'not-found':
             return notFound();
         case 'unavailable':
@@ -50,7 +53,7 @@ export default async function PreviewViewer({ params }: PreviewViewerProps) {
             return (
                 <StoryViewer
                     viewer={viewer}
-                    closeHref={routes.seriesHref(viewer.series.slug)}
+                    closeHref={routes.seriesHref(viewer.series.slug, { focusPhotoId: viewer.photo.id })}
                     previousHref={step(viewer.previousPhotoId)}
                     nextHref={step(viewer.nextPhotoId)}
                     pendingCopy={viewer.photo.descriptionPending ? DESCRIPTION_PENDING_COPY : null}

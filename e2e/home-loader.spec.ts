@@ -1,8 +1,11 @@
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import sharp from 'sharp';
 import { STAND_IN_PORTRAIT } from './support/aboutPortrait';
-import { CATALOG_ORIGIN } from './support/catalog-home';
+import type { TestCatalog } from '../lib/catalog/testing';
+import { CATALOG_ORIGIN, HOME_LONG_STATEMENT } from './support/catalog-home';
+import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { expectHomeImmersive, photoPoint } from './support/home';
+import { publishHomeCopyFixture } from './support/homeFixture';
 import { waitForHydration } from './support/hydration';
 import { expect, setPhotoFixtures, test } from './support/test';
 
@@ -100,30 +103,40 @@ const aroundBadge = (page: Page) =>
             title: box(document.querySelector('[data-chrome-region="story"] h1')),
             statement: box(document.querySelector('[data-chrome-region="story"] p')),
             link: box(document.querySelector('[data-chrome-region="story"] a')),
+            work: box(document.querySelector('[data-chrome-region="story"] a[href="/work"]')),
             panel: box(document.querySelector('[data-chrome-region="story"] [data-chrome-panel]')),
         };
     });
 
 /**
  * The landed badge's box, checked in its place: v1.1.0's exactly, badgePlace()'s, where the catalog Home keeps that
- * place; 16 px clear of the nav, the series title, its statement, its link and the title's panel wherever it lands;
- * and holding still, so a badge still gliding in fails. It returns the box, and `around`, what it was measured against.
+ * place, and today's place beside the story exactly; 16 px clear of the series title, its statement and both links
+ * wherever it lands, and of the nav and the title's panel too above the story; and holding still, so a badge still
+ * gliding in fails. Beside the story keeps clear of the text alone, as it always has, so there it may sit nearer the
+ * nav, or on the panel's fade. It returns the box, and `around`, what it was measured against.
  */
 async function inItsPlace(page: Page) {
     const box = await boxOf(badge(page));
-    if ((await badge(page).getAttribute('data-badge-place')) === 'v1.1.0') {
+    const place = await badge(page).getAttribute('data-badge-place');
+    if (place === 'v1.1.0') {
         const exact = badgePlace(page);
         for (const key of ['x', 'y', 'width'] as const) expect(Math.abs(box[key] - exact[key]), `v1.1.0's ${key}`).toBeLessThanOrEqual(1);
     }
+    if (place === 'side') {
+        // Today's place beside the story: a quarter of the width right of the center, 10 px above the middle.
+        const { width, height } = page.viewportSize()!;
+        expect(Math.abs(box.x - (width * 3) / 4), "beside the story, today's x").toBeLessThanOrEqual(1);
+        expect(Math.abs(box.y - (height / 2 - 10)), "beside the story, today's y").toBeLessThanOrEqual(1);
+    }
     const around = await aroundBadge(page);
     expect(around.oval).not.toBeNull();
-    for (const name of ['nav', 'title', 'statement', 'link'] as const) {
+    for (const name of [...(place === 'side' ? [] : (['nav'] as const)), 'title', 'statement', 'link', 'work'] as const) {
         expect(around[name], name).not.toBeNull();
         expect(gap(around.oval!, around[name]!), `the badge's room from the ${name}`).toBeGreaterThanOrEqual(15.5);
     }
     // The title's dark panel, drawn from 640 px wide, its fade included.
     const panel = around.panel && around.panel.right > around.panel.left ? around.panel : null;
-    if (panel) expect(gap(around.oval!, panel), "the badge's room from the title's panel").toBeGreaterThanOrEqual(15.5);
+    if (panel && place !== 'side') expect(gap(around.oval!, panel), "the badge's room from the title's panel").toBeGreaterThanOrEqual(15.5);
     await page.waitForTimeout(250);
     const later = await boxOf(badge(page));
     for (const key of ['x', 'y', 'width'] as const) expect(Math.abs(later[key] - box[key]), `the badge's ${key} a moment later`).toBeLessThanOrEqual(1);
@@ -423,6 +436,8 @@ test.describe("the badge's place on the catalog Home", () => {
         { width: 390, height: 844, place: 'clear' },
         { width: 360, height: 740, place: 'clear' },
         { width: 844, height: 390, place: 'side' },
+        // 1280 x 800 at 200%: beside the story, on the panel's fade, as today.
+        { width: 640, height: 400, place: 'side' },
     ]) {
         test(`the landed badge keeps 16 px from the series title, its panel and the nav at ${width} x ${height}`, async ({ page }, testInfo) => {
             runsOn(testInfo, 'desktop');
@@ -443,4 +458,87 @@ test.describe("the badge's place on the catalog Home", () => {
             if (panel && place === 'v1.1.0') expect(around.oval!.left - panel.right, 'the panel ends 16 px before the badge').toBeLessThanOrEqual(17);
         });
     }
+
+    // Pixel 7 held sideways: today's place beside the story, clear of the text. Its oval's top is 12.8 px under the nav,
+    // and that stays as today's.
+    test("on a phone held sideways at 863 x 360, the landed badge shows in today's place beside the story, clear of the series title, its statement and both links", async ({ page }, testInfo) => {
+        runsOn(testInfo, 'mobile');
+        await page.setViewportSize({ width: 863, height: 360 });
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
+        await expect(badge(page)).toHaveAttribute('data-landed', '');
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'side');
+        await expect(badge(page)).toHaveCSS('visibility', 'visible');
+        // inItsPlace() checks today's exact place beside the story, and the room from the title, statement and links.
+        const { around } = await inItsPlace(page);
+        console.log(`badge boxes at 863x360 on a phone: ${JSON.stringify(around)}, ${(around.oval!.top - around.nav!.bottom).toFixed(2)} px under the nav`);
+    });
+
+    // A phone so short that no place keeps the badge 16 px from the nav and the copy: 320 x 500 with the fixture's
+    // two-line title. In Black, which raises the badge over the scrim, as Light and Bright do.
+    test('where no place clears the copy, the badge is out of sight and out of the accessibility tree at default text, and shows under the scrim with the text enlarged', async ({ page }, testInfo) => {
+        runsOn(testInfo, 'mobile');
+        await page.setViewportSize({ width: 320, height: 500 });
+        await page.addInitScript(() => localStorage.setItem('theme', 'black'));
+        await page.goto('/');
+        await waitForHydration(page);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
+        await expect(badge(page)).toHaveAttribute('data-landed', '');
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'none');
+        const alt = await badge(page).locator('img').getAttribute('alt');
+        expect(alt, "the portrait's alt").toBeTruthy();
+        const portrait = badge(page).getByRole('img', { name: alt!, exact: true });
+        await expect(main(page)).not.toHaveAttribute('data-text-enlarged');
+        await expect(badge(page)).toHaveCSS('visibility', 'hidden');
+        await expect(badge(page)).toBeHidden();
+        await expect(portrait).toHaveCount(0);
+        expect(await page.locator('body').ariaSnapshot(), 'the accessibility tree').not.toContain(alt!);
+        // Enlarged text: the chrome scrolls, so the copy can move under the badge anywhere, and the scrim carries it.
+        await page.addStyleTag({ content: 'html { font-size: 200% !important; }' });
+        await expect(main(page)).toHaveAttribute('data-text-enlarged', '');
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'none');
+        await expect(badge(page)).toHaveCSS('visibility', 'visible');
+        await expect(badge(page)).toHaveCSS('z-index', '42');
+        await expect(portrait).toHaveCount(1);
+    });
+});
+
+// A small phone held sideways, 568 x 320, with a statement that runs two lines (HOME_LONG_STATEMENT), on a Home fixture
+// of its own: the statement reaches under the place beside the story, and above the story there's no room under the
+// nav, so the badge is out of sight. Its own `next start`, on mobile only.
+test.describe('the badge with no clear place on a phone held sideways', () => {
+    test.describe.configure({ mode: 'default' });
+    let long: { catalog: TestCatalog; server: CatalogServer } | undefined;
+
+    test.beforeAll(async () => {
+        const testInfo = test.info();
+        test.skip(testInfo.project.name !== 'mobile', 'Runs on mobile.');
+        test.setTimeout(READY_TIMEOUT + 60_000);
+        const { catalog } = await publishHomeCopyFixture({ shortStatement: HOME_LONG_STATEMENT });
+        // Above the ports the other specs with servers of their own take when E2E_CATALOG_PORT pins them.
+        const base = Number(process.env.E2E_CATALOG_PORT);
+        long = { catalog, server: await startCatalogServer(catalog.root, Number.isInteger(base) && base > 0 ? base + 50 + testInfo.parallelIndex : undefined) };
+    });
+
+    // The fixture's data root stays under the OS temp folder, for whoever runs the suite to move to the Trash.
+    test.afterAll(async () => {
+        test.setTimeout(READY_TIMEOUT + 60_000);
+        await long?.server.stop();
+    });
+
+    test('at 568 x 320 with a two-line statement, the badge is out of sight at default text', async ({ page }) => {
+        if (!long) throw new Error("The long-statement fixture's server did not start");
+        await page.setViewportSize({ width: 568, height: 320 });
+        await page.goto(`${long.server.origin}/`);
+        await waitForHydration(page);
+        await expect(page.locator('[data-chrome-region="story"] p')).toHaveText(HOME_LONG_STATEMENT);
+        await expect(main(page)).toHaveAttribute('data-home-intro', 'settled', { timeout: 20_000 });
+        await expect(badge(page)).toHaveAttribute('data-landed', '');
+        const lines = await page.locator('[data-chrome-region="story"] p').evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
+        console.log(`badge at 568x320 with a ${lines}-line statement: ${JSON.stringify(await aroundBadge(page))}`);
+        expect(lines, "the statement's lines").toBe(2);
+        await expect(badge(page)).toHaveAttribute('data-badge-place', 'none');
+        await expect(badge(page)).toHaveCSS('visibility', 'hidden');
+    });
 });

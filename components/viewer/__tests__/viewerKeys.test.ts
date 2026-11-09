@@ -26,6 +26,16 @@ describe('stepForKey', () => {
         expect(stepForKey(key('ArrowRight'), true)).toBeNull();
     });
 
+    it('ignores a held key\'s auto-repeat, a key an input method is composing, and a key someone else already took (#178)', () => {
+        for (const name of ['ArrowLeft', 'ArrowRight']) {
+            expect(stepForKey({ ...key(name), repeat: true }, false), `${name} repeat`).toBeNull();
+            expect(stepForKey({ ...key(name), isComposing: true }, false), `${name} composing`).toBeNull();
+            expect(stepForKey({ ...key(name), defaultPrevented: true }, false), `${name} taken`).toBeNull();
+            // The first press of the key, with nothing composing and nobody taking it, still moves.
+            expect(stepForKey({ ...key(name), repeat: false, isComposing: false, defaultPrevented: false }, false), name).not.toBeNull();
+        }
+    });
+
     it('leaves the caret keys to form fields and editable text, inside them too', () => {
         document.body.innerHTML = `
             <input id="text" /><textarea id="area"></textarea><select id="pick"><option>a</option></select>

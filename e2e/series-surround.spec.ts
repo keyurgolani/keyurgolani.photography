@@ -3,13 +3,15 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { startCatalogServer, READY_TIMEOUT, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
+import { measure } from './support/measure';
 import { expect, test } from './support/test';
 
 // The photo surround on Work and a series (spec §3, themes PR 3), in Dark, Light and Bright (Black with its layer):
 // - the sequence's window cut: one 4:3 slot per entry, the slot the mat, and the print inside it sized to its own
 //   ratio with its own edge, for a landscape, a portrait and a square in one row (Dark keeps today's letterbox);
 // - the hover and focus mark, which keeps the surround and rings it from outside its room (R2-P3-2);
-// - the focus ring, which clears each surround and stays inside the 16 px gutter at 390.
+// - the focus ring, which clears each surround and stays inside the 16 px gutter at 390; on Work it's inset on the
+//   entry's stretched target, which takes in the cover's surround (#171, B3).
 // Its own catalog, served from a second `next start`, on the desktop project; the phone sizes are set per test.
 
 test.describe.configure({ mode: 'serial' });
@@ -210,7 +212,6 @@ for (const theme of THEMES) {
     test(`in ${theme}, at 390 the focus ring clears each surround and stays inside the gutter`, async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         for (const [path, target, room] of [
-            ['/work', (p: Page) => p.getByRole('main').locator('ul > li > a').first(), ROOM[theme].sm],
             ['/work/mixed', (p: Page) => p.locator('#series-cover'), ROOM[theme].sm],
             ['/work/mixed', (p: Page) => entry(p, 0), ROOM[theme].sm],
         ] as const) {
@@ -233,12 +234,37 @@ for (const theme of THEMES) {
         }
     });
 
-    test(`in ${theme}, at 390 a surround thicker than the gutter allows clamps the ring to it`, async ({ page }) => {
+    // Work's entry (#171, B3): the ring is inset on the stretched target, which reaches the surround's outer edge, so it
+    // rings the print from outside, and the target stays inside the gutter.
+    test(`in ${theme}, at 390 Work's ring is inset on a target that takes in the cover's surround, inside the gutter`, async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         await open(page, '/work', theme);
-        // A room no theme has: the clamp, gutter less ring less 1, has to take over.
+        const link = page.getByRole('main').locator('ul > li h2 > a').first();
+        const cover = page.getByRole('main').locator('ul > li').first().locator('[data-cover]');
+        await link.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+        await page.keyboard.press('Tab');
+        await link.focus();
+        await expect(link).toBeFocused();
+        const ring = await measure(link, { pseudo: '::after' });
+        const frame = await cover.evaluate((el) => el.getBoundingClientRect().toJSON() as DOMRect);
+        expect(ring.outline.offset + ring.outline.width, "Work's ring is inset").toBe(0);
+        // The surround's room, or what the ring paints (3 px wide and 3 px offset) where that's more, so it clears the
+        // copy (B3's review, 1): Dark's 6 px, Light's 7 and Bright's 6.
+        const reach = Math.max(ROOM[theme].sm, 6);
+        expect(ring.box.left, 'the target takes in the surround on the left').toBeCloseTo(frame.left - reach, 1);
+        expect(ring.box.right, 'and on the right').toBeCloseTo(frame.right + reach, 1);
+        expect(ring.box.top, 'and above').toBeCloseTo(frame.top - reach, 1);
+        expect(ring.box.left, "the ring's left edge inside the gutter").toBeGreaterThanOrEqual(1);
+        expect(ring.viewport.width - ring.box.right, "the ring's right edge inside the gutter").toBeGreaterThanOrEqual(1);
+    });
+
+    test(`in ${theme}, at 390 a surround thicker than the gutter allows clamps the ring to it`, async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await open(page, '/work/mixed', theme);
+        // A room no theme has: the clamp, gutter less ring less 1, has to take over. On the series cover, since Work's
+        // ring is inset and takes no room (#171, B3).
         await page.addStyleTag({ content: '[data-ring-room]{--ring-room:20px}' });
-        const link = page.getByRole('main').locator('ul > li > a').first();
+        const link = page.locator('#series-cover');
         await page.keyboard.press('Tab');
         await link.focus();
         const ring = await link.evaluate((el) => {

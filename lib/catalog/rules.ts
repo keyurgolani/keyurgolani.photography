@@ -7,7 +7,7 @@ import { VARIANT_FORMATS, VARIANT_WIDTHS } from '../identity/variants';
 import { cameraSettingsCaption } from './legacy-photos';
 import { ORDER_RULES } from './order-rules';
 import { CARRY_OVER_SERIES_ID, MAX_SLUG_LENGTH, RESERVED_SLUGS, SERIES_ID_RE, SLUG_RE } from './schema';
-import type { Gate, Issue, IssueRecord, Rule, RuleContext, RuleFinding } from './types';
+import type { Gate, Issue, IssueRecord, RevisionFile, Rule, RuleContext, RuleFinding } from './types';
 
 /**
  * The validation rule registry, #13's rules, and #8's order rules from
@@ -117,6 +117,16 @@ function allSeries(ctx: RuleContext): SeriesLike[] {
 /** Published series: the working layer's, or a stored revision's, which holds only published ones. */
 function publishedSeries(ctx: RuleContext): SeriesLike[] {
     return ctx.authored ? ctx.authored.series.filter((series) => series.visibility === 'published') : ctx.candidate.series;
+}
+
+/**
+ * What visitors reach today, which #5's route rules compare the candidate
+ * against: the active revision for a draft, and for a stored revision the
+ * one it would replace. Null before the first publish, when that revision
+ * can't be read, or for a check with nothing to replace (photos verify).
+ */
+function liveContent(ctx: RuleContext): RevisionFile['content'] | null {
+    return (ctx.authored ? ctx.active : ctx.replaces)?.content ?? null;
 }
 
 /** A series' slug and aliases, with the field each sits in. */
@@ -630,6 +640,36 @@ const SLICE_A_RULES: RuleDefinition[] = [
             }))),
     },
     {
+        // Work lists every published series by its title, so two that share one show as links with the same name. A
+        // warning, the owner's call: it names each series by slug, and never blocks a publish or changes an exit code.
+        // Titles match after normalized()'s trim and collapse of every run of whitespace, then foldName()'s NFC and
+        // case-fold: "Harbor light", " harbor  light" and "HARBOR\u00a0LIGHT" are one. Work's titles have no white-space
+        // rule, so a run of ordinary spaces renders as one. A non-breaking space doesn't collapse, but it looks like an
+        // ordinary space, so a title with one reads the same, and \s matches it.
+        id: 'series.duplicate-title',
+        severity: 'warning',
+        gate: 'publish',
+        check: (ctx) => {
+            const byTitle = new Map<string, SeriesLike[]>();
+            for (const series of publishedSeries(ctx)) {
+                const key = foldName(normalized(series.title));
+                if (key !== '') byTitle.set(key, [...(byTitle.get(key) ?? []), series]);
+            }
+            return [...byTitle.values()].filter((group) => group.length > 1).flatMap((group) => {
+                const slugs = group.map((series) => series.slug);
+                const named = `${slugs.slice(0, -1).join(', ')} and ${slugs[slugs.length - 1]}`;
+                return group.map((series) => ({
+                    record: seriesRecord(series.id),
+                    field: 'title',
+                    message: `The series ${named} share this title, so Work shows ${group.length} links with the same name.`,
+                    // Integrity-class, so a rollback's plan keeps it as it is (acceptHints() rewrites editorial hints only): the
+                    // words fit a publish and a rollback alike.
+                    hint: 'Give each series its own title. This is a warning only; nothing is blocked.',
+                }));
+            });
+        },
+    },
+    {
         id: 'route.slug-format',
         severity: 'error',
         gate: 'render',
@@ -665,6 +705,68 @@ const SLICE_A_RULES: RuleDefinition[] = [
                     field: entry.field,
                     message: others.length ? `The slug is also used by ${others.join(', ')}.` : 'The slug is used twice in this series.',
                 };
+            }));
+        },
+    },
+    // #5: a rename keeps every inbound link. Both rules compare against what's live, not the stored revision alone,
+    // so they're editorial: a rollback across a rename asks for an accept, as the owner's call on his own addresses.
+    // They say nothing without a live revision to compare against, which is why callers that judge a revision on its
+    // own, recover() and photos verify, pass no `replaces`.
+    {
+        id: 'route.slug-change',
+        severity: 'error',
+        gate: 'publish',
+        rollbackClass: 'editorial',
+        check: (ctx) => {
+            const live = liveContent(ctx);
+            if (!live) return [];
+            const before = new Map(live.series.map((series) => [series.id, series]));
+            return ctx.candidate.series.flatMap((series) => {
+                const was = before.get(series.id);
+                if (was === undefined || was.slug === series.slug) return [];
+                // A rename keeps the old slug and every old address the series had, so a second rename can't drop
+                // the first one's. Dropping an alias with no rename stays allowed: that's how an address moves on.
+                const kept = (slug: string) => slug === series.slug || series.slugAliases.includes(slug);
+                const findings: RuleFinding[] = [];
+                if (!kept(was.slug)) {
+                    findings.push({
+                        record: seriesRecord(series.id),
+                        field: 'slug',
+                        message: `The address changes from /work/${was.slug} to /work/${series.slug}, and nothing keeps /work/${was.slug}, so every link to it would break.`,
+                        hint: `Add ${was.slug} to slugAliases with photos edit ${series.id}, so /work/${was.slug} leads to the new address.`,
+                    });
+                }
+                for (const alias of was.slugAliases.filter((slug) => !kept(slug))) {
+                    findings.push({
+                        record: seriesRecord(series.id),
+                        field: 'slugAliases',
+                        message: `The rename drops /work/${alias}, an old address of this series, so every link to it would break.`,
+                        hint: `Keep ${alias} in slugAliases beside ${was.slug} with photos edit ${series.id}.`,
+                    });
+                }
+                return findings;
+            });
+        },
+    },
+    {
+        id: 'route.alias-reassigned',
+        severity: 'error',
+        gate: 'publish',
+        rollbackClass: 'editorial',
+        check: (ctx) => {
+            const live = liveContent(ctx);
+            if (!live) return [];
+            const holders = new Map<string, string>();
+            for (const series of live.series) for (const [, slug] of slugsOf(series)) holders.set(slug, series.id);
+            return ctx.candidate.series.flatMap((series) => slugsOf(series).flatMap(([field, slug]) => {
+                const holder = holders.get(slug);
+                if (holder === undefined || holder === series.id) return [];
+                return [{
+                    record: seriesRecord(series.id),
+                    field,
+                    message: `/work/${slug} belongs to ${holder} on the live site. Giving it to this series would send every link to ${holder} here instead.`,
+                    hint: `Choose another slug. An address moves to another series only once a publish has taken it off ${holder}.`,
+                }];
             }));
         },
     },

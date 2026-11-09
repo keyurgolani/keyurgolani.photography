@@ -130,7 +130,9 @@ describe('GET /api/catalog/series/[slug]/pages/[cursor]', () => {
         expect(response.headers.get('x-catalog-revision')).toBe(fixture.revisionId);
         expect(response.headers.get('cache-control')).not.toMatch(/s-maxage|stale-while-revalidate|max-age/);
         const body = await response.json();
-        expect(Object.keys(body).sort()).toEqual(['entries', 'nextHref', 'revisionId']);
+        expect(Object.keys(body).sort()).toEqual(['entries', 'nextHref', 'prevHref', 'revisionId']);
+        // The page before it, for Show earlier after a deep entry (B5).
+        expect(body.prevHref).toBe(`/api/catalog/series/fixture-long/pages/${cursor(0)}`);
         expect(body.revisionId).toBe(fixture.revisionId);
         expect(body.entries.map((entry: { position: number }) => entry.position)).toEqual(Array.from({ length: 100 }, (_, n) => n + 101));
         expect(body.nextHref).toBe(`/api/catalog/series/fixture-long/pages/${cursor(200)}`);
@@ -315,9 +317,12 @@ describe('GET /api/catalog/series/[slug]/photos/[photoId]', () => {
         expect((await peekGET('fixture-featured', FEATURED[0], revision(), { 'If-None-Match': first })).status).toBe(304);
     });
 
-    it('answers 409 when the Viewer\'s revision isn\'t the one served, before it looks at the photograph', async () => {
-        await expectError(await peekGET('fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
-        await expectError(await peekGET('fixture-draft', DRAFT[0], revision(REVISION_B)), 409, { reason: 'revision-changed' });
+    it('answers 409 when the Viewer\'s revision isn\'t the one served, saying whether its photograph is still there (#178)', async () => {
+        // Still where the Viewer has it, under a former slug of its series (a rename), or gone: unpublished, or never published.
+        await expectError(await peekGET('fixture-featured', FEATURED[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'kept' });
+        await expectError(await peekGET('old-fixture-long', LONG[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'renamed' });
+        await expectError(await peekGET('fixture-draft', DRAFT[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'gone' });
+        await expectError(await peekGET('fixture-featured', LONG[0], revision(REVISION_B)), 409, { reason: 'revision-changed', photo: 'gone' });
     });
 
     it('answers 400 for no revision, two of them, or a malformed one, without reading the catalog', async () => {

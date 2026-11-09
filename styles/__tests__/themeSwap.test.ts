@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 // A theme change under reduced motion starts no transitions (the v1.3.0 phone scroll regression): ThemeProvider puts
 // data-theme-swap on <html> for the two frames a new theme lands in (components/ThemeContext.tsx), and app/globals.css
 // turns transitions off under it. ThemeContext.test.tsx pins the attribute; this pins the rule, which no parity gate
-// reads (e2e/themes/computed.ts has no transition-*), and e2e/shell/theme.spec.ts counts what a switch starts.
+// reads (test/helpers/parityWalk.ts's PROPERTIES have no transition-*), and e2e/shell/theme.spec.ts counts what a switch starts.
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const read = (file: string) => fs.readFileSync(path.join(ROOT, file), 'utf8');

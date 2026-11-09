@@ -1,8 +1,12 @@
-import type { CatalogChange, CatalogDiff } from '../catalog/diff';
-import { hashValue, inboxReviewOf, type FieldReviewState, type InboxItem, type ReviewContext } from '../catalog/review';
+import { positionsPhrase, type CatalogChange, type CatalogDiff } from '../catalog/diff';
+import { hashValue, inboxReviewOf, publishedIndexes, type FieldReviewState, type InboxItem, type PublishedIndex, type ReviewContext } from '../catalog/review';
+import { SERIES_ID_RE } from '../catalog/schema';
+import { USE_PUBLISHED_REASONS, publishedValueOffer } from '../catalog/use-published-rules';
+import { INBOX_REASONS, isGeneratedAlt, restampReason, type RestampReason } from '../catalog/review-reasons';
 import type { Activation, AuthoredRecord, CandidateContent, CandidatePhotoRecord, Issue, IssueRecord, PublicPhotoRecord, RevisionContent, WorkingLayer } from '../catalog/types';
 import type { Registry } from '../identity/types';
-import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type ReviewLabel, type ReviewTarget } from './publish-facts';
+import { type Blocker, type BlockerLink, type Compare, type Fix, type KindLabel, type Ledger, type LedgerRow, type Picture, type PublishWarning, type ReviewLabel, type ReviewTarget, type UsePublishedFix } from './publish-facts';
+import { textDiff } from './text-diff';
 import { fileParts, shortIdOf } from './inbox-view';
 import { dayToken } from './publish-history';
 
@@ -25,6 +29,11 @@ export interface LedgerInput {
     activations: readonly Activation[];
     /** The answer's errors, or null on a page load, where the review state predicts them. */
     issues: readonly Issue[] | null;
+    /**
+     * On a page load, the issues the load's own check of the draft found, or null when it ran none. Only their
+     * warnings are read: the review state predicts the errors.
+     */
+    diagnostics?: readonly Issue[] | null;
     /** A `/media` URL for an image of the candidate (the preview's mirror) and of the active revision. */
     media: { draft: (url: string) => string; live: (url: string) => string };
 }
@@ -72,8 +81,8 @@ const DERIVED_FIELD: Record<string, string> = {
 
 const TEXT_FIELDS = new Set(['title', 'statement', 'shortStatement', 'caption', 'credit', 'location']);
 
-/** The reasons a stamp-only review on the screen may clear (decision 2), and the action's label. */
-const RESTAMP: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> = {
+/** The action's label for each reason a stamp-only review may clear (decision 2, review-reasons.ts's RESTAMP_REASONS). */
+const RESTAMP: Record<RestampReason, string> = {
     'active-moved': 'Still right, mark reviewed',
     'base-unreadable': 'Still right, mark reviewed',
     'asset-replaced': 'Still right, mark reviewed',
@@ -82,14 +91,6 @@ const RESTAMP: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> 
     'no-stamp': 'Mark reviewed',
     generated: 'Mark reviewed',
 };
-
-/** The reasons only the Inbox settles. */
-export const INBOX_REASONS: ReadonlySet<string> = new Set(['item-reopened', 'newer-item', 'item-unreadable', 'inbox-unread']);
-
-/** Whether "Mark reviewed" may clear this field's state: its reason is one the screen restamps, and it isn't a generated description, whose review is its own fix. */
-export function restampReason(state: FieldReviewState): boolean {
-    return state.state !== 'reviewed' && state.reason !== undefined && RESTAMP[state.reason] !== undefined && !isGeneratedAlt(state);
-}
 
 /** What the CLI or a restore has to do, for a reason the screen can't clear. */
 const HINT_ONLY: Partial<Record<NonNullable<FieldReviewState['reason']>, string>> = {
@@ -100,7 +101,6 @@ const HINT_ONLY: Partial<Record<NonNullable<FieldReviewState['reason']>, string>
 
 const valueOf = (record: AuthoredRecord, field: string): unknown => (record as unknown as Record<string, unknown>)[field];
 const pad = (n: number) => String(n).padStart(2, '0');
-const isGeneratedAlt = (entry: FieldReviewState) => entry.reason === 'generated' && entry.record.kind === 'photo' && entry.field === 'alt';
 const keyOf = (record: IssueRecord, field: string) => `${record.kind}:${record.id}:${field}`;
 
 /** The page's names for records, read from the candidate, then the active revision, then the working layer and the registry. */
@@ -169,6 +169,12 @@ function altValue(value: Json): string | null {
 
 const asText = (value: Json): string | null => (value === null ? null : typeof value === 'string' ? value : JSON.stringify(value));
 
+/** A text compare with its word diff (A9). */
+const textCompare = (before: string | null, after: string | null): Compare => ({ type: 'text', before, after, diff: textDiff(before, after) });
+
+/** The chapter a `chapters[<id>]` row is about, by its ID. */
+const chapterIdOf = (field: string): string | null => (field.startsWith('chapters[') ? field.slice('chapters['.length, -1) : null);
+
 /** The candidate's placement of a photograph, by series. */
 function placementOf(content: CandidateContent | RevisionContent, photoId: string): { seriesId: string; position: number } | null {
     for (const series of content.series) {
@@ -188,9 +194,11 @@ interface Built {
 /** The rows of one diff, the join's first half. */
 function rowsOf(input: LedgerInput, names: Names): Built {
     const built: Built = { rows: new Map(), group: new Map(), change: new Map() };
+    const published = publishedIndexes();
     for (const change of input.diff.changes) {
         if (!change.visible && change.category !== 'missing') continue;
         const id = `chg-${change.id}`;
+        const usePublished = publishedFixFor(change, input, names, published);
         const group = change.category === 'missing' ? 'health' : change.category === 'derived' || change.category === 'asset' ? 'derived' : 'authored';
         built.rows.set(id, {
             id,
@@ -200,11 +208,32 @@ function rowsOf(input: LedgerInput, names: Names): Built {
             blocks: false,
             ...detailOf(change, input, names),
             ...compareOf(change, input, names),
+            ...(usePublished ? { usePublished } : {}),
         });
         built.group.set(id, group);
         built.change.set(id, change);
     }
     return built;
+}
+
+/**
+ * A9's "Use the published value" for a row, from the rule the writer and
+ * `photos review --use-published` share: only a row whose own field went
+ * stale because the live revision moved, or is in conflict, and with no
+ * Inbox item to decide first. Rows that can't qualify are skipped before
+ * the rule reads anything.
+ */
+function publishedFixFor(change: CatalogChange, input: LedgerInput, names: Names, published: (content: LedgerInput['active']) => PublishedIndex): UsePublishedFix | null {
+    const candidate = change.review.fields.some((entry) => entry.state === 'stale' && entry.reason !== undefined && USE_PUBLISHED_REASONS.has(entry.reason)) || recordIn(input.layer, change.record)?.conflicts?.length;
+    if (!candidate) return null;
+    const offer = publishedValueOffer(change, { layer: input.layer, active: input.active, review: input.review, published: published(input.active) });
+    if (!offer.ok) return null;
+    const { target } = offer;
+    const name = names.record(change.record);
+    const part = rowPart(change, input, names);
+    const label = `the ${fieldName({ record: change.record, field: target.field })} of ${name}${part ? `, from ${part}` : ''}`;
+    const note = target.field === 'photoIds' ? `This puts back the whole published order of ${name}.` : target.field === 'chapters' ? `This puts back every published chapter of ${name}.` : undefined;
+    return { kind: target.record.kind, id: target.record.id, field: target.field, version: target.version, valueHash: target.valueHash, record: label, ...(note ? { note } : {}) };
 }
 
 function kindOf(change: CatalogChange): KindLabel {
@@ -254,6 +283,8 @@ export function summaryOf(change: CatalogChange, input: Pick<LedgerInput, 'activ
     }
     if (record.kind === 'series') {
         const name = names.series(record.id);
+        const chapterId = chapterIdOf(field);
+        if (chapterId !== null) return chapterSummary(change, chapterId, name, input, names);
         if (category === 'new') return `${name} is published, with ${String((after as Record<string, Json>)?.photoCount ?? 0)} photographs`;
         if (category === 'removed') return `${name} leaves the site`;
         if (category === 'visibility') return `${name} is ${String(after)}, so it leaves the site`;
@@ -261,7 +292,14 @@ export function summaryOf(change: CatalogChange, input: Pick<LedgerInput, 'activ
         if (category === 'derived') {
             const was = (before as Record<string, Json> | null)?.photoCount;
             const now = (after as Record<string, Json> | null)?.photoCount;
-            return typeof was === 'number' && typeof now === 'number' && was !== now ? `${name}: ${now} photographs, was ${was}` : `${name}: its dates are recalculated`;
+            const counted = typeof was === 'number' && typeof now === 'number' && was !== now ? `${name}: ${now} photographs, was ${was}` : null;
+            const dated = (change.fields ?? []).some((entry) => entry === 'capturedFrom' || entry === 'capturedTo') ? `${name}: its dates are recalculated` : null;
+            const head = counted ?? dated;
+            // A9: the photographs a move shifts, which the derived row's positions carry.
+            const shifted = change.positions ? positionsPhrase(change.positions) : null;
+            if (head && shifted) return `${head}. ${shifted.charAt(0).toUpperCase()}${shifted.slice(1)}`;
+            if (shifted) return `${name}: ${shifted}`;
+            return head ?? `${name}: its dates are recalculated`;
         }
         if (category === 'moved' && field.startsWith('photoIds[')) {
             const photoId = field.slice('photoIds['.length, -1);
@@ -303,6 +341,23 @@ export function summaryOf(change: CatalogChange, input: Pick<LedgerInput, 'activ
     return `${photo}: the ${PHOTO_FIELD[field] ?? field} changes`;
 }
 
+/** A chapter row's line (A9): a new chapter, one that goes, a new title, or a new start photograph. */
+function chapterSummary(change: CatalogChange, chapterId: string, name: string, input: Pick<LedgerInput, 'active' | 'candidate'>, names: Names): string {
+    const value = (side: Json) => (side && typeof side === 'object' && !Array.isArray(side) ? (side as Record<string, Json>) : null);
+    const chapterIn = (content: Pick<LedgerInput, 'candidate'>['candidate'] | LedgerInput['active']) => content.series.find((series) => series.id === change.record.id)?.chapters.find((chapter) => chapter.id === chapterId);
+    const title = chapterIn(input.candidate)?.title ?? chapterIn(input.active)?.title ?? chapterId;
+    switch (change.category) {
+        case 'new':
+            return `${name}: a new chapter, ${title}, starts at ${names.photo(String(value(change.after)?.startPhotoId ?? ''))}`;
+        case 'removed':
+            return `${name}: the chapter ${String(value(change.before)?.title ?? title)} is removed`;
+        case 'moved':
+            return `${name}: the chapter ${title} starts at ${names.photo(String(value(change.after)?.startPhotoId ?? ''))} now`;
+        default:
+            return `${name}: the chapter ${String(change.before ?? title)} is renamed ${String(change.after ?? title)}`;
+    }
+}
+
 /** Before and after, only where they help judgment (scope, Visual). */
 function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { compare?: Compare } {
     const { record, field, category } = change;
@@ -323,8 +378,8 @@ function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { c
             const generated = authored?.kind === 'photo' && authored.alt?.kind === 'described' && authored.alt.reviewed === false;
             return { compare: { type: 'description', label: generated ? 'Generated description' : 'Description', text } };
         }
-        if (field === 'alt') return { compare: { type: 'text', before: altValue(change.before), after: altValue(change.after) } };
-        if (TEXT_FIELDS.has(field)) return { compare: { type: 'text', before: asText(change.before), after: asText(change.after) } };
+        if (field === 'alt') return { compare: textCompare(altValue(change.before), altValue(change.after)) };
+        if (TEXT_FIELDS.has(field)) return { compare: textCompare(asText(change.before), asText(change.after)) };
         return {};
     }
     if (record.kind === 'series') {
@@ -340,7 +395,9 @@ function compareOf(change: CatalogChange, input: LedgerInput, names: Names): { c
             const now = input.candidate.photos.find((photo) => photo.id === coverOf(change.after));
             return { compare: { type: 'images', before: pictureOf(was, input.media.live, altText(was)), after: pictureOf(now, input.media.draft, altText(now)) } };
         }
-        if (TEXT_FIELDS.has(field)) return { compare: { type: 'text', before: asText(change.before), after: asText(change.after) } };
+        if (TEXT_FIELDS.has(field)) return { compare: textCompare(asText(change.before), asText(change.after)) };
+        // A chapter's new title.
+        if (chapterIdOf(field) !== null && category === 'authored') return { compare: textCompare(asText(change.before), asText(change.after)) };
         return {};
     }
     // The site: Home's featured series, or the Work order.
@@ -462,19 +519,19 @@ function fixOf(change: CatalogChange, input: LedgerInput, names: Names): Fix | u
         };
     }
     if (first.reason && INBOX_REASONS.has(first.reason) && first.eventId) return { type: 'inbox', record: names.record(change.record), eventId: first.eventId };
-    const label = first.reason ? RESTAMP[first.reason] : undefined;
+    const label = restampReason(first) ? RESTAMP[first.reason as RestampReason] : undefined;
     if (label) {
         const record = recordIn(input.layer, first.record);
         if (!record) return { type: 'hint', text: HINT_ONLY['no-record'] as string };
         // Every field this row waits on in the same record, that a review here may clear.
-        const fields = open.filter((entry) => keyOf(entry.record, '') === keyOf(first.record, '') && entry.reason && RESTAMP[entry.reason] && !isGeneratedAlt(entry)).map((entry) => entry.field);
+        const fields = open.filter((entry) => keyOf(entry.record, '') === keyOf(first.record, '') && restampReason(entry)).map((entry) => entry.field);
         const target: ReviewTarget = {
             kind: first.record.kind,
             id: first.record.id,
             version: record.version,
             hashes: Object.fromEntries(fields.map((field) => [field, hashValue(valueOf(record, field))])),
         };
-        return { type: 'restamp', record: actionName(change, first, names), label, target, field: fieldName(first) };
+        return { type: 'restamp', record: actionName(change, first, names, input), label, target, field: fieldName(first) };
     }
     return { type: 'hint', text: HINT_ONLY[first.reason ?? 'no-record'] ?? 'Review the change with the photos command, then validate again.' };
 }
@@ -494,16 +551,41 @@ function conflictFix(change: CatalogChange): Fix {
     return { type: 'hint', text: 'Keep one value with photos edit, which clears the conflict, then validate again.', command: `photos edit ${change.record.kind === 'site' ? 'site' : change.record.id}` };
 }
 
-/** The owner's name for a field. */
-function fieldName(entry: Pick<FieldReviewState, 'record' | 'field'>): string {
+/** The owner's name for a field: "order" for a series' photoIds, "description" for a photo's alt. */
+export function fieldName(entry: Pick<FieldReviewState, 'record' | 'field'>): string {
     const map = entry.record.kind === 'photo' ? PHOTO_FIELD : entry.record.kind === 'series' ? SERIES_FIELD : { featuredSeriesIds: 'featured series', seriesOrder: 'Work order' } as Record<string, string>;
     return map[entry.field] ?? (entry.field || 'record');
 }
 
 /** What a stamp action's accessible name adds: "Pier lamps position in Salt Roads", or "the short statement of Low Tide Hours". */
-function actionName(change: CatalogChange, entry: FieldReviewState, names: Names): string {
+function actionName(change: CatalogChange, entry: FieldReviewState, names: Names, input: Pick<LedgerInput, 'active' | 'candidate'>): string {
     if (change.record.kind === 'series' && change.field.startsWith('photoIds[')) return `${names.photo(change.field.slice('photoIds['.length, -1))} position in ${names.series(change.record.id)}`;
-    return `the ${fieldName(entry)} of ${names.record(entry.record)}`;
+    // A9 review: rows that rest on one field, as a series' chapter rows do, each name their own part, so no two controls share a name.
+    const part = rowPart(change, input, names);
+    return `the ${fieldName(entry)} of ${names.record(entry.record)}${part ? `, ${part}` : ''}`;
+}
+
+/** "Pier lamps'", "chapter Dawn's". */
+const possessive = (name: string) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+
+/** What one row of a field with several says on its own: "Pier lamps' move", "chapter Dawn's new title". Null for a row about the whole field. */
+function rowPart(change: CatalogChange, input: Pick<LedgerInput, 'active' | 'candidate'>, names: Names): string | null {
+    if (change.record.kind !== 'series') return null;
+    if (change.field.startsWith('photoIds[')) return `${possessive(names.photo(change.field.slice('photoIds['.length, -1)))} move`;
+    const chapterId = chapterIdOf(change.field);
+    if (chapterId === null) return null;
+    const chapterIn = (content: LedgerInput['active'] | LedgerInput['candidate']) => content.series.find((series) => series.id === change.record.id)?.chapters.find((chapter) => chapter.id === chapterId);
+    const title = chapterIn(input.candidate)?.title ?? chapterIn(input.active)?.title ?? chapterId;
+    switch (change.category) {
+        case 'new':
+            return `new chapter ${title}`;
+        case 'removed':
+            return `removed chapter ${title}`;
+        case 'moved':
+            return `${possessive(`chapter ${title}`)} new start`;
+        default:
+            return `${possessive(`chapter ${title}`)} new title`;
+    }
 }
 
 /** The blocker list's link for a row's fix. */
@@ -536,15 +618,45 @@ function blockerMessage(change: CatalogChange, entry: FieldReviewState | undefin
 }
 
 /**
+ * What a warning names and where it takes the curator. A series by its title and slug, so two of one title read
+ * apart, linked to its page only from an ID a series could have. A photograph by its title: its description review
+ * only from a row that shows one, marked with that fix, since the review panel renders for nothing else; else its
+ * Inbox item, which opens from anywhere; else nothing.
+ */
+function warningTarget(record: IssueRecord, input: LedgerInput, names: Names, built: Built): Pick<PublishWarning, 'record' | 'link'> {
+    if (record.kind === 'series') {
+        const slug = [...input.candidate.series, ...input.active.series].find((series) => series.id === record.id)?.slug ?? (input.layer.series.find((series) => series.id === record.id) as { slug?: string } | undefined)?.slug;
+        const name = slug ? `${names.series(record.id)} (${slug})` : names.series(record.id);
+        return { record: name, link: SERIES_ID_RE.test(record.id) ? { type: 'series', href: `/curation/series/${encodeURIComponent(record.id)}`, name } : null };
+    }
+    const name = names.record(record);
+    if (record.kind !== 'photo') return { record: name, link: null };
+    let inbox: PublishWarning['link'] = null;
+    for (const [rowId, change] of built.change) {
+        if (change.record.kind !== 'photo' || change.record.id !== record.id) continue;
+        const shown = built.rows.get(rowId)?.fix;
+        if (shown?.type === 'description') return { record: name, link: { type: 'description', rowId, name: shown.record } };
+        const fix = shown ?? fixOf(change, input, names);
+        if (fix?.type === 'inbox') inbox ??= { type: 'inbox', eventId: fix.eventId, name: fix.record };
+        else if (fix?.type === 'description' && fix.inboxItem) inbox ??= { type: 'inbox', eventId: fix.inboxItem, name: fix.record };
+    }
+    return { record: name, link: inbox };
+}
+
+/**
  * The join: the ledger's rows and the blocker list, from the diff, the review
  * context and the answer's diagnostics (or, on a page load, what the review
  * state predicts the gate refuses). Every blocker that names a changed
  * record and field marks exactly that row, with its label, the badge and its
- * fix; a diagnostic with no row is listed on its own, with no link.
+ * fix; a diagnostic with no row is listed on its own, with no link. A
+ * warning never blocks: it is listed apart, in its rule's own words.
  */
-export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blocker[] } {
+export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const names = new Names(input);
     const built = rowsOf(input, names);
+    // The warnings, named and linked once every row is marked, since a link to a row's review needs its mark.
+    const warned: Issue[] = [];
+    const warn = (issue: Issue) => warned.push(issue);
     const blockers: Blocker[] = [];
     const marked = new Set<string>();
     const conflicts = conflictFields(input.layer);
@@ -587,9 +699,14 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
             // A rebase conflict blocks too (working.conflicts), and the load predicts it from the layer, not the rules.
             if (entry || conflictOf(change)) mark(rowId, entry, null);
         }
+        for (const issue of input.diagnostics ?? []) if (issue.severity === 'warning') warn(issue);
     } else {
         for (const issue of input.issues) {
-            if (issue.severity !== 'error') continue;
+            // A warning is listed on its own and never marks a row.
+            if (issue.severity !== 'error') {
+                warn(issue);
+                continue;
+            }
             const issueKey = keyOf(issue.record, issue.field);
             let hit = false;
             for (const [rowId, change] of built.change) {
@@ -614,7 +731,13 @@ export function buildLedger(input: LedgerInput): { ledger: Ledger; blockers: Blo
     const order = [...ledger.authored, ...ledger.derived, ...ledger.health].map((row) => row.id);
     const rank = (blocker: Blocker) => (blocker.rowId === null ? order.length : order.indexOf(blocker.rowId));
     blockers.sort((a, b) => rank(a) - rank(b));
-    return { ledger, blockers };
+    const warnings = warned.map((issue): PublishWarning => {
+        // "alt.text" is the description, as the ledger names it.
+        const field = fieldName({ record: issue.record, field: issue.field.split(/[.[]/)[0] });
+        const { record, link } = warningTarget(issue.record, input, names, built);
+        return { key: `${issue.code} ${issue.record.kind} ${issue.record.id} ${issue.field}`, record, field, message: issue.message, hint: issue.hint ?? null, link };
+    });
+    return { ledger, blockers, warnings };
 }
 
 /** The series the panel opens: the one with the most authored rows, and its first changed photograph in series order. */

@@ -99,6 +99,14 @@ describe('sequence and series argv', () => {
         expect(usage(() => parseFlags({ args: ['--json', '--json'], options: { json: { type: 'boolean' } } }))).toBe('--json is given more than once. Give it once.');
         expect(parseFlags({ args: ['--import', 'a.csv'], options: { import: { type: 'string' } } }).values).toEqual({ import: 'a.csv' });
     });
+
+    it('lets only an option declared multiple repeat, and still refuses a repeat of every other one', () => {
+        const options = { accept: { type: 'string', multiple: true }, reason: { type: 'string' }, yes: { type: 'boolean' } } as const;
+        expect(parseFlags({ args: ['--accept', 'accent.format', '--accept=accent.contrast', '--reason', 'r'], options }).values).toEqual({ accept: ['accent.format', 'accent.contrast'], reason: 'r' });
+        expect(parseFlags({ args: ['--accept', 'accent.format'], options }).values).toEqual({ accept: ['accent.format'] });
+        expect(usage(() => parseFlags({ args: ['--accept', 'a', '--reason', 'r', '--reason=s'], options }))).toBe('--reason is given more than once. Give it once.');
+        expect(usage(() => parseFlags({ args: ['--accept', 'a', '--yes', '--yes'], options }))).toBe('--yes is given more than once. Give it once.');
+    });
 });
 
 describe('the publish report', () => {
@@ -137,28 +145,61 @@ describe('the publish report', () => {
         expect((await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet })).launch).toEqual({ published: 4, gone: 1 });
     });
 
+    /** v2.0.0 bug 8: there's been no legacy site since v1.6.0, so the launch says only what it puts on the site. */
+    const LEGACY_WORDS = /legacy|leaves? the site|leave it/i;
+
     it('prints the checklist and an --expect hint before the launch, and only the impact after it', async () => {
         const catalog = await launchFixture();
+        // A top-level photo no series lists, which launchImpact() still counts as gone for carry-over's GONE_COUNT guard.
+        const registry = await readRegistry(catalog.root);
+        const nested = Object.values(registry.photos).find((photo) => photo.source.path.startsWith('nested/'));
+        if (!nested) throw new Error('no nested photo');
+        nested.source.path = nested.source.path.slice('nested/'.length);
+        await writeRegistry(catalog.root, registry, registry.version);
+
         const required = await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet });
+        expect(required).toMatchObject({ outcome: 'LAUNCH_CONFIRMATION_REQUIRED', launch: { published: 4, gone: 1 } });
         const before = report(required, catalog.root);
-        expect(before).toContain('Launch: this revision replaces the legacy Home and Gallery with 4 photographs. Every photograph the legacy site lists is in it.');
+        expect(before).toContain('[photos] LAUNCH_CONFIRMATION_REQUIRED: This is the first publish, which puts 4 photographs on the site. Confirm the launch to go ahead.');
+        expect(before).toContain('Launch: this first revision puts 4 photographs on the site.');
         expect(before).toContain('Launch checklist, from the README\'s "Curating the catalog":');
-        expect(before).toContain("#15's 15-1 and 15-2");
+        expect(before).toContain('A preview looks right');
+        // The v1.3.0 milestones are long shipped, so they're off the checklist.
+        expect(before).not.toContain("#15's 15-1 and 15-2");
+        expect(before).not.toContain('Viewer hardening');
         expect(before).toContain(`To publish exactly this candidate, run publish again with --confirm-launch --expect ${required.candidateId}.`);
         expect(before).not.toContain('docs/curation.md');
+        expect(before).not.toMatch(LEGACY_WORDS);
 
         const dryRun = await publish({ dataRoot: catalog.root, actor: 'test', dryRun: true, logger: quiet });
         const dry = report(dryRun, catalog.root);
         expect(dryRun.outcome).toBe('DRY_RUN_OK');
+        expect(dry).toContain('Launch: this first revision puts 4 photographs on the site.');
         expect(dry).toContain('Launch checklist');
         expect(dry).toContain(`--confirm-launch --expect ${dryRun.candidateId}`);
+        expect(dry).not.toMatch(LEGACY_WORDS);
 
         const published = await publish({ dataRoot: catalog.root, actor: 'test', confirmLaunch: true, expectedRevisionId: required.candidateId ?? undefined, logger: quiet });
         const after = report(published, catalog.root);
         expect(published.outcome).toBe('PUBLISHED');
-        expect(after).toContain('Launch: this revision replaced the legacy Home and Gallery with 4 photographs.');
+        expect(after).toContain('Launch: this first revision put 4 photographs on the site.');
         expect(after).not.toContain('checklist');
         expect(after).not.toContain('--confirm-launch');
+        expect(after).not.toMatch(LEGACY_WORDS);
+    });
+
+    it('counts only the photographs the launch revision publishes, not a draft series\'s', async () => {
+        const catalog = await createTestCatalog({ seed: 1321, photos: 3, series: [{ photos: 2 }, { photos: 1, visibility: 'draft' }], variantBytes: VARIANT_BYTES });
+        cleanups.push(() => catalog.cleanup());
+        const required = await publish({ dataRoot: catalog.root, actor: 'test', logger: quiet });
+        const before = report(required, catalog.root);
+        expect(before).toContain('This is the first publish, which puts 2 photographs on the site.');
+        expect(before).toContain('Launch: this first revision puts 2 photographs on the site.');
+        const one = await createTestCatalog({ seed: 1322, photos: 1, series: [{ photos: 1 }], variantBytes: VARIANT_BYTES });
+        cleanups.push(() => one.cleanup());
+        const single = report(await publish({ dataRoot: one.root, actor: 'test', logger: quiet }), one.root);
+        expect(single).toContain('This is the first publish, which puts 1 photograph on the site.');
+        expect(single).toContain('Launch: this first revision puts 1 photograph on the site.');
     });
 
     it('lists what a publish takes off the site under Removed, once a revision is active (#17)', () => {
@@ -196,6 +237,15 @@ describe('scripts/photos.ts', { timeout: 120_000 }, () => {
             expect(run.code).toBe(1);
             expect(run.stderr).toContain('[photos] The data root is unset: PHOTOGRAPHY_DATA_DIR is not set.');
         }
+    });
+
+    it('prints status --json on stdout whatever its exit code, so a monitor reads one stream', async () => {
+        const run = await photos(['status', '--check', '--json'], { PHOTOGRAPHY_DATA_DIR: undefined, NODE_ENV: 'production' });
+        expect(run.code).toBe(1);
+        expect(run.stderr).toBe('');
+        const printed = JSON.parse(run.stdout) as { check: { ok: boolean; problems: { code: string }[] } };
+        expect(printed.check.ok).toBe(false);
+        expect(printed.check.problems.map((problem) => problem.code)).toContain('heartbeat-missing');
     });
 
     it('refuses a repeated flag and an empty series order with exit 2, and takes a chapter title after --', async () => {

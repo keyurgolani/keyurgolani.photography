@@ -1,8 +1,9 @@
 import { act, fireEvent, render } from '@testing-library/react';
+import { useEffect } from 'react';
 import { hydrateRoot, type Root } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COVER_ID, RETURN_KEY } from '../returnPosition';
+import { ARRIVAL_KEY, COVER_ID, RESTORE_WAIT_MS, RETURN_KEY, SERIES_TITLE_ID } from '../returnPosition';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';
 import SeriesReturn from '../SeriesReturn';
 
@@ -12,18 +13,19 @@ import SeriesReturn from '../SeriesReturn';
 // for #6's restored entries, and the scroll put back when the intercepted
 // Viewer (#9) closes over the mounted page.
 
-const navigation = vi.hoisted(() => ({ pathname: '/work/harbor' }));
-vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
+const navigation = vi.hoisted(() => ({ pathname: '/work/harbor', replace: (() => undefined) as (href: string, options?: unknown) => void }));
+vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname, useRouter: () => ({ replace: (href: string, options?: unknown) => navigation.replace(href, options) }) }));
 
 const A = 'ph_00000000-0000-4000-8000-000000000001';
 const B = 'ph_00000000-0000-4000-8000-000000000002';
 const NEXT_KEYS = { __NA: true, __PRIVATE_NEXTJS_INTERNALS_TREE: { tree: ['', {}], renderedSearch: '' } };
 /** Past the first page, so it isn't on the page until #6 loads it again. */
 const LATE = 'ph_00000000-0000-4000-8000-000000000003';
-const PROPS = { path: '/work/harbor', slug: 'harbor', revisionId: 'rev_a', total: 3 };
+const PROPS = { path: '/work/harbor', slug: 'harbor', revisionId: 'rev_a', total: 3, firstPosition: 1, focusPhotoId: null as string | null };
 
 const PAGE = `
     <main>
+        <h1 id="${SERIES_TITLE_ID}">Harbor</h1>
         <figure><a id="${COVER_ID}" href="/work/harbor/photo/${B}"><span data-photo="cover"></span></a></figure>
         <section aria-labelledby="series-sequence">
             <h2 id="series-sequence">Sequence</h2>
@@ -52,6 +54,7 @@ beforeAll(() => {
 
 beforeEach(() => {
     navigation.pathname = '/work/harbor';
+    navigation.replace = () => undefined;
     document.body.innerHTML = PAGE;
     scrollTo = vi.fn();
     window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
@@ -62,7 +65,7 @@ beforeEach(() => {
     navigationType = 'navigate';
     vi.spyOn(performance, 'getEntriesByType').mockImplementation((type: string) => (type === 'navigation' && navigationType ? [{ type: navigationType } as unknown as PerformanceEntry] : []));
     setScrollY(0);
-    window.history.replaceState({ ...NEXT_KEYS }, '');
+    window.history.replaceState({ ...NEXT_KEYS }, '', '/work/harbor');
 });
 
 afterEach(() => {
@@ -72,20 +75,20 @@ afterEach(() => {
 });
 
 /** A client render, as after a soft navigation. */
-function mount() {
+function mount(overrides: Partial<typeof PROPS> = {}) {
     const host = document.createElement('div');
     document.body.append(host);
-    return render(<SeriesReturn {...PROPS} />, { container: host });
+    return render(<SeriesReturn {...PROPS} {...overrides} />, { container: host });
 }
 
 /** A hydration of server HTML, as on a document load. */
-function hydrate(): Root {
+function hydrate(overrides: Partial<typeof PROPS> = {}): Root {
     const host = document.createElement('div');
-    host.innerHTML = renderToString(<SeriesReturn {...PROPS} />);
+    host.innerHTML = renderToString(<SeriesReturn {...PROPS} {...overrides} />);
     document.body.append(host);
     let root: Root | undefined;
     act(() => {
-        root = hydrateRoot(host, <SeriesReturn {...PROPS} />);
+        root = hydrateRoot(host, <SeriesReturn {...PROPS} {...overrides} />);
     });
     if (!root) throw new Error('No root');
     return root;
@@ -326,5 +329,319 @@ describe('closing the intercepted Viewer over the mounted page', () => {
         navigation.pathname = '/work/harbor';
         view.rerender(<SeriesReturn {...PROPS} />);
         expect(scrollTo).not.toHaveBeenCalled();
+    });
+});
+
+describe('?photo= (#5, #6 deep entry, B5)', () => {
+    const at = (search: string, state: object = NEXT_KEYS) => window.history.replaceState({ ...state }, '', `/work/harbor${search}`);
+    const stored = (record: object, extra: object = {}) => ({ ...NEXT_KEYS, ...extra, [RETURN_KEY]: record });
+
+    it('leaves the series URL alone on activation: the return lives in history.state, so a reload or a copied link starts where the page does', () => {
+        at('?utm_source=mail#sequence');
+        mount();
+        fireEvent.click(byId(`photo-${A}`));
+        expect([window.location.pathname, window.location.search, window.location.hash]).toEqual(['/work/harbor', '?utm_source=mail', '#sequence']);
+        expect(returnState()).toEqual({ photoId: A, opener: 'entry', scrollY: 0 });
+    });
+
+    it('marks a deep link\'s ?photo= as used when an entry on its page is opened, so Back from Work later doesn\'t refocus it', () => {
+        at(`?photo=${B}`);
+        navigationType = 'reload';
+        hydrate({ focusPhotoId: B });
+        fireEvent.click(byId(`photo-${A}`));
+        expect((window.history.state as Record<string, unknown>)[ARRIVAL_KEY]).toBe(B);
+    });
+
+    it('focuses the entry a direct load of ?photo= names, brought to the middle of the view, and only the first time', () => {
+        at(`?photo=${B}`);
+        const root = hydrate({ focusPhotoId: B });
+        expect(document.activeElement).toBe(byId(`photo-${B}`));
+        expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' });
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect((window.history.state as Record<string, unknown>)[ARRIVAL_KEY]).toBe(B);
+        // Work, then Back to the same entry: the browser keeps its place.
+        act(() => root.unmount());
+        byId(`photo-${B}`).blur();
+        mount({ focusPhotoId: B });
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('focuses it after a soft navigation too, as Close from a directly loaded photograph is', () => {
+        at(`?photo=${A}`);
+        mount({ focusPhotoId: A });
+        expect(document.activeElement).toBe(byId(`photo-${A}`));
+    });
+
+    it.each([
+        ['a photograph the server didn\'t find', `?photo=${B}`, null, 'navigate'],
+        ['a reload of the page', `?photo=${B}`, B, 'reload'],
+        ['a URL with no parameter', '', B, 'navigate'],
+        ['a URL that names another photograph', `?photo=${A}`, B, 'navigate'],
+        ['a value that isn\'t a photo ID', `?photo=${B.toUpperCase()}`, B, 'navigate'],
+        ['two values', `?photo=${B}&photo=${B}`, B, 'navigate'],
+    ])('focuses nothing for %s', (_case, search, focusPhotoId, type) => {
+        at(search);
+        navigationType = type;
+        hydrate({ focusPhotoId });
+        expect(document.activeElement).toBe(document.body);
+        expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it('puts a return from the Viewer first: the record\'s offset and opener, then uses it up', () => {
+        at(`?photo=${B}`, stored({ photoId: B, opener: 'cover', scrollY: 640 }));
+        navigationType = 'back_forward';
+        hydrate({ focusPhotoId: B });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 640, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(byId(COVER_ID));
+        expect(returnState()).toBeUndefined();
+    });
+
+    it('passes the server page\'s first position on, so a restore waits for #6 to load the pages before it', () => {
+        at(`?photo=${B}`, stored({ photoId: B, opener: 'entry', scrollY: 640 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 1, loaded: 3 } }));
+        navigationType = 'back_forward';
+        hydrate({ focusPhotoId: B, firstPosition: 2 });
+        expect(scrollTo).not.toHaveBeenCalled();
+        act(() => {
+            document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+        });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 640, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(byId(`photo-${B}`));
+    });
+
+    it('goes to the series heading when the server\'s answer for this ?photo= doesn\'t hold the photograph: it left the revision', () => {
+        const LEFT = 'ph_00000000-0000-4000-8000-000000000009';
+        at(`?photo=${LEFT}`, stored({ photoId: LEFT, opener: 'entry', scrollY: 640 }));
+        navigationType = 'back_forward';
+        const replace = vi.fn();
+        navigation.replace = replace;
+        hydrate({ focusPhotoId: null });
+        expect(document.activeElement).toBe(byId(SERIES_TITLE_ID));
+        // The page is already the server's answer for this URL: nothing to ask again.
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('restores a return from the Viewer on a deep link\'s page, whatever photograph its ?photo= named', () => {
+        at(`?photo=${B}`, stored({ photoId: A, opener: 'entry', scrollY: 320 }, { [ARRIVAL_KEY]: B }));
+        navigationType = 'back_forward';
+        hydrate({ focusPhotoId: B });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 320, left: 0, behavior: 'instant' });
+        expect(document.activeElement).toBe(byId(`photo-${A}`));
+    });
+
+    describe('when the saved pages can\'t bring the photograph back', () => {
+        const OLD_PAGES = { revisionId: 'rev_old', slug: 'harbor', first: 1, loaded: 3 };
+        const appendLate = () => {
+            const late = document.createElement('a');
+            late.id = `photo-${LATE}`;
+            late.href = `/work/harbor/photo/${LATE}`;
+            document.querySelector('ol')?.append(late);
+            return late;
+        };
+        /** As Next lands a replace to ?photo=: the entry rewritten with its own keys, and the page under it mounted again. */
+        const land = (view: ReturnType<typeof mount>, search: string) => {
+            window.history.replaceState({ ...NEXT_KEYS }, '', `/work/harbor${search}`);
+            view.unmount();
+        };
+
+        it('asks the server once for the page that holds it, then focuses it there and writes kgSeriesPages and kgSeriesReturn back before using the record', () => {
+            at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+            const replace = vi.fn();
+            navigation.replace = replace;
+            const view = mount();
+            expect(replace).toHaveBeenCalledTimes(1);
+            expect(replace).toHaveBeenCalledWith(`/work/harbor?photo=${LATE}`, { scroll: false });
+            // Never the heading while the answer is on its way.
+            expect(document.activeElement).toBe(document.body);
+            expect(scrollTo).toHaveBeenCalledTimes(1);
+            land(view, `?photo=${LATE}`);
+            const late = appendLate();
+            const pagesSeen: unknown[] = [];
+            const spy = vi.spyOn(window.history, 'replaceState').mockImplementation(function (this: History, data, unused, url) {
+                pagesSeen.push((data as Record<string, unknown> | null)?.[RETURN_KEY] ?? null);
+                return History.prototype.replaceState.call(this, data, unused, url);
+            });
+            mount({ focusPhotoId: LATE, firstPosition: 3 });
+            spy.mockRestore();
+            expect(document.activeElement).toBe(late);
+            expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' });
+            // Both keys went back before the record was used up.
+            expect(pagesSeen).toContainEqual({ photoId: LATE, opener: 'entry', scrollY: 5000 });
+            expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: OLD_PAGES, [ARRIVAL_KEY]: LATE });
+            expect(replace).toHaveBeenCalledTimes(1);
+        });
+
+        it('goes to the heading when the server\'s page for ?photo= doesn\'t hold it either: it left the revision', () => {
+            at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+            const view = mount();
+            land(view, `?photo=${LATE}`);
+            mount({ focusPhotoId: null });
+            expect(document.activeElement).toBe(byId(SERIES_TITLE_ID));
+            expect(returnState()).toBeUndefined();
+        });
+
+        it('waits for #6\'s saved pages and never falls back to the heading first (Viewer, Work, then Back twice)', () => {
+            at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 1, loaded: 3 } }));
+            const replace = vi.fn();
+            navigation.replace = replace;
+            mount();
+            expect(document.activeElement).toBe(document.body);
+            expect(replace).not.toHaveBeenCalled();
+            const late = appendLate();
+            act(() => {
+                document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+            });
+            expect(document.activeElement).toBe(late);
+            expect(replace).not.toHaveBeenCalled();
+        });
+
+        it('asks the server, and still not the heading, when #6\'s saved pages ended without it', () => {
+            at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: { revisionId: 'rev_a', slug: 'harbor', first: 1, loaded: 3 } }));
+            const replace = vi.fn();
+            navigation.replace = replace;
+            mount();
+            act(() => {
+                document.querySelector('section')?.dispatchEvent(new Event(SERIES_RESTORED_EVENT, { bubbles: true }));
+            });
+            expect(replace).toHaveBeenCalledWith(`/work/harbor?photo=${LATE}`, { scroll: false });
+            expect(document.activeElement).toBe(document.body);
+        });
+
+        it('restores focus and uses the record up after RESTORE_WAIT_MS when the answer never lands', () => {
+            vi.useFakeTimers();
+            at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+            mount();
+            expect(document.activeElement).toBe(document.body);
+            act(() => {
+                vi.advanceTimersByTime(RESTORE_WAIT_MS);
+            });
+            expect(document.activeElement).toBe(byId(SERIES_TITLE_ID));
+            expect(returnState()).toBeUndefined();
+        });
+
+        describe('when Next answers in place, as Next 16 does for a replace that changes only the query', () => {
+            // The page segment's key is `__PAGE__` whatever the query, so SeriesReturn isn't mounted again: it renders
+            // again with the server's new page, in the commit whose insertion effect has already written the new URL.
+            const answer = (view: ReturnType<typeof mount>, search: string, props: Partial<typeof PROPS>) => {
+                window.history.replaceState({ ...NEXT_KEYS }, '', `/work/harbor${search}`);
+                view.rerender(<SeriesReturn {...PROPS} {...props} />);
+            };
+
+            it('focuses the photograph on the server\'s page and writes kgSeriesPages and kgSeriesReturn back before using the record', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const replace = vi.fn();
+                navigation.replace = replace;
+                const view = mount();
+                expect(replace).toHaveBeenCalledWith(`/work/harbor?photo=${LATE}`, { scroll: false });
+                const late = appendLate();
+                const pagesSeen: unknown[] = [];
+                const spy = vi.spyOn(window.history, 'replaceState').mockImplementation(function (this: History, data, unused, url) {
+                    pagesSeen.push((data as Record<string, unknown> | null)?.[RETURN_KEY] ?? null);
+                    return History.prototype.replaceState.call(this, data, unused, url);
+                });
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                spy.mockRestore();
+                expect(document.activeElement).toBe(late);
+                expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'instant' });
+                expect(pagesSeen).toContainEqual({ photoId: LATE, opener: 'entry', scrollY: 5000 });
+                expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: OLD_PAGES, [ARRIVAL_KEY]: LATE });
+                expect(replace).toHaveBeenCalledTimes(1);
+            });
+
+            it('goes to the heading when the answer doesn\'t hold it, even with the same props as before: it left the revision', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                answer(view, `?photo=${LATE}`, {});
+                expect(document.activeElement).toBe(byId(SERIES_TITLE_ID));
+                expect(returnState()).toBeUndefined();
+            });
+
+            it('lands once: a later render of the same page moves nothing', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                const late = appendLate();
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                expect(document.activeElement).toBe(late);
+                byId(`photo-${A}`).focus();
+                view.rerender(<SeriesReturn {...PROPS} focusPhotoId={LATE} firstPosition={3} />);
+                expect(document.activeElement).toBe(byId(`photo-${A}`));
+            });
+
+            it('waits for the answer: a render before the URL changes lands nothing', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                appendLate();
+                view.rerender(<SeriesReturn {...PROPS} />);
+                expect(document.activeElement).toBe(document.body);
+            });
+
+            it('doesn\'t take an answer for another photograph for its own', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+                const view = mount();
+                appendLate();
+                answer(view, `?photo=${A}`, { focusPhotoId: A });
+                expect(document.activeElement).toBe(document.body);
+            });
+
+            it('puts kgSeriesPages back before #6\'s passive effect reads it, though #6 sits earlier in the tree', () => {
+                // Stands in for SeriesSequence: keyed by the server's page, so it mounts afresh with the answer, and reads the extent in a passive effect.
+                const seen: unknown[] = [];
+                function Sequence() {
+                    useEffect(() => {
+                        seen.push((window.history.state as Record<string, unknown> | null)?.[SERIES_PAGES_KEY]);
+                    }, []);
+                    return null;
+                }
+                const page = (props: Partial<typeof PROPS>) => {
+                    const all = { ...PROPS, ...props };
+                    return (
+                        <>
+                            <Sequence key={all.firstPosition} />
+                            <SeriesReturn {...all} />
+                        </>
+                    );
+                };
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const host = document.createElement('div');
+                document.body.append(host);
+                const view = render(page({}), { container: host });
+                appendLate();
+                seen.length = 0;
+                window.history.replaceState({ ...NEXT_KEYS }, '', `/work/harbor?photo=${LATE}`);
+                view.rerender(page({ focusPhotoId: LATE, firstPosition: 3 }));
+                expect(seen).toEqual([OLD_PAGES]);
+            });
+
+            it('leaves focus where the visitor moved it during the round trip, and still uses the record up', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const view = mount();
+                appendLate();
+                byId('all-work').focus();
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                expect(document.activeElement).toBe(byId('all-work'));
+                expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+                expect(window.history.state).toEqual({ ...NEXT_KEYS, [SERIES_PAGES_KEY]: OLD_PAGES, [ARRIVAL_KEY]: LATE });
+            });
+
+            it('lands nothing on another series\' page, and lands on its own when that answer comes', () => {
+                at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }, { [SERIES_PAGES_KEY]: OLD_PAGES }));
+                const view = mount();
+                const late = appendLate();
+                window.history.replaceState({ ...NEXT_KEYS }, '', `/work/ridge?photo=${LATE}`);
+                view.rerender(<SeriesReturn {...PROPS} path="/work/ridge" slug="ridge" />);
+                expect(document.activeElement).toBe(document.body);
+                expect(window.history.state).toEqual(NEXT_KEYS);
+                answer(view, `?photo=${LATE}`, { focusPhotoId: LATE, firstPosition: 3 });
+                expect(document.activeElement).toBe(late);
+            });
+        });
+
+        it('keeps a later page that has nothing to do with it alone: an answer for another photograph doesn\'t land', () => {
+            at('', stored({ photoId: LATE, opener: 'entry', scrollY: 5000 }));
+            const view = mount();
+            land(view, `?photo=${A}`);
+            mount({ focusPhotoId: A });
+            // That page is a deep link of its own, focused as one; the pending answer isn't taken for it.
+            expect(document.activeElement).toBe(byId(`photo-${A}`));
+        });
     });
 });

@@ -55,7 +55,11 @@ services:
   #   chmod 700 ./portfolio-data
   # and keep the photos readable to uid 1001 (docs/data-root.md, Who owns
   # the photos). Its run --rm form is also the CLI, photos.mjs, with these
-  # same mounts.
+  # same mounts and the same uid as web: every command that locks or writes
+  # the data root, dry runs that take a lock included, the watcher and the
+  # curator refuse as any uid but the data root's owner, before they take a
+  # lock, since the others must read what they write (docs/data-root.md, Who
+  # owns the data root).
   image-watcher:
     image: ghcr.io/keyurgolani/keyurgolani.photography:${PHOTOGRAPHY_IMAGE_TAG:?Set PHOTOGRAPHY_IMAGE_TAG to a release tag, for example v1.1.0}
     user: "1001:1001"

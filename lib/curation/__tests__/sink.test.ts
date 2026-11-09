@@ -14,7 +14,7 @@ import { runReconcilePass } from '../../identity/pass';
 import { readRegistry, writeRegistry } from '../../identity/registry';
 import type { IdentityFact, IdentityFactType } from '../../identity/types';
 import { deferEvent, dismissEvent } from '../actions';
-import { eventIdOf, eventKey, EVENT_TYPE_FOR_FACT, type CurationEvent } from '../events';
+import { CLOSE_REASONS, eventIdOf, eventKey, EVENT_TYPE_FOR_FACT, type CurationEvent } from '../events';
 import { curationPaths, eventDir, listEvents, readEvent, writeEvent } from '../repository';
 import { createCurationSink } from '../sink';
 import { createCurationFixture, DRAFT, GPS, holdingCuration, PUBLISHED, SERIAL, writeRules, type CurationFixture } from './curationFixtures';
@@ -114,7 +114,8 @@ describe('the curation sink', () => {
         const [event] = (await listEvents(f.root)).events;
         expect(event.suggestions.series).toMatchObject({ value: DRAFT, confidence: 'high', producedAt: new Date(NOW).toISOString(), producedBy: expect.stringMatching(/^rules@[0-9a-f]{12}$/) });
         expect(event.suggestions.series?.evidence.join(' ')).toContain('trips');
-        expect(event.suggestions.placement).toMatchObject({ value: 'end', confidence: 'low', producedBy: 'placement@1' });
+        // #14 (A8): the fixture's series photographs are all captured before this one, so it goes at the end, by date.
+        expect(event.suggestions.placement).toMatchObject({ value: 'end', confidence: 'medium', producedBy: 'placement@2' });
         expect(event).toMatchObject({ edits: null, decisions: [], reviewedAt: null, reviewedBy: null });
         expect(Object.keys(event.suggestions).sort()).toEqual(['placement', 'series']);
     });
@@ -280,6 +281,57 @@ describe('a missing source that comes back as missing', () => {
         await sinkFor(f.root)([{ ...missing, factId: 'again-m' }, { ...replaced, factId: 'again-r' }]);
         expect(await readEvent(f.root, eventIdOf(eventKey('missing', missing)))).toMatchObject({ status: 'open', decisions: [expect.objectContaining({ action: 'reopen', reason: expect.stringMatching(/active revision/) })] });
         expect(await readEvent(f.root, eventIdOf(eventKey('replacement', replaced)))).toMatchObject({ status: 'dismissed' });
+    });
+});
+
+describe('evidence again for an item the watcher closed', () => {
+    const closedByWatcher = (event: CurationEvent, reason: string): CurationEvent => ({
+        ...event,
+        status: 'resolved',
+        decisions: [...event.decisions, { action: 'close', at: '2026-02-01T00:00:01.000Z', by: 'watcher', baseRevisionId: null, reason }],
+    });
+
+    it('reopens an ambiguous item, since #10 holds the same bytes in doubt again, and leaves a dismissed one alone (#14)', async () => {
+        const f = await fixture();
+        const [photo, other] = f.fresh;
+        const closed = f.fact('ambiguous', photo, { candidates: [photo] });
+        const dismissed = f.fact('ambiguous', other, { candidates: [other] });
+        await sinkFor(f.root)([closed, dismissed]);
+        const closedId = eventIdOf(eventKey('ambiguous', closed));
+        const dismissedId = eventIdOf(eventKey('ambiguous', dismissed));
+        const stored = await readEvent(f.root, closedId) as CurationEvent;
+        await holdingCuration(f.root, (hold) => writeEvent(f.root, closedByWatcher(stored, CLOSE_REASONS.identified(photo)), stored.version, hold));
+        expect(await dismissEvent({ root: f.root, eventId: dismissedId, expectedVersion: 1, actor: 'curator:test', reason: 'Fine as it is.' })).toMatchObject({ ok: true });
+
+        await sinkFor(f.root)([{ ...closed, factId: 'again-a' }, { ...dismissed, factId: 'again-d' }]);
+        const reopened = await readEvent(f.root, closedId);
+        expect(reopened).toMatchObject({ status: 'open', factIds: [closed.factId, 'again-a'] });
+        expect(reopened?.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: '#10 holds this file in doubt again.' });
+        expect(await readEvent(f.root, dismissedId)).toMatchObject({ status: 'dismissed' });
+    });
+
+    it('reopens a superseded or moved replacement without its failed set once its bytes are back, and no other closed replacement (#17)', async () => {
+        const f = await fixture();
+        const photoId = f.catalog.photos[0].id;
+        const superseded = f.fact('replaced', photoId, { assetRevision: `sha256-${'c'.repeat(64)}` });
+        const built = f.fact('replaced', photoId, { assetRevision: `sha256-${'d'.repeat(64)}` });
+        const moved = f.fact('replaced', photoId, { assetRevision: `sha256-${'e'.repeat(64)}` });
+        await sinkFor(f.root)([superseded, built, moved]);
+        for (const [fact, reason] of [[superseded, CLOSE_REASONS.superseded], [built, CLOSE_REASONS.built('p_test')], [moved, CLOSE_REASONS.moved]] as const) {
+            const id = eventIdOf(eventKey('replacement', fact));
+            const stored = await readEvent(f.root, id) as CurationEvent;
+            const candidate = { state: 'failed' as const, profileId: `p_${'0'.repeat(16)}`, failure: 'superseded' as const, at: '2026-02-01T00:00:01.000Z' };
+            await holdingCuration(f.root, (hold) => writeEvent(f.root, { ...closedByWatcher(stored, reason), candidate }, stored.version, hold));
+        }
+
+        await sinkFor(f.root)([{ ...superseded, factId: 'back-c', revert: true }, { ...built, factId: 'back-d', revert: true }, { ...moved, factId: 'back-e', revert: true }]);
+        for (const fact of [superseded, moved]) {
+            const back = await readEvent(f.root, eventIdOf(eventKey('replacement', fact)));
+            expect(back).toMatchObject({ status: 'open' });
+            expect(back?.candidate).toBeUndefined();
+            expect(back?.decisions.at(-1)).toMatchObject({ action: 'reopen', by: 'watcher', reason: 'The source holds these bytes again.' });
+        }
+        expect(await readEvent(f.root, eventIdOf(eventKey('replacement', built)))).toMatchObject({ status: 'resolved' });
     });
 });
 

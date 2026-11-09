@@ -1,7 +1,7 @@
-import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Answer } from '@/lib/curation/publish-facts';
-import { HISTORY_LEAD, RESTORE_IDLE, type EntryView, type HistoryView } from '@/lib/curation/publish-history';
+import { HISTORY_LEAD, RESTORE_IDLE, type EntryView, type HistoryView, type PlanView, type RestoreState } from '@/lib/curation/publish-history';
 import { PublishAnswerContext, type PublishAnswerState } from '../HistoryContext';
 import HistorySection from '../HistorySection';
 
@@ -61,5 +61,130 @@ describe('HistorySection', () => {
         expect(restore).toHaveAttribute('aria-disabled', 'true');
         expect(restore).toHaveAttribute('data-off', 'true');
         expect(screen.getByText('You can restore again once this publish finishes.')).toHaveAttribute('id', 'history-paused');
+    });
+});
+
+// #117: a restore that brings back editorial errors asks for each one. One
+// native checkbox per flagged rule, in a fieldset, labelled in plain words;
+// Restore stays aria-disabled until every box is checked, and a press before
+// then shows why, focuses the first unchecked box, and posts nothing.
+describe('the restore dialog with editorial errors', () => {
+    const plan: PlanView = {
+        revisionId: `rev_${'4'.repeat(64)}`,
+        revision: 4,
+        hash: '44444444',
+        activeRevisionId: `rev_${'3'.repeat(64)}`,
+        active: 3,
+        activeHash: '33333333',
+        impact: [{ text: 'Changes 1 series: Salt Roads' }],
+        editorial: {
+            lead: "Today's checks flag 2 styles on revision 4.",
+            rules: [
+                { id: 'accent.contrast', label: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" },
+                { id: 'accent.format', label: "Accept Low Tide Hours' accent color: it isn't a color the site can show" },
+            ],
+            note: 'Restoring brings them back as they were, and History records that you accepted them.',
+        },
+    };
+    const withPlan: HistoryView = { ...historyOf([entry(5, 3, true), entry(4, 4, false)]), plans: { 4: plan } };
+
+    beforeEach(() => {
+        // jsdom has HTMLDialogElement but no showModal(), close() or :modal, so these stand in.
+        Object.assign(HTMLDialogElement.prototype, {
+            showModal(this: HTMLDialogElement) {
+                this.setAttribute('open', '');
+                this.dataset.modal = 'true';
+            },
+            close(this: HTMLDialogElement) {
+                this.removeAttribute('open');
+                delete this.dataset.modal;
+            },
+        });
+        const matches = Element.prototype.matches;
+        vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+            return selector === ':modal' ? (this as HTMLElement).dataset.modal === 'true' : matches.call(this, selector);
+        });
+        vi.stubGlobal('requestAnimationFrame', (run: FrameRequestCallback) => {
+            run(0);
+            return 0;
+        });
+    });
+    afterEach(() => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        const prototype = HTMLDialogElement.prototype as unknown as Record<string, unknown>;
+        delete prototype.showModal;
+        delete prototype.close;
+    });
+
+    function openDialog(post: (previous: RestoreState, form: FormData) => Promise<RestoreState>) {
+        render(
+            <PublishAnswerContext.Provider value={{ result: null, pending: false, sent: null, zone: 'UTC' }}>
+                <HistorySection view={withPlan} action={post} openRestore={null} />
+            </PublishAnswerContext.Provider>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'Restore revision 4' }));
+        return screen.getByRole('dialog', { hidden: true });
+    }
+
+    it('shows one native checkbox per rule inside a fieldset, with plain-word labels and no rule IDs', () => {
+        const dialog = openDialog(vi.fn(async (previous: RestoreState) => previous));
+        const group = within(dialog).getByRole('group', { name: "Today's checks flag 2 styles on revision 4." });
+        const boxes = within(group).getAllByRole('checkbox');
+        expect(boxes.map((box) => [box.tagName, box.getAttribute('name'), box.getAttribute('value')])).toEqual([
+            ['INPUT', 'accept', 'accent.contrast'],
+            ['INPUT', 'accept', 'accent.format'],
+        ]);
+        expect(within(group).getByRole('checkbox', { name: "Accept Salt Roads' accent color: it's hard to read on the Viewer's dark bands" })).not.toBeChecked();
+        expect(group.textContent).not.toMatch(/accent\.(contrast|format)/);
+        expect(within(group).getByText('Restoring brings them back as they were, and History records that you accepted them.')).toBeInTheDocument();
+    });
+
+    it('keeps Restore aria-disabled until every box is checked, and a press before then focuses the first unchecked box and posts nothing', async () => {
+        const post = vi.fn(async (previous: RestoreState, form: FormData) => (form ? previous : previous));
+        const dialog = openDialog(post);
+        fireEvent.change(within(dialog).getByLabelText('Why are you restoring it?'), { target: { value: 'Bring the accents back.' } });
+        const submit = within(dialog).getByRole('button', { name: 'Restore revision 4' });
+        const [contrast, format] = within(dialog).getAllByRole('checkbox');
+        expect(submit).toHaveAttribute('aria-disabled', 'true');
+        // aria-disabled, never disabled: it stays focusable, and a press still reaches it and says why.
+        expect(submit).not.toBeDisabled();
+        fireEvent.click(contrast);
+        expect(contrast).toBeChecked();
+        expect(submit).toHaveAttribute('aria-disabled', 'true');
+
+        fireEvent.click(submit);
+        expect(within(dialog).getByText('Accept each one to restore it, or cancel.')).toBeInTheDocument();
+        await waitFor(() => expect(format).toHaveFocus());
+        expect(format).toHaveAttribute('aria-describedby', expect.stringContaining('restore-accept-error'));
+        expect(post).not.toHaveBeenCalled();
+
+        fireEvent.click(format);
+        expect(submit).not.toHaveAttribute('aria-disabled');
+        expect(within(dialog).queryByText('Accept each one to restore it, or cancel.')).toBeNull();
+        fireEvent.click(submit);
+        await waitFor(() => expect(post).toHaveBeenCalledOnce());
+        const sent = post.mock.calls[0][1];
+        expect(sent.getAll('accept')).toEqual(['accent.contrast', 'accent.format']);
+        expect(sent.get('reason')).toBe('Bring the accents back.');
+    });
+
+    it('reports the boxes and the reason on the same press, and keeps focus on the first unchecked box while they are checked', async () => {
+        const post = vi.fn(async (previous: RestoreState) => previous);
+        const dialog = openDialog(post);
+        const submit = within(dialog).getByRole('button', { name: 'Restore revision 4' });
+        const [contrast, format] = within(dialog).getAllByRole('checkbox');
+        fireEvent.click(submit);
+        expect(within(dialog).getByText('Accept each one to restore it, or cancel.')).toBeInTheDocument();
+        expect(within(dialog).getByText("Say why in a few words. It's saved with the entry.")).toBeInTheDocument();
+        await waitFor(() => expect(contrast).toHaveFocus());
+        fireEvent.click(contrast);
+        // A press on a box focuses it, then checks it. Checking the last one moves nothing: focus stays where the owner is.
+        format.focus();
+        fireEvent.click(format);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(format).toHaveFocus();
+        expect(within(dialog).getByLabelText('Why are you restoring it?')).toHaveAttribute('aria-invalid', 'true');
+        expect(post).not.toHaveBeenCalled();
     });
 });

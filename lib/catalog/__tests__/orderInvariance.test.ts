@@ -6,9 +6,11 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { buildExif, withSegments } from '../../../test/fixtures/exif';
 import { fixtureFiles } from '../../../test/fixtures/makeLibrary';
 import { folderBytes } from '../../../test/helpers/folderBytes';
+import { readNewestRegistry } from '../../../test/helpers/registryFiles';
 import { runTsx } from '../../../test/helpers/runTsx';
 import { createTempDataRoot, type TempDataRoot } from '../../../test/helpers/tempDataRoot';
 import { createTempLibrary, type TempLibrary } from '../../../test/helpers/tempLibrary';
+import { killWatchers, spawnWatcher, waitUntil } from '../../../test/helpers/watcherProcess';
 import { listEvents } from '../../curation/repository';
 import { createCurationSink } from '../../curation/sink';
 import { migrateApply } from '../../identity/apply';
@@ -406,6 +408,56 @@ describe('the watcher never authors order', () => {
         // The watcher's own --once run delivered to #14's curation sink: the new photograph is an inbox item.
         const { events } = await listEvents(fixture.data.root);
         expect(events.filter((event) => event.type === 'new').map((event) => event.derivedFacts.sourcePath)).toContain('added.jpg');
+    }, 180_000);
+
+    it('leaves them alone under --watch: at startup, and after a metadata edit, each time lastPassAt moves (#8)', async () => {
+        const fixture = await prepare({ migrate: true });
+        cleanups.push(async () => killWatchers());
+        let watcher: ReturnType<typeof spawnWatcher> | null = null;
+        const output = () => watcher?.output ?? '';
+        const lastPassAt = (): string | null => {
+            try {
+                return (JSON.parse(fs.readFileSync(watcherStatusFile(fixture.data.root), 'utf8')) as { lastPassAt: string | null }).lastPassAt;
+            } catch {
+                return null;
+            }
+        };
+        const advanced = (since: string | null) => () => {
+            const at = lastPassAt();
+            return at !== null && (since === null || at > since);
+        };
+        const landscape = () => (readNewestRegistry(fixture.data.root) as unknown as Registry).photos[fixture.members[0]].source.observedRevision;
+        await assertOrderUntouched(fixture.data.root, [
+            {
+                name: 'startup under --watch',
+                run: async () => {
+                    const since = lastPassAt();
+                    watcher = spawnWatcher(['--watch'], { PHOTOGRAPHY_LIBRARY_DIR: fixture.lib.root, PHOTOGRAPHY_DATA_DIR: fixture.data.root });
+                    await waitUntil(advanced(since), 60_000, 'No pass after the watcher started', output);
+                    expect(output()).not.toContain('Identity step off');
+                },
+            },
+            {
+                name: 'an EXIF DateTimeOriginal edit under --watch',
+                run: async () => {
+                    const since = lastPassAt();
+                    const before = landscape();
+                    fixture.put('landscape.jpg', withDates(bytesOf('landscape.jpg'), { original: '2023:07:08 09:10:11', modified: '2023:07:08 09:10:11' }));
+                    // The pass that took the edit in, and its heartbeat.
+                    await waitUntil(() => landscape() !== before && advanced(since)(), 60_000, 'No pass took the edit in', output);
+                },
+            },
+            {
+                // Review nit: and once more after it shuts down, since a pass or build under way finishes then.
+                name: 'SIGTERM under --watch',
+                run: async () => {
+                    const running = watcher as ReturnType<typeof spawnWatcher> | null;
+                    if (running === null) throw new Error('The watcher never started.');
+                    running.child.kill('SIGTERM');
+                    expect(await running.exited, running.output).toBe(0);
+                },
+            },
+        ]);
     }, 180_000);
 
     it('leaves them alone at startup against an uninitialized data root too', async () => {

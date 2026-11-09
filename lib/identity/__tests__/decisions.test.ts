@@ -66,7 +66,7 @@ describe('parseDecision', () => {
         ['a newer schema', { ...base, schemaVersion: 2, type: 'archive', photoId: PHOTO }, 'schemaVersion 2 comes from a newer build'],
         ['an old schema', { ...base, schemaVersion: 0, type: 'archive', photoId: PHOTO }, 'schemaVersion must be 1'],
         ['a bad decisionId', { ...base, decisionId: 'x', type: 'archive', photoId: PHOTO }, 'decisionId must be a lowercase UUID v4'],
-        ['an unknown type', { ...base, type: 'merge', photoId: PHOTO }, 'type must be one of bind, new, archive, retry, reprofile'],
+        ['an unknown type', { ...base, type: 'merge', photoId: PHOTO }, 'type must be one of bind, new, archive, retry, reprofile, restore'],
         ['an empty actor', { ...base, actor: '', type: 'archive', photoId: PHOTO }, 'actor must be a non-empty string'],
         ['a non-string reason', { ...base, reason: 3, type: 'archive', photoId: PHOTO }, 'reason must be a string'],
         ['a date without a time', { ...base, createdAt: '2026-06-01', type: 'archive', photoId: PHOTO }, 'createdAt must be an ISO timestamp'],
@@ -755,5 +755,174 @@ describe('reconcile: decision files', () => {
             { status: 'applied' },
             { status: 'rejected', reason: `${n} is not present` },
         ]);
+    });
+});
+
+describe('reconcile: restore (#17, A5)', () => {
+    /** An archived photo whose bytes came back at `at`, which a pass made a new photo, a duplicate of it. */
+    function archivedAndBack(at: string, inspection = image('A')) {
+        const r = seeded({ 'a.jpg': 'A' });
+        const x = r.photoAt('a.jpg').photoId;
+        r.library.remove('a.jpg');
+        r.pass();
+        r.decide({ type: 'archive', photoId: x });
+        r.pass();
+        expect(r.photo(x).sourceHealth).toBe('archived');
+        r.library.put(at, inspection);
+        r.pass();
+        // Not r.photoAt(at): an archived photo keeps its last path, which may be this one.
+        const n = Object.values(r.registry.photos).find((photo) => photo.photoId !== x && photo.source.path === at)?.photoId as string;
+        expect(r.photo(n)).toMatchObject({ duplicateOf: x, sourceHealth: 'present' });
+        return { r, x, n };
+    }
+
+    it('parses with a path, the archived photo, and the duplicate it merges', () => {
+        expect(parseDecision({ schemaVersion: 1, decisionId: '00000000-0000-4000-8000-000000000001', type: 'restore', path: 'b.jpg', photoId: PHOTO, merge: OTHER, actor: 'test', reason: '', createdAt: '2026-06-01T12:00:00.000Z' })).toHaveProperty('decision');
+        expect(parseDecision({ schemaVersion: 1, decisionId: '00000000-0000-4000-8000-000000000001', type: 'restore', photoId: PHOTO, actor: 'test', reason: '', createdAt: '2026-06-01T12:00:00.000Z' })).toEqual({ invalid: 'restore needs a library-relative path' });
+    });
+
+    it('brings an archived photo back under its old ID at the path its bytes came back to, merging the duplicate', () => {
+        const { r, x, n } = archivedAndBack('b.jpg');
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: x, merge: n });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'applied' }]);
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'b.jpg', present: true, observedRevision: revisionOf('A') } });
+        expect(r.photo(x).mergedInto).toBeUndefined();
+        expect(r.photo(n)).toMatchObject({ mergedInto: x, sourceHealth: 'archived' });
+        expect(r.last.facts).toMatchObject([{ type: 'renamed', photoId: x, path: 'b.jpg', fromPath: 'a.jpg' }]);
+    });
+
+    it('reports reappeared when the bytes came back at the archived photo\'s own path', () => {
+        const { r, x, n } = archivedAndBack('a.jpg');
+        r.decide({ type: 'restore', path: 'a.jpg', photoId: x, merge: n });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'applied' }]);
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'a.jpg', present: true } });
+        expect(r.last.facts).toMatchObject([{ type: 'reappeared', photoId: x, path: 'a.jpg' }]);
+    });
+
+    it('takes the same pixels in other bytes as a replacement of the restored photo', () => {
+        const { r, x, n } = archivedAndBack('b.jpg', image('A2', { pixels: 'A' }));
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: x, merge: n });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'applied' }]);
+        expect(r.photo(x)).toMatchObject({ sourceHealth: 'present', source: { path: 'b.jpg', observedRevision: revisionOf('A2') } });
+        expect(r.last.facts).toMatchObject([{ type: 'replaced', photoId: x, assetRevision: revisionOf('A2'), path: 'b.jpg' }]);
+    });
+
+    it('refuses a photo that is not archived, or was merged, and leaves an archived one archived when the bind would refuse', () => {
+        const { r, x, n } = archivedAndBack('b.jpg');
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: n });
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: x });
+        r.pass();
+        expect(outcomes(r)).toEqual([
+            { status: 'rejected', reason: `${n} is not archived, so there is nothing to restore` },
+            { status: 'rejected', reason: `b.jpg is bound to ${n}. To merge ${n} into ${x}, name it with --merge` },
+        ]);
+        expect(r.photo(x).sourceHealth).toBe('archived');
+        expect(r.photo(n)).toMatchObject({ sourceHealth: 'present', duplicateOf: x });
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: x, merge: n });
+        r.pass();
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: n });
+        r.pass();
+        expect(outcomes(r)).toEqual([{ status: 'rejected', reason: `${n} was merged into ${x}, so it can't be restored` }]);
+    });
+});
+
+describe('reconcile: other pixels suggested for a missing photo (#17, A5)', () => {
+    const at = (when: string) => {
+        const inspection = image(`dated ${when}`);
+        return { ...inspection, curatorOnly: { ...inspection.curatorOnly, dateTimeOriginal: { value: when, source: 'test' } } };
+    };
+
+    it('suggests the missing photo with the same file name for other pixels at a new path', () => {
+        const r = seeded({ 'harbor/boat.jpg': 'A', 'harbor/pier.jpg': 'P' });
+        const x = r.photoAt('harbor/boat.jpg').photoId;
+        r.library.remove('harbor/boat.jpg');
+        r.pass();
+        r.library.put('edits/Boat.JPG', image('B'));
+        r.pass();
+        expect(r.last.facts).toMatchObject([{ type: 'new', path: 'edits/Boat.JPG', suggestedFor: x, suggestedBy: 'basename' }]);
+    });
+
+    it('suggests it in the pass that finds it gone, too', () => {
+        const r = seeded({ 'harbor/boat.jpg': 'A' });
+        const x = r.photoAt('harbor/boat.jpg').photoId;
+        r.library.remove('harbor/boat.jpg').put('edits/boat.jpg', image('B'));
+        r.pass();
+        expect(r.last.facts).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'new', path: 'edits/boat.jpg', suggestedFor: x, suggestedBy: 'basename' }), expect.objectContaining({ type: 'missing', photoId: x })]));
+    });
+
+    it('suggests the missing photo taken at the same moment, whatever the file is called', () => {
+        const r = new Reconciler();
+        r.library.put('harbor/boat.jpg', at('2024-06-01T05:06:07'));
+        r.pass();
+        const x = r.photoAt('harbor/boat.jpg').photoId;
+        r.library.remove('harbor/boat.jpg');
+        r.pass();
+        r.library.put('edits/final.jpg', { ...at('2024-06-01T05:06:07'), assetRevision: revisionOf('edited'), pixelDigest: revisionOf('edited pixels') });
+        r.pass();
+        expect(r.last.facts).toMatchObject([{ type: 'new', path: 'edits/final.jpg', suggestedFor: x, suggestedBy: 'capture-time' }]);
+    });
+
+    it('suggests nothing for a present photo, an archived one, a duplicate, or a file at the missing path', () => {
+        const r = seeded({ 'harbor/boat.jpg': 'A', 'harbor/pier.jpg': 'P' });
+        const x = r.photoAt('harbor/boat.jpg').photoId;
+        r.library.put('edits/pier.jpg', image('P2'));
+        r.pass();
+        expect(r.last.facts[0]).not.toHaveProperty('suggestedFor');
+        r.library.remove('harbor/boat.jpg');
+        r.pass();
+        r.library.put('harbor/boat.jpg', image('B'));
+        r.pass();
+        // Other bytes at its own last path are samePathAs, as before, not a suggestion.
+        expect(r.last.facts).toMatchObject([{ type: 'new', samePathAs: x }]);
+        expect(r.last.facts[0]).not.toHaveProperty('suggestedFor');
+        r.decide({ type: 'archive', photoId: x });
+        r.pass();
+        r.library.put('more/boat.jpg', image('C'));
+        r.pass();
+        expect(r.last.facts[0]).not.toHaveProperty('suggestedFor');
+    });
+});
+
+describe('the registry after a restore and a suggestion, read by v1.7.x (#183, A5 review)', () => {
+    // The registry's fields at v1.7.0 (lib/identity/types.ts at 0de8ab31). Its reader there, readStoredRegistry(), is
+    // the one this build runs: lib/identity/registry.ts hasn't changed since.
+    const V1 = {
+        registry: ['schemaVersion', 'version', 'updatedAt', 'photos', 'holds', 'pendingFacts', 'decided'],
+        photo: ['photoId', 'createdAt', 'source', 'sourceHealth', 'duplicateOf', 'mergedInto', 'revisions'],
+        revision: ['assetRevision', 'pixelDigest', 'firstSeenAt', 'firstSeenPath', 'sourceBytes', 'sourceFormat', 'width', 'height', 'orientation', 'derived', 'curatorOnly', 'reassignedTo', 'profiles'],
+        health: ['present', 'missing', 'ambiguous', 'archived'],
+        fact: ['type', 'factId', 'key', 'photoId', 'assetRevision', 'path', 'folder', 'observedAt', 'fromPath', 'candidates', 'duplicateOf', 'samePathAs', 'revert', 'reason'],
+    };
+
+    it('keeps schema version 1 and only fields v1.7.x reads, but for the suggestion on a fact, which its sinks drop', () => {
+        const r = seeded({ 'a.jpg': 'A', 'harbor/boat.jpg': 'B' });
+        const x = r.photoAt('a.jpg').photoId;
+        r.library.remove('a.jpg');
+        r.pass();
+        r.decide({ type: 'archive', photoId: x });
+        r.pass();
+        r.library.put('b.jpg', image('A'));
+        r.pass();
+        const n = Object.values(r.registry.photos).find((photo) => photo.source.path === 'b.jpg')?.photoId as string;
+        r.decide({ type: 'restore', path: 'b.jpg', photoId: x, merge: n });
+        r.pass();
+        r.library.remove('harbor/boat.jpg');
+        r.pass();
+        r.library.put('edits/boat.jpg', image('C'));
+        const suggested = r.pass().facts;
+        expect(suggested).toMatchObject([{ suggestedFor: expect.any(String) }]);
+
+        expect(r.registry.schemaVersion).toBe(1);
+        const within = (value: object, allowed: string[]) => Object.keys(value).filter((key) => !allowed.includes(key));
+        expect(within(r.registry, V1.registry)).toEqual([]);
+        for (const photo of Object.values(r.registry.photos)) {
+            expect(within(photo, V1.photo)).toEqual([]);
+            expect(V1.health).toContain(photo.sourceHealth);
+            for (const revision of Object.values(photo.revisions)) expect(within(revision, V1.revision)).toEqual([]);
+        }
+        for (const fact of suggested) expect(within(fact, V1.fact).sort()).toEqual(['suggestedBy', 'suggestedFor']);
     });
 });

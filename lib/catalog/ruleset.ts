@@ -1,5 +1,6 @@
 import './asset-rules';
 import './review-rules';
+export { AUTHORED_ONLY_RULE_IDS } from './review-rules';
 
 /**
  * The rule runner for every process: rules.ts's registry with every rule

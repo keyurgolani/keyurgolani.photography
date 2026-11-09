@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, useTransform, animate, type AnimationPlaybackControls } from 'framer-motion';
 import type { AboutPortraitView } from '@/lib/siteConfig/portraitVariants';
-import { badgePlace, boxOf, chromeOverflows, homeCopyTop, textEnlarged, type BadgePlace, type Box } from './badgePlace';
+import { badgePlace, boxOf, chromeOverflows, copyAboveDarkWash, homeCopyTop, textEnlarged, type BadgePlace, type Box, type StoryBox } from './badgePlace';
 import ProfilePicture from './ProfilePicture';
 import { HOME_LOADING_TIMEOUT_MS } from './home/homeChromeConfig';
 import { usePrefersReducedMotion } from './motion/usePrefersReducedMotion';
@@ -272,7 +272,8 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   const handleUnusable = useCallback(() => setPortraitFailed(true), []);
 
   // The badge's place, from the chrome's own boxes, measured before the first paint and again whenever Home, the
-  // nav or the story changes size, or the story's copy changes (`copyKey`). The chrome is in the document while it's
+  // nav or the story changes size, or the story's copy changes (`copyKey`), and once the fonts are in, since a title
+  // that re-wraps in its own face can change no box the observer watches. The chrome is in the document while it's
   // hidden, so its boxes are there to measure.
   const portraitRef = useRef<HTMLDivElement>(null);
   const [placeKind, setPlaceKind] = useState<BadgePlace['kind'] | null>(null);
@@ -280,12 +281,19 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     const element = portraitRef.current;
     if (!element || !showPortrait) return;
     const root = element.closest('main') ?? document.body;
+    let current = true;
     const measure = () => {
+      if (!current) return;
       const place = badgePlace(
         { width: window.innerWidth, height: window.innerHeight },
         element.offsetWidth,
         boxOf(root.querySelector('[data-chrome-region="nav"]')),
-        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a, [data-chrome-panel])')].map(boxOf).filter((box): box is Box => box !== null),
+        [...root.querySelectorAll('[data-chrome-region="story"] :is(h1, h2, p, a, [data-chrome-panel])')]
+          .map((element): StoryBox | null => {
+            const box = boxOf(element);
+            return box && element.hasAttribute('data-chrome-panel') ? { ...box, panel: true } : box;
+          })
+          .filter((box): box is StoryBox => box !== null),
       );
       if (place === null) {
         for (const name of ['--badge-dx', '--badge-dy', '--badge-scale']) element.style.removeProperty(name);
@@ -297,11 +305,14 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       setPlaceKind(place?.kind ?? null);
     };
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer.observe(region);
-    return () => observer.disconnect();
+    void document.fonts?.ready.then(measure);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(root);
+    for (const region of root.querySelectorAll('[data-chrome-region="nav"], [data-chrome-region="story"]')) observer?.observe(region);
+    return () => {
+      current = false;
+      observer?.disconnect();
+    };
   }, [showPortrait, copyKey]);
 
   // The copy's top, for the phone wash (HomeChrome.module.css), with or without a portrait. It's measured against the
@@ -310,7 +321,9 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
   // changes no box the observer watches (M2). New copy (`copyKey`) measures again and observes its own elements. When
   // the chrome scrolls, as large text can make it, the copy moves under a fixed scrim, so the hold covers the whole
   // print instead (M1). With the text enlarged Home's root says so too, and Black's wash then follows the copy as the
-  // other themes' does (spec §10); at default text it doesn't.
+  // other themes' does (spec §10); at default text it doesn't. Where the title or the statement starts higher than
+  // Dark's fixed phone wash holds it (copyAboveDarkWash()), Home's root says that too, and Dark's wash follows the copy
+  // there; everywhere else, a chrome that scrolls included, Dark keeps today's wash.
   useLayoutEffect(() => {
     const story = document.querySelector('[data-chrome-region="story"]');
     const root = story?.closest('main');
@@ -318,6 +331,11 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
     const scrim = root.querySelector<HTMLElement>('[data-home-vignette]') ?? root;
     const chrome = story.closest('[data-home-chrome]');
     const copy = () => [...story.querySelectorAll(':is(h1, h2, p, a)')];
+    /** Where `element`'s top sits on the stage, as homeCopyTop() gives it, or null where it isn't there to measure. */
+    const topOf = (stage: Box | null, element: Element | null) => {
+      const box = boxOf(element);
+      return stage && box ? homeCopyTop(stage, [box]) : null;
+    };
     let written: string | null = null;
     let current = true;
     const measure = () => {
@@ -332,6 +350,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
         written = value;
       }
       root.toggleAttribute('data-text-enlarged', textEnlarged(parseFloat(getComputedStyle(document.documentElement).fontSize)));
+      root.toggleAttribute('data-copy-high', copyAboveDarkWash(topOf(stage, story.querySelector(':is(h1, h2)')), topOf(stage, story.querySelector('p'))));
     };
     measure();
     void document.fonts?.ready.then(measure);
@@ -342,6 +361,7 @@ export default function HeroReveal({ isLoading, onSettled, onPhaseChange, portra
       observer?.disconnect();
       scrim.style.removeProperty('--home-copy-top');
       root.removeAttribute('data-text-enlarged');
+      root.removeAttribute('data-copy-high');
     };
   }, [copyKey]);
 

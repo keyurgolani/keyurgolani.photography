@@ -1,0 +1,32 @@
+// The delete rail's module-name control (test/deleteRail.test.ts): deleting
+// packages, by import, default import, require and dynamic import. Kept as
+// .txt so tsc doesn't try to resolve them. Nothing imports or runs it.
+import rimraf from 'rimraf';
+import { deleteAsync } from 'del';
+import * as fse from 'fs-extra';
+import trash from 'trash';
+const again = require('fs-extra');
+export const later = () => import('rimraf');
+export * from 'fs-extra/lib/remove';
+export { sync } from 'rimraf/dist/sync';
+import fsAlias = require('node:fs');
+export const dyn = (name: string) => fsAlias[name];
+import { default as fsNamed } from 'node:fs';
+export const viaNamedDefault = (name: string) => fsNamed[name];
+const { default: whole } = require('node:child_process');
+export const viaDestructuredDefault = (command: string) => whole.exec(command);
+export const viaDotDefault = async (name: string) => (await import('node:fs')).default[name];
+export * from 'node:fs';
+export { exec as run } from 'node:child_process';
+export const viaData = () => import('data:text/javascript,1');
+
+// Round 9 (item 48): modules that run code or reach native bindings, however they're loaded.
+import cluster from 'node:cluster';
+import * as inspector from 'inspector';
+import repl from 'node:repl';
+import { WASI } from 'node:wasi';
+import { Module } from 'module';
+export function viaCodeModules() {
+    require('worker_threads');
+    return import('node:inspector/promises');
+}

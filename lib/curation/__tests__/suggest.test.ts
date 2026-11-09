@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { eventIdOf, eventKey, fingerprintOf, parseEvent } from '../events';
-import { filenameTokens, loadRules, suggestForNew, type SuggestInput } from '../suggest';
+import { filenameTokens, loadRules, placementFor, suggestForNew, type SuggestInput } from '../suggest';
 import { MAX_DESCRIPTION_LENGTH, MAX_REASON_LENGTH, ownerText } from '../text';
 
 const AT = '2026-02-01T00:00:00.000Z';
@@ -15,7 +15,7 @@ describe('series suggestions', () => {
     it('suggests a configured folder at high confidence, the end of it as the position, and no description', () => {
         const result = suggestForNew(input({ schemaVersion: 1, series: [{ seriesId: 'ser_harbor', folders: ['trips'] }] }));
         expect(result.series).toMatchObject({ value: 'ser_harbor', confidence: 'high', producedAt: AT });
-        expect(result.placement).toMatchObject({ value: 'end', confidence: 'low', producedBy: 'placement@1' });
+        expect(result.placement).toMatchObject({ value: 'end', confidence: 'low', producedBy: 'placement@2' });
         expect(Object.keys(result)).toEqual(['series', 'placement']);
     });
 
@@ -77,6 +77,47 @@ describe('series suggestions', () => {
     });
 });
 
+const P = (n: number) => `ph_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+describe('insertion suggestions (#14, A8)', () => {
+    const rules = { schemaVersion: 1, series: [{ seriesId: 'ser_harbor', folders: ['trips'] }] };
+    const members = (dates: (string | null)[]) => new Map([['ser_harbor', dates.map((capturedDate, index) => ({ photoId: P(index + 1), capturedDate }))]]);
+    const placed = (capturedDate: string | null, dates: (string | null)[]) => suggestForNew(input(rules, { capturedDate, seriesMembers: members(dates) })).placement;
+
+    it('puts a dated photograph after the last one captured on or before it, at medium', () => {
+        expect(placed('2024-06-01', ['2024-05-01', '2024-06-01', '2024-07-01'])).toMatchObject({ value: { after: P(2) }, confidence: 'medium', producedBy: 'placement@2' });
+        expect(placed('2024-06-15', ['2024-05-01', '2024-06-01', '2024-07-01'])?.value).toEqual({ after: P(2) });
+        // Undated members are skipped over, never compared.
+        expect(placed('2024-06-15', ['2024-05-01', null, '2024-07-01'])?.value).toEqual({ after: P(1) });
+    });
+
+    it('puts one captured before every dated photograph before the first of them, and one after them all at the end', () => {
+        expect(placed('2024-01-01', ['2024-05-01', '2024-06-01'])).toMatchObject({ value: 'start', confidence: 'medium' });
+        expect(placed('2024-01-01', [null, '2024-05-01'])).toMatchObject({ value: { after: P(1) }, confidence: 'medium' });
+        expect(placed('2025-01-01', ['2024-05-01', '2024-06-01'])).toMatchObject({ value: 'end', confidence: 'medium' });
+    });
+
+    it('says which photographs it placed it between, by date, never a file name', () => {
+        const placement = placed('2024-06-15', ['2024-05-01', '2024-06-01', '2024-07-01']);
+        expect(placement?.evidence.join(' ')).toMatch(/captured 2024-06-15/);
+        expect(placement?.evidence.join(' ')).toMatch(/2024-06-01/);
+        expect(placement?.evidence.join(' ')).not.toMatch(/harbor-dawn|\.jpg/);
+    });
+
+    it('never places a photograph after itself, when the series already lists it (A8 review N8)', () => {
+        const members = [{ photoId: P(1), capturedDate: '2024-05-01' }, { photoId: P(9), capturedDate: '2024-06-15' }, { photoId: P(2), capturedDate: '2024-07-01' }];
+        expect(placementFor('2024-06-15', members, 'ser_harbor', AT, P(9)).value).toEqual({ after: P(1) });
+        expect(placementFor('2024-08-01', [{ photoId: P(1), capturedDate: '2024-05-01' }, { photoId: P(9), capturedDate: '2024-08-01' }], 'ser_harbor', AT, P(9)).value).toBe('end');
+    });
+
+    it('suggests the end at low for an undated photograph, or a series with no dated photograph', () => {
+        expect(placed(null, ['2024-05-01', '2024-06-01'])).toMatchObject({ value: 'end', confidence: 'low', producedBy: 'placement@2' });
+        expect(placed(null, ['2024-05-01'])?.evidence.join(' ')).toMatch(/no capture date/);
+        expect(placed('2024-06-01', [null, null])).toMatchObject({ value: 'end', confidence: 'low' });
+        expect(placed('2024-06-01', [])).toMatchObject({ value: 'end', confidence: 'low' });
+    });
+});
+
 describe('event keys', () => {
     const fact = { photoId: 'ph_00000000-0000-4000-8000-000000000001', assetRevision: `sha256-${'a'.repeat(64)}`, key: `new:ph_00000000-0000-4000-8000-000000000001:sha256-${'a'.repeat(64)}` };
 
@@ -99,7 +140,8 @@ describe('event keys', () => {
     });
 
     it('refuse a record from a newer build', () => {
-        expect(parseEvent({ schemaVersion: 2 })).toMatchObject({ ok: false, reason: 'unknown-schema-version' });
+        expect(parseEvent({ schemaVersion: 3 })).toMatchObject({ ok: false, reason: 'unknown-schema-version' });
+        expect(parseEvent({ schemaVersion: 2 })).toMatchObject({ ok: false, reason: 'invalid' });
         expect(parseEvent({ schemaVersion: 1 })).toMatchObject({ ok: false, reason: 'invalid' });
     });
 });

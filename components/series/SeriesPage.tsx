@@ -5,7 +5,7 @@ import SeriesPhoto from './SeriesPhoto';
 import SeriesReturn from './SeriesReturn';
 import SeriesSequence from './SeriesSequence';
 import { coverSizes } from './seriesCopy';
-import { altOf, capturedSource, coverEntryName, yearsLabel } from './seriesLabels';
+import { altOf, capturedSource, coverEntryName, locationsLabel, yearsLabel } from './seriesLabels';
 import { COVER_ID } from './returnPosition';
 import styles from './SeriesPage.module.css';
 
@@ -18,6 +18,12 @@ export interface SeriesPageProps {
 /** Interface copy for the derived facts, apart from the authored text. */
 export const FACTS_HEADING = 'From the published photographs';
 export const ALL_WORK = 'All work';
+/**
+ * The top All work link's name (#5). Both links go to /work, and the contract's rule 2 gives every control a name of
+ * its own, so the top one says where it goes. It starts with the visible words (WCAG 2.5.3), and the end one keeps
+ * plain ALL_WORK.
+ */
+export const ALL_WORK_TOP_NAME = `${ALL_WORK}, back to the series list`;
 
 /** The derived facts, each with where it came from, so none reads as authored copy. */
 function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
@@ -50,7 +56,7 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
                     <div className={styles.fact}>
                         <dt>{facts.locations.values.length === 1 ? 'Location' : 'Locations'}</dt>
                         <dd data-source={facts.locations.source}>
-                            {facts.locations.values.join(', ')}
+                            {locationsLabel(facts.locations.values)}
                             <span className={styles.source}>From the photograph records</span>
                         </dd>
                     </div>
@@ -64,20 +70,32 @@ function Facts({ facts, total }: { facts: SeriesFacts; total: number }) {
  * A published series in Gallery After Hours (#5): the title, the authored
  * statement, the cover as the one decisive photograph, the derived facts set
  * apart, then the authored sequence, cut into its chapters without
- * reordering, and an All work link at its end. The sequence is
- * SeriesSequence, which shows the first page and appends the rest on Show
- * more (#6); every prop it takes comes from the projection's allowlist.
+ * reordering. An All work link sits above the title and another at the end,
+ * so the way back is there at both ends of a long sequence. The sequence is
+ * SeriesSequence, which shows the server's page and loads the rest on Show
+ * more and, after a deep entry (`?photo=`, B5), Show earlier (#6); every
+ * prop it takes comes from the projection's allowlist.
  * The cover and each entry link to their canonical Viewer URL. Entries carry
  * `id="photo-<photoId>"` and the cover `id="series-cover"`, so SeriesReturn
- * (whose props are the series path, slug, revision, and total) and #9 can
- * put focus back on the one that opened the Viewer.
+ * (whose props are the series path, slug, revision, total, the server
+ * page's first position, and the photograph `?photo=` resolved to) and #9 can put focus back on the one
+ * that opened the Viewer, or on the one a deep link names. `main` carries the
+ * revision the page came from (`data-catalog-revision`), as Work's list and
+ * Home's main do, for #12's freshness checks; generateMetadata puts the same
+ * one in a `catalog-revision` meta tag.
  */
 export default function SeriesPage({ page }: SeriesPageProps) {
     const { total, cover } = page;
     return (
-        <main className={styles.page}>
+        <main className={styles.page} data-catalog-revision={page.catalogRevision}>
             <article aria-labelledby="series-title">
                 <header className={styles.header}>
+                    {/* A paragraph, not a nav: SiteNav is the page's one navigation landmark. */}
+                    <p className={styles.back}>
+                        <Link href={page.workHref} className={styles.allWork} aria-label={ALL_WORK_TOP_NAME}>
+                            {ALL_WORK}
+                        </Link>
+                    </p>
                     <h1 id="series-title" className={styles.title}>
                         {page.authored.title}
                     </h1>
@@ -98,7 +116,7 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                             id={COVER_ID}
                             href={cover.href}
                             prefetch={false}
-                            aria-label={coverEntryName({ alt: altOf(cover.description), position: cover.position, total })}
+                            aria-label={coverEntryName({ title: cover.title, alt: altOf(cover.description), position: cover.position, total })}
                             className={styles.coverLink}
                             style={{ '--ratio': `${cover.image.width} / ${cover.image.height}` } as CSSProperties}
                             // The focus ring clears the cover's surround (--ring-room, SeriesPage.module.css).
@@ -122,20 +140,29 @@ export default function SeriesPage({ page }: SeriesPageProps) {
                     </figure>
                 )}
 
-                {/* Keyed by revision and series, so a new revision's page starts its own sequence and drops the old one's pages. */}
+                {/* Keyed by revision, series, and the server's page, so a new revision's page, or another page after a refresh for
+                    ?photo= (B5), starts its own sequence and drops the old one's pages. */}
                 <SeriesSequence
-                    key={`${page.catalogRevision}:${page.slug}`}
+                    key={`${page.catalogRevision}:${page.slug}:${page.entries[0]?.position ?? 1}`}
                     revisionId={page.catalogRevision}
                     slug={page.slug}
                     href={page.href}
                     entries={page.entries}
                     total={total}
+                    prevHref={page.prevHref}
                     nextHref={page.nextHref}
                     chapters={page.chapters}
                 />
 
                 {/* Outside the sequence section, which SeriesSequence renders. */}
-                <SeriesReturn path={page.href} slug={page.slug} revisionId={page.catalogRevision} total={total} />
+                <SeriesReturn
+                    path={page.href}
+                    slug={page.slug}
+                    revisionId={page.catalogRevision}
+                    total={total}
+                    firstPosition={page.entries[0]?.position ?? 1}
+                    focusPhotoId={page.focusPhotoId}
+                />
 
                 <p className={styles.end}>
                     <Link href={page.workHref} className={styles.allWork}>

@@ -2,17 +2,18 @@ import 'server-only';
 import { compileCandidate, type CompileResult } from '@/lib/catalog/compile';
 import { diffCatalog, type CatalogDiff } from '@/lib/catalog/diff';
 import { previewBasePath, previewFrameHref, previewRoutes } from '@/lib/catalog/preview-reader';
+import { checkDraft } from '@/lib/catalog/publish';
 import { listActivations, readRevisionFile, revisionNumberFor } from '@/lib/catalog/repository';
 import { readReviewContext } from '@/lib/catalog/review-context';
 import { createRouteBuilder } from '@/lib/catalog/routes';
-import { fieldReview, inboxReviewOf, type FieldReviewState, type ReviewEnv } from '@/lib/catalog/review';
-import type { ActivePointer, Activation, Issue, IssueRecord, RevisionFile, WorkingLayer } from '@/lib/catalog/types';
+import type { ActivePointer, Activation, Issue, RevisionFile, WorkingLayer } from '@/lib/catalog/types';
+import { rollbackReadiness } from '@/lib/catalog/verify';
 import { readActivePointer, readWorkingLayer } from '@/lib/catalog/working-layer';
 import type { ReviewContext } from '@/lib/catalog/review';
 import { readRegistry } from '@/lib/identity/registry';
 import type { Registry } from '@/lib/identity/types';
 import { dataRootStatus } from '@/lib/storage/config';
-import type { Blocker, Ledger, RevisionFacts, ScreenView } from '@/lib/curation/publish-facts';
+import type { Blocker, Ledger, PublishWarning, RevisionFacts, RollbackReadiness, ScreenView } from '@/lib/curation/publish-facts';
 import { buildLedger, Names, panelLines, panelTarget } from '@/lib/curation/publish-view';
 import type { HistoryView } from '@/lib/curation/publish-history';
 import { loadHistoryView, type HistoryLoadOptions } from './history-load';
@@ -77,23 +78,10 @@ export async function readSnapshot(): Promise<Snapshot | null> {
 }
 
 /**
- * Each of `fields` of one record as review reads it now, from a fresh read:
- * fieldReview()'s state, and what the inbox item its stamp names says on its
- * own, which a stale base would hide behind its own reason. The screen's
- * review writes check both before they write (16-3).
+ * The ledger, its blockers and its warnings for a snapshot: the blockers predicted on a page load (`issues` null),
+ * with the warnings from `checked`, the load's own check of the draft; or both from an answer's diagnostics.
  */
-export async function reviewNow(root: string, record: IssueRecord, fields: readonly string[]): Promise<{ field: string; state: FieldReviewState; inbox: FieldReviewState | null }[]> {
-    const pointer = await readActivePointer(root);
-    const layer = await readWorkingLayer(root);
-    const active = pointer ? await readRevisionFile(root, pointer.revisionId) : null;
-    if (pointer && active === null) throw new Error('The active pointer names a revision with no file.');
-    const review = await readReviewContext(root, layer, active?.revisionId ?? null);
-    const env: ReviewEnv = { layer, active: active ? { revisionId: active.revisionId, content: active.content } : null, review };
-    return fields.map((field) => ({ field, state: fieldReview({ record, field }, env), inbox: inboxReviewOf({ record, field }, env) }));
-}
-
-/** The ledger and its blockers for a snapshot: predicted on a page load (`issues` null), or from an answer's diagnostics. */
-export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): { ledger: Ledger; blockers: Blocker[] } {
+export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null, checked: readonly Issue[] | null = null): { ledger: Ledger; blockers: Blocker[]; warnings: PublishWarning[] } {
     const routes = previewRoutes(snapshot.compiled.candidateId);
     return buildLedger({
         diff: snapshot.diff,
@@ -104,12 +92,38 @@ export function ledgerOf(snapshot: Snapshot, issues: readonly Issue[] | null): {
         review: snapshot.review,
         activations: snapshot.activations,
         issues,
+        diagnostics: checked,
         media: { draft: (url) => routes.mediaHref(url), live: (url) => url },
     });
 }
 
-/** The view for a snapshot, as a page load shows it. */
-export function viewOf(snapshot: Snapshot): ScreenView {
+/**
+ * #117: whether `revisionId`, the revision the page shows as live, is
+ * rollback-ready, through verify.ts's lastKnownGood() gate: the live checks
+ * without digests, then the record `photos verify` writes. Read only, and it
+ * never throws. `registry`: one this read already has.
+ */
+export async function readinessOf(root: string, revisionId: string, registry?: Registry): Promise<RollbackReadiness> {
+    const readiness = await rollbackReadiness(root, { revisionId, ...(registry ? { registry } : {}) });
+    if (readiness.state === 'failed') return { state: 'failed', reason: readiness.reason };
+    return { state: readiness.state === 'none' ? 'unknown' : readiness.state };
+}
+
+/**
+ * The load's own check of the draft, or null when it throws: the warnings it lists never block, so a check that fails
+ * lists none and leaves the page, its ledger, History and Restore, as they are. The log names why.
+ */
+function checkedOrNull(snapshot: Snapshot): Issue[] | null {
+    try {
+        return checkDraft(snapshot.root, snapshot);
+    } catch (error) {
+        console.error('[curation] The Publish screen could not check the draft for warnings:', error);
+        return null;
+    }
+}
+
+/** The view for a snapshot, as a page load shows it, with what readinessOf() said of its active revision. */
+export function viewOf(snapshot: Snapshot, rollbackReady: RollbackReadiness = { state: 'unknown' }): ScreenView {
     const { compiled, active, activations, diff } = snapshot;
     const draftId = compiled.candidateId;
     // What `photos rollback` returns to now: the revision the active pointer's activation replaced.
@@ -126,7 +140,9 @@ export function viewOf(snapshot: Snapshot): ScreenView {
     // The Nothing states show the live site as it is: its own series, at the top.
     const liveSeries = kind === 'ledger' ? series : active.content.series[0];
     const lines = kind === 'ledger' ? panelLines(diff, compiled.content, active.content, target.seriesId, names) : liveLines(active, names);
-    const { ledger, blockers } = kind === 'ledger' ? ledgerOf(snapshot, null) : { ledger: { authored: [], derived: [], health: [] }, blockers: [] };
+    // The warnings come from the same rules `photos validate` runs, on the draft this load compiled, so they're current
+    // with the registry's source health too, which the draft's ID doesn't cover. About a third of the read's own time.
+    const { ledger, blockers, warnings } = kind === 'ledger' ? ledgerOf(snapshot, null, checkedOrNull(snapshot)) : { ledger: { authored: [], derived: [], health: [] }, blockers: [], warnings: [] };
     return {
         draftId,
         draftNumber: revisionNumberFor(activations, draftId),
@@ -136,12 +152,14 @@ export function viewOf(snapshot: Snapshot): ScreenView {
         kind,
         ledger,
         blockers,
+        warnings,
         panel: {
             ...lines,
             draftSrc: kind === 'ledger' ? at(preview) : null,
             liveSrc: kind === 'ledger' ? at(live) : liveSeries ? live.seriesHref(liveSeries.slug) : live.workHref(),
             ...(kind === 'ledger' && series && target.photoId ? { scrollToId: `photo-${target.photoId}` } : {}),
         },
+        rollbackReady,
     };
 }
 
@@ -169,7 +187,7 @@ export async function loadPublishPage(query: PageQuery = {}): Promise<PublishPag
     try {
         snapshot = await readSnapshot();
         if (snapshot === null) return { state: 'not-launched' };
-        view = viewOf(snapshot);
+        view = viewOf(snapshot, await readinessOf(snapshot.root, snapshot.active.revisionId, snapshot.registry));
         history = await loadHistoryView(snapshot.root, { ...query, draftPending: view.kind === 'ledger', conflicts: conflictRows(view) });
     } catch (error) {
         console.error('[curation] The Publish screen could not be read:', error);

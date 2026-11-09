@@ -10,6 +10,7 @@ import { readRegistry, writeRegistry } from '../../lib/identity/registry';
 import { runIdentityOnce } from '../../lib/identity/watcherStep';
 import { writeDataRootMarker } from '../../test/helpers/tempDataRoot';
 import { processImage } from '../../utils/imageOptimizer';
+import { keepWatcherAlive } from './watcher';
 
 /**
  * A site at the launch, through the real pipeline: a library of twelve
@@ -117,6 +118,8 @@ export async function createCarryOverFixture(): Promise<CarryOverFixture> {
         const ids = Object.fromEntries(Object.values(registry.photos).map((photo) => [photo.source.path, photo.photoId]));
         const order = (await readWorkingLayer(root)).series.find((series) => series.id === 'ser_gallery')?.photoIds ?? [];
         if (order.length !== photos.length) throw new Error(`The carry-over placed ${order.length} of ${photos.length} photographs`);
+        // The watcher ran once; this keeps its heartbeat fresh, so the Inbox shows no watcher warning (#14).
+        const watcher = await keepWatcherAlive(root);
         return {
             root,
             library,
@@ -124,7 +127,10 @@ export async function createCarryOverFixture(): Promise<CarryOverFixture> {
             order,
             output: { dryRun: dryRun.output, dryRunExit: dryRun.exitCode, apply: apply.output },
             gone,
-            cleanup: async () => fs.rmSync(temp, { recursive: true, force: true }),
+            cleanup: async () => {
+                watcher.stop();
+                fs.rmSync(temp, { recursive: true, force: true });
+            },
         };
     });
 }

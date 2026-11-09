@@ -76,14 +76,18 @@ describe('diffCatalog() categories', () => {
             expected: (w) => [['series', series(w, 0).id, 'title', 'authored']],
         },
         {
-            name: 'a statement, short statement, cover, chapters, and accent are authored, one row each',
+            name: 'a statement, short statement, cover, and accent are authored, one row each, and a new chapter is its own row',
             edit: (w) => {
                 const s = series(w, 0);
                 const next = { statement: 'Fixture statement, edited.', shortStatement: 'Fixture short, edited.', cover: { photoId: s.photoIds[1] }, chapters: [{ id: 'ch-1', title: 'Fixture chapter', startPhotoId: s.photoIds[0] }], accent: '#e0c080' };
                 Object.assign(s, next);
                 Object.assign(authoredSeries(w, s.id), next);
             },
-            expected: (w) => ['accent', 'chapters', 'cover', 'shortStatement', 'statement'].map((field) => ['series', series(w, 0).id, field, 'authored']),
+            expected: (w) => [
+                ['series', series(w, 0).id, 'accent', 'authored'],
+                ['series', series(w, 0).id, 'chapters[ch-1]', 'new'],
+                ...['cover', 'shortStatement', 'statement'].map((field): [string, string, string, ChangeCategory] => ['series', series(w, 0).id, field, 'authored']),
+            ],
         },
         {
             name: 'a caption and a description are authored, and a switch to decorative says so',
@@ -138,7 +142,8 @@ describe('diffCatalog() categories', () => {
                 s.photoIds = [s.photoIds[1], s.photoIds[2], s.photoIds[0]];
                 authoredSeries(w, s.id).photoIds = [...s.photoIds];
             },
-            expected: () => [['series', catalog.content.series[0].id, `photoIds[${catalog.content.series[0].photoIds[0]}]`, 'moved']],
+            // A9: the two photographs the move shifts are the series' derived row's `positions`.
+            expected: () => [['series', catalog.content.series[0].id, 'derived', 'derived'], ['series', catalog.content.series[0].id, `photoIds[${catalog.content.series[0].photoIds[0]}]`, 'moved']],
         },
         {
             name: 'an insertion in the middle is new, with no spurious moves',
@@ -352,6 +357,97 @@ describe('diffCatalog() empty, provenance, and output', () => {
         Object.assign(photo(w, id), { assetRevision: B, width: 1000, aspectRatio: 0.625 });
         authoredPhoto(w, id).assetRevision = B;
     }
+});
+
+describe('chapters (A9)', () => {
+    /** The active revision with two chapters on the first series, and the working layer and candidate on it. */
+    function chaptered(): { w: World; active: RevisionFile } {
+        const w = world();
+        const s = series(w, 0);
+        const chapters = [{ id: 'ch-dawn', title: 'Dawn', startPhotoId: s.photoIds[0] }, { id: 'ch-dusk', title: 'Dusk', startPhotoId: s.photoIds[2] }];
+        const content = structuredClone(active.content);
+        content.series[0].chapters = structuredClone(chapters);
+        const published: RevisionFile = { ...active, revisionId: revisionIdOf(content), content };
+        s.chapters = structuredClone(chapters);
+        Object.assign(authoredSeries(w, s.id), { chapters: structuredClone(chapters) });
+        for (const record of [...w.layer.series, ...w.layer.photos]) record.baseRevisionId = published.revisionId;
+        if (w.layer.site) w.layer.site.baseRevisionId = published.revisionId;
+        return { w, active: published };
+    }
+    const setChapters = (w: World, chapters: AuthoredSeries['chapters']) => {
+        series(w, 0).chapters = structuredClone(chapters);
+        authoredSeries(w, series(w, 0).id).chapters = structuredClone(chapters);
+    };
+
+    it('gives each chapter its own row: new, removed, a title as authored, and a start photograph as moved', () => {
+        const { w, active: published } = chaptered();
+        const s = series(w, 0);
+        setChapters(w, [{ id: 'ch-dawn', title: 'First light', startPhotoId: s.photoIds[1] }, { id: 'ch-noon', title: 'Noon', startPhotoId: s.photoIds[2] }]);
+        const result = diff(w, { active: published });
+        expect(rows(result.changes)).toEqual([
+            ['series', s.id, 'chapters[ch-dawn]', 'authored'],
+            ['series', s.id, 'chapters[ch-dawn]', 'moved'],
+            ['series', s.id, 'chapters[ch-dusk]', 'removed'],
+            ['series', s.id, 'chapters[ch-noon]', 'new'],
+        ]);
+        const [title, start, removed, added] = result.changes;
+        expect(title).toMatchObject({ before: 'Dawn', after: 'First light' });
+        expect(title.surfaces).toContain('series');
+        expect(start).toMatchObject({ before: { startPhotoId: s.photoIds[0], position: 1 }, after: { startPhotoId: s.photoIds[1], position: 2 } });
+        expect(removed).toMatchObject({ before: { title: 'Dusk', startPhotoId: s.photoIds[2] }, after: null });
+        expect(added).toMatchObject({ before: null, after: { title: 'Noon', startPhotoId: s.photoIds[2] } });
+        // Every chapter row rests on the series' one chapters stamp.
+        for (const change of result.changes) expect(change.review.fields.map((entry) => entry.field)).toEqual(['chapters']);
+    });
+
+    it('keeps one whole-field row for a change no chapter row says, such as a new order of the same chapters', () => {
+        const { w, active: published } = chaptered();
+        setChapters(w, [...series(w, 0).chapters].reverse());
+        expect(rows(diff(w, { active: published }).changes)).toEqual([['series', series(w, 0).id, 'chapters', 'authored']]);
+    });
+});
+
+describe('positions (A9)', () => {
+    const derivedRow = (changes: CatalogChange[], seriesId: string) => changes.find((change) => change.record.id === seriesId && change.field === 'derived');
+
+    it("puts the photographs a move shifts in the series' derived row, by how far", () => {
+        const w = world();
+        const s = series(w, 0);
+        // The last photograph to the front: the two before it each shift one place later.
+        s.photoIds = [s.photoIds[2], s.photoIds[0], s.photoIds[1]];
+        authoredSeries(w, s.id).photoIds = [...s.photoIds];
+        const row = derivedRow(diff(w).changes, s.id) as CatalogChange;
+        expect(row).toMatchObject({ category: 'derived', fields: ['positions'], positions: { shifted: 2, by: 1 }, review: { state: 'not-required' } });
+        expect(row.summary).toMatch(/2 other photographs shift one place later/);
+    });
+
+    it('says the shift without a distance when the photographs move by different amounts', () => {
+        const w = world();
+        const s = series(w, 0);
+        // The other series' photographs come in around these three, which shift by one, one and two places.
+        const both = [...s.photoIds, ...series(w, 1).photoIds];
+        s.photoIds = [both[5], both[0], both[1], both[4], both[2], both[3]];
+        series(w, 1).photoIds = [];
+        s.derived.photoCount = 6;
+        series(w, 1).derived.photoCount = 0;
+        authoredSeries(w, s.id).photoIds = [...s.photoIds];
+        authoredSeries(w, series(w, 1).id).photoIds = [];
+        const row = derivedRow(diff(w).changes, s.id) as CatalogChange;
+        expect(row.positions).toEqual({ shifted: 3, by: null });
+        expect(row.summary).toMatch(/3 other photographs change place/);
+    });
+
+    it('counts the photograph a swap passes, and adds no row when nothing changes place', () => {
+        const w = world();
+        const s = series(w, 0);
+        s.photoIds = [s.photoIds[1], s.photoIds[0], s.photoIds[2]];
+        authoredSeries(w, s.id).photoIds = [...s.photoIds];
+        // b a c: a moves, and b, which it passes, shifts one place earlier.
+        const row = derivedRow(diff(w).changes, s.id);
+        expect(row?.positions).toEqual({ shifted: 1, by: -1 });
+        const still = world();
+        expect(derivedRow(diff(still).changes, series(still, 0).id)).toBeUndefined();
+    });
 });
 
 describe('an authored capture date', () => {

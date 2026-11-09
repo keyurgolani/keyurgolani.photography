@@ -4,6 +4,7 @@ import { canonicalJson } from '../identity/ids';
 import { readRegistry } from '../identity/registry';
 import type { Registry } from '../identity/types';
 import { configuredLibraryRoot, dataRootStatus } from '../storage/config';
+import type { VersionedWriteHooks } from '../storage/document';
 import { LockTimeoutError, withLock, type LockContext, type LockHooks, type LockRecord } from '../storage/lock';
 import { candidateFile, compileCandidate, type CompileResult } from './compile';
 import { legacySitePhotos } from './legacy-photos';
@@ -118,6 +119,8 @@ export interface PublishHooks {
     afterStep?(step: number): void | Promise<void>;
     /** Passed to the catalog lock, so a test can pause renewals. */
     lock?: LockHooks;
+    /** Passed to step 11's pointer write, so a test can fail it between its temp and its link (#181). */
+    pointer?: VersionedWriteHooks;
 }
 
 export interface PublishOptions {
@@ -143,14 +146,16 @@ export interface PublishOptions {
     authoredWaitMs?: number;
 }
 
-/** What a first publish replaces, for its confirmation and its dry run. */
+/** What a first publish puts on the site, for its confirmation and its dry run. */
 export interface LaunchImpact {
     /** Photographs the candidate publishes. */
     published: number;
     /**
-     * Photographs the legacy site counts as on it (legacySitePhotos()) that the candidate leaves out. They leave the
-     * site at launch. It counts by the registry: a photo hidden behind another's shared legacy set isn't on the site,
-     * but one whose legacy derivatives aren't all built still counts, so a missing or empty library can't lower it.
+     * Photographs a library the legacy site served still counts as on it (legacySitePhotos()) that the candidate
+     * leaves out. Only `photos carry-over`'s GONE_COUNT guard reads it, so nothing it didn't name by `--allow-missing`
+     * is lost at the launch; publish prints no such count, and a fresh library counts 0. It counts by the registry: a
+     * photo hidden behind another's shared legacy set isn't counted, but one whose legacy derivatives aren't all built
+     * still is, so a missing or empty library can't lower it.
      */
     gone: number;
 }
@@ -231,6 +236,7 @@ interface CommitInput {
     lockTakeover: Activation['lockTakeover'];
     clock: () => number;
     afterStep?: (step: number) => void | Promise<void>;
+    pointerHooks?: VersionedWriteHooks;
 }
 
 type CommitResult = { ok: true; activation: Activation } | { ok: false; outcome: 'LOCK_LOST'; message: string };
@@ -272,7 +278,7 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
     // A compare-and-swap on the version read above: a holder that lost the lock after that re-read, and finds the
     // pointer moved by the process that has it now, stops here instead of putting its revision back.
     try {
-        await writeActivePointer(root, { revisionId: pending.revisionId, activationId: pending.activationId }, pointer?.version ?? 0);
+        await writeActivePointer(root, { revisionId: pending.revisionId, activationId: pending.activationId }, pointer?.version ?? 0, input.pointerHooks);
     } catch (error) {
         if (error instanceof ActivePointerMovedError) return lost;
         throw error;
@@ -285,10 +291,28 @@ async function commitActivation(input: CommitInput): Promise<CommitResult> {
     return { ok: true, activation: committed };
 }
 
-/** Run every rule over a stored revision, as a rollback or a repair records it. */
-export function validateStored(root: string, revision: RevisionFile, registry: Registry | null): { validation: Activation['validation']; issues: Issue[] } {
-    const issues = runRules({ candidate: revision.content, authored: null, active: revision, registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } });
+/**
+ * Run every rule over a stored revision, as a rollback or a repair records
+ * it. `replaces` is the live revision a rollback would replace, or null when
+ * it can't be read, for #5's route rules; without it they have nothing to
+ * compare against and stay quiet.
+ */
+export function validateStored(root: string, revision: RevisionFile, registry: Registry | null, replaces?: RevisionFile | null): { validation: Activation['validation']; issues: Issue[] } {
+    const issues = acceptHints(runRules({ candidate: revision.content, authored: null, active: revision, ...(replaces === undefined ? {} : { replaces }), registry, roots: { dataRoot: root, libraryRoot: configuredLibraryRoot() } }));
     return { issues, validation: { rulesetVersion: rulesetVersion(), errors: countOf(issues, 'error'), warnings: countOf(issues, 'warning'), diagnosticsDigest: digestOf(issues) } };
+}
+
+/**
+ * A stored revision can't be edited, so an editorial rule's hint, which
+ * names the fix a publish takes, is wrong for it: the way past one is an
+ * accept. Each editorial issue gets that hint instead; integrity ones keep
+ * theirs.
+ */
+export function acceptHints(issues: readonly Issue[]): Issue[] {
+    const editorial = new Set(registeredRules().filter((rule) => rule.rollbackClass === 'editorial').map((rule) => rule.id));
+    return issues.map((issue) => (editorial.has(issue.code)
+        ? { ...issue, hint: `A rollback brings this back only once you accept it: --accept ${issue.code} with photos rollback, or its box in Restore on the Publish screen.` }
+        : issue));
 }
 
 /**
@@ -446,7 +470,7 @@ export function removedPhotos(active: RevisionFile | null, candidate: CompileRes
         .sort((a, b) => (a.photoId < b.photoId ? -1 : a.photoId > b.photoId ? 1 : 0));
 }
 
-function ruleContext(root: string, snapshot: Snapshot) {
+function ruleContext(root: string, snapshot: Pick<Snapshot, 'layer' | 'registry' | 'active' | 'compiled' | 'review'>) {
     return {
         candidate: snapshot.compiled.content,
         authored: snapshot.layer,
@@ -456,6 +480,15 @@ function ruleContext(root: string, snapshot: Snapshot) {
         excluded: snapshot.compiled.excluded,
         review: snapshot.review,
     };
+}
+
+/**
+ * Every rule's issues for a draft the caller has already read and compiled, as publish() and `photos validate` check
+ * it, with the same context. #16's Publish screen lists the warnings from it on each load, so they're current with
+ * the registry's source health as well as the draft. Writes nothing.
+ */
+export function checkDraft(root: string, draft: Pick<Snapshot, 'layer' | 'registry' | 'active' | 'compiled' | 'review'>): Issue[] {
+    return runRules(ruleContext(root, draft));
 }
 
 export type ValidateOutcome = 'VALID' | 'VALIDATION_FAILED' | 'DATA_ROOT_NOT_READY' | 'INTEGRITY_MISMATCH' | 'STORAGE_ERROR';
@@ -472,6 +505,8 @@ export interface ValidateResult {
     outcome: ValidateOutcome;
     message: string;
     candidateId: string | null;
+    /** The compiled candidate, for #6's budget sizes. Null when nothing compiled. */
+    content: CompileResult['content'] | null;
     issues: Issue[];
     errors: number;
     warnings: number;
@@ -486,7 +521,7 @@ export interface ValidateResult {
  */
 export async function validateWorkingLayer(options: { dataRoot: string; reprofile?: boolean; profileId?: string }): Promise<ValidateResult> {
     const root = path.resolve(options.dataRoot);
-    const result: ValidateResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, issues: [], errors: 0, warnings: 0 };
+    const result: ValidateResult = { outcome: 'STORAGE_ERROR', message: '', candidateId: null, content: null, issues: [], errors: 0, warnings: 0 };
     const status = dataRootStatus({ root });
     if (status.state !== 'ready') return { ...result, outcome: 'DATA_ROOT_NOT_READY', message: `The data root is ${status.state}${status.detail ? `: ${status.detail}` : ''}.` };
     try {
@@ -499,6 +534,7 @@ export async function validateWorkingLayer(options: { dataRoot: string; reprofil
             outcome: errors > 0 ? 'VALIDATION_FAILED' : 'VALID',
             message: errors > 0 ? `The working layer has ${counts}.` : `The working layer passes, with ${counts}.`,
             candidateId: snapshot.compiled.candidateId,
+            content: snapshot.compiled.content,
             issues,
             errors,
             warnings,
@@ -524,7 +560,7 @@ export async function checkLayer(dataRoot: string, layer: WorkingLayer): Promise
     if (pointer && active === null) throw new CatalogIntegrityError(ACTIVE_POINTER_NAME, `${ACTIVE_POINTER_NAME} names ${pointer.revisionId}, which has no revision file.`);
     const compiled = await compileCandidate({ layer, registry, root, active });
     const review = await readReviewContext(root, layer, pointer?.revisionId ?? null);
-    const issues = runRules(ruleContext(root, { layer, registry, pointer, active, compiled, review }));
+    const issues = runRules(ruleContext(root, { layer, registry, active, compiled, review }));
     const launch = pointer ? null : launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
     return { compiled, issues, launch };
 }
@@ -543,7 +579,7 @@ export interface ActivateOptions {
     /** Editorial rules a #15 rollback accepted. */
     acceptedRules?: string[];
     lockTakeover?: Activation['lockTakeover'];
-    hooks?: Pick<PublishHooks, 'afterStep'>;
+    hooks?: Pick<PublishHooks, 'afterStep' | 'pointer'>;
     logger?: CatalogLogger;
     clock?: () => number;
 }
@@ -612,7 +648,10 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         return { outcome: 'STORAGE_ERROR', message: `The identity registry can't be read, so ${revision.revisionId}'s sets can't be checked: ${reason}${/[.!?]$/.test(reason) ? '' : '.'} Nothing was activated.`, activation: null, recovery };
     }
     const acceptedRules = options.acceptedRules ?? [];
-    const { validation, issues } = validateStored(root, revision, registry);
+    // The revision this replaces, for #5's route rules only. One that can't be read is no reason to refuse, since
+    // moving off it is what a rollback is for, so the route rules then have nothing to compare against, as in the plan.
+    const replaces = await readRevisionFile(root, pointer.revisionId).catch(() => null);
+    const { validation, issues } = validateStored(root, revision, registry, replaces);
     const blocking = blockingIssues(issues, acceptedRules);
     if (blocking.length > 0) {
         const codes = [...new Set(blocking.map((issue) => issue.code))].sort().join(', ');
@@ -636,12 +675,13 @@ export async function activateRevision(options: ActivateOptions): Promise<Activa
         lockTakeover: options.lockTakeover ?? lock.takeover,
         clock,
         afterStep: options.hooks?.afterStep,
+        pointerHooks: options.hooks?.pointer,
     });
     if (!result.ok) return { outcome: result.outcome, message: result.message, activation: null, recovery, issues };
     return { outcome: 'ACTIVATED', message: `Activated ${revision.revisionId} as revision ${result.activation.revisionNumber}.`, activation: result.activation, recovery, issues };
 }
 
-/** What a first activation takes away: photographs the legacy site counts as on it that the candidate doesn't publish. */
+/** A first activation's count, and for carry-over's GONE_COUNT guard, what a legacy-era library loses: see LaunchImpact. */
 function launchImpact(registry: Registry, published: number, publishedIds: ReadonlySet<string>): LaunchImpact {
     // Only the case-folding of shared legacy sets reads the library, so a publisher without one still counts, never lower.
     const { onSite } = legacySitePhotos(registry, configuredLibraryRoot());
@@ -795,7 +835,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
         if (errors > 0) throw new Stop('VALIDATION_FAILED', `${errors} ${errors === 1 ? 'error blocks' : 'errors block'} the publish.`);
         await step(6);
 
-        // 7. The first activation replaces the legacy site.
+        // 7. The first activation is the launch, which the owner confirms.
         const activations = await listActivations(root);
         if (lastCommitted(activations) === null) {
             const registered = new Set(registeredRules().map((rule) => rule.id));
@@ -803,9 +843,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             if (missingRules.length > 0) throw new Stop('LAUNCH_RULES_MISSING', `The first publish needs these rules registered: ${missingRules.join(', ')}.`, { missingRules });
             result.launch = launchImpact(registry, compiled.content.photos.length, new Set(compiled.content.photos.map((photo) => photo.id)));
             if (!confirmLaunch && !dryRun) {
-                const { published, gone } = result.launch;
-                const leaving = gone > 0 ? `, and ${photographs(gone)} the legacy site lists ${gone === 1 ? 'leaves' : 'leave'} it` : '';
-                throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish: ${photographs(published)} ${published === 1 ? 'replaces' : 'replace'} the legacy Home and Gallery${leaving}. Confirm the launch to go ahead.`);
+                throw new Stop('LAUNCH_CONFIRMATION_REQUIRED', `This is the first publish, which puts ${photographs(result.launch.published)} on the site. Confirm the launch to go ahead.`);
             }
         }
         await step(7);
@@ -833,6 +871,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
             lockTakeover: lock.takeover,
             clock,
             afterStep: step,
+            pointerHooks: hooks.pointer,
         });
         if (!committed.ok) throw new Stop('LOCK_LOST', committed.message);
         Object.assign(result, { revisionId: committed.activation.revisionId, revisionNumber: committed.activation.revisionNumber, activationId: committed.activation.activationId });

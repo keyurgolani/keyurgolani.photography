@@ -19,6 +19,8 @@ const origin = useViewerCatalog();
 const viewer = (page: Page) => page.locator('[data-surface="viewer"]');
 const control = (page: Page, name: string) => viewer(page).getByRole('button', { name, exact: true });
 const announcer = (page: Page) => viewer(page).locator('[data-viewer-announcer]');
+/** A move's announcement (#178): the position, then the title and the description when the photograph has them. */
+const moved = (position: number, total: number) => new RegExp(`^Photograph ${position} of ${total}(\\. |$)`);
 const position = (page: Page) => viewer(page).locator('header');
 
 /** Marks the focused element, so a later check can tell it's the same node, not a copy focused again. */
@@ -54,9 +56,11 @@ test.describe('a directly loaded Viewer is a page', () => {
         await expect(viewer(page)).toHaveAttribute('data-viewer-mode', 'page');
         await expect(page.locator('dialog, [role="dialog"], [aria-modal]')).toHaveCount(0);
         await expect(page.locator('[inert]')).toHaveCount(0);
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(['Fixture harbor']);
+        // One h1, named "{series}, photograph N of T" (#7).
+        await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveAccessibleName(/^Fixture harbor, photograph \d of 3$/);
         await expect(viewer(page).getByRole('link', { name: 'Close' })).toBeVisible();
-        await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', '/work/harbor');
+        await expect(viewer(page).getByRole('link', { name: 'Close' })).toHaveAttribute('href', `/work/harbor?photo=${P[1]}`);
         // A page moves no focus on load.
         expect(await focusPlace(page)).toBe('body');
         // The region is there and empty, so the first move is a change it announces.
@@ -84,11 +88,11 @@ test.describe('a directly loaded Viewer is a page', () => {
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
         await expect(position(page)).toContainText('02 / 03');
-        await expect(announcer(page)).toHaveText('Photograph 2 of 3');
+        await expect(announcer(page)).toHaveText(moved(2, 3));
         expect(await focusIsMarked(page), 'focus stays on the same Next, never a copy').toBe(true);
         await page.keyboard.press('Enter');
         await expect(position(page)).toContainText('03 / 03');
-        await expect(announcer(page)).toHaveText('Photograph 3 of 3');
+        await expect(announcer(page)).toHaveText(moved(3, 3));
         expect(await focusIsMarked(page)).toBe(true);
         // The end: focusable, aria-disabled, and pressing it moves nothing.
         await expect(control(page, 'Next photograph')).toHaveAttribute('aria-disabled', 'true');
@@ -110,7 +114,7 @@ test.describe('a directly loaded Viewer is a page', () => {
         await expect(page).toHaveURL(`${origin()}${href(P[0])}`);
         await page.keyboard.press('ArrowRight');
         await expect(page).toHaveURL(`${origin()}${href(P[1])}`);
-        await expect(announcer(page)).toHaveText('Photograph 2 of 3');
+        await expect(announcer(page)).toHaveText(moved(2, 3));
         for (const chord of ['Alt+ArrowRight', 'Shift+ArrowRight', 'Control+ArrowRight', 'Meta+ArrowRight', 'Shift+ArrowLeft']) {
             await page.keyboard.press(chord);
             await expect(position(page), chord).toContainText('02 / 03');
@@ -164,7 +168,7 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
 
     test('opens as a named modal dialog over the series, with focus moved inside onto Close', async ({ page }) => {
         await openFromSeries(page, P[1]);
-        await expect(dialog(page)).toHaveAccessibleName(/^Fixture harbor\s*Photograph 2 of 3$/);
+        await expect(dialog(page)).toHaveAccessibleName('Fixture harbor, photograph 2 of 3');
         expect(await dialog(page).evaluate((element) => element.matches('dialog:modal'))).toBe(true);
         await expect(dialog(page)).toHaveAttribute('data-surface', 'viewer');
         await expect(dialog(page).getByRole('button', { name: 'Close' })).toBeFocused();
@@ -207,8 +211,8 @@ test.describe('opened from the series page, the Viewer is a modal dialog', () =>
         await markFocused(page);
         await page.keyboard.press('Enter');
         await expect(page).toHaveURL(`${origin()}${href(HARBOR[1])}`);
-        await expect(dialog(page)).toHaveAccessibleName(/Photograph 2 of 3$/);
-        await expect(dialog(page).locator('[data-viewer-announcer]')).toHaveText('Photograph 2 of 3');
+        await expect(dialog(page)).toHaveAccessibleName(/photograph 2 of 3$/);
+        await expect(dialog(page).locator('[data-viewer-announcer]')).toHaveText(moved(2, 3));
         expect(await focusIsMarked(page)).toBe(true);
         await page.keyboard.press('ArrowRight');
         await expect(page).toHaveURL(`${origin()}${href(HARBOR[2])}`);

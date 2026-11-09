@@ -203,6 +203,26 @@ describe('ViewerHost', () => {
         expect(document.activeElement).toBe(screen.getByText('Entry a again'));
     });
 
+    it('falls back to the series heading, #series-title, when the opener and its entry are both gone (#178)', () => {
+        const view = render(host());
+        fireEvent.click(screen.getByText('Entry a'));
+        openModal('a');
+        view.rerender(host());
+        // The series rendered again under the modal without the photograph that opened it (a publish dropped it).
+        const without = (
+            <article>
+                <h1 id="series-title">Fixture series</h1>
+                <a id="photo-b" href="/work/fixture/photo/b">
+                    Entry b
+                </a>
+            </article>
+        );
+        view.rerender(host(without));
+        closeModal();
+        view.rerender(host(without));
+        expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Fixture series' }));
+    });
+
     it('records only a plain click on a Viewer link outside the Viewer', () => {
         const view = render(host());
         const entry = screen.getByText('Entry a');

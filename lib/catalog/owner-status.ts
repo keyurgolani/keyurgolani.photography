@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { inboxAlertLines, inboxAlerts, type InboxAlerts } from '../curation/alerts';
+import { ageText } from '../curation/inbox-view';
+import { HEARTBEAT_PROBLEM_TEXT, heartbeatStale, WATCHER_STALE_AFTER_MS, WATCHER_STALLED_AFTER_MS, watcherHeartbeatAge, type HeartbeatAge } from '../identity/heartbeat';
 import { currentProfileId } from '../identity/profile';
 import { readRegistry } from '../identity/registry';
 import { identityStatus, type IdentityStatus } from '../identity/status';
@@ -9,6 +11,9 @@ import { dataRootStatus } from '../storage/config';
 import { usualProfile } from './compile';
 import { checkPublished, type PublishState } from './mode';
 import { lastCommitted, listActivations, readLastPublish, readRevisionFile, type LastPublishFile } from './repository';
+import { alwaysHolder, protectedText, references } from './references';
+import { renameBack, setAsideFolders, TRASH_DIR, trashOrigin } from './tombstones';
+import { sizeText, trashSummary, type TrashSummary } from './asset-folders';
 import type { CommandResult, LayerHandle } from './sequence-commands';
 import type { Activation, AuthoredPhoto, AuthoredSeries, WorkingLayer } from './types';
 import { readActivePointer, readWorkingLayer } from './working-layer';
@@ -18,6 +23,10 @@ import { readActivePointer, readWorkingLayer } from './working-layer';
  * Like sequence-commands.ts, each takes parsed arguments and a data root and
  * returns the exit code and the text to print: 0 when everything read, 1 when
  * the data root isn't ready or a file it needs can't be read.
+ *
+ * `photos status --check` (#14 and #17, v2.0.0) is the monitor's form: it
+ * also exits 1 on an open missing, failed or ambiguous item, on a failed
+ * last pass, or on a heartbeat over 5 minutes old, and prints why.
  */
 
 /** A photo's description, as the description rules see it. */
@@ -93,6 +102,8 @@ export interface OwnerStatus {
      * or why the inbox can't be read. Null before the data root is ready.
      */
     inbox: InboxAlerts | { error: string } | null;
+    /** What `photos gc --set-aside` moved into the data root's `trash/`, when anything is there (#181's A10). Emptying it is the owner's step. */
+    trash?: TrashSummary | { error: string };
 }
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -150,6 +161,7 @@ function unsetIdentity(): IdentityStatus {
         holds: [],
         failedProfiles: [],
         pendingJobs: 0,
+        retryingJobs: 0,
         pendingFacts: 0,
         watcher: null,
     };
@@ -211,14 +223,49 @@ export async function ownerStatus({ dataRoot, clock }: StatusHandle): Promise<Ow
         status.working = workingSummary(await readWorkingLayer(root), await readRegistry(root));
     }
     try {
-        status.inbox = await inboxAlerts(root);
+        status.inbox = await inboxAlerts(root, clock);
     } catch (error) {
         status.inbox = { error: message(error) };
+    }
+    try {
+        const trash = await trashSummary(root);
+        if (trash) status.trash = trash;
+        // A folder in trash/ that something holds again, as a put-back photos gc --set-aside couldn't make leaves one: named with its
+        // holder, whatever the count, by its name alone (items 40a and 49).
+        if (trash?.kind === 'folder') {
+            const origins = trash.names.flatMap((name) => {
+                const origin = trashOrigin(name);
+                return origin ? [{ name, origin }] : [];
+            });
+            if (origins.length > 0) {
+                try {
+                    const refs = await references(root, { live: true });
+                    trash.held = origins.flatMap(({ name, origin }) => {
+                        const holder = alwaysHolder(refs, origin.photoId, origin.assetRevision);
+                        return holder ? [{ name, text: protectedText(holder), origin: `assets/${origin.photoId}/${origin.assetRevision}` }] : [];
+                    });
+                } catch (error) {
+                    trash.holdersUnknown = message(error).replace(/ Nothing was deleted\.$/, '').replace(/\.$/, '');
+                }
+            }
+        }
+    } catch (error) {
+        status.trash = { error: message(error) };
     }
     return status;
 }
 
-function formatStatus(status: OwnerStatus): string {
+/** The heartbeat line: its age, and why it's stale when it is, worded as --check words it. */
+function heartbeatLine(watcher: IdentityStatus['watcher'], now: number): string {
+    if (watcher === null) return 'Watcher heartbeat: none yet';
+    // identityStatus() clamps a stamp ahead of the clock to 0 s, which is right for a few seconds of drift and wrong past the stale bound.
+    const ageMs = now - Date.parse(watcher.heartbeatAt);
+    if (ageMs < -WATCHER_STALE_AFTER_MS) return `Watcher heartbeat: stamped ${ageText(ageMs)} ahead of this clock (${watcher.heartbeatAt}), so it can't show the watcher runs`;
+    const late = ageMs > WATCHER_STALE_AFTER_MS ? ", over 5 minutes old, so new photographs won't reach the Inbox until the watcher runs" : '';
+    return `Watcher heartbeat: ${watcher.ageSeconds} s ago (${watcher.heartbeatAt})${late}`;
+}
+
+function formatStatus(status: OwnerStatus, now: number): string {
     const { identity, catalog, working } = status;
     const lines = [`Data root: ${identity.dataRoot.root ?? 'not set'} (${identity.dataRoot.state}${identity.dataRoot.detail ? `: ${identity.dataRoot.detail}` : ''})`];
     if (identity.dataRoot.state === 'uninitialized') lines.push('  photos:migrate initializes it, as docs/data-root.md describes.');
@@ -277,19 +324,168 @@ function formatStatus(status: OwnerStatus): string {
     }
     if (status.inbox) lines.push(...('error' in status.inbox ? [`Inbox: can't be read (${status.inbox.error})`] : inboxAlertLines(status.inbox)));
     lines.push(`Holds: ${identity.holds.length}, failed profiles: ${identity.failedProfiles.length}, pending jobs: ${identity.pendingJobs}`);
-    lines.push(`Watcher heartbeat: ${identity.watcher ? `${identity.watcher.ageSeconds} s ago (${identity.watcher.heartbeatAt})` : 'none yet'}`);
+    if (status.trash) {
+        const trash = status.trash;
+        if ('error' in trash) lines.push(`Trash: trash/ can't be read (${trash.error})`);
+        else if (trash.kind !== 'folder') lines.push(`Trash: trash/ in the data root is a ${trash.kind}, which nothing reads or empties.`);
+        else {
+            lines.push(`Trash: ${count(trash.count, 'folder')} in trash/, ${trash.bytes === null ? 'size unknown' : sizeText(trash.bytes)}. Emptying trash/ is your own step.`);
+            const heldText = (name: string) => {
+                const held = trash.held?.find((each) => each.name === name);
+                return held ? `; ${held.text}, so it belongs back at ${held.origin}: ${renameBack(`${TRASH_DIR}/${name}`, held.origin)}` : '';
+            };
+            for (const entry of trash.folders) lines.push(`  ${entry.name}, ${sizeText(entry.bytes)}${heldText(entry.name)}`);
+            // Over TRASH_LISTED, only the held ones, by name.
+            if (trash.folders.length === 0) for (const held of trash.held ?? []) lines.push(`  ${held.name}${heldText(held.name)}`);
+            if (trash.holdersUnknown !== undefined) lines.push(`  holders unknown: what holds a folder in trash/ can't be read (${trash.holdersUnknown}), so status can't say whether one belongs back`);
+        }
+    }
+    lines.push(heartbeatLine(identity.watcher, now));
     return `${lines.join('\n')}\n`;
 }
 
-/** `photos status [--json]`. */
-export async function runStatusCommand(layer: StatusHandle, { json = false, clock }: { json?: boolean; clock?: () => number } = {}): Promise<CommandResult> {
+/** Why `photos status --check` fails, one code each, so a monitor can tell them apart. A6 adds `library-unavailable`. */
+export type CheckCode =
+    | 'status-incomplete'
+    | 'library-unavailable'
+    | 'inbox-unreadable'
+    | 'missing-open'
+    | 'failed-open'
+    | 'ambiguous-open'
+    | 'last-pass-failed'
+    | 'pass-stalled'
+    | 'heartbeat-missing'
+    | 'heartbeat-stale'
+    /** #181's A10: a folder a stopped `photos gc --apply` run set aside, which GC never deletes. */
+    | 'gc-set-aside';
+
+export interface StatusCheck {
+    ok: boolean;
+    problems: { code: CheckCode; message: string }[];
+    /**
+     * A6: what the check counts without failing on it: the missing sources
+     * the library-unavailable item holds, the builds waiting for a retry, and
+     * the builds that failed for good, which the inbox's failures cover.
+     */
+    counts?: { held: number; retrying: number; permanent: number };
+}
+
+/** The heartbeat's problem for the check, or null while it's fresh. */
+function heartbeatProblem(heartbeat: HeartbeatAge | null): StatusCheck['problems'][number] | null {
+    // The reason names the file's absolute path, so the check words the cause instead.
+    if (heartbeat === null) return { code: 'heartbeat-missing', message: "PHOTOGRAPHY_DATA_DIR is not set, so there's no heartbeat to read" };
+    if (!heartbeat.found) {
+        if (heartbeat.cause === 'absent') return { code: 'heartbeat-missing', message: "The watcher hasn't written a heartbeat, so nothing shows it runs" };
+        const what = HEARTBEAT_PROBLEM_TEXT[heartbeat.cause].replace(/^status\/watcher\.json /, '');
+        return { code: 'heartbeat-missing', message: `The watcher's heartbeat, status/watcher.json, ${what}, so nothing shows it runs` };
+    }
+    if (!heartbeatStale(heartbeat.ageMs)) return null;
+    return {
+        code: 'heartbeat-stale',
+        message: heartbeat.ageMs < 0
+            ? `The watcher's heartbeat is stamped ${ageText(heartbeat.ageMs)} ahead of this clock, at ${heartbeat.heartbeatAt}`
+            : `The watcher's heartbeat is ${ageText(heartbeat.ageMs)} old, over 5 minutes, at ${heartbeat.heartbeatAt}`,
+    };
+}
+
+/**
+ * A watcher that beats but gets no pass through: none committed or refused
+ * an empty library for WATCHER_STALLED_AFTER_MS, measured from lastProgressAt.
+ * A heartbeat from a watcher older than that field is read by its last pass
+ * when that one got through, else by the pass under way.
+ */
+function stallProblem(heartbeat: Extract<HeartbeatAge, { found: true }>, now: number): StatusCheck['problems'][number] | null {
+    // A6 review: only a committed pass got anywhere. A refused one, for an empty or unavailable library, is no progress.
+    const progressed = heartbeat.lastPassResult === 'committed';
+    const running = heartbeat.passRunningMs === null ? null : new Date(now - heartbeat.passRunningMs).toISOString();
+    const since = heartbeat.lastProgressAt ?? (progressed ? heartbeat.lastPassAt : null) ?? running;
+    if (since === null || now - Date.parse(since) <= WATCHER_STALLED_AFTER_MS) return null;
+    const why = heartbeat.passRunningMs !== null
+        ? `; the pass under way started ${ageText(heartbeat.passRunningMs)} ago`
+        : heartbeat.lastPassResult !== null && !progressed ? `; its last try was ${heartbeat.lastPassResult}` : '';
+    return { code: 'pass-stalled', message: `The watcher has finished no pass for ${ageText(now - Date.parse(since))}, over 30 minutes, since ${since}${why}` };
+}
+
+/** `--check`'s verdict on what status read, and on the heartbeat. `complete` is whether status itself read everything. */
+async function statusCheck(status: OwnerStatus, dataRoot: string | null, complete: boolean, clock: () => number): Promise<StatusCheck> {
+    const problems: StatusCheck['problems'] = [];
+    if (!complete) problems.push({ code: 'status-incomplete', message: "Status couldn't read everything it reports, as above" });
+    if (status.inbox && !('error' in status.inbox)) {
+        const { missing, failed, ambiguous, unreadable, library, held } = status.inbox;
+        // A6: the library itself, before the per-photo items it holds.
+        if (library) {
+            const heldText = held.length > 0 ? `, so ${count(held.length, 'missing source')} ${held.length === 1 ? 'is' : 'are'} held` : '';
+            problems.push({ code: 'library-unavailable', message: `The library is unavailable (${library.causeText}) since ${library.since}, ${ageText(library.ageSeconds * 1000)} ago${heldText}` });
+        }
+        // An item that can't be read may be an open missing source or failure, so the check can't pass over it.
+        if (unreadable > 0) problems.push({ code: 'inbox-unreadable', message: `${count(unreadable, 'inbox item')} can't be read, so the check can't tell what ${unreadable === 1 ? 'it holds' : 'they hold'}. curation list names ${unreadable === 1 ? 'it' : 'them'}` });
+        if (missing.length > 0) {
+            const oldest = Math.max(...missing.map((item) => item.ageSeconds));
+            problems.push({ code: 'missing-open', message: `${count(missing.length, 'missing source')} open, the oldest ${ageText(oldest * 1000)} old` });
+        }
+        if (failed.length > 0) problems.push({ code: 'failed-open', message: `${count(failed.length, 'failure')} open` });
+        if (ambiguous.length > 0) problems.push({ code: 'ambiguous-open', message: `${ambiguous.length} ambiguous ${ambiguous.length === 1 ? 'item' : 'items'} open` });
+    }
+    const heartbeat = dataRoot === null ? null : await watcherHeartbeatAge(path.resolve(dataRoot), clock);
+    // A6 review: fail closed. A last pass that refused the library fails the check even when its item couldn't be
+    // written, as with curation/events/ unwritable. Reported once, with the item when there is one.
+    const refused = heartbeat?.found && (heartbeat.lastPassResult === 'library-empty' || heartbeat.lastPassResult === 'library-unavailable') ? heartbeat : null;
+    if (refused && !problems.some((problem) => problem.code === 'library-unavailable')) {
+        const what = refused.lastPassResult === 'library-empty' ? 'the library empty while the registry has present photos' : 'the library root missing or unreadable';
+        problems.push({ code: 'library-unavailable', message: `The watcher's last pass${refused.lastPassAt ? `, at ${refused.lastPassAt},` : ''} found ${what}, so it changed nothing` });
+    }
+    if (heartbeat?.found && heartbeat.lastPassResult === 'failed') {
+        problems.push({ code: 'last-pass-failed', message: `The watcher's last pass failed${heartbeat.lastPassAt ? `, at ${heartbeat.lastPassAt}` : ''}` });
+    }
+    const stalled = heartbeat?.found ? stallProblem(heartbeat, clock()) : null;
+    if (stalled) problems.push(stalled);
+    const late = heartbeatProblem(heartbeat);
+    if (late) problems.push(late);
+    const aside = dataRoot === null ? null : await setAsideProblem(path.resolve(dataRoot));
+    if (aside) problems.push(aside);
+    const held = status.inbox && !('error' in status.inbox) ? status.inbox.held.length : 0;
+    // Review nit: a superseded set isn't a failure of these bytes.
+    const permanent = status.identity.failedProfiles.filter((failed) => failed.error !== 'source-superseded').length;
+    return { ok: problems.length === 0, problems, counts: { held, retrying: status.identity.retryingJobs, permanent } };
+}
+
+/** The folders a stopped `photos gc --apply` run set aside, as a problem, or null when there are none. */
+async function setAsideProblem(dataRoot: string): Promise<StatusCheck['problems'][number] | null> {
+    let found: Awaited<ReturnType<typeof setAsideFolders>>;
     try {
-        const status = await ownerStatus({ ...layer, clock: clock ?? layer.clock });
-        const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined
-            && status.inbox !== null && !('error' in status.inbox);
-        return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status) };
+        found = await setAsideFolders(dataRoot);
     } catch (error) {
-        return { exitCode: 1, output: `Error: ${message(error)}\n` };
+        return { code: 'gc-set-aside', message: `assets/ can't be listed for folders photos gc --apply set aside (${(error as NodeJS.ErrnoException).code ?? 'an I/O error'})` };
+    }
+    if (found.length === 0) return null;
+    return { code: 'gc-set-aside', message: `${count(found.length, 'folder')} a stopped photos gc --apply run left, which GC never deletes: ${found.map((folder) => folder.text).join('; ')}` };
+}
+
+function checkLines(check: StatusCheck): string {
+    // A6: what the check counts without failing on, before its verdict, so the verdict stays the last line.
+    const counts = check.counts
+        ? `Held: ${count(check.counts.held, 'missing source')}. Builds: ${check.counts.retrying} retrying, ${check.counts.permanent} failed for good.\n`
+        : '';
+    return `${counts}${check.ok ? 'Check: passed.\n' : `${['Check: failed.', ...check.problems.map((problem) => `  - ${problem.message}.`)].join('\n')}\n`}`;
+}
+
+/** `photos status [--json] [--check]`. */
+export async function runStatusCommand(layer: StatusHandle, { json = false, check = false, clock }: { json?: boolean; check?: boolean; clock?: () => number } = {}): Promise<CommandResult> {
+    try {
+        const now = clock ?? layer.clock ?? Date.now;
+        const status = await ownerStatus({ ...layer, clock: now });
+        const ok = status.identity.dataRoot.state === 'ready' && status.working !== null && status.catalog.error === undefined
+            && status.inbox !== null && !('error' in status.inbox)
+            // Holders of trash/ entries that couldn't be read leave the status incomplete (item 49).
+            && !(status.trash !== undefined && 'kind' in status.trash && status.trash.kind === 'folder' && status.trash.holdersUnknown !== undefined);
+        if (!check) return { exitCode: ok ? 0 : 1, output: json ? `${JSON.stringify(status, null, 2)}\n` : formatStatus(status, now()) };
+        const verdict = await statusCheck(status, layer.dataRoot, ok, now);
+        return { exitCode: verdict.ok ? 0 : 1, output: json ? `${JSON.stringify({ ...status, check: verdict }, null, 2)}\n` : `${formatStatus(status, now())}${checkLines(verdict)}` };
+    } catch (error) {
+        // A monitor parsing --json gets JSON even now, and --check's verdict in its usual shape.
+        const verdict: StatusCheck = { ok: false, problems: [{ code: 'status-incomplete', message: `Status couldn't run: ${message(error)}` }] };
+        if (json) return { exitCode: 1, output: `${JSON.stringify(check ? { error: message(error), check: verdict } : { error: message(error) }, null, 2)}\n` };
+        return { exitCode: 1, output: `Error: ${message(error)}\n${check ? checkLines(verdict) : ''}` };
     }
 }
 

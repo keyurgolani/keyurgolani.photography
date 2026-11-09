@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styles from './PreviewFrame.module.css';
 
 export interface PreviewFrameProps {
@@ -35,6 +35,27 @@ export interface PreviewFrameProps {
      * `#fragment` in `src` would do (16-3, round 2 of the mockup).
      */
     scrollToId?: string;
+    /**
+     * A9 (#182): the full preview's toolbar. `presets` adds Fit the window,
+     * Desktop (1440 × 900) and Mobile (390 × 844), which change the frame's
+     * size only, scaled down to fit; `draftHash` shows the draft's short hash;
+     * `backHref` is "Back to Publish". The Publish screen's panel has none.
+     */
+    presets?: boolean;
+    draftHash?: string;
+    backHref?: string;
+}
+
+type Preset = 'fit' | 'desktop' | 'mobile';
+const SIZES: Record<Exclude<Preset, 'fit'>, { width: number; height: number; label: string }> = {
+    desktop: { width: 1440, height: 900, label: 'Desktop' },
+    mobile: { width: 390, height: 844, label: 'Mobile' },
+};
+
+/** How far a preset's frame scales down to fit `box`, never up. */
+function fitScale(box: { width: number; height: number }, size: { width: number; height: number }): number {
+    if (box.width <= 0 || box.height <= 0) return 1;
+    return Math.min(1, box.width / size.width, box.height / size.height);
 }
 
 /** How long a framed page may take to render the element it should show, such as a series page fetching its next entries. */
@@ -74,9 +95,23 @@ function scrollFrameTo(frame: HTMLIFrameElement, id: string): () => void {
  * preview renders it alone, and #16's Publish screen embeds it as its
  * visitor preview panel.
  */
-export default function PreviewFrame({ src, height, focusable = true, marker = 'Preview · not public', title = 'Visitor preview of the draft catalog', embedded = false, scrollToId }: PreviewFrameProps) {
+export default function PreviewFrame({ src, height, focusable = true, marker = 'Preview · not public', title = 'Visitor preview of the draft catalog', embedded = false, scrollToId, presets = false, draftHash, backHref }: PreviewFrameProps) {
     const Frame = embedded ? 'div' : 'section';
     const ref = useRef<HTMLIFrameElement>(null);
+    const stage = useRef<HTMLDivElement>(null);
+    const [preset, setPreset] = useState<Preset>('fit');
+    const [scale, setScale] = useState(1);
+    const size = preset === 'fit' ? null : SIZES[preset];
+    useEffect(() => {
+        const box = stage.current;
+        if (!size || !box) return;
+        const measure = () => setScale(fitScale({ width: box.clientWidth, height: box.clientHeight }, size));
+        measure();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(box);
+        return () => observer.disconnect();
+    }, [size]);
     useEffect(() => {
         const frame = ref.current;
         if (!frame || !scrollToId) return;
@@ -93,15 +128,53 @@ export default function PreviewFrame({ src, height, focusable = true, marker = '
             cleanup();
         };
     }, [src, scrollToId]);
-    const iframe = <iframe ref={ref} className={styles.site} src={src} title={title} referrerPolicy="no-referrer" inert={!focusable || undefined} />;
+    const sized = size ? { width: `${size.width}px`, height: `${size.height}px`, flex: 'none', ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : {}) } : undefined;
+    const iframe = <iframe ref={ref} className={styles.site} src={src} title={title} referrerPolicy="no-referrer" inert={!focusable || undefined} style={sized} />;
+    // A preset's frame keeps its own size, scaled into a box that takes the scaled size, so the page around it lays out as it
+    // looks. The wrappers are there from the first render, so a new preset resizes the same iframe and never reloads it.
+    const site = presets ? (
+        <div ref={stage} className={styles.stage} data-preset={preset}>
+            <div className={styles.sizer} style={size ? { width: `${Math.round(size.width * scale)}px`, height: `${Math.round(size.height * scale)}px` } : undefined}>
+                {iframe}
+            </div>
+        </div>
+    ) : (
+        iframe
+    );
     return (
         <Frame className={styles.frame} aria-label={embedded ? undefined : 'Visitor preview'} data-embedded={embedded ? 'true' : undefined} style={height ? { height } : undefined}>
+            {/* A <p>, as before A9, holding phrasing content only, so the Publish panel's markup is what it was (Dark parity). */}
             <p className={styles.toolbar}>
                 <span className={styles.marker}>{marker}</span>
+                {draftHash ? <span className={styles.hash}>Draft {draftHash}</span> : null}
+                {presets ? (
+                    // Contract rule 1: an in-page choice is a button with aria-pressed, each a 44 px target with the focus token.
+                    <span className={styles.presets} role="group" aria-label="Frame size">
+                        <button type="button" className={styles.preset} aria-pressed={preset === 'fit'} onClick={() => setPreset('fit')}>
+                            Fit the window
+                        </button>
+                        {(Object.keys(SIZES) as (keyof typeof SIZES)[]).map((key) => (
+                            // The name is the visible text, whole (WCAG 2.5.3): "Desktop 1440 × 900". A real space between the label and
+                            // the size keeps the words apart however the name is joined (each part of the inline-flex button is a flex
+                            // item), and nothing is hidden or absolutely placed, which once read "Desktop , 1440 by 900" (A9 CI fix).
+                            <button key={key} type="button" className={styles.preset} aria-pressed={preset === key} onClick={() => setPreset(key)}>
+                                {SIZES[key].label}{' '}
+                                <span className={styles.size}>
+                                    {SIZES[key].width} × {SIZES[key].height}
+                                </span>
+                            </button>
+                        ))}
+                    </span>
+                ) : null}
+                {backHref ? (
+                    <a className={styles.back} href={backHref}>
+                        Back to Publish
+                    </a>
+                ) : null}
             </p>
             {/* inert takes the iframe and its title out of the accessibility tree, so the picture is named here instead. */}
             {focusable ? (
-                iframe
+                site
             ) : (
                 <div className={styles.picture} role="img" aria-label={title}>
                     {iframe}

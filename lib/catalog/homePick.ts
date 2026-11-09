@@ -1,5 +1,6 @@
 import { randomInt } from 'node:crypto';
 import type { HomePick } from './projections/home';
+import { globalSlot, slotKey } from '../globalSlot';
 
 /**
  * TEST ONLY. The e2e harness sets this on a test server it starts
@@ -19,13 +20,11 @@ export const TEST_HOME_PICK_ENV = 'PHOTOGRAPHY_TEST_HOME_PICK';
 const SCRIPT_RE = /^\d{1,6}(,\d{1,6})*$/;
 
 /** Where the scripted sequence is, per script, on globalThis so every route bundle in the server shares one place. */
-const CURSORS = Symbol.for('keyurgolani.photography.testHomePick');
 type Cursors = Map<string, number>;
+const CURSORS = slotKey<Cursors>(Symbol.for('keyurgolani.photography.testHomePick'));
 
 function cursors(): Cursors {
-    const holder = globalThis as typeof globalThis & { [CURSORS]?: Cursors };
-    holder[CURSORS] ??= new Map();
-    return holder[CURSORS];
+    return globalSlot<Cursors>(CURSORS, () => new Map());
 }
 
 /**

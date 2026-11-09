@@ -354,7 +354,9 @@
 
 .rowFix {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 0.5rem;
   margin-top: 0.625rem;
 }
 
@@ -500,6 +502,53 @@
   color: var(--gah-ink-muted);
   background: transparent;
   cursor: not-allowed;
+}
+
+/* What the last check found that never blocks a publish: the change tone, never the alert's red, so it reads as a
+   warning. The words are the body ink and its soft step on the change ground, both past 4.5:1 in Dark and Light;
+   the icon takes the change ink. */
+.warnings {
+  margin-top: 1.25rem;
+}
+
+.warningsHeading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem !important;
+  color: var(--gah-ink);
+  font-size: var(--gah-type-ui) !important;
+  font-weight: 500;
+}
+
+.warningsHeading svg {
+  flex: none;
+  margin-top: 0.2em;
+  color: var(--curator-tone-change-ink);
+}
+
+.warningList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.warningList li {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--curator-rule);
+  color: var(--gah-ink);
+  font-size: var(--gah-type-label);
+}
+
+.warningList strong {
+  font-weight: 500;
+  font-size: var(--gah-type-ui);
+}
+
+.warningHint {
+  color: var(--gah-ink-soft);
 }
 
 /* The result slot, between the ledger and the bar: every answer to Validate or Publish. */
@@ -751,6 +800,11 @@
   margin-top: 0.1rem;
 }
 
+/* #117: the warning in the rollback-ready line's place, in the alert ink, as the failed count line is. */
+.panelFooter[data-tone='alert'] {
+  color: var(--curator-tone-alert-ink);
+}
+
 .command {
   display: inline-block;
   padding: 0.5rem 0.75rem;
@@ -883,4 +937,69 @@
   .buttons svg {
     display: none;
   }
+}
+
+/* A9: a text change's words. The published side strikes what goes, the draft's
+   underlines what comes, each on the notice tone fills the screen already uses,
+   so the ink keeps its contrast in every theme. */
+.removed,
+.added {
+  color: var(--gah-ink);
+  text-decoration-thickness: 1px;
+}
+
+.removed {
+  background: var(--curator-tone-alert-bg);
+  text-decoration-line: line-through;
+}
+
+.added {
+  background: var(--curator-lock-bg);
+  text-decoration-line: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* A9: a group of more than 50 rows, collapsed. The summary is the native
+   disclosure control, a 44 px target with the focus token. */
+.collapse {
+  margin: 0;
+}
+
+.collapseSummary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.4rem;
+  list-style: none;
+  color: var(--gah-ink-soft);
+  font-size: var(--gah-type-ui);
+  cursor: pointer;
+}
+
+/* A9: what Use the published value did, where focus lands after it. */
+.reverted {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+}
+
+/* A focus target, not a control, as the refusal strip is. */
+.reverted:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+/* The summary's own marker is replaced by a chevron that turns when the group opens (A9 review). */
+.collapseSummary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  flex: none;
+  transform: rotate(-90deg);
+}
+
+.collapse[open] > .collapseSummary .chevron {
+  transform: none;
 }

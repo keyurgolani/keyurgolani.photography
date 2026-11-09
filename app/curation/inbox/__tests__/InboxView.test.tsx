@@ -48,11 +48,16 @@ vi.mock('../actions', () => {
         confirmItem: make('confirm'),
         bindItem: make('bind'),
         archiveItem: make('archive'),
+        restoreItem: make('restore'),
+        releaseItem: make('release'),
+        // #14's A8: the list's bulk form. InboxScreen.test.tsx checks what it sends.
+        bulkItems: async () => ({ status: 'idle' }),
     };
 });
 
 const { default: InboxList } = await import('../InboxList');
 const { default: InboxDetailView } = await import('../InboxDetailView');
+const { default: WatcherNotice } = await import('../WatcherNotice');
 const { navigation, rememberedRow, rememberRow } = await import('../journey');
 
 beforeEach(() => {
@@ -83,7 +88,7 @@ const SERIES: SeriesOption[] = [
 ];
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
-    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, ...overrides };
+    return { id: EVT(1), version: 3, type: 'new', status: 'open', group: 'judgment', title: 'Uncurated photograph', photoId: P(9), shortId: SHORT(9), sourcePath: 'trips/harbor-1.jpg', thumbnailUrl: THUMB(9), waiting: null, placedBy: null, unplacedSeries: null, observedAt: '2026-02-01T00:00:00.000Z', seriesChosen: false, held: false, ...overrides };
 }
 
 function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
@@ -119,12 +124,15 @@ function detail(overrides: Partial<InboxDetail> = {}): InboxDetail {
         replacement: null,
         resolvedBy: null,
         bindWaiting: null,
+        suggestedFiles: [],
+        restores: null,
+        release: false,
         ...overrides,
     };
 }
 
 function view(overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}): Extract<InboxView, { state: 'ready' }> {
-    return { state: 'ready', activeRevisionId: ACTIVE, needsJudgment: 1, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
+    return { state: 'ready', watcher: { state: 'running' }, readAt: '2026-02-01T00:00:00.000Z', cursor: 0, activeRevisionId: ACTIVE, needsJudgment: 1, held: 0, library: null, waiting: 0, placed: 0, unplaced: 0, placementUnknown: false, items: [item()], problems: [], series: SERIES, seriesProblem: null, selected: detail(), missingSelection: null, ...overrides };
 }
 
 const tree = (v: ReturnType<typeof view>, listView = false) => (
@@ -464,6 +472,20 @@ describe('the detail', () => {
         expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
     });
 
+    it('asks the identity question only while an ambiguous item is open, and says the next pass closes it (#14)', () => {
+        const none = { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: false, confirm: false, bind: false, archive: false };
+        const { unmount } = renderInbox(view({ selected: detail({ type: 'ambiguous', can: { ...none, dismiss: true }, primaryUnavailable: null }) }));
+        expect(screen.getByRole('heading', { name: 'Identity question' })).toBeInTheDocument();
+        const question = screen.getByRole('heading', { name: 'Identity question' }).closest('section') as HTMLElement;
+        // A5's commands for an ambiguous item (#14, A8).
+        expect(question).toHaveTextContent(/curation bind --to or curation resolve --as new records the decision, and the watcher's next pass applies it and closes this item\./);
+        expect(question).toHaveTextContent(/It stays open while the same bytes are still in doubt at another path\./);
+        unmount();
+        renderInbox(view({ selected: detail({ type: 'ambiguous', status: 'resolved', group: 'settled', resolvedBy: { kind: 'identified' }, can: none, primaryUnavailable: null }) }));
+        expect(screen.queryByRole('heading', { name: 'Identity question' })).toBeNull();
+        expect(screen.getByText("The watcher now knows whose file this is, so there's nothing left to decide here.")).toBeInTheDocument();
+    });
+
     it("shows a missing item #17 archived as archived, with no hint about series or description", () => {
         renderInbox(view({ selected: detail({ type: 'missing', status: 'approved', group: 'settled', references: [], can: { approve: false, edit: false, defer: false, dismiss: false, retry: false, reopen: true, confirm: false, bind: false, archive: false }, primaryUnavailable: null }) }));
         expect(screen.getAllByText('Archived').length).toBeGreaterThan(0);
@@ -593,6 +615,14 @@ describe('the forms', () => {
         expect(sent.forms[0].fields.seriesTouched).toBeUndefined();
     });
 
+    it('hold the position select disabled with no rules file, saying the photo is left unassigned', () => {
+        renderInbox(view({ selected: detail({ suggestions: { series: { value: null, confidence: 'low', producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null } }) }));
+        const position = screen.getByRole('combobox', { name: 'Proposed sequence position' });
+        expect(position).toBeDisabled();
+        expect(position).toHaveTextContent('No position: left unassigned');
+        expect(position).not.toHaveTextContent('Choose a series first');
+    });
+
     it('fill a reopened item from its photo record and series, so unchecking the flag clears it', async () => {
         const noRules = { series: { value: null, confidence: 'low' as const, producedBy: 'rules@none', producedAt: '2026-02-01T00:00:00.000Z', evidence: [] }, placement: null };
         const approved = [{ action: 'approve', at: '2026-02-01T00:00:00.000Z', by: 'curator:web', detail: '' }, { action: 'reopen', at: '2026-02-01T00:01:00.000Z', by: 'curator:web', detail: '' }];
@@ -670,7 +700,8 @@ describe('the forms', () => {
     it('post every form, so a click before hydration never puts the typed text in a URL', () => {
         renderInbox();
         for (const form of document.querySelectorAll('form')) {
-            if (form.querySelector('[aria-label="Refresh inbox"]')) continue;
+            // Refresh and A8's filters are plain GETs of the page, which carry nothing typed.
+            if (form.querySelector('[aria-label="Refresh inbox"]') || form.getAttribute('role') === 'search') continue;
             expect(form.getAttribute('method')).toBe('post');
         }
     });
@@ -1210,7 +1241,10 @@ describe('moving on after a decision', () => {
         carry(null, { from: EVT(1), fromName: 'harbor-1.jpg', message: 'Left harbor-1.jpg for later. Nothing in the draft changed.' });
         renderInbox(view({ items: [item({ status: 'deferred', group: 'deferred' })], needsJudgment: 0, selected: null }), true);
         // Said once: the line that takes focus already says nothing requires judgment.
-        expect(screen.getByRole('status')).toHaveTextContent(/^Left harbor-1\.jpg for later\. Nothing in the draft changed\.Open harbor-1\.jpg again$/);
+        // A8's bulk form has its own named region, empty until a bulk action answers.
+        expect(screen.getAllByRole('status').filter((region) => !region.hasAttribute('aria-label'))).toHaveLength(1);
+        expect(screen.getAllByRole('status').find((region) => !region.hasAttribute('aria-label'))).toHaveTextContent(/^Left harbor-1\.jpg for later\. Nothing in the draft changed\.Open harbor-1\.jpg again$/);
+        expect(screen.getByRole('status', { name: 'Bulk answer' })).toBeEmptyDOMElement();
         expect(screen.getByRole('link', { name: 'Open harbor-1.jpg again' })).toHaveAttribute('href', `/curation/inbox?item=${EVT(1)}#item`);
         expect(screen.getByText('Nothing requires judgment right now.')).toHaveFocus();
         // The wide screen's detail side says it quietly too, rather than opening an item nobody needs to decide.
@@ -1406,5 +1440,53 @@ describe('the two scrolling panels', () => {
         renderInbox();
         expect(screen.getAllByRole('region', { name: 'Curation inbox' })).toHaveLength(1);
         expect(screen.getAllByRole('region', { name: 'Item details' })).toHaveLength(1);
+    });
+});
+
+describe('the watcher notice (#14)', () => {
+    const AT = '2026-02-01T00:00:00.000Z';
+    /** In the browser's own zone, as LocalTime shows it once the page runs. */
+    const local = () => humanTime(AT, Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+    it('shows nothing while the watcher checks in', () => {
+        const { container } = render(<WatcherNotice watcher={{ state: 'running' }} />);
+        expect(container).toBeEmptyDOMElement();
+    });
+
+    it('warns, with the time, when the heartbeat is over 5 minutes old', () => {
+        render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 }} />);
+        const notice = screen.getByRole('region', { name: 'Watcher' });
+        expect(notice).toHaveTextContent(`The watcher last checked in 12 min ago, at ${local()}. New photographs won't appear here until it runs again.`);
+        expect(within(notice).getByText(local())).toHaveAttribute('dateTime', AT);
+    });
+
+    it('says when the heartbeat is stamped ahead of the clock, which hides whether the watcher runs', () => {
+        render(<WatcherNotice watcher={{ state: 'stale', heartbeatAt: AT, ageMs: -10 * 60_000 }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent(`The watcher's last check-in, ${local()}, is ahead of this server's clock, so the Inbox can't tell whether it runs. New photographs won't appear here until it does.`);
+    });
+
+    it('warns when there is no heartbeat at all', () => {
+        render(<WatcherNotice watcher={{ state: 'missing' }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveTextContent("The watcher hasn't checked in, so it may not be running. New photographs won't appear here until it runs.");
+    });
+
+    it('takes the id the item view points at, so a phone on a deep link can reach it (review)', () => {
+        render(<WatcherNotice watcher={{ state: 'missing' }} />);
+        expect(screen.getByRole('region', { name: 'Watcher' })).toHaveAttribute('id', 'watcher');
+        expect(screen.getByRole('region', { name: 'Watcher' })).not.toHaveAttribute('aria-live');
+    });
+
+    it("points at the warning from inside the item, which a phone's #item link scrolls to past it (review)", () => {
+        render(<InboxDetailView view={view({ watcher: { state: 'stale', heartbeatAt: AT, ageMs: 12 * 60_000 } })} />);
+        const item = document.getElementById('item')!;
+        const pointer = within(item).getByRole('link', { name: "The watcher isn't checking in" });
+        expect(pointer).toHaveAttribute('href', '#watcher');
+        expect(pointer.closest('p')).toHaveTextContent("The watcher isn't checking in, so new photographs won't appear here until it runs.");
+        expect(pointer.closest('[aria-live]')).toBeNull();
+    });
+
+    it('says nothing about the watcher inside the item while it checks in', () => {
+        render(<InboxDetailView view={view()} />);
+        expect(within(document.getElementById('item')!).queryByRole('link', { name: /watcher/ })).toBeNull();
     });
 });

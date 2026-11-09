@@ -20,7 +20,14 @@ import { identityPaths } from './registry';
  */
 
 export const DECISION_SCHEMA_VERSION = 1;
-export const DECISION_TYPES = ['bind', 'new', 'archive', 'retry', 'reprofile'] as const;
+/**
+ * `restore` (A5, #17) brings an archived photo back under its old ID: the
+ * path its bytes came back to is bound to it, merging the duplicate a pass
+ * made of them, which `merge` names. v1.7.x doesn't know the type, so a
+ * restore still waiting when the image rolls back is rejected, with its
+ * reason, and approving the duplicate's item again writes it once more.
+ */
+export const DECISION_TYPES = ['bind', 'new', 'archive', 'retry', 'reprofile', 'restore'] as const;
 export type DecisionType = (typeof DECISION_TYPES)[number];
 
 interface DecisionBase {
@@ -37,13 +44,16 @@ interface DecisionBase {
  * `bind` with `merge` names the photo holding the path that it may merge
  * into `photoId`. `retry` without `assetRevision` covers every revision of
  * the photo, and `reprofile` without `photoId` covers every photo.
+ * `restore` with `merge` names the duplicate the path's photo is, which the
+ * restore retires into `photoId`.
  */
 export type IdentityDecision =
     | (DecisionBase & { type: 'bind'; path: string; photoId: string; merge?: string })
     | (DecisionBase & { type: 'new'; path: string; photoId: string })
     | (DecisionBase & { type: 'archive'; photoId: string })
     | (DecisionBase & { type: 'retry'; photoId: string; assetRevision?: string })
-    | (DecisionBase & { type: 'reprofile'; photoId?: string });
+    | (DecisionBase & { type: 'reprofile'; photoId?: string })
+    | (DecisionBase & { type: 'restore'; path: string; photoId: string; merge?: string });
 
 /** One file found in `identity/decisions/`. */
 export interface DecisionFile {
@@ -71,6 +81,7 @@ const SHAPES: Record<DecisionType, { path: 'required' | 'none'; photoId: 'requir
     archive: { path: 'none', photoId: 'required', merge: 'none', assetRevision: 'none' },
     retry: { path: 'none', photoId: 'required', merge: 'none', assetRevision: 'optional' },
     reprofile: { path: 'none', photoId: 'optional', merge: 'none', assetRevision: 'none' },
+    restore: { path: 'required', photoId: 'required', merge: 'optional', assetRevision: 'none' },
 };
 
 export { isLibraryPath };

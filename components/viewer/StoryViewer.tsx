@@ -9,15 +9,17 @@ import ViewerChrome from './ViewerChrome';
 import { ViewerContext, peekKey, type ViewerChromeState, type ViewerPeek } from './viewerContext';
 import {
     DESCRIPTION_LABEL,
+    FAILED_LABEL,
     HIDE_TECHNICAL,
+    RETRY_LABEL,
     SHOW_TECHNICAL,
-    TECHNICAL_LABELS,
     TECHNICAL_SOURCE,
     UNAVAILABLE_LABEL,
     accentValue,
     positionText,
+    technicalFacts,
 } from './viewerLabels';
-import { fitSizes } from './viewerSizes';
+import { fitSizes, zoomWidth } from './viewerSizes';
 import styles from './StoryViewer.module.css';
 
 export interface StoryViewerProps {
@@ -36,30 +38,82 @@ type ViewerImage = NonNullable<PublishedViewerPhoto['photo']['image']>;
 
 /**
  * The photograph in its fitted box, reserved from the record's shape before
- * the file arrives. If the file fails, the box keeps its place and shape with
- * the missing-image copy, so Previous, Next, Close, and the reading area stay
- * where they were. A file that fails before hydration fires no event, so the
- * mount check looks too.
+ * the file arrives. If the file fails (ResponsivePhoto retries a failed AVIF
+ * file with WebP first, and catches a failure from before hydration), the box
+ * keeps its place and shape and says so, with the alt, so the description is
+ * still there for everyone, and Retry, which loads the same files again in a
+ * new image. Previous, Next, Close, and the reading area stay where they were.
  */
-function Photograph({ image, alt, zoomedWidth }: { image: ViewerImage; alt: string; zoomedWidth: number | null }) {
-    const element = useRef<HTMLImageElement>(null);
+function Photograph({ image, alt, zoomed, largest }: { image: ViewerImage; alt: string; zoomed: boolean; largest: number }) {
+    const frame = useRef<HTMLElement>(null);
+    const retryButton = useRef<HTMLButtonElement>(null);
     const [failed, setFailed] = useState(false);
+    /** Each Retry is a new image: a failed one doesn't fetch again. */
+    const [attempt, setAttempt] = useState(0);
+    /** Set by Retry, whose button goes with the failure, so focus lands on the photograph's box instead of the page. */
+    const [refocus, setRefocus] = useState(false);
+    /**
+     * The photograph's fitted width, for zoomWidth(), kept current while it isn't zoomed: read at once, then whenever the
+     * box resizes. In the modal the first read comes before showModal() gives the box its place, so the observer's
+     * later reads are the ones that count.
+     */
+    const [fitted, setFitted] = useState<number | null>(null);
+    useLayoutEffect(() => {
+        const element = frame.current;
+        if (zoomed || failed || element === null) return;
+        const take = (width: number) => {
+            if (width > 0) setFitted(width);
+        };
+        take(element.getBoundingClientRect().width);
+        if (typeof ResizeObserver === 'undefined') {
+            const onResize = () => take(element.getBoundingClientRect().width);
+            window.addEventListener('resize', onResize);
+            return () => window.removeEventListener('resize', onResize);
+        }
+        const observer = new ResizeObserver((entries) => {
+            for (const entry of entries) take(entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width);
+        });
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [zoomed, failed, attempt]);
+    // After Retry, focus goes where the visitor can act: the photograph's box once it shows, or Retry again if it failed again.
     useEffect(() => {
-        const img = element.current;
-        if (img && img.complete && img.naturalWidth === 0 && img.currentSrc !== '') setFailed(true);
-    }, []);
+        if (!refocus) return;
+        if (failed) retryButton.current?.focus({ preventScroll: true });
+        else frame.current?.focus({ preventScroll: true });
+    }, [refocus, failed, attempt]);
     const shape = { '--ratio': `${image.width} / ${image.height}` } as CSSProperties;
     if (failed) {
         return (
-            <div className={styles.missing} style={shape} data-photo="unavailable" data-viewer-current="">
-                <span className={styles.missingLabel}>{UNAVAILABLE_LABEL}</span>
+            <div className={`${styles.missing} ${styles.failed}`} style={shape} data-photo="unavailable" data-viewer-current="">
+                <p className={styles.failedLabel}>{FAILED_LABEL}</p>
+                {alt !== '' && <p className={styles.failedAlt}>{alt}</p>}
+                <button
+                    ref={retryButton}
+                    type="button"
+                    className={styles.control}
+                    onClick={() => {
+                        setRefocus(true);
+                        setAttempt((value) => value + 1);
+                        setFailed(false);
+                    }}
+                >
+                    {RETRY_LABEL}
+                </button>
             </div>
         );
     }
+    const zoomedWidth = zoomed ? zoomWidth(fitted, largest) : null;
     return (
-        <figure className={styles.frame} style={zoomedWidth === null ? shape : ({ ...shape, '--zoom-width': `${zoomedWidth}px` } as CSSProperties)} data-viewer-current="">
+        <figure
+            ref={frame}
+            className={styles.frame}
+            style={zoomedWidth === null ? shape : ({ ...shape, '--zoom-width': `${zoomedWidth}px` } as CSSProperties)}
+            tabIndex={refocus ? -1 : undefined}
+            data-viewer-current=""
+        >
             <ResponsivePhoto
-                ref={element}
+                key={attempt}
                 asset={image}
                 alt={alt}
                 sizes={zoomedWidth === null ? fitSizes(image.width, image.height) : `${zoomedWidth}px`}
@@ -126,7 +180,10 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
     const { series, photo, position, total } = viewer;
     const shell = useContext(ViewerContext);
     const [ownZoom, setOwnZoom] = useState(false);
-    const [technicalOpen, setTechnicalOpen] = useState(false);
+    // In the shell the panel stays open across moves within a visit (#7, decided). Outside one there's one photograph.
+    const [ownTechnical, setOwnTechnical] = useState(false);
+    const technicalOpen = shell === null ? ownTechnical : shell.technicalOpen;
+    const setTechnicalOpen = shell === null ? setOwnTechnical : shell.setTechnicalOpen;
     const technicalId = useId();
     const readingId = useId();
 
@@ -150,8 +207,10 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
             previousPhotoId: viewer.previousPhotoId,
             nextPhotoId: viewer.nextPhotoId,
             image,
+            title: photo.title,
+            description: photo.description,
         }),
-        [photo.id, photo.namedByPlace, photo.title, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
+        [photo.id, photo.namedByPlace, photo.title, photo.description, series.title, series.slug, closeHref, previousHref, nextHref, position, total, image, accent, viewer.catalogRevision, viewer.previousPhotoId, viewer.nextPhotoId],
     );
     const report = shell?.report;
     // Before paint, so the shell's controls replace these in the same frame and show this photograph's state.
@@ -162,10 +221,12 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
     const claimed = shell?.claimed ?? false;
     const zoomed = shell === null ? ownZoom : shell.claimed && shell.zoomed;
     const surface = (accent === null ? undefined : { '--cc-accent': accent }) as CSSProperties | undefined;
-    const facts = (Object.keys(TECHNICAL_LABELS) as (keyof typeof TECHNICAL_LABELS)[]).flatMap((key) => {
-        const value = photo.technical[key];
-        return typeof value === 'string' ? [{ key, label: TECHNICAL_LABELS[key], value }] : [];
-    });
+    const facts = technicalFacts(photo.technical);
+    // The alt is the description (viewer.ts), so while an element carrying it is on the page, the photograph or its
+    // failed box, the reading area's copy is for the eye only: a screen reader hears it once (bug 9). With no usable
+    // set no element carries it, and the reading area says it. A caption takes the reading area's place for it.
+    const altShown = image !== null;
+    const showDescription = photo.description !== null && (photo.caption === null || !altShown);
     const largest = image === null ? null : image.variants.w1920.webp.width;
     const zoomedIn = zoomed && largest !== null;
     // The neighbors that peek in while the photograph follows the finger (9a), once the shell has them. Never zoomed.
@@ -191,6 +252,8 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                 // Where a swipe can start (#9's useSwipe), and only there: the controls and the reading area sit outside it.
                 data-viewer-stage=""
                 data-zoomed={zoomedIn ? 'true' : undefined}
+                // From a move's press to its photograph's arrival (#178): this photograph is on its way out.
+                aria-busy={shell?.busy ? 'true' : undefined}
                 // Zoomed, the photograph can overflow its box, and a scroll region has to be reachable by keyboard.
                 tabIndex={zoomedIn ? 0 : undefined}
                 role={zoomedIn ? 'region' : undefined}
@@ -205,7 +268,7 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                         </div>
                     ) : (
                         // Keyed on the file, so the next photograph starts without the last one's failure.
-                        <Photograph key={image.variants.w1200.webp.url} image={image} alt={photo.alt} zoomedWidth={zoomedIn ? largest : null} />
+                        <Photograph key={image.variants.w1200.webp.url} image={image} alt={photo.alt} zoomed={zoomedIn} largest={largest ?? image.variants.w1920.webp.width} />
                     )}
                     {nextPeek && <Peek key={viewer.nextPhotoId} side="next" peek={nextPeek} />}
                 </div>
@@ -222,10 +285,11 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                     )}
                     {photo.caption !== null && <p className={styles.caption}>{photo.caption}</p>}
                 </div>
-                {(photo.description !== null || pendingCopy !== null) && (
-                    <div className={styles.description}>
+                {(showDescription || (photo.description === null && pendingCopy !== null)) && (
+                    // The label goes with the text: hidden together, or heard together. The pending copy is never an alt.
+                    <div className={styles.description} aria-hidden={showDescription && altShown ? true : undefined}>
                         <p className={styles.label}>{DESCRIPTION_LABEL}</p>
-                        {photo.description !== null ? (
+                        {showDescription ? (
                             <p className={styles.descriptionText}>{photo.description}</p>
                         ) : (
                             <p className={styles.pending} data-description="pending">
@@ -242,7 +306,7 @@ export default function StoryViewer({ viewer, closeHref, previousHref, nextHref,
                             aria-expanded={technicalOpen}
                             aria-controls={technicalId}
                             data-viewer-focus="technical"
-                            onClick={() => setTechnicalOpen((value) => !value)}
+                            onClick={() => setTechnicalOpen(!technicalOpen)}
                         >
                             <SlidersHorizontal aria-hidden="true" size={16} />
                             {technicalOpen ? HIDE_TECHNICAL : SHOW_TECHNICAL}

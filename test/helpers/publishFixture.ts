@@ -5,6 +5,7 @@ import path from 'node:path';
 import { publish } from '../../lib/catalog/publish';
 import { CATALOG_LOCK, readRevisionFile, revisionFilePath } from '../../lib/catalog/repository';
 import { hashValue } from '../../lib/catalog/review';
+import { rollback } from '../../lib/catalog/rollback';
 import { createTestCatalog, type TestCatalog } from '../../lib/catalog/testing';
 import type { AuthoredPhoto } from '../../lib/catalog/types';
 import { authoredRecordDir, readActivePointer, readAuthoredRecord } from '../../lib/catalog/working-layer';
@@ -15,6 +16,7 @@ import { readEvent } from '../../lib/curation/repository';
 import { createCurationSink } from '../../lib/curation/sink';
 import { assetDir } from '../../lib/media/path';
 import { withLock } from '../../lib/storage/lock';
+import { publishByHand } from './handPublish';
 
 /**
  * #16's Publish screen (16-3) on a real data root: two published series and
@@ -247,4 +249,49 @@ export async function createRemovalsFixture({ dir }: { dir?: string } = {}): Pro
     await rewrite(fixture.root, 'site', 'site', (record: object) => ({ ...record, featuredSeriesIds: featured }), await stamp());
     const live = await publishFromCli(fixture);
     return { ...fixture, live, hidden };
+}
+
+/** Salt Roads' accent on the hand-written revision 4: too dark for the Viewer's dark bands (accent.contrast). */
+export const DARK_ACCENT = '#202020';
+/** Low Tide Hours' accent with `rules: 2`: not a #rrggbb color at all (accent.format). */
+export const BAD_ACCENT = 'sea green';
+
+/**
+ * #117's acceptance: the History fixture, then revision 4 written by hand
+ * with Salt Roads' accent at #202020, as a revision that went live under
+ * older rules would be, and a restore back to revision 3. Revision 3 is live
+ * and revision 4 is restorable only once its owner accepts what today's
+ * accent.contrast flags. With `rules: 2`, Low Tide Hours' accent is also one
+ * the site can't show, so accent.format is flagged too, on another series.
+ */
+export async function createEditorialFixture({ dir, rules = 1 }: { dir?: string; rules?: 1 | 2 } = {}): Promise<PublishFixture & { live: string; flagged: string }> {
+    const fixture = await createHistoryFixture({ dir });
+    const flagged = await publishByHand(fixture.root, (content) => {
+        for (const series of content.series) {
+            if (series.id === SALT_ROADS) series.accent = DARK_ACCENT;
+            if (rules === 2 && series.id === LOW_TIDE) series.accent = BAD_ACCENT;
+        }
+    }, { reason: 'fixture revision 4, under older rules' });
+    const back = await rollback({ dataRoot: fixture.root, revisionId: fixture.live, expectedActiveRevisionId: flagged, actor: 'keyur', reason: 'fixture: back to revision 3', logger: quiet });
+    if (back.outcome !== 'ROLLED_BACK') throw new Error(`The editorial fixture's restore to revision 3 didn't go through: ${back.outcome}: ${back.message}`);
+    return { ...fixture, flagged };
+}
+
+/** Salt Roads' slug in the rename fixture's live revision 4. Revision 3 has `salt-roads`. */
+export const RENAMED_SLUG = 'salt-roads-west';
+
+/**
+ * #5's restore across a rename: the History fixture, then revision 4
+ * published from the command line with Salt Roads moved to /work/salt-roads-west
+ * and /work/salt-roads kept as its old address, as route.slug-change asks.
+ * Revision 4 is live. Revision 3 has only /work/salt-roads, so restoring it
+ * drops /work/salt-roads-west, which today's route.slug-change flags.
+ */
+export async function createRenameFixture({ dir }: { dir?: string } = {}): Promise<PublishFixture & { live: string; renamed: string }> {
+    const fixture = await createHistoryFixture({ dir });
+    const pointer = await readActivePointer(fixture.root);
+    const stamp = { baseRevisionId: pointer?.revisionId ?? null, origin: 'curator' as const, actor: 'curator:web', reviewedAt: new Date().toISOString() };
+    await rewrite(fixture.root, 'series', SALT_ROADS, (record: { slug: string }) => ({ ...record, slug: RENAMED_SLUG, slugAliases: [record.slug] }), stamp);
+    const renamed = await publishFromCli(fixture);
+    return { ...fixture, live: fixture.live, renamed };
 }

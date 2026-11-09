@@ -7,6 +7,7 @@ import { mediaUrl, type AssetRef } from '../media/url';
 import { hasErrorCode } from '../storage/fsx';
 import { MANIFEST_FILE } from '../storage/publish';
 import { registerRule, shared } from './rules';
+import { readTombstonesSync, standingFor } from './tombstones';
 import type { CandidatePhotoRecord, ExcludedMember, ExclusionReason, Rule, RuleContext, RuleFinding } from './types';
 
 /**
@@ -183,6 +184,33 @@ export const ASSET_RULES: readonly Rule[] = [
                 field: `${field}.bytes`,
                 message: `The derivative file is ${size} bytes, but its manifest says ${bytes}.`,
             }))),
+    }),
+    rule({
+        // #15's purge (#181's A10): no revision that shows a taken-down asset goes live, by publish or rollback, and verify fails it.
+        id: 'assets.tombstoned',
+        check: (ctx) => {
+            const root = ctx.roots.dataRoot;
+            if (root === null) return [];
+            const read = shared(ctx, 'assets.tombstones', () => readTombstonesSync(root));
+            // Fails closed: a file nobody can read might take down any photo here.
+            const damaged: RuleFinding[] = read.problems.map((problem) => ({
+                record: { kind: 'site' as const, id: 'site' },
+                field: problem.file,
+                message: `${problem.file} can't be read as a takedown record: ${problem.detail}. Nobody can tell what it takes down, so nothing goes live until it reads again.`,
+                hint: 'Put the file back from a backup of the data root. photos purge writes these files whole, and nothing should edit them.',
+            }));
+            return [...damaged, ...eachPhoto(ctx, (photo) => {
+                const standing = standingFor(read, photo.id, photo.assetRevision);
+                if (standing.length === 0) return [];
+                const ids = standing.map((entry) => entry.tombstoneId);
+                return [{
+                    record: photoRecord(photo.id),
+                    field: 'assetRevision',
+                    message: `Its asset revision ${photo.assetRevision} was taken down with photos purge (${ids.join(', ')}), so no revision that shows it can be published or rolled back to.`,
+                    hint: `Publish without it: take it out of its series with photos sequence remove <seriesId> ${photo.id}, or pin another asset revision. To undo the takedown, run photos purge --revoke ${ids[0]} --reason <text> before GC deletes its files.`,
+                }];
+            })];
+        },
     }),
     rule({
         id: 'assets.url',

@@ -32,7 +32,7 @@ interface Opened {
 }
 
 const TYPE_OF: Record<IdentityFact['type'], CurationEventType> = {
-    new: 'new', replaced: 'replacement', 'metadata-changed': 'replacement', missing: 'missing', reappeared: 'reappeared', ambiguous: 'ambiguous', 'processing-failed': 'processing-failure', renamed: 'new',
+    new: 'new', replaced: 'replacement', 'metadata-changed': 'replacement', missing: 'missing', reappeared: 'reappeared', ambiguous: 'ambiguous', 'processing-failed': 'processing-failure', renamed: 'new', 'io-recovered': 'processing-failure',
 };
 
 /** A fixture with one event the sink opened from `fact`. */
@@ -128,7 +128,7 @@ describe('approve', () => {
     it.each<[IdentityFact['type'], RegExp]>([
         ['missing', /#17/],
         ['replaced', /#17/],
-        ['ambiguous', /photos identity bind or photos identity new/],
+        ['ambiguous', /curation resolve or curation bind --to/],
         ['reappeared', /dismiss/],
         ['processing-failed', /dismiss/],
     ])('refuses a %s event, naming what settles it, and writes nothing', async (type, owner) => {

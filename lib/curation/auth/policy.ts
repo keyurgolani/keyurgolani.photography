@@ -305,10 +305,11 @@ export function inContainer(): boolean {
  * `next dev`, whose `--hostname` reaches its server over IPC.
  */
 export function listeningAddresses(): string[] | null {
-    const active = (process as unknown as { _getActiveHandles?: () => unknown[] })._getActiveHandles;
-    if (typeof active !== 'function') return null;
+    // Called as process's own method, so process itself is never handed on.
+    const handles = (process as unknown as { _getActiveHandles?: () => unknown[] })._getActiveHandles?.();
+    if (!Array.isArray(handles)) return null;
     const addresses: string[] = [];
-    for (const handle of active.call(process)) {
+    for (const handle of handles) {
         if (!(handle instanceof net.Server) || !handle.listening) continue;
         const address = handle.address();
         if (address !== null && typeof address === 'object') addresses.push(address.address);
@@ -559,7 +560,11 @@ export const CURATOR_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
     'Referrer-Policy': 'no-referrer',
 };
 
-/** The curator's framing policy, sent apart from the other headers. */
+/**
+ * The curator's framing policy, sent apart from the other headers. It sends no script-src. A future one must allow the
+ * submit gate (components/site/submitGateScript.ts) by the same nonce or hash as THEME_INIT_SCRIPT, or the Inbox's
+ * early presses post again.
+ */
 export const CURATOR_FRAME_POLICY: Readonly<Record<string, string>> = {
     'Content-Security-Policy': "frame-ancestors 'none'",
 };

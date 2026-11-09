@@ -12,7 +12,8 @@ import {
 } from '../storage/document';
 import { ensureDirectory, hasErrorCode, pathExists } from '../storage/fsx';
 import { withLock, type LockContext } from '../storage/lock';
-import { EVENT_ID_RE, parseEvent, type CurationEvent } from './events';
+import { arrives, recordArrival } from './arrivals';
+import { EVENT_ID_RE, parseEvent, schemaVersionFor, type CurationEvent } from './events';
 
 /**
  * Where curation records live: `curation/` in the data root. Each event is a
@@ -177,7 +178,8 @@ export class EventMovedError extends Error {
  */
 export async function writeEvent(root: string, event: CurationEvent, expectedVersion: number, hold: LockContext, hooks?: VersionedWriteHooks): Promise<CurationEvent> {
     if (hold.name !== CURATION_LOCK || hold.signal.aborted) throw new Error('An event is written only under a live hold on the curation lock.');
-    const parsed = parseEvent({ ...event, version: expectedVersion + 1 });
+    // Stamped for the oldest build that reads it, so a v1.7.x rollback still reads every item that holds nothing newer.
+    const parsed = parseEvent({ ...event, schemaVersion: schemaVersionFor({ ...event, version: expectedVersion + 1 }), version: expectedVersion + 1 });
     if (!parsed.ok) throw new InvalidEventError(String(event.id), parsed.issues);
     const paths = curationPaths(root);
     // A first version survives a crash only with every folder above it synced, including ones another writer made.
@@ -186,12 +188,35 @@ export async function writeEvent(root: string, event: CurationEvent, expectedVer
     await ensureDirectory(paths.events, { syncParent });
     const folder = await eventFolderProblem(root, event.id);
     if (folder !== null) throw new EventUnusableError({ id: event.id, reason: 'file-name', message: folder });
+    // #14 (A8 review, 4a): whether this write is an arrival, which needs the status it leaves, read under the same hold.
+    const previous = expectedVersion === 0 ? null : arrives(null, parsed.event.status) ? await previousStatus(root, event.id) : undefined;
+    let written: CurationEvent;
     try {
-        return await writeVersionedDocument(eventDir(root, event.id), parsed.event, expectedVersion, { hooks });
+        written = await writeVersionedDocument(eventDir(root, event.id), parsed.event, expectedVersion, { hooks });
     } catch (error) {
         if (error instanceof StaleVersionError) throw new EventMovedError(event.id, expectedVersion, error.found);
         if (error instanceof VersionLimitError) throw new EventUnusableError({ id: event.id, reason: 'invalid', message: `it is at version ${error.version}, the highest a version can be` });
         throw error;
+    }
+    if (previous !== undefined && arrives(previous, written.status)) {
+        try {
+            await recordArrival(root, event.id, hold);
+        } catch (error) {
+            // The event is written; only the poll's line about it is lost (lib/curation/arrivals.ts).
+            console.warn(`[curation] The arrival of ${event.id} could not be recorded, so the Inbox won't announce it:`, (error as Error).message);
+        }
+    }
+    return written;
+}
+
+/** The status an event's newest version holds, or null when it can't be read, which counts the write as an arrival. */
+async function previousStatus(root: string, eventId: string): Promise<CurationEvent['status'] | null> {
+    try {
+        const stored = await readVersionedDocument(eventDir(root, eventId));
+        const status = stored?.value.status;
+        return typeof status === 'string' ? (status as CurationEvent['status']) : null;
+    } catch {
+        return null;
     }
 }
 

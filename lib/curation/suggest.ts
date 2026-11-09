@@ -4,13 +4,15 @@ import { z } from 'zod';
 import { SERIES_ID_RE } from '../catalog/schema';
 import { isLibraryPath } from '../identity/decisions';
 import { canonicalJson } from '../storage/canonical';
-import type { Suggestions } from './events';
+import type { Placement, Suggestions } from './events';
 
 /**
  * Suggestions for a new photograph, from the owner's `curation/rules.json`
  * (CURATION_MODEL.md, "Assignment rules"): a configured folder or a filename
  * tag may suggest a series, and the EXIF capture date may narrow it. The
- * insertion point is the end of the suggested series. Everything here is
+ * insertion point (#14, A8) is among the series' dated photographs by capture
+ * date, at `medium`; an undated photograph, or a series with no dated
+ * photograph, goes at the end at `low`. Everything here is
  * pure and local: it reads nothing but its arguments and makes no network
  * request. No description is suggested.
  *
@@ -86,7 +88,63 @@ export interface SuggestInput {
     knownSeries: ReadonlySet<string>;
     /** Their titles, for the evidence. */
     seriesTitles?: ReadonlyMap<string, string>;
+    /** Each series' photographs in authored order, with the capture date #10 read for each, or null (#14, A8). */
+    seriesMembers?: ReadonlyMap<string, readonly SeriesMember[]>;
+    /** The photograph being placed, left out of its series' members (A8 review N8). */
+    photoId?: string | null;
     producedAt: string;
+}
+
+export interface SeriesMember {
+    photoId: string;
+    /** `YYYY-MM-DD`, or null when the photograph holds none. */
+    capturedDate: string | null;
+}
+
+/** Who makes insertion suggestions. 2 is A8's capture-date rule; 1 was always the end. */
+export const PLACEMENT_PRODUCER = 'placement@2';
+
+/**
+ * #14 (A8): where a new photograph goes in a series, by capture date. A dated photograph goes after the last member
+ * captured on or before it, in authored order, at `medium`: undated members are passed over, never compared. One
+ * captured before every dated member goes just before the first of them, which is the start when that member leads.
+ * One after them all goes at the end when the last dated member is last. An undated photograph, or a series with no
+ * dated member, goes at the end at `low`. Evidence names dates, never files.
+ *
+ * Dates are #10's `YYYY-MM-DD` capture dates, the camera's own wall-clock day with no zone (A8 review N9), compared as
+ * text. So two photographs of the same day are a tie, whatever the hour or the zone, and a tie goes after the one
+ * already there. `photoId`, the photograph being placed, is left out of `members` when the series already lists it
+ * (N8), so it never goes after itself.
+ */
+export function placementFor(capturedDate: string | null, all: readonly SeriesMember[], seriesName: string, producedAt: string, photoId: string | null = null): NonNullable<Suggestions['placement']> {
+    const members = photoId === null ? all : all.filter((member) => member.photoId !== photoId);
+    const dated = members.map((member, index) => ({ ...member, index })).filter((member): member is SeriesMember & { index: number; capturedDate: string } => member.capturedDate !== null);
+    const atEnd = (why: string): NonNullable<Suggestions['placement']> => ({
+        producedBy: PLACEMENT_PRODUCER,
+        producedAt,
+        confidence: 'low',
+        value: 'end',
+        evidence: [`${why} Places it after the last photograph of ${seriesName}. Choose another position before approving if it belongs elsewhere.`],
+    });
+    if (capturedDate === null) return atEnd('The photograph has no capture date, so nothing dates its place.');
+    if (dated.length === 0) return atEnd(`No photograph in ${seriesName} has a capture date to place it among.`);
+    const before = dated.filter((member) => member.capturedDate <= capturedDate).at(-1);
+    const medium = (value: Placement, why: string): NonNullable<Suggestions['placement']> => ({
+        producedBy: PLACEMENT_PRODUCER,
+        producedAt,
+        confidence: 'medium',
+        value,
+        evidence: [`It was captured ${capturedDate}. ${why} Choose another position before approving if it belongs elsewhere.`],
+    });
+    if (before === undefined) {
+        const first = dated[0];
+        const value: Placement = first.index === 0 ? 'start' : { after: members[first.index - 1].photoId };
+        return medium(value, `The earliest dated photograph in ${seriesName} was captured ${first.capturedDate}, so it goes just before that one.`);
+    }
+    const value: Placement = before.index === members.length - 1 ? 'end' : { after: before.photoId };
+    const next = dated.find((member) => member.index > before.index);
+    const between = next ? ` and before the next dated one, captured ${next.capturedDate}` : '';
+    return medium(value, `It goes after the photograph in ${seriesName} captured ${before.capturedDate}${between}.`);
 }
 
 /** The series and placement suggestions for a new photograph. Pure: no I/O and no network. */
@@ -134,12 +192,6 @@ export function suggestForNew(input: SuggestInput): Suggestions {
     const [chosen] = narrowed;
     return {
         series: { producedBy, producedAt, confidence: how === 'folder' ? 'high' : 'medium', value: chosen.seriesId, evidence },
-        placement: {
-            producedBy: 'placement@1',
-            producedAt,
-            confidence: 'low',
-            value: 'end',
-            evidence: [`Places it after the last photograph of ${describe(chosen.seriesId)}. Choose another position before approving if it belongs elsewhere.`],
-        },
+        placement: placementFor(input.capturedDate, input.seriesMembers?.get(chosen.seriesId) ?? [], describe(chosen.seriesId), producedAt, input.photoId ?? null),
     };
 }

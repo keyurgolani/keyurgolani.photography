@@ -13,20 +13,23 @@ import { hasErrorCode } from '../storage/fsx';
 
 export interface PendingMerge {
     decisionId: string;
+    /** A bind's merge, or a restore's (A5). */
+    kind: 'bind' | 'restore';
     /** The photo the merge gives this one's bytes to. */
     into: string;
     path: string;
 }
 
 /**
- * The pending bind decision that merges `photoId` into another photo, or
- * null. A decision file that can't be read could be one, so it throws.
+ * The pending bind or restore decision that merges `photoId` into another
+ * photo, or null. A decision file that can't be read could be one, so it throws.
  */
 export async function pendingMergeOf(root: string, photoId: string): Promise<PendingMerge | null> {
     for (const file of await readPendingDecisions(root)) {
         if (file.raw === null) throw new Error(`The identity decision ${file.name} can't be read, so nothing shows whether it merges ${photoId}`);
         const decision = file.decision;
-        if (decision?.type === 'bind' && decision.merge === photoId) return { decisionId: decision.decisionId, into: decision.photoId, path: decision.path };
+        // A5: a restore merges the duplicate it names into the archived photograph, as a bind's merge does.
+        if ((decision?.type === 'bind' || decision?.type === 'restore') && decision.merge === photoId) return { decisionId: decision.decisionId, kind: decision.type, into: decision.photoId, path: decision.path };
     }
     return null;
 }
@@ -45,6 +48,20 @@ export async function pendingBindOf(root: string, photoId: string): Promise<Pend
         if (file.raw === null) throw new Error(`The identity decision ${file.name} can't be read, so nothing shows whether it binds ${photoId}`);
         const decision = file.decision;
         if (decision?.type === 'bind' && decision.photoId === photoId) return { decisionId: decision.decisionId, path: decision.path };
+    }
+    return null;
+}
+
+/**
+ * A5: the pending restore decision that brings `photoId` back, or null, so a
+ * second duplicate's approval isn't written beside it. A decision file that
+ * can't be read could be one, so it throws.
+ */
+export async function pendingRestoreOf(root: string, photoId: string): Promise<PendingBind | null> {
+    for (const file of await readPendingDecisions(root)) {
+        if (file.raw === null) throw new Error(`The identity decision ${file.name} can't be read, so nothing shows whether it restores ${photoId}`);
+        const decision = file.decision;
+        if (decision?.type === 'restore' && decision.photoId === photoId) return { decisionId: decision.decisionId, path: decision.path };
     }
     return null;
 }

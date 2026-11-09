@@ -3,12 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ACCEPTANCE, ownerPass, ownerPassProblems, withoutStep } from './helpers/ownerPass.mjs';
 
 // The host docs never tell the owner to delete anything on or under the photo
 // library, his originals: no `rm` on a line, or in a code block, that names
 // the library, its paths, or the legacy derivative folders (#13's slice E,
 // v1.7.0). The only delete earlier releases' steps keep is of
 // ./.next-images-cache, the old /_next/image cache, which is allowed by name.
+// Nor do they promise a GC for the legacy folders: #15 decided on none, and
+// scripts/host/legacy-move-aside.sh moves them out instead (v2.0.0).
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -54,6 +57,28 @@ function libraryDeletes(file, text) {
   return found;
 }
 
+/** A legacy derivative folder, the heartbeat flag about them, or the folders as a group. */
+const LEGACY_FOLDER = /\b(?:thumbnails|medium|optimized)(?:-avif)?\b|\blqip\b|\bcache\/|\blegacy[- ]derivatives?\b|\blegacyDerivatives\b/i;
+
+/** A promise that something collects them: GC as a word, case-sensitive so `photos gc` passes. `reclaim` stays out, so "nothing reclaims them" can be said. */
+const GC_PROMISE = [/\bGC\b/, /garbage[- ]collect|once it ships/i];
+
+/** Each line that names a legacy folder and promises a GC for it, as `file:line: text`. */
+function legacyGcPromises(file, text) {
+  return text.split('\n').flatMap((line, index) => (GC_PROMISE.some((promise) => promise.test(line)) && LEGACY_FOLDER.test(line) ? [`${file}:${index + 1}: ${line.trim().slice(0, 160)}`] : []));
+}
+
+/**
+ * A release-process label: a PR lane or the review it had, such as A8, B7E or F4. The docs name issues by number
+ * (#14) and releases by version, never by lane. A bare R stays out: the docs use it as a placeholder and a flag.
+ */
+const RELEASE_LABEL = /(?<![\w#-])(?:[AB](?:1[0-2]|[1-9])[A-Z]?|C1|F(?:1[0-4]|[1-9])|H1|S1)(?![\w-])|\bPARITY\b/g;
+
+/** Each release-process label in the text, as `file:line: label`. */
+function releaseLabels(file, text) {
+  return text.split('\n').flatMap((line, index) => [...line.matchAll(RELEASE_LABEL)].map(([label]) => `${file}:${index + 1}: ${label}`));
+}
+
 describe('the host docs', () => {
   it('flag a delete on or under the library, and leave docker --rm and the old image cache alone', () => {
     const flagged = [
@@ -77,5 +102,103 @@ describe('the host docs', () => {
 
   it.each(HOST_DOCS)('%s never suggests deleting anything on or under the library', (file) => {
     expect(libraryDeletes(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
+  });
+
+  it('flag a GC promise for the legacy folders, and leave the move-aside wording alone', () => {
+    // The six lines v1.7.0 shipped, as they were, and one more way to say it.
+    const flagged = [
+      '- **The legacy derivatives** a watcher before v1.7.0 wrote, the seven folders `thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif` and `lqip`, and `cache/`, at the top of the library, are left exactly as they are. Nothing writes, reads, or serves them, and the identity scan skips those folder names, so a photo inside them is never taken for one of yours. They harm nothing, so leave them in place: #15\'s GC reclaims them once it ships. No step here moves or deletes them.',
+      'A library a watcher before v1.7.0 wrote into still has its legacy derivative folders (`thumbnails`, `medium`, `optimized`, `thumbnails-avif`, `medium-avif`, `optimized-avif`, `lqip`) and `cache/` at the top, often owned by uid 1001. They stay as they are: nothing reads or writes them, the identity scan skips those names, and #15\'s GC reclaims them once it ships. No step moves or deletes them. A host that ran `chown -R 1001:1001` on the photos for an older release can leave that as it is too, since reading is all uid 1001 does now. Every change of owner makes the watcher\'s next identity pass read every photo again, as [Health](#health) says, so don\'t `chown` the library back and forth. If a tool can leave folders out, leave out those eight.',
+      '- **The watcher stops writing the legacy derivatives**, the seven `<name>.webp`, `.avif` and `.txt` copies of each photo in `thumbnails/`, `medium/`, `optimized/`, `thumbnails-avif/`, `medium-avif/`, `optimized-avif/` and `lqip/`, and `cache/` beside them, at the top of the library. Nothing has served them since the launch. The ones already there stay exactly as they are, and the identity scan keeps skipping those names. Its heartbeat, `status/watcher.json` in the data root, now says `"legacyDerivatives": false`, which #15\'s GC waits for before it takes legacy files. `--force`, which rebuilt them, exits 2 now.',
+      'The legacy derivative folders stay in the library, left as they are. They take space and nothing else, and #15\'s GC reclaims them once it ships. No step of this release, or of any doc here, moves or deletes anything in the library.',
+      'The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`\'s heartbeat simply drops `legacyDerivatives`, which #15\'s GC reads as a watcher that still writes them.',
+      'A watcher before v1.7.0 wrote seven resized copies of each photo in this folder\'s top level, in `thumbnails/`, `medium/`, `optimized/`, `thumbnails-avif/`, `medium-avif/`, `optimized-avif/` and `lqip/`, and kept `cache/` beside them. From v1.7.0 nothing writes, reads, or serves them, and the watcher leaves them exactly as they are. The identity scan still skips those eight names at the top level, so nothing in them is ever taken for a photo. They take space and nothing else, so leave them in place: #15\'s GC reclaims them once it ships, and until then a rollback to v1.6.x finds them where its watcher left them. No documented step moves or deletes anything in this folder.',
+      'A later garbage collection takes `cache/` too.',
+    ];
+    for (const text of flagged) expect(legacyGcPromises('probe.md', text), text).not.toEqual([]);
+    const allowed = [
+      'Nothing in the stack reclaims the legacy derivatives automatically: move them aside with `scripts/host/legacy-move-aside.sh` if you want them out.',
+      '`photos gc` cleans the data root only, and never touches `thumbnails/` or any other folder in the library.',
+      'GC deletes two kinds of leftover from the data root.',
+      'The heartbeat says `"legacyDerivatives": false`. Only the CI smokes and step 4 read it.',
+    ];
+    for (const text of allowed) expect(legacyGcPromises('probe.md', text), text).toEqual([]);
+  });
+
+  // #15 shipped no GC for the legacy folders (v2.0.0): a host step moves them aside instead.
+  it.each(HOST_DOCS)('%s promises no GC for the legacy folders', (file) => {
+    expect(legacyGcPromises(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
+  });
+
+  it('flag a release-process label, and leave issue numbers, versions, flags and hex alone', () => {
+    const flagged = [
+      '`e2e/curation-inbox-screen.spec.ts` from #14\'s A8, whose `checkSurface()` covers the rows',
+      "The inbox's arrival sequence (v2.0.0, A8).",
+      "A6's inbox items are stamped 2",
+      'and, from A6, the `library-unavailable` item',
+      'a fix from B7E',
+      'as F4 found',
+      'H1 and S1 too',
+      'the C1 burst row',
+    ];
+    for (const text of flagged) expect(releaseLabels('probe.md', text), text).not.toEqual([]);
+    const allowed = [
+      'Fixes #14 and #184, in v2.0.0 and v1.7.x.',
+      'sudo chown -R 1001:1001 portfolio-data',
+      '`Held: N missing sources. Builds: R retrying, P failed for good.`',
+      'the colour `#A1B2C3`, and `sha256-a1b2`',
+      'the second PR of slice E of #13, and #14\'s 14-2',
+      'AA contrast, WCAG 2.5.3, and `photos.mjs`',
+    ];
+    for (const text of allowed) expect(releaseLabels('probe.md', text), text).toEqual([]);
+  });
+
+  it.each(HOST_DOCS)('%s names no release-process label', (file) => {
+    expect(releaseLabels(file, fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toEqual([]);
+  });
+});
+
+describe("the README's screenshots", () => {
+  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  const alts = Object.fromEntries([...readme.matchAll(/<img src="(docs\/screenshots\/[^"]+)" alt="([^"]*)"/g)].map(([, src, alt]) => [src, alt]));
+
+  // #12: the alt says what the shot shows, not only which page it is.
+  it('describe About with its portrait and statement', () => {
+    expect(alts['docs/screenshots/about.png']).toBe('About page with portrait and artist statement');
+  });
+});
+
+// #184: the owner's screen-reader and device pass is a checklist in the accessibility contract, one part per area,
+// with one step for each of #184's acceptance steps, and what to do with a finding (test/helpers/ownerPass.mjs).
+describe("the accessibility contract's owner pass", () => {
+  const contract = fs.readFileSync(path.join(REPO_ROOT, 'docs/accessibility-contract.md'), 'utf8');
+
+  it('holds every part and acceptance step, says what each step expects, and names no PR', () => {
+    expect(ownerPassProblems(contract)).toEqual([]);
+  });
+
+  // The check can fail: the contract with any one acceptance step taken out fails it, for that step.
+  it.each(ACCEPTANCE.map((item) => [item.name, item]))('fails without the step for %s', (name, item) => {
+    const without = withoutStep(contract, item);
+    expect(without, 'the step was found and taken out').not.toBe(contract);
+    expect(ownerPassProblems(without)).toContain(`no step for ${name}`);
+  });
+
+  it('fails on a PR label, a step with nothing to expect, and a missing finding rule', () => {
+    expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee B6.\n'))).toContain('the section names a PR: B6');
+    expect(ownerPassProblems(contract.replace('### Publish\n', '### Publish\n\nSee PR #193.\n'))).toContain('the section names a PR: PR #193');
+    expect(ownerPassProblems(contract.replace('### The Inbox\n', '### The Inbox\n\n- [ ] **Listen.** Read the page.\n'))).toContain('The Inbox: "Listen." says nothing to expect');
+    expect(ownerPassProblems(contract.replace('in writing', 'later'))).toContain('a finding is never accepted in writing');
+  });
+
+  // A step pasted twice, as a rebase or a merge can leave it, fails twice over: by its title, and by its acceptance item.
+  it('fails on a step that appears twice', () => {
+    const lieFi = ownerPass(contract).steps['The Viewer'].find((step) => step.title.startsWith('Lie-fi'));
+    expect(lieFi, 'the lie-fi step was found').toBeDefined();
+    const doubled = contract.replace(`${lieFi.text}\n`, `${lieFi.text}\n${lieFi.text}\n`);
+    expect(doubled, 'the step was doubled').not.toBe(contract);
+    const problems = ownerPassProblems(doubled);
+    expect(problems).toContain(`step appears twice: ${lieFi.title}`);
+    expect(problems).toContain('the Viewer on lie-fi matches 2 steps');
   });
 });
