@@ -1,6 +1,6 @@
 # Showcase
 
-A tour of the site as it's live at v1.7.0, with the catalog launched. The photographs hang as bodies of work now: ten series, 115 photographs. Each series has its own page with a statement and a sequence, and any photograph in it opens in the story Viewer. Home plays the featured series, starting on one of them at random, Work lists them all, and About says who took them.
+A tour of the site as it's live at v2.0.0-rc.1, the release candidate for v2.0.0, with the catalog launched. The photographs hang as bodies of work now: ten series, 115 photographs. Each series has its own page with a statement and a sequence, and any photograph in it opens in the story Viewer. Home plays the featured series, starting on one of them at random, Work lists them all, and About says who took them.
 
 ---
 
@@ -113,4 +113,4 @@ About shows the portrait and the name, a short note, and links to my photography
 
 ---
 
-_Screenshots from production on 2026-11-03, serving v1.4.0 in catalog mode, revision 1, in Chromium at 1200 px wide with reduced motion, which is why Home's slideshow shows Play. The series shown is The Palouse. About and Home's portrait badge show my own portrait. See the [README](README.md) for setup and configuration._
+_Screenshots from production on 2026-11-09, serving v2.0.0-rc.1 in catalog mode, revision 1, in Chromium at 1200 px wide with reduced motion, which is why Home's slideshow shows Play. The series shown is The Palouse. About and Home's portrait badge show my own portrait. See the [README](README.md) for setup and configuration._
