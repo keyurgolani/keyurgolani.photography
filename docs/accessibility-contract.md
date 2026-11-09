@@ -199,7 +199,7 @@ Every Publish step is VoiceOver on macOS Safari, signed in on the copy, on `/cur
 
 ### The Inbox
 
-Every Inbox step is VoiceOver on macOS Safari, signed in on the copy, on `/curation/inbox`, unless it says otherwise. The Inbox without JavaScript checks #237's line, which is still open: if it misses rc.1, that step runs on the copy once #237 is on `next`, or on the final.
+Every Inbox step is VoiceOver on macOS Safari, signed in on the copy, on `/curation/inbox`, unless it says otherwise.
 
 - [ ] **The list and its filters.** Read the page from the top, then use the filters and the pager.
   Expect: the heading level 1 "Curation inbox". A search landmark, "Filter the inbox", with the pop-up buttons "Status" and "Type", and "Apply filters", then "Clear filters" once one is set. With more than one page, "Showing 51 to 100 of 120 items" and an "Inbox pages" navigation with "Previous page" and "Next page". The first list, "Requires judgment", is named by its label and has no heading; each group after it is a heading level 2 over its list. A row's link reads the item's type, then its file's name, its title, its folder and ID, and how long ago it opened; the open one reads as current. Before the lists, a form named "Bulk actions" holds "Decide later on selected". A row a bulk action can take has a checkbox, "Select <the row's name>", beside its link, never in it. Under a filter with nothing in it: "No item matches these filters."
