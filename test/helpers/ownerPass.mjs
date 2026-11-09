@@ -24,6 +24,8 @@ export const ACCEPTANCE = [
   { name: 'the Viewer modal', area: 'The Viewer', title: [/modal/i, /VoiceOver with Safari/, /NVDA with Chrome/], body: [/dialog/, /Escape/, /focus/] },
   { name: 'the Viewer page', area: 'The Viewer', title: [/page/i, /VoiceOver with Safari/, /NVDA with Chrome/], body: [/main landmark/, /no dialog/i] },
   { name: "the Viewer heading in NVDA's browse mode", area: 'The Viewer', title: [/heading/i, /browse mode/i, /NVDA with Chrome/], body: [/aria-label/, /photograph 3 of 12/, /once/, /doubled title/] },
+  // #184's recheck adds lie-fi: online by navigator.onLine, but nothing loads (#217).
+  { name: 'the Viewer on lie-fi', area: 'The Viewer', title: [/Lie-fi/, /iPhone Safari/, /NVDA with Chrome/], body: [/still says it's online/, /long latency/, /no offline notice/, /#217/, /fetched ahead, so the move lands and is announced/, /nothing is said while the move waits/, /navigator\.onLine/, /FULL_PREFETCH/] },
   { name: 'the grouped ledger', area: 'Publish', title: [/group/i, /ledger/i], body: [/heading level 3/] },
   { name: 'a collapsed group', area: 'Publish', title: [/collapsed/i], body: [/collapsed/, /expanded/] },
   { name: 'a review', area: 'Publish', title: [/review/i], body: [/mark reviewed/i] },
@@ -99,9 +101,15 @@ export function ownerPassProblems(contract) {
       if (!/\bExpect\b/.test(step.text)) problems.push(`${area}: "${step.title}" says nothing to expect`);
     }
   }
+  // Each step once, across the whole section: a rebase or a merge that pastes a step twice fails here.
+  const titles = new Map();
+  for (const step of Object.values(pass.steps).flat()) if (step.title !== '') titles.set(step.title, (titles.get(step.title) ?? 0) + 1);
+  for (const [title, count] of titles) if (count > 1) problems.push(`step appears ${count === 2 ? 'twice' : `${count} times`}: ${title}`);
+  // Each acceptance item names exactly one step, so a doubled step, or words loose enough to match two, fail too.
   for (const item of ACCEPTANCE) {
-    const found = (pass.steps[item.area] ?? []).some((step) => item.title.every((words) => words.test(step.title)) && item.body.every((words) => words.test(step.text)));
-    if (!found) problems.push(`no step for ${item.name}`);
+    const matches = (pass.steps[item.area] ?? []).filter((step) => item.title.every((words) => words.test(step.title)) && item.body.every((words) => words.test(step.text))).length;
+    if (matches === 0) problems.push(`no step for ${item.name}`);
+    else if (matches > 1) problems.push(`${item.name} matches ${matches} steps`);
   }
   const finding = pass.parts['What to do with a finding'] ?? '';
   if (!/bug issue/.test(finding)) problems.push('a finding never becomes a bug issue');
