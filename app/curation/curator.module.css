@@ -317,15 +317,6 @@
   font-size: var(--gah-type-label);
 }
 
-/* The Inbox's loading state without JavaScript: Publish's no-JavaScript line (publish.module.css .reason), centred
-   under the loading label, since nothing else ever shows. */
-.noScriptNote {
-  margin: 0.5rem var(--site-gutter) 0;
-  color: var(--gah-ink-muted);
-  font-size: var(--gah-type-label);
-  text-align: center;
-}
-
 .empty {
   padding: 1.25rem 1rem;
   color: var(--gah-ink-soft);

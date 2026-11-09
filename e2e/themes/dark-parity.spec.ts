@@ -1004,7 +1004,7 @@ async function newState(state: NewState, origins: { base: string; head: string }
 
 /**
  * F12 (v2.0.0): without JavaScript the Inbox never leaves its loading state, so a <noscript> line after the status
- * region says what needs JavaScript (app/curation/inbox/loading.tsx, curator.module.css's .noScriptNote). The walk
+ * region says what needs JavaScript (app/curation/inbox/loading.tsx, loading.module.css's .noScriptNote). The walk
  * skips NOSCRIPT with its subtree (test/helpers/parityWalk.ts), so the note's one trace in the comparison is the body,
  * whose flow holds it: CI run 42499424839 failed the Inbox's five pairs at 390 on `body` alone, 46.375 px taller, the
  * note's 8 px margin-top and two lines of 19.1875. The coordinator's ruling, held in every no-JavaScript cell of the

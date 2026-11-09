@@ -1,5 +1,5 @@
 import LoadingState from '@/components/site/LoadingState';
-import curator from '../curator.module.css';
+import styles from './loading.module.css';
 
 /**
  * The Inbox's loading state: the shared wait, whose label shows only after a
@@ -18,7 +18,7 @@ export default function InboxLoading() {
         <>
             <LoadingState label="Loading the inbox" />
             <noscript>
-                <p className={curator.noScriptNote}>The Inbox and its header, with Sign out, need JavaScript. Nothing is written without it.</p>
+                <p className={styles.noScriptNote}>The Inbox and its header, with Sign out, need JavaScript. Nothing is written without it.</p>
             </noscript>
         </>
     );
