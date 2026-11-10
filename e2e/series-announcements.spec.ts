@@ -199,3 +199,53 @@ test('Back after a reload on the Viewer, whose return asks the server for the dr
     await expectHeadingAlone(page, read, false);
     await expectNextChangeHeard(page);
 });
+
+// The page change after a modal Close that takes no landing hold, for comparison with the returns above: All work,
+// after a Close onto the photograph's entry, with and without the Viewer's revision check having refreshed the page
+// under the modal. Whether Next writes for Work isn't guaranteed (its announcer reads the title in its effect for the
+// router's new tree, and a title that streams in after that tree is never announced), so it's recorded in the report,
+// with the log, and only what is guaranteed is asserted.
+async function recordNextChange(page: Page): Promise<void> {
+    const read = await recordAnnouncer(page, { titles: true });
+    await page.getByRole('link', { name: 'All work, back to the series list' }).click();
+    await expect(page).toHaveURL(`${origin()}/work`);
+    await expect(page).toHaveTitle(/^Work\b/);
+    await expect(host(page)).not.toHaveAttribute('aria-hidden');
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)))));
+    const steps = await read();
+    const log = describeLog(steps);
+    const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
+    test.info().annotations.push({ type: 'Next wrote on the next change', description: `${test.info().project.name}: ${wrote.length > 0 ? 'yes' : 'no'} (${log})` });
+    console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
+    expect(steps.filter((step) => !step.hidden && step.text !== '' && !/^(Work|Fixture swell)\b/.test(step.text)), log).toEqual([]);
+    expect(wrote.filter((text) => !/^Work\b/.test(text)), log).toEqual([]);
+}
+
+test('the modal\'s Close onto its entry, after the revision check refreshed the page under it, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
+    await page.clock.install();
+    await page.goto(`${origin()}${SERIES}`);
+    await waitForHydration(page);
+    await entry(page, R[5]).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    // A publish that keeps the open photograph: the 30 s check refreshes the page under the modal, as for the dropped one.
+    await publishWithout(R[4]);
+    await page.clock.fastForward(30_000);
+    await expect(entry(page, R[4])).toHaveCount(0);
+    await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    await expect(entry(page, R[5])).toBeFocused();
+    await recordNextChange(page);
+});
+
+test('the modal\'s Close onto its entry, with no refresh, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
+    await page.goto(`${origin()}${SERIES}`);
+    await waitForHydration(page);
+    await entry(page, R[5]).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    await expect(entry(page, R[5])).toBeFocused();
+    await recordNextChange(page);
+});
