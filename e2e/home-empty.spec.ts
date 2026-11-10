@@ -137,7 +137,9 @@ test('at 320 px with 200% text, the heading and the Work link are clear of each 
     await expectReflow(copyAndControls);
     await page.setViewportSize({ width: 320, height: 640 });
     await page.evaluate(() => document.documentElement.style.setProperty('font-size', '200%'));
-    await expect(page.locator('main')).toHaveAttribute('data-text-enlarged', '');
+    // Only HeroReveal marks enlarged text, and the empty state has none, so the phone's beside-Enter rule has to key on
+    // Enter itself to leave this link alone.
+    await expect(page.locator('main')).not.toHaveAttribute('data-text-enlarged');
     await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length)).toBe(0);
     const problems = await page.evaluate((slack) => {
         const found: string[] = [];
