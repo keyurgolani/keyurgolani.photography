@@ -109,3 +109,67 @@ test.describe('the Viewer\'s status is empty once its message has been heard (#2
         expect(await viewer(page).ariaSnapshot()).not.toContain('Last photograph');
     });
 });
+
+test.describe('an open that waits for the shell\'s chunk (#247)', () => {
+    test('is never announced by Next: the series page stays until the shell is in, and the shell marks the host first', async ({ page }) => {
+        // From the page's start, every change to the announcer's host's aria-hidden and to its shadow root's text, in
+        // the order they happened: one observer for both keeps that order.
+        await page.addInitScript(() => {
+            const log: string[] = [];
+            (window as unknown as { kgAnnouncer: string[] }).kgAnnouncer = log;
+            const watch = (host: Element) => {
+                log.push(`host aria-hidden=${host.getAttribute('aria-hidden')}`);
+                const observer = new MutationObserver((records) => {
+                    for (const record of records) log.push(record.type === 'attributes' ? 'flip' : `text=${host.shadowRoot?.textContent ?? ''}`);
+                });
+                observer.observe(host, { attributes: true, attributeFilter: ['aria-hidden'] });
+                if (host.shadowRoot) observer.observe(host.shadowRoot, { childList: true, characterData: true, subtree: true });
+            };
+            new MutationObserver((records) => {
+                for (const record of records) for (const added of record.addedNodes) if (added instanceof Element && added.localName === 'next-route-announcer') watch(added);
+            }).observe(document, { childList: true, subtree: true });
+        });
+        // The shell's chunk (data-viewer-announcer is ViewerShell's alone) is held until the test lets it go, so the
+        // open, and any load ahead of it on the link's intent or the idle time, waits on it.
+        let release = () => {};
+        const held = new Promise<void>((resolve) => (release = resolve));
+        const delayed: string[] = [];
+        await page.route('**/_next/static/**/*.js*', async (route) => {
+            try {
+                const response = await route.fetch();
+                const body = await response.text();
+                if (body.includes('data-viewer-announcer')) {
+                    delayed.push(route.request().url());
+                    await held;
+                }
+                await route.fulfill({ response, body });
+            } catch (error) {
+                if (!/disposed|has been closed|Test ended/.test(String(error))) throw error;
+            }
+        });
+        await page.goto(`${origin()}/work/harbor`);
+        await waitForHydration(page);
+        await expect(host(page)).toHaveCount(1);
+        await page.locator(`[id="photo-${HARBOR[0]}"]`).click();
+        await expect.poll(() => delayed.length, "the shell's chunk was asked for and held").toBeGreaterThan(0);
+        // While it waits, the series page is the page: no dialog, and nothing in the announcer.
+        await page.waitForTimeout(1000);
+        await expect(page.locator('dialog')).toHaveCount(0);
+        expect(await announcerText(page), 'the announcer, while the open waits').toBe('');
+        await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0);
+        release();
+        await expect(page.getByRole('dialog', { name: /^Fixture harbor/ })).toBeVisible();
+        await expect(host(page)).toHaveAttribute('aria-hidden', 'true');
+        await expectNoAlert(page, 'the open');
+        // Replayed in order: no text was written into the alert while its host wasn't hidden.
+        const log = await page.evaluate(() => (window as unknown as { kgAnnouncer: string[] }).kgAnnouncer);
+        let hidden = log[0] === 'host aria-hidden=true';
+        const spoken: string[] = [];
+        for (const entry of log.slice(1)) {
+            if (entry === 'flip') hidden = !hidden;
+            else if (!hidden && entry !== 'text=') spoken.push(entry);
+        }
+        expect(log[0], 'the host, as Next made it').toBe('host aria-hidden=null');
+        expect(spoken, `written while the host was exposed (${log.join(', ')})`).toEqual([]);
+    });
+});
