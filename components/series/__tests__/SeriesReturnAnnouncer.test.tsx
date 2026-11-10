@@ -173,8 +173,9 @@ describe('landReturn: a return that asked the server for its photograph\'s page,
         expect(said()).not.toContain('Harbor');
     });
 
-    it('keeps the answer\'s own write from being heard when it has one: WebKit can read the h1 for the Back while the title is replaced', async () => {
-        // The Back's effect ran with the title empty, so Next took the h1's text; the answer's has the title.
+    it('keeps the answer\'s own write from being heard when it has one: Next can read the h1 for the Back while the title is replaced', async () => {
+        // The Back's effect ran with the title empty, so Next took the h1's text; the answer's has the title. The e2e
+        // run saw it so in desktop Chromium (e2e/series-announcements.spec.ts).
         const { view, read } = await backAndAsk('');
         answer(view, SERIES_TITLE);
         const steps = await read();
