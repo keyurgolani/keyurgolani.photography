@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test';
 import { installAnnouncerLog, readAnnouncerLog, type AnnouncerStep } from '../../test/helpers/announcerLog';
 
-export { describeLog, shownHolding, spokenOf, type AnnouncerStep } from '../../test/helpers/announcerLog';
+export { describeLog, nextChangeVerdict, readOf, shownHolding, spokenOf, type AnnouncerStep } from '../../test/helpers/announcerLog';
 
 let count = 0;
 

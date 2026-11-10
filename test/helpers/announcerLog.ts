@@ -242,3 +242,55 @@ export function describeLog(steps: readonly AnnouncerStep[]): string {
         })
         .join('; ');
 }
+
+/** What Next's announcer read, from a read step: `document.title`, or the first h1's text when the title was empty. */
+export function readOf(step: AnnouncerStep): { of: 'title' | 'h1'; value: string | null } | null {
+    if (step.kind !== 'read' || step.focus === undefined) return null;
+    const match = /^(title|h1) (.*)$/.exec(step.focus);
+    if (match === null) return null;
+    return { of: match[1] as 'title' | 'h1', value: JSON.parse(match[2]) as string | null };
+}
+
+/** The note a next change that met #258 carries, in the report. */
+export const LATE_TITLE_NOTE = 'Next read the old title (#258)';
+
+export interface NextChangeVerdict {
+    /** 'strict' when Next's first read was the new page's title, or an empty one, so its write was due; else 'late-title'. */
+    branch: 'strict' | 'late-title';
+    /** Empty when the change passes. */
+    problems: string[];
+    /** LATE_TITLE_NOTE when the late title was recorded rather than failed. */
+    note?: string;
+}
+
+/**
+ * The verdict on a page change from a log that began just before the click (#257, #258). Next's announcer reads the
+ * title once for each new router tree, and writes only when it differs from what it read last. Whatever the branch:
+ * the host is never hidden after the click, and whenever it's shown it holds nothing or the new page's name.
+ *
+ * - **Strict.** Next's first read is the new page's title, or an empty one followed by the first h1: then the new
+ *   page's name must be written while the host is shown.
+ * - **Late title.** Next's first read is some other title: the new page's title landed after its tree, so Next wrote
+ *   nothing (#258). With `lateTitle: 'record'` that passes with LATE_TITLE_NOTE, as long as the title then became the
+ *   new page's. With 'fail', the default, it fails.
+ *
+ * With no read step at all, it fails: the log can't say what Next saw.
+ */
+export function nextChangeVerdict(steps: readonly AnnouncerStep[], { name, lateTitle = 'fail' }: { name: RegExp; lateTitle?: 'fail' | 'record' }): NextChangeVerdict {
+    const problems: string[] = [];
+    if (steps.some((step) => step.kind === 'hidden' || step.hidden)) problems.push('the host was hidden after the click');
+    // A title step's text is the document's title; every other step carries the host's text.
+    const stale = steps.filter((step) => step.kind !== 'title' && !step.hidden && step.text !== '' && !name.test(step.text)).map((step) => step.text);
+    if (stale.length > 0) problems.push(`the host was shown holding ${JSON.stringify([...new Set(stale)])}`);
+    const reads = steps.map(readOf).filter((read) => read !== null);
+    if (reads.length === 0) return { branch: 'strict', problems: [...problems, 'no read of the title after the click'] };
+    const first = reads[0];
+    const due = first.of === 'title' && (first.value === '' || name.test(first.value ?? ''));
+    if (due) {
+        if (!spokenOf(steps).some((text) => name.test(text))) problems.push(`Next read ${JSON.stringify(first.value)} and wrote nothing with the new page's name`);
+        return { branch: 'strict', problems };
+    }
+    if (lateTitle === 'fail') return { branch: 'late-title', problems: [...problems, `${LATE_TITLE_NOTE}: it read ${JSON.stringify(first.value)}`] };
+    if (!steps.some((step) => step.kind === 'title' && name.test(step.text))) problems.push("the title never became the new page's");
+    return { branch: 'late-title', problems, note: LATE_TITLE_NOTE };
+}

@@ -3,7 +3,7 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { readAuthoredRecord } from '../lib/catalog/working-layer';
 import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
-import { describeLog, recordAnnouncer, shownHolding, spokenOf, type AnnouncerStep } from './support/announcerLog';
+import { describeLog, nextChangeVerdict, readOf, recordAnnouncer, shownHolding, spokenOf, type AnnouncerStep } from './support/announcerLog';
 import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
@@ -23,6 +23,9 @@ import { expect, test } from './support/test';
 //
 // Each records every write to the announcer's shadow root and every change to its host's aria-hidden from before the
 // press (test/helpers/announcerLog.ts), so a write that's emptied a moment later still counts.
+//
+// #258: after the modal's Back from "This photograph is no longer here", Next's announcer can read the series page's title for All work's new tree, whose title lands later, so it writes nothing. Seen only in Chromium with a Pixel 7 profile.
+// That test's next change is strict whenever Next read Work's title, and records the miss otherwise. Every other next-change check is strict.
 
 test.describe.configure({ mode: 'default' });
 
@@ -73,23 +76,6 @@ async function publishWithout(photoId: string): Promise<void> {
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
 }
 
-/**
- * Every request the page makes for /work's RSC payload, a prefetch or the navigation's own, with when it finished
- * (ms since the test began), so a log of the next change can say whether /work was prefetched before the click.
- */
-const workFetches = new WeakMap<Page, string[]>();
-function trackWork(page: Page): void {
-    const seen: string[] = [];
-    const began = Date.now();
-    workFetches.set(page, seen);
-    page.on('requestfinished', (request) => {
-        const url = new URL(request.url());
-        if (url.pathname !== '/work' || !(url.searchParams.has('_rsc') || request.headers().rsc === '1')) return;
-        seen.push(`${request.headers()['next-router-prefetch'] ? 'prefetch' : 'fetch'} at ${Date.now() - began} ms`);
-    });
-}
-const workLog = (page: Page) => (workFetches.get(page) ?? []).join(', ') || 'none';
-
 /** Publishes the whole series again when a test before this one, or a try of this one, left it short. */
 test.beforeEach(async () => {
     if (!catalog) throw new Error('No catalog');
@@ -126,40 +112,64 @@ async function expectHeadingAlone(page: Page, read: () => Promise<AnnouncerStep[
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
     const steps = await read();
     const log = describeLog(steps);
-    // The whole log, in the report and the output, whatever fails below.
+    // The whole log in the report, and in the output when something below fails.
     test.info().annotations.push({ type: 'announcer', description: log });
-    console.log(`[${test.info().project.name}] ${test.info().title}: ${log}`);
-    await expect(host(page), log).not.toHaveAttribute('aria-hidden');
-    await expect(page.getByRole('alert').filter({ hasText: named }), log).toHaveCount(0);
-    expect(await page.locator('body').ariaSnapshot(), log).not.toMatch(new RegExp(`^\\s*- alert\\b.*${NAME}`, 'm'));
-    await expect(heading(page), log).toBeFocused();
-    expect(spokenOf(fromHeading(steps)).filter((text) => named.test(text)), log).toEqual([]);
-    // Nor was the host ever shown holding a title it took while hidden: the Viewer's, or Next's own for this landing.
-    expect(shownHolding(steps), log).toEqual([]);
-    if (strict) expect(spokenOf(steps).filter((text) => named.test(text)), log).toEqual([]);
+    try {
+        await expect(host(page), log).not.toHaveAttribute('aria-hidden');
+        await expect(page.getByRole('alert').filter({ hasText: named }), log).toHaveCount(0);
+        expect(await page.locator('body').ariaSnapshot(), log).not.toMatch(new RegExp(`^\\s*- alert\\b.*${NAME}`, 'm'));
+        await expect(heading(page), log).toBeFocused();
+        expect(spokenOf(fromHeading(steps)).filter((text) => named.test(text)), log).toEqual([]);
+        // Nor was the host ever shown holding a title it took while hidden: the Viewer's, or Next's own for this landing.
+        expect(shownHolding(steps), log).toEqual([]);
+        if (strict) expect(spokenOf(steps).filter((text) => named.test(text)), log).toEqual([]);
+    } catch (error) {
+        console.log(`[${test.info().project.name}] ${test.info().title}: ${log}`);
+        throw error;
+    }
     return steps;
 }
 
-/** A page change that focuses no heading: All work, from the series page. The announcer says Work's title. */
-async function expectNextChangeHeard(page: Page): Promise<void> {
+const WORK = /^Work\b/;
+
+/**
+ * A page change that focuses no heading: All work, from the series page. The verdict is read from what Next's announcer
+ * read for Work's tree (nextChangeVerdict, test/helpers/announcerLog.ts). When it read Work's title, or an empty one,
+ * the announcer must say Work's name. When it read another title, Work's landed after its tree and Next wrote nothing
+ * (#258): that fails, unless `lateTitle` is 'record', where it's recorded and only what's guaranteed is asserted. Either
+ * way the host is never hidden after the click, and shows nothing but Work's name. This reads the title only through
+ * the log, never itself, so the log's first read is Next's.
+ */
+async function expectNextChangeHeard(page: Page, { lateTitle = 'fail' }: { lateTitle?: 'fail' | 'record' } = {}): Promise<void> {
     const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
+    let steps: AnnouncerStep[] = [];
     try {
-        await expect(page.getByRole('alert')).toHaveText(/^Work\b/);
-        await expect(host(page)).not.toHaveAttribute('aria-hidden');
-    } finally {
-        // The log, with the title's changes, in the report and the output, whether or not the alert came.
-        const log = `${describeLog(await read())} | /work requests: ${workLog(page)}`;
-        test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${log}` });
-        console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
+        // Work's title in the document, and Next's read for Work's tree, whichever came first.
+        await expect
+            .poll(async () => {
+                steps = await read();
+                return steps.some((step) => step.kind === 'title' && WORK.test(step.text)) && steps.some((step) => readOf(step) !== null);
+            }, { message: 'Work\'s title, and a read of the title by Next\'s announcer' })
+            .toBe(true);
+        const first = steps.map(readOf).find((found) => found !== null);
+        // Its write is due: it lands in the commit after that read.
+        if (first?.of === 'title' && (first.value === '' || WORK.test(first.value ?? ''))) await expect(page.getByRole('alert')).toHaveText(WORK);
+        steps = await read();
+    } catch (error) {
+        console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${describeLog(await read())}`);
+        throw error;
     }
-    const steps = await read();
-    expect(spokenOf(steps).filter((text) => /^Work\b/.test(text)), describeLog(steps)).not.toEqual([]);
+    const verdict = nextChangeVerdict(steps, { name: WORK, lateTitle });
+    const log = describeLog(steps);
+    test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${verdict.note ?? verdict.branch} (${log})` });
+    if (verdict.problems.length > 0 || verdict.branch === 'late-title') console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${verdict.note ?? verdict.branch}: ${log}`);
+    expect(verdict.problems, log).toEqual([]);
+    await expect(host(page), log).not.toHaveAttribute('aria-hidden');
 }
 
 test('the modal\'s Back to the series onto the heading, when a publish dropped its photograph: the heading alone says the name', async ({ page }) => {
-    trackWork(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -176,7 +186,8 @@ test('the modal\'s Back to the series onto the heading, when a publish dropped i
     await expect(page).toHaveURL(`${origin()}${SERIES}`);
     await expect(entry(page, R[1])).toHaveCount(0);
     await expectHeadingAlone(page, read, true);
-    await expectNextChangeHeard(page);
+    // #258: Next can read the series page's title for All work's tree here, and then writes nothing.
+    await expectNextChangeHeard(page, { lateTitle: 'record' });
 });
 
 test('Back after a reload on the Viewer to a deep link\'s page for a dropped photograph: the heading alone says the name', async ({ page }) => {
@@ -224,7 +235,6 @@ test('Back after a reload on the Viewer, whose return asks the server for the dr
 // router's new tree, and a title that streams in after that tree is never announced), so it's recorded in the report,
 // with the log, and only what is guaranteed is asserted.
 async function recordNextChange(page: Page): Promise<void> {
-    const before = workLog(page);
     const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
@@ -232,16 +242,19 @@ async function recordNextChange(page: Page): Promise<void> {
     await expect(host(page)).not.toHaveAttribute('aria-hidden');
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)))));
     const steps = await read();
-    const log = `${describeLog(steps)} | /work requests before the click: ${before}; by the end: ${workLog(page)}`;
+    const log = describeLog(steps);
     const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
     test.info().annotations.push({ type: 'Next wrote on the next change', description: `${test.info().project.name}: ${wrote.length > 0 ? 'yes' : 'no'} (${log})` });
-    console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
-    expect(steps.filter((step) => !step.hidden && step.text !== '' && !/^(Work|Fixture swell)\b/.test(step.text)), log).toEqual([]);
-    expect(wrote.filter((text) => !/^Work\b/.test(text)), log).toEqual([]);
+    try {
+        expect(steps.filter((step) => !step.hidden && step.text !== '' && !/^(Work|Fixture swell)\b/.test(step.text)), log).toEqual([]);
+        expect(wrote.filter((text) => !/^Work\b/.test(text)), log).toEqual([]);
+    } catch (error) {
+        console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
+        throw error;
+    }
 }
 
 test('the modal\'s Close onto its entry, after the revision check refreshed the page under it, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
-    trackWork(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -259,7 +272,6 @@ test('the modal\'s Close onto its entry, after the revision check refreshed the 
 });
 
 test('the modal\'s Close onto its entry, with no refresh, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
-    trackWork(page);
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
     await entry(page, R[5]).focus();
@@ -271,9 +283,7 @@ test('the modal\'s Close onto its entry, with no refresh, then All work: no hold
     await recordNextChange(page);
 });
 
-
 test('the modal\'s Back to the series onto the opener\'s entry, after a publish dropped the photograph a move reached: no hold, and Next\'s write is recorded', async ({ page }) => {
-    trackWork(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
