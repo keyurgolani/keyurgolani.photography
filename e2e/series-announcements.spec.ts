@@ -234,6 +234,12 @@ test('Back after a reload on the Viewer, whose return asks the server for the dr
 // under the modal. Whether Next writes for Work isn't guaranteed (its announcer reads the title in its effect for the
 // router's new tree, and a title that streams in after that tree is never announced), so it's recorded in the report,
 // with the log, and only what is guaranteed is asserted.
+/** Whether Next wrote after a click, in the report, since it isn't guaranteed: `type` names the change. */
+function noteNextWrote(steps: AnnouncerStep[], type: string): void {
+    const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
+    test.info().annotations.push({ type, description: `${test.info().project.name}: ${wrote.length > 0 ? `yes, ${JSON.stringify(wrote)}` : 'no'} (${describeLog(steps)})` });
+}
+
 async function recordNextChange(page: Page): Promise<void> {
     const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
@@ -244,7 +250,7 @@ async function recordNextChange(page: Page): Promise<void> {
     const steps = await read();
     const log = describeLog(steps);
     const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
-    test.info().annotations.push({ type: 'Next wrote on the next change', description: `${test.info().project.name}: ${wrote.length > 0 ? 'yes' : 'no'} (${log})` });
+    noteNextWrote(steps, 'Next wrote on the next change');
     try {
         expect(steps.filter((step) => !step.hidden && step.text !== '' && !/^(Work|Fixture swell)\b/.test(step.text)), log).toEqual([]);
         expect(wrote.filter((text) => !/^Work\b/.test(text)), log).toEqual([]);
@@ -303,4 +309,86 @@ test('the modal\'s Back to the series onto the opener\'s entry, after a publish 
     // The opener's entry is still there, so focus goes back to it, with no landing hold.
     await expect(entry(page, R[0])).toBeFocused();
     await recordNextChange(page);
+});
+
+
+// #256: a photograph's own page (the Viewer loaded directly) closes with a link to the series, `?photo=<id>`. In
+// WebKit, Next's announcer can write nothing for that Close (it reads the h1 during a move's title swap, then finds
+// the text unchanged), so the series page reached from it puts focus where the modal's Close does: on the
+// photograph's entry, or on the heading when the entry isn't there, under the landing hold.
+
+/** The series page's name as Next writes it, its title or its h1, and never a photograph's title, which starts the same. */
+const seriesName = new RegExp(`^${NAME}( · |$)`);
+
+/** Whether Next wrote on this Close, in the report, since it isn't guaranteed. */
+const noteWrote = (steps: AnnouncerStep[]) => noteNextWrote(steps, 'Next wrote on page Close');
+
+test('a photograph\'s own page: a move, then Close lands on its entry, and the page\'s name is said at most once', async ({ page }) => {
+    await page.goto(`${origin()}${href(R[0])}`);
+    await waitForHydration(page);
+    await expect(viewer(page)).toHaveAttribute('data-viewer-mode', 'page');
+    await viewer(page).getByRole('button', { name: 'Next photograph', exact: true }).click();
+    await expect(page).not.toHaveURL(`${origin()}${href(R[0])}`);
+    const photoId = new URL(page.url()).pathname.split('/').pop() ?? '';
+    expect(R).toContain(photoId);
+    const read = await recordAnnouncer(page);
+    await viewer(page).getByRole('link', { name: 'Close' }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}?photo=${photoId}`);
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(entry(page, photoId)).toBeFocused();
+    await expect(host(page)).not.toHaveAttribute('aria-hidden');
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)))));
+    const steps = await read();
+    const log = describeLog(steps);
+    noteWrote(steps);
+    expect(spokenOf(steps).filter((text) => seriesName.test(text)).length, log).toBeLessThanOrEqual(1);
+    expect(steps.filter((step) => !step.hidden && step.text !== '' && !seriesName.test(step.text)), log).toEqual([]);
+    await expect(entry(page, photoId)).toBeFocused();
+});
+
+test('a photograph\'s own page whose photograph a publish dropped: Close lands on the heading, which alone says the name', async ({ page }) => {
+    await page.goto(`${origin()}${href(R[4])}`);
+    await waitForHydration(page);
+    await expect(viewer(page)).toHaveAttribute('data-viewer-mode', 'page');
+    await publishWithout(R[4]);
+    const read = await recordAnnouncer(page);
+    await viewer(page).getByRole('link', { name: 'Close' }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}?photo=${R[4]}`);
+    await expect(entry(page, R[4])).toHaveCount(0);
+    const steps = await expectHeadingAlone(page, read, true);
+    noteWrote(steps);
+    await expectNextChangeHeard(page);
+});
+
+test('the modal\'s Close is as before: focus on the photograph\'s entry, and the announcer says the series page', async ({ page }) => {
+    await page.goto(`${origin()}${SERIES}`);
+    await waitForHydration(page);
+    await entry(page, R[5]).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    const read = await recordAnnouncer(page);
+    await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    await expect(entry(page, R[5])).toBeFocused();
+    await expect(page.getByRole('alert')).toHaveText(seriesName);
+    const steps = await read();
+    expect(shownHolding(steps), describeLog(steps)).toEqual([]);
+    expect(spokenOf(steps).filter((text) => seriesName.test(text)), describeLog(steps)).toHaveLength(1);
+});
+
+test('a series page reached any other way moves no focus: a plain visit, a link from Work, and a ?photo= the server doesn\'t find', async ({ page }) => {
+    await page.goto(`${origin()}${SERIES}`);
+    await waitForHydration(page);
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    await page.goto(`${origin()}/work`);
+    await waitForHydration(page);
+    await page.locator(`main a[href="${SERIES}"]`).first().click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    await expect(heading(page)).toBeVisible();
+    await expect(heading(page)).not.toBeFocused();
+    expect(await page.evaluate(() => document.activeElement === document.body || document.activeElement?.closest('main') === null)).toBe(true);
+    await page.goto(`${origin()}${SERIES}?photo=${id(99)}`);
+    await waitForHydration(page);
+    await expect(heading(page)).not.toBeFocused();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
