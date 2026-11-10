@@ -997,6 +997,52 @@ describe('CatalogHome', () => {
       expect(main()).toHaveAttribute('data-interface-state', 'interactive');
       expect(queryButton('Next photograph')).toBeNull();
     });
+
+    it('offers "All bodies of work" to Work under its heading, next after it in the reading and Tab order (#4)', async () => {
+      await renderHome(EMPTY);
+      const heading = screen.getByRole('heading', { level: 1 });
+      const work = screen.getByRole('link', { name: 'All bodies of work' });
+      expect(work).toHaveAttribute('href', '/work');
+      expect(work.closest('[data-chrome-region]')).toHaveAttribute('data-chrome-region', 'story');
+      // Every heading and focusable element on the page, in document order: the link comes right after the heading.
+      const order = [...document.querySelectorAll('h1, a[href], button, [tabindex]')];
+      expect(order.indexOf(work)).toBe(order.indexOf(heading) + 1);
+      expect(screen.getAllByRole('link', { name: 'All bodies of work' })).toHaveLength(1);
+      // It doesn't change what the empty state holds: the navigation stays up for good.
+      expect(main()).toHaveAttribute('data-home-state', 'empty');
+      expect(holds()).toBe('no-photo');
+      advance(HOME_CHROME_IDLE_MS * 3);
+      expect(main()).toHaveAttribute('data-interface-state', 'interactive');
+    });
+
+    it('gives the empty state the same Work link as the featured story, by class and href', async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const featured = document.createElement('div');
+      featured.innerHTML = renderToString(<CatalogHome home={published()} />);
+      const empty = document.createElement('div');
+      empty.innerHTML = renderToString(<CatalogHome home={EMPTY} />);
+      const linkIn = (host: HTMLElement) => [...host.querySelectorAll<HTMLAnchorElement>('[data-chrome-region="story"] a')].find((a) => a.textContent === 'All bodies of work');
+      const [inFeatured, inEmpty] = [linkIn(featured), linkIn(empty)];
+      expect(inEmpty).toBeDefined();
+      expect([inEmpty?.getAttribute('href'), inEmpty?.className]).toEqual([inFeatured?.getAttribute('href'), inFeatured?.className]);
+      // In the server HTML too, the only link in the empty story, right after the heading.
+      const story = empty.querySelector('[data-chrome-region="story"]')!;
+      expect([...story.querySelectorAll('h1, a')].map((el) => [el.tagName, el.textContent])).toEqual([
+        ['H1', 'Nothing is featured right now.'],
+        ['A', 'All bodies of work'],
+      ]);
+    });
+
+    it("keeps the empty state's Work link inside #16's preview, from the site's route builder", async () => {
+      const { default: CatalogHome } = await import('../CatalogHome');
+      const { default: SiteRoutesProvider } = await import('@/components/site/SiteRoutes');
+      render(
+        <SiteRoutesProvider basePath="/curation/preview/fixture/site">
+          <CatalogHome home={EMPTY} />
+        </SiteRoutesProvider>,
+      );
+      expect(screen.getByRole('link', { name: 'All bodies of work' })).toHaveAttribute('href', '/curation/preview/fixture/site/work');
+    });
   });
 
   describe('the narrowed Home (#6): three records from the server, the rest as Home moves', () => {
@@ -1843,11 +1889,6 @@ describe('CatalogHome', () => {
         ['Enter the series', '/work/fixture-a'],
         ['All bodies of work', '/work'],
       ]);
-    });
-
-    it('leaves the empty state as it is, with no Work link of its own', async () => {
-      await renderHome(EMPTY);
-      expect(screen.queryByRole('link', { name: 'All bodies of work' })).toBeNull();
     });
 
     /** A series of `count` photographs in ID order, opening on the third. */
