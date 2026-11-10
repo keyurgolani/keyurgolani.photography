@@ -17,10 +17,13 @@ export async function recordAnnouncer(page: Page, { titles = false }: { titles?:
 }
 
 /**
- * Starts a title trace (#258) on every document the page loads from now on, before any script runs. Call it before
- * the first goto. The reader reads the current document's trace.
+ * Starts a title trace (#258) on every document the page loads from now on, before any script runs, when TITLE_TRACE=1
+ * is set. Call it before the first goto. The reader reads the current document's trace. Off by default: its work on
+ * every read and every DOM change moves the timing of Next's head enough to change which way #258's race goes (Back
+ * to a deep link's page on desktop missed 2 of 5 traced, and 0 of 10 untraced).
  */
-export async function traceTitles(page: Page): Promise<() => Promise<TitleTraceEntry[]>> {
+export async function traceTitles(page: Page): Promise<(() => Promise<TitleTraceEntry[]>) | undefined> {
+    if (process.env.TITLE_TRACE !== '1') return undefined;
     const key = `titles-${++count}`;
     await page.addInitScript(installTitleTrace, key);
     return () => page.evaluate(readTitleTrace, key);

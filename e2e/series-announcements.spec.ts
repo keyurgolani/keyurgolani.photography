@@ -135,7 +135,7 @@ const WORK = /^Work\b/;
 type Trace = () => Promise<TitleTraceEntry[]>;
 
 /**
- * The test's title trace from its first load on (#258), in the report: every <title> put in or taken out, each read of
+ * The test's title trace from its first load on (#258), with TITLE_TRACE=1, in the report: every <title> put in or taken out, each read of
  * the title with every <title> there and the state of each Next.Metadata boundary, and the commits' history pushes.
  */
 async function noteTrace(trace: Trace | undefined): Promise<void> {
