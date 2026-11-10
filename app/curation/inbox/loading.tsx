@@ -1,5 +1,16 @@
 import LoadingState from '@/components/site/LoadingState';
-import styles from './loading.module.css';
+
+/**
+ * The note's look: Publish's no-JavaScript line (publish.module.css .reason), centred under the label. A style
+ * attribute, not a stylesheet: Turbopack puts any sheet this loading boundary imports into the CSS chunk every visitor
+ * route loads, which ci/curator-css.mjs refuses.
+ */
+const NOTE_STYLE = {
+    margin: '0.5rem var(--site-gutter) 0',
+    color: 'var(--gah-ink-muted)',
+    fontSize: 'var(--gah-type-label)',
+    textAlign: 'center',
+} as const;
 
 /**
  * The Inbox's loading state: the shared wait, whose label shows only after a
@@ -18,7 +29,8 @@ export default function InboxLoading() {
         <>
             <LoadingState label="Loading the inbox" />
             <noscript>
-                <p className={styles.noScriptNote}>The Inbox and its header, with Sign out, need JavaScript. Nothing is written without it.</p>
+                {/* A future style-src CSP would have to move this style attribute into a stylesheet. */}
+                <p style={NOTE_STYLE}>The Inbox and its header, with Sign out, need JavaScript. Nothing is written without it.</p>
             </noscript>
         </>
     );
