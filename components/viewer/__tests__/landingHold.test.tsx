@@ -2,7 +2,7 @@ import { act, render } from '@testing-library/react';
 import { AppRouterAnnouncer } from 'next/dist/client/components/app-router-announcer';
 import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf } from '@/test/helpers/announcerLog';
+import { describeLog, installAnnouncerLog, readAnnouncerLog, shownHolding, spokenOf } from '@/test/helpers/announcerLog';
 import { quietRouteAnnouncer, useLandingHold } from '../routeAnnouncer';
 
 // #255: when a navigation lands with focus on a heading that names the page, the heading says the name, so Next
@@ -106,6 +106,33 @@ describe('useLandingHold, with Next 16.4.2\'s announcer', () => {
         // Nothing left hidden, and no alert with the page's name beside the focused heading.
         expect(host()).not.toHaveAttribute('aria-hidden');
         expect(said()).toBe('');
+    });
+
+    it('never shows the host holding the write it kept from being heard', async () => {
+        const view = await fromViewer();
+        const read = record();
+        navigate(view, 'series', SERIES_TITLE, <HeadingPage />);
+        const steps = await read();
+        expect(shownHolding(steps), describeLog(steps)).toEqual([]);
+    });
+
+    it('over a host in another shape, empties nothing there, throws nothing, and still lets it go', async () => {
+        const view = await fromViewer();
+        // A second host with no aria-live node, as a Next upgrade might render it.
+        const odd = document.createElement('next-route-announcer');
+        const alert = document.createElement('div');
+        alert.setAttribute('role', 'alert');
+        alert.textContent = 'Odd title';
+        odd.attachShadow({ mode: 'open' }).appendChild(alert);
+        document.body.appendChild(odd);
+        await settle();
+        expect(odd).toHaveAttribute('aria-hidden', 'true');
+        navigate(view, 'series', SERIES_TITLE, <HeadingPage />);
+        await settle();
+        expect(odd.shadowRoot?.textContent).toBe('Odd title');
+        expect(odd).not.toHaveAttribute('aria-hidden');
+        expect(said()).toBe('');
+        expect(host()).not.toHaveAttribute('aria-hidden');
     });
 
     it('lets the next page change be heard as before', async () => {

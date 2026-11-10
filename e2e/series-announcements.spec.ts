@@ -3,7 +3,7 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { readAuthoredRecord } from '../lib/catalog/working-layer';
 import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
-import { describeLog, recordAnnouncer, spokenOf, type AnnouncerStep } from './support/announcerLog';
+import { describeLog, recordAnnouncer, shownHolding, spokenOf, type AnnouncerStep } from './support/announcerLog';
 import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
@@ -106,6 +106,8 @@ async function expectHeadingAlone(page: Page, read: () => Promise<AnnouncerStep[
     expect(await page.locator('body').ariaSnapshot(), log).not.toMatch(new RegExp(`^\\s*- alert\\b.*${NAME}`, 'm'));
     await expect(heading(page), log).toBeFocused();
     expect(spokenOf(fromHeading(steps)).filter((text) => named.test(text)), log).toEqual([]);
+    // Nor was the host ever shown holding a title it took while hidden: the Viewer's, or Next's own for this landing.
+    expect(shownHolding(steps), log).toEqual([]);
     if (strict) expect(spokenOf(steps).filter((text) => named.test(text)), log).toEqual([]);
     return steps;
 }

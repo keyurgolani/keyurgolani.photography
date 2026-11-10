@@ -175,6 +175,14 @@ export function spokenOf(steps: readonly AnnouncerStep[]): string[] {
     return steps.filter((step) => step.kind === 'text' && !step.hidden && step.text !== '').map((step) => step.text);
 }
 
+/**
+ * The texts the host held each time it was shown: a step that took its aria-hidden off while it still held text. That
+ * text was written while it was hidden, so it's stale, and a screen reader can read an alert out as it's shown.
+ */
+export function shownHolding(steps: readonly AnnouncerStep[]): string[] {
+    return steps.filter((step) => step.kind === 'hidden' && !step.hidden && step.text !== '').map((step) => step.text);
+}
+
 /** The log as one line per step, for a failure message. */
 export function describeLog(steps: readonly AnnouncerStep[]): string {
     return steps.map((step) => (step.kind === 'focus' ? `focus ${step.focus}` : `${step.kind} ${JSON.stringify(step.text)}${step.hidden ? ' (hidden)' : ''}`)).join('; ');

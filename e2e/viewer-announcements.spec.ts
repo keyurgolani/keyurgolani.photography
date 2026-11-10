@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { describeLog, recordAnnouncer, shownHolding, spokenOf } from './support/announcerLog';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 import { HARBOR, href, useViewerCatalog } from './support/viewerCatalog';
@@ -85,6 +86,48 @@ test.describe('Next\'s route announcer stays quiet for the Viewer\'s moves (#247
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(host(page)).not.toHaveAttribute('aria-hidden');
         await expect(page.getByRole('alert')).toHaveText(/^Fixture harbor( · |$)/);
+    });
+});
+
+test.describe('Close never shows the announcer holding a title it took while the Viewer held it (#255)', () => {
+    // The alert keeps the last title Next wrote under the Viewer's mark. Shown again as it was, a screen reader could
+    // read that stale title out, so the Viewer's release empties it first, and the series page is Next's next write.
+    test('in the modal and on a page, Close shows the host empty, then the announcer says the series page', async ({ page }) => {
+        await page.goto(`${origin()}/work/harbor`);
+        await waitForHydration(page);
+        await expect(host(page)).toHaveCount(1);
+        await page.locator(`[id="photo-${HARBOR[0]}"]`).click();
+        const dialog = page.getByRole('dialog', { name: /^Fixture harbor/ });
+        await expect(dialog).toBeVisible();
+        const moving = await recordAnnouncer(page);
+        await dialog.getByRole('button', { name: 'Next photograph', exact: true }).click();
+        await expect(status(page)).toHaveText(moved(2, 3));
+        await expect.poll(() => announcerText(page)).toMatch(/^Fixture harbor(, photograph 2 of 3 · |$)/);
+        const moves = await moving();
+        expect(spokenOf(moves), describeLog(moves)).toEqual([]);
+
+        const closing = await recordAnnouncer(page);
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        await expect(page.getByRole('alert')).toHaveText(/^Fixture harbor( · |$)/);
+        const closed = await closing();
+        expect(shownHolding(closed), describeLog(closed)).toEqual([]);
+        expect(spokenOf(closed).filter((text) => /^Fixture harbor( · |$)/.test(text)), describeLog(closed)).not.toEqual([]);
+
+        // A page: the Viewer loaded directly, a move, then Close, its link to the series.
+        await page.goto(`${origin()}${href(HARBOR[0])}`);
+        await waitForHydration(page);
+        await expect(host(page)).toHaveAttribute('aria-hidden', 'true');
+        await control(page, 'Next photograph').click();
+        await expect(page).toHaveURL(`${origin()}${href(HARBOR[1])}`);
+        await expect.poll(() => announcerText(page)).toMatch(/^Fixture harbor(, photograph 2 of 3 · |$)/);
+        const leaving = await recordAnnouncer(page);
+        await viewer(page).getByRole('link', { name: 'Close' }).click();
+        await expect(viewer(page)).toHaveCount(0);
+        await expect(page.getByRole('alert')).toHaveText(/^Fixture harbor( · |$)/);
+        const left = await leaving();
+        expect(shownHolding(left), describeLog(left)).toEqual([]);
+        expect(spokenOf(left).filter((text) => /^Fixture harbor( · |$)/.test(text)), describeLog(left)).not.toEqual([]);
     });
 });
 

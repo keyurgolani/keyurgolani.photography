@@ -6,6 +6,7 @@ import type { PublishedViewerPhoto } from '@/lib/catalog/projections/viewer';
 import StoryViewer from '../StoryViewer';
 import ViewerShell from '../ViewerShell';
 import ViewerUnavailable from '../ViewerUnavailable';
+import { describeLog, installAnnouncerLog, readAnnouncerLog, shownHolding, spokenOf } from '@/test/helpers/announcerLog';
 
 // #247: each Viewer move is a client-side navigation, so Next 16.4.2's route announcer
 // (next/dist/client/components/app-router-announcer.js) writes the new title into its assertive alert, and on a
@@ -262,6 +263,79 @@ describe('Next\'s route announcer while the Viewer is mounted (#247)', () => {
         render(<App route="2" page={<ViewerShell mode="page">{photo(2)}</ViewerShell>} />);
         await settle();
         expect([...document.querySelectorAll('[aria-hidden="true"]')].filter((node) => node.closest('[data-surface="viewer"]') === null)).toEqual([host()]);
+    });
+});
+
+// #255: the alert keeps the last title Next wrote while the Viewer held the host. Shown again as it was, a screen
+// reader could read that stale title out, so the Viewer's release empties it first, and the series page's title is
+// Next's own next write.
+describe('the title Next wrote while the Viewer held the host, on Close (#255)', () => {
+    let logs = 0;
+    function record() {
+        const key = `shell-${++logs}`;
+        installAnnouncerLog(key);
+        return async () => {
+            await settle();
+            return readAnnouncerLog(key);
+        };
+    }
+
+    it('in the modal: a move says nothing, and Close never shows the stale title, then says the series page', async () => {
+        document.title = SERIES_TITLE;
+        const series = <main>Series page</main>;
+        const view = render(<App route="series" page={series} />);
+        await settle();
+        const page = (n: number) => (
+            <>
+                {series}
+                <ViewerShell mode="modal">{photo(n)}</ViewerShell>
+            </>
+        );
+        const moving = record();
+        navigate(view, '2', titleOf(2), page(2));
+        await settle();
+        navigate(view, '3', titleOf(3), page(3));
+        const moves = await moving();
+        expect(spokenOf(moves), describeLog(moves)).toEqual([]);
+        expect(said()).toBe(titleOf(3));
+
+        const closing = record();
+        navigate(view, 'series', SERIES_TITLE, series);
+        const steps = await closing();
+        expect(shownHolding(steps), describeLog(steps)).toEqual([]);
+        expect(spokenOf(steps), describeLog(steps)).toEqual([SERIES_TITLE]);
+        expect(host()).not.toHaveAttribute('aria-hidden');
+        expect(said()).toBe(SERIES_TITLE);
+    });
+
+    it('on a page: Close never shows the stale title, then says the series page', async () => {
+        document.title = titleOf(1);
+        const page = (n: number) => <ViewerShell mode="page">{photo(n)}</ViewerShell>;
+        const view = render(<App route="1" page={page(1)} />);
+        await settle();
+        navigate(view, '2', titleOf(2), page(2));
+        await settle();
+        expect(said()).toBe(titleOf(2));
+        const closing = record();
+        navigate(view, 'series', SERIES_TITLE, <main>Series page</main>);
+        const steps = await closing();
+        expect(shownHolding(steps), describeLog(steps)).toEqual([]);
+        expect(spokenOf(steps), describeLog(steps)).toEqual([SERIES_TITLE]);
+        expect(said()).toBe(SERIES_TITLE);
+    });
+
+    it('when the next page has the same title, nothing is said and nothing stale is shown', async () => {
+        document.title = SERIES_TITLE;
+        const view = render(<App route="2" page={<ViewerShell mode="page">{photo(2)}</ViewerShell>} />);
+        await settle();
+        navigate(view, '3', titleOf(3), <ViewerShell mode="page">{photo(3)}</ViewerShell>);
+        await settle();
+        const closing = record();
+        navigate(view, 'series', titleOf(3), <main>Series page</main>);
+        const steps = await closing();
+        expect(shownHolding(steps), describeLog(steps)).toEqual([]);
+        expect(spokenOf(steps), describeLog(steps)).toEqual([]);
+        expect(host()).not.toHaveAttribute('aria-hidden');
     });
 });
 
