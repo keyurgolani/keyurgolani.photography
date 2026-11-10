@@ -367,13 +367,14 @@ type Traces = Record<string, { entries: TitleTraceEntry[]; flush: () => void }>;
  * Playwright can send it to the page, and it can run before the document has a root element.
  */
 export function installTitleTrace(key: string): void {
-    const win = window as unknown as { kgTitleTraces?: Traces; kgTitleIds?: WeakMap<Node, number>; kgTitleNext?: number };
-    const traces = (win.kgTitleTraces ??= {});
-    const ids = (win.kgTitleIds ??= new WeakMap<Node, number>());
+    type TraceWindow = { kgTitleTraces?: Traces; kgTitleIds?: Map<Node, number> };
+    const traces = ((window as unknown as TraceWindow).kgTitleTraces ??= {});
+    // Shared by every trace on this document, so a title keeps its id across them. A Map, so its size numbers the next.
+    const ids = ((window as unknown as TraceWindow).kgTitleIds ??= new Map<Node, number>());
     const idOf = (node: Node): number => {
         let found = ids.get(node);
         if (found === undefined) {
-            found = win.kgTitleNext = (win.kgTitleNext ?? 0) + 1;
+            found = ids.size + 1;
             ids.set(node, found);
         }
         return found;
