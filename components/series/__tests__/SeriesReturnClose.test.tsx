@@ -248,6 +248,14 @@ describe('a series page reached any other way moves nothing new (#256)', () => {
         expect(document.activeElement).toBe(document.body);
     });
 
+    it('a Close for another photograph than the one ?photo= names', async () => {
+        const view = await onViewerAfterMove();
+        close();
+        navigate(view, closeHref(3), SERIES_TITLE, seriesPage([1, 2], null));
+        await settle();
+        expect(document.activeElement).toBe(document.body);
+    });
+
     it('a Close to another series', async () => {
         const view = await onViewerAfterMove();
         close();
