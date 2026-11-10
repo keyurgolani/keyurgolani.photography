@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { AppRouterAnnouncer } from 'next/dist/client/components/app-router-announcer';
 import { useLayoutEffect, type ReactNode } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf } from '@/e2e/support/announcerLog';
+import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf } from '@/test/helpers/announcerLog';
 import { quietRouteAnnouncer } from '../routeAnnouncer';
 import ViewerHost from '../ViewerHost';
 

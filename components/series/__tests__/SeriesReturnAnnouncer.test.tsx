@@ -2,7 +2,7 @@ import { act, render } from '@testing-library/react';
 import { AppRouterAnnouncer } from 'next/dist/client/components/app-router-announcer';
 import { useLayoutEffect, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf, type AnnouncerStep } from '@/e2e/support/announcerLog';
+import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf, type AnnouncerStep } from '@/test/helpers/announcerLog';
 import { quietRouteAnnouncer } from '@/components/viewer/routeAnnouncer';
 import { RESTORE_WAIT_MS, RETURN_KEY, SERIES_TITLE_ID } from '../returnPosition';
 import { SERIES_PAGES_KEY, SERIES_RESTORED_EVENT } from '../seriesContinuation';

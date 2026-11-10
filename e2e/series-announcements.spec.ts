@@ -12,8 +12,8 @@ import { expect, test } from './support/test';
 // there, so Next's route announcer (<next-route-announcer>, an assertive role="alert" in its shadow root) must not say
 // it for the navigation that lands there, and no alert with the name may sit beside the focused heading. Every other
 // page change is still announced. Its own catalog and server, as viewer-revision.spec.ts has for #178, since each
-// test republishes the series without the photograph it opened. The tests run in order and each builds on the
-// revision before; in this serial group a retry starts again from the first revision.
+// test republishes the series without the photograph it opened. The tests run in order in one worker, and none needs
+// another's revision, so a failure doesn't skip the rest: the worker that takes over starts from the first revision.
 //
 // - The modal's Back to the series, when a publish dropped the photograph that opened it (ViewerHost).
 // - Back after a reload on the Viewer to a deep link's page whose ?photo= named the dropped photograph: the page is
@@ -22,9 +22,9 @@ import { expect, test } from './support/test';
 //   page with ?photo= and lands on the heading when the answer doesn't hold it (SeriesReturn's landReturn).
 //
 // Each records every write to the announcer's shadow root and every change to its host's aria-hidden from before the
-// press (e2e/support/announcerLog.ts), so a write that's emptied a moment later still counts.
+// press (test/helpers/announcerLog.ts), so a write that's emptied a moment later still counts.
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'default' });
 
 const HOOK_TIMEOUT = READY_TIMEOUT + 60_000;
 const id = (n: number) => `ph_00000000-0000-4000-8000-${String(n + 60).padStart(12, '0')}`;
@@ -94,14 +94,19 @@ function fromHeading(steps: AnnouncerStep[]): AnnouncerStep[] {
 async function expectHeadingAlone(page: Page, read: () => Promise<AnnouncerStep[]>, strict: boolean): Promise<AnnouncerStep[]> {
     await expect(heading(page)).toBeFocused();
     await expect(host(page)).toHaveCount(1);
-    await expect(host(page)).not.toHaveAttribute('aria-hidden');
-    await expect(page.getByRole('alert').filter({ hasText: named })).toHaveCount(0);
-    expect(await page.locator('body').ariaSnapshot()).not.toMatch(new RegExp(`^\\s*- alert\\b.*${NAME}`, 'm'));
-    await expect(heading(page)).toBeFocused();
+    // Past the landing's write: the announcer's update renders in a commit after the landing's (#255).
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
     const steps = await read();
-    test.info().annotations.push({ type: 'announcer', description: describeLog(steps) });
-    expect(spokenOf(fromHeading(steps)).filter((text) => named.test(text)), describeLog(steps)).toEqual([]);
-    if (strict) expect(spokenOf(steps).filter((text) => named.test(text)), describeLog(steps)).toEqual([]);
+    const log = describeLog(steps);
+    // The whole log, in the report and the output, whatever fails below.
+    test.info().annotations.push({ type: 'announcer', description: log });
+    console.log(`[${test.info().project.name}] ${test.info().title}: ${log}`);
+    await expect(host(page), log).not.toHaveAttribute('aria-hidden');
+    await expect(page.getByRole('alert').filter({ hasText: named }), log).toHaveCount(0);
+    expect(await page.locator('body').ariaSnapshot(), log).not.toMatch(new RegExp(`^\\s*- alert\\b.*${NAME}`, 'm'));
+    await expect(heading(page), log).toBeFocused();
+    expect(spokenOf(fromHeading(steps)).filter((text) => named.test(text)), log).toEqual([]);
+    if (strict) expect(spokenOf(steps).filter((text) => named.test(text)), log).toEqual([]);
     return steps;
 }
 

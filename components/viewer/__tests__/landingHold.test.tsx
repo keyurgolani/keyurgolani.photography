@@ -2,7 +2,7 @@ import { act, render } from '@testing-library/react';
 import { AppRouterAnnouncer } from 'next/dist/client/components/app-router-announcer';
 import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf } from '@/e2e/support/announcerLog';
+import { describeLog, installAnnouncerLog, readAnnouncerLog, spokenOf } from '@/test/helpers/announcerLog';
 import { quietRouteAnnouncer, useLandingHold } from '../routeAnnouncer';
 
 // #255: when a navigation lands with focus on a heading that names the page, the heading says the name, so Next
