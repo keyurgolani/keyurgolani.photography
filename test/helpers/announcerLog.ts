@@ -319,6 +319,8 @@ export interface TitleTraceEntry {
     titles?: TitleFact[];
     /** For a read: each `Next.Metadata` Suspense boundary in React's current tree. */
     metadata?: MetadataFact[];
+    /** For a read: each of Next's Head components in React's current tree. */
+    heads?: HeadFact[];
 }
 
 export interface TitleFact {
@@ -342,6 +344,20 @@ export interface MetadataFact {
     state: 'content' | 'fallback' | 'dehydrated';
     /** The React keys on its return path, innermost first. */
     keys: string;
+}
+
+/**
+ * Next's Head (app-router.js), which renders `useDeferredValue(rsc, prefetchRsc ?? rsc)`: a partial prefetched head
+ * first, when there is one, then the full head in a later render.
+ */
+export interface HeadFact {
+    /** Its React key, from the head's vary path. */
+    key: string;
+    /** What its head render tree holds: 'null', '""', 'element', 'array', or a thenable with its status. */
+    prefetch: string;
+    rsc: string;
+    /** Which of the two it rendered in the current tree: 'rsc', 'prefetch', or 'other'. */
+    shows: 'rsc' | 'prefetch' | 'other';
 }
 
 type Traces = Record<string, { entries: TitleTraceEntry[]; flush: () => void }>;
@@ -399,7 +415,8 @@ export function installTitleTrace(key: string): void {
         const name = Object.keys(node).find((own) => own.startsWith('__reactFiber$'));
         return name === undefined ? null : ((node as Record<string, { return: unknown }>)[name] ?? null);
     };
-    type Fiber = { tag: number; key: string | null; return: Fiber | null; child: Fiber | null; sibling: Fiber | null; memoizedProps: { name?: unknown } | null; memoizedState: { dehydrated?: unknown } | null; stateNode: unknown };
+    type HeadData = { rsc?: unknown; prefetchRsc?: unknown };
+    type Fiber = { tag: number; key: string | null; return: Fiber | null; child: Fiber | null; sibling: Fiber | null; memoizedProps: { name?: unknown; headRenderTree?: { data?: HeadData } } | null; memoizedState: { dehydrated?: unknown; memoizedState?: unknown } | null; stateNode: unknown };
     const keysOf = (fiber: Fiber): { keys: string; root: boolean } => {
         const keys: string[] = [];
         let at: Fiber | null = fiber.return;
@@ -408,7 +425,17 @@ export function installTitleTrace(key: string): void {
         // HostRoot is tag 3.
         return { keys: keys.join(' < '), root: last.tag === 3 };
     };
+    const valueOf = (value: unknown): string => {
+        if (value === null) return 'null';
+        if (value === '') return '""';
+        if (Array.isArray(value)) return 'array';
+        if (typeof value === 'object' && typeof (value as { then?: unknown }).then === 'function') return `thenable:${String((value as { status?: unknown }).status ?? 'untracked')}`;
+        if (typeof value === 'object' && (value as { $$typeof?: unknown }).$$typeof !== undefined) return 'element';
+        return typeof value;
+    };
+    let heads: HeadFact[] = [];
     const metadataNow = (): MetadataFact[] => {
+        heads = [];
         const name = Object.keys(document).find((own) => own.startsWith('__reactContainer$'));
         if (name === undefined) return [];
         const hostRoot = (document as unknown as Record<string, Fiber | undefined>)[name];
@@ -422,6 +449,12 @@ export function installTitleTrace(key: string): void {
             if (fiber.tag === 13 && fiber.memoizedProps?.name === 'Next.Metadata') {
                 const state = fiber.memoizedState === null ? 'content' : fiber.memoizedState.dehydrated ? 'dehydrated' : 'fallback';
                 found.push({ state, keys: keysOf(fiber).keys });
+            }
+            const data = fiber.memoizedProps?.headRenderTree?.data;
+            if (data !== undefined && fiber.key !== null) {
+                // A function component's first hook is its memoizedState: here useDeferredValue's, the value it rendered.
+                const shown = fiber.memoizedState?.memoizedState;
+                heads.push({ key: fiber.key, prefetch: valueOf(data.prefetchRsc), rsc: valueOf(data.rsc), shows: shown === data.rsc ? 'rsc' : shown === data.prefetchRsc ? 'prefetch' : 'other' });
             }
             if (fiber.sibling !== null) stack.push(fiber.sibling);
             if (fiber.child !== null) stack.push(fiber.child);
@@ -449,7 +482,8 @@ export function installTitleTrace(key: string): void {
             get(this: Document) {
                 const value = get.call(this) as string;
                 flush();
-                entries.push({ at: performance.now(), kind: 'read', value, titles: titlesNow(), metadata: metadataNow() });
+                const metadata = metadataNow();
+                entries.push({ at: performance.now(), kind: 'read', value, titles: titlesNow(), metadata, heads });
                 return value;
             },
         });
@@ -483,7 +517,8 @@ export function describeTrace(entries: readonly TitleTraceEntry[]): string {
             if (entry.kind !== 'read') return head;
             const titles = (entry.titles ?? []).map(fact).join(', ');
             const metadata = (entry.metadata ?? []).map((boundary) => `${boundary.state} keys=${boundary.keys}`).join(', ');
-            return `${head} titles=[${titles}] metadata=[${metadata}]`;
+            const heads = (entry.heads ?? []).map((one) => `${one.key} prefetch=${one.prefetch} rsc=${one.rsc} shows=${one.shows}`).join(', ');
+            return `${head} titles=[${titles}] metadata=[${metadata}]${entry.heads === undefined ? '' : ` heads=[${heads}]`}`;
         })
         .join('\n');
 }

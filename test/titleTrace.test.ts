@@ -4,7 +4,7 @@ import { describeTrace, installTitleTrace, readTitleTrace } from './helpers/anno
 // The title trace (#258) the series-announcements spec writes into its report, on jsdom: titles put in and taken out
 // anywhere, reads of document.title with every <title> and each Next.Metadata boundary, and history pushes.
 
-type FakeFiber = { tag: number; key: string | null; return: FakeFiber | null; child: FakeFiber | null; sibling: FakeFiber | null; memoizedProps: { name?: string } | null; memoizedState: object | null; stateNode: unknown };
+type FakeFiber = { tag: number; key: string | null; return: FakeFiber | null; child: FakeFiber | null; sibling: FakeFiber | null; memoizedProps: { name?: string; headRenderTree?: { data: { rsc: unknown; prefetchRsc: unknown } } } | null; memoizedState: object | null; stateNode: unknown };
 const fiber = (tag: number, key: string | null, parent: FakeFiber | null, extra: Partial<FakeFiber> = {}): FakeFiber => ({ tag, key, return: parent, child: null, sibling: null, memoizedProps: null, memoizedState: null, stateNode: null, ...extra });
 
 let count = 0;
@@ -38,10 +38,12 @@ describe('installTitleTrace', () => {
         expect(trace.every((entry) => typeof entry.at === 'number')).toBe(true);
     });
 
-    it('takes, at a read, every <title> with its owner, and each Next.Metadata boundary\'s state', () => {
+    it('takes, at a read, every <title> with its owner, each Next.Metadata boundary\'s state, and what each Head shows', () => {
         const key = `t-${++count}`;
         const root = fiber(3, null, null);
-        const head = fiber(0, 'head-key', root);
+        const partial = { $$typeof: Symbol.for('react.element') };
+        const full = Object.assign(Promise.resolve(null), { status: 'pending' });
+        const head = fiber(0, 'head-key', root, { memoizedProps: { headRenderTree: { data: { rsc: full, prefetchRsc: partial } } }, memoizedState: { memoizedState: partial } });
         const shown = fiber(13, null, head, { memoizedProps: { name: 'Next.Metadata' } });
         const pending = fiber(13, null, head, { memoizedProps: { name: 'Next.Metadata' }, memoizedState: {} });
         const other = fiber(13, null, head, { memoizedProps: { name: 'Other' }, memoizedState: {} });
@@ -74,6 +76,7 @@ describe('installTitleTrace', () => {
             { state: 'content', keys: 'head-key' },
             { state: 'fallback', keys: 'head-key' },
         ]);
+        expect(read?.heads).toEqual([{ key: 'head-key', prefetch: 'element', rsc: 'thenable:pending', shows: 'prefetch' }]);
     });
 
     it('stamps each history push and replace with its URL, and each h1 put in', () => {
