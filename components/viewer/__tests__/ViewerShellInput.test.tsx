@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LIVE_HOLD_MS } from '@/components/liveMessage';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
@@ -878,6 +879,17 @@ describe('#246: the status is empty again once its message has been heard', () =
         advance(1000);
         expect(announcer().textContent).toBe(MOVED);
         advance(9000);
+        expect(announcer().textContent).toBe('');
+    });
+
+    it('empties the status LIVE_HOLD_MS after a move\'s message lands, the hold Home\'s carousel keeps too', () => {
+        vi.useFakeTimers();
+        const { move } = renderShell('page', 1);
+        fireEvent.click(step('Next photograph'));
+        move(2);
+        advance(250 + LIVE_HOLD_MS - 1);
+        expect(announcer().textContent).toBe(MOVED);
+        advance(1);
         expect(announcer().textContent).toBe('');
     });
 

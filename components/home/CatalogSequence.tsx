@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useLiveMessage } from '@/components/liveMessage';
 import ResponsivePhoto from '@/components/ResponsivePhoto';
 import type { HomePhoto as CatalogPhoto } from '@/lib/catalog/projections/home';
 import type { PlaybackState } from './homePlayback';
@@ -120,12 +121,24 @@ export default function CatalogSequence({ photoIds, photos, recordsFailed, index
     for (const id of [activeId, nextId]) if (id !== undefined && photos.get(id)?.image === null) onImageFailed(id);
   }, [activeId, nextId, photos, onImageFailed]);
 
-  if (photoIds.length === 0) return null;
   const shownRecord = shownId === undefined ? undefined : photos.get(shownId);
   // Before anything has decoded, the slide on screen is the one Home moved to, and its record may still be on its way:
   // the line waits for it, so the slide and its description are one message, not the slide said twice. A record that
   // failed has no description to wait for.
   const waiting = shownId !== undefined && shownRecord === undefined && !recordsFailed.has(shownId);
+  const line = shownId === undefined || waiting ? '' : `${stage.crossed ? `Now showing ${seriesOf(shownId).title}. ` : ''}${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`;
+
+  // The line goes to the live region only when it changes while the visitor's own move has it polite, and leaves it
+  // once it's been heard (#246): text there stays in the reading order, after the slide that already says it.
+  const { message, say } = useLiveMessage();
+  const lastLine = useRef(line);
+  useEffect(() => {
+    const before = lastLine.current;
+    lastLine.current = line;
+    if (line !== before && line !== '' && announce === 'polite') say(line);
+  }, [line, announce, say]);
+
+  if (photoIds.length === 0) return null;
 
   return (
     // A div with the region role, not a <section>: the same semantics, and the element Dark's parity gate walks.
@@ -184,11 +197,11 @@ export default function CatalogSequence({ photoIds, photos, recordsFailed, index
       })}
       {/*
         The slide on screen and its photograph, after the series' name when it crossed into another, for a screen
-        reader: read out after the visitor's own move, never Home's. Home's only announcement, so a crossing is one
-        message (#4).
+        reader: read out after the visitor's own move, never Home's, and empty otherwise. Home's only announcement, so
+        a crossing is one message (#4).
       */}
       <p className="sr-only" aria-live={announce} aria-atomic="true">
-        {shownId === undefined || waiting ? '' : `${stage.crossed ? `Now showing ${seriesOf(shownId).title}. ` : ''}${slideLabel(shownId)}${shownRecord?.alt ? `, ${shownRecord.alt}` : ''}`}
+        {message}
       </p>
     </div>
   );

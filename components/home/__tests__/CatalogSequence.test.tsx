@@ -1,5 +1,6 @@
 import { act, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LIVE_HOLD_MS } from '@/components/liveMessage';
 import type { HomeImage, HomePhoto } from '@/lib/catalog/projections/home';
 import CatalogSequence from '../CatalogSequence';
 
@@ -132,6 +133,16 @@ describe('CatalogSequence: the live region is empty once its line has been said'
     expect(region(view).textContent).toBe('');
     // Nothing in the carousel reads the slide but the slide.
     expect(view.container.querySelector('p')?.textContent).toBe('');
+  });
+
+  it('empties the region LIVE_HOLD_MS after the line lands, the hold the Viewer\'s status keeps too', () => {
+    vi.useFakeTimers();
+    const view = render(sequence({ index: 0, photos: records(1, 2, 3), announce: 'off' }));
+    view.rerender(sequence({ index: 1, photos: records(1, 2, 3) }));
+    advance(LIVE_HOLD_MS - 1);
+    expect(region(view).textContent).toBe('2 of 2, Described photograph 2');
+    advance(1);
+    expect(region(view).textContent).toBe('');
   });
 
   it('says a crossing as one message, then is empty', () => {
