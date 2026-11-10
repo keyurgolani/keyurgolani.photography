@@ -415,9 +415,12 @@
   display: none;
 }
 
-/* The item's heading takes focus when a row or the next item opens. It isn't a control, so it shows no ring. */
+/* The item's heading takes focus when a row or the next item opens, and the list's when Back to inbox finds no row to
+   land on. Neither is a control, so neither shows a ring. */
 .fieldsHeader h2:focus,
 .fieldsHeader h2:focus-visible,
+.listHeader h1:focus,
+.listHeader h1:focus-visible,
 .list .empty:focus,
 .list .empty h2:focus,
 .list .empty h2:focus-visible,

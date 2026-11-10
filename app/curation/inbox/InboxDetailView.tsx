@@ -7,6 +7,7 @@ import EventBadge from './EventBadge';
 import ItemActions from './ItemActions';
 import LandOnItem from './LandOnItem';
 import LocalTime from './LocalTime';
+import { ANY_QUERY, inboxQueryString, listPage, type InboxQuery } from '@/lib/curation/inbox-list';
 import {
     failureNotice,
     fileParts,
@@ -171,12 +172,14 @@ const sentence = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}`;
 
 /**
  * A phone's way back from the one item it shows to the whole list, landing
- * on the row it came from (`#row-<id>`, which ReturnToRow takes). A wide
- * screen shows the list beside the item, so it hides this.
+ * on the row it came from (`#row-<id>`, which ReturnToRow takes). It keeps
+ * the list's filters and page, as the row's own link does (#248), so the row
+ * is on the page it lands on. A wide screen shows the list beside the item,
+ * so it hides this.
  */
-function BackToInbox({ itemId }: { itemId: string | null }) {
+function BackToInbox({ itemId, query }: { itemId: string | null; query: InboxQuery }) {
     return (
-        <a className={styles.backToList} href={itemId ? `/curation/inbox#row-${itemId}` : '/curation/inbox'}>
+        <a className={styles.backToList} href={`/curation/inbox${inboxQueryString(query)}${itemId ? `#row-${itemId}` : ''}`}>
             <ArrowLeft size={16} aria-hidden="true" />
             Back to inbox
         </a>
@@ -189,8 +192,10 @@ function BackToInbox({ itemId }: { itemId: string | null }) {
  * full, what the system did, the suggestion, and the actions. Source facts
  * below holds the asset revision in full, and repeats neither.
  */
-export default function InboxDetailView({ view }: { view: ReadyView }) {
+export default function InboxDetailView({ view, query = ANY_QUERY }: { view: ReadyView; query?: InboxQuery }) {
     const detail = view.selected;
+    // The list's query with its page as the list shows it: past the end is the last page, as InboxList's listPage().
+    const listQuery: InboxQuery = { ...query, page: listPage(view.items, query).page };
     if (detail === null) {
         // Nothing needs judgment, so nothing is selected: the list says so once. Once items are listed, a wide screen's detail side keeps one quiet line pointing at them; a phone shows the list alone then.
         if (view.needsJudgment === 0 && !view.missingSelection) {
@@ -204,7 +209,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         }
         return (
             <section className={styles.state} aria-label="Item">
-                {view.missingSelection ? <BackToInbox itemId={null} /> : null}
+                {view.missingSelection ? <BackToInbox itemId={null} query={listQuery} /> : null}
                 {view.missingSelection ? <p role="status">That item isn&apos;t in the inbox any more. Pick another from the list.</p> : <p>Pick an item from the list to review it.</p>}
             </section>
         );
@@ -217,7 +222,7 @@ export default function InboxDetailView({ view }: { view: ReadyView }) {
         // `id="item"` is where every row's link lands; a phone shows only this then.
         <section className={styles.detail} id="item" aria-labelledby="item-heading">
             <LandOnItem targetId="item" focusId="item-heading" />
-            <BackToInbox itemId={detail.id} />
+            <BackToInbox itemId={detail.id} query={listQuery} />
             {/* #14: on a phone a deep link lands here, past the watcher warning, so the item points back to it. */}
             <WatcherPointer watcher={view.watcher} />
             {/* What the last approval or Decide later did, above the photograph and the form, when it opened this item. */}

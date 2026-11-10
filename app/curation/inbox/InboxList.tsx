@@ -212,7 +212,10 @@ export default function InboxList({ view, listView = false, query = ANY_QUERY }:
             <ReturnToRow listView={listView} />
             <header className={styles.listHeader}>
                 <div>
-                    <h1 id="inbox-heading">Curation inbox</h1>
+                    {/* tabIndex -1: ReturnToRow focuses it when the row Back to inbox names isn't on this page, and it stays out of the tab order. */}
+                    <h1 id="inbox-heading" tabIndex={-1}>
+                        Curation inbox
+                    </h1>
                     {/* An empty inbox says it once, in the empty state below. */}
                     {empty ? null : <p>{summaryText(view)}</p>}
                 </div>
