@@ -38,7 +38,8 @@ const px = (value: string) => {
 };
 
 const PHONE = '(min-width: 22.5rem) and (max-width: 39.99rem)';
-const WORK = ':global(main:not([data-text-enlarged])) .work';
+/** Beside Enter only where Enter is: the empty state's link has no Enter to sit beside, so it stays under the heading. */
+const WORK = ':global(main:not([data-text-enlarged])) .enter + .work';
 
 describe('All bodies of work on a phone', () => {
   const enter = declarations(sheet, '.enter');
@@ -74,6 +75,15 @@ describe('All bodies of work on a phone', () => {
     const selectors: string[] = [];
     phone?.walkRules((rule: Rule) => void selectors.push(...rule.selectors));
     expect(selectors.filter((selector) => selector.includes('.work'))).toEqual([WORK, WORK]);
+  });
+
+  it("moves only the link that follows Enter the series, so the empty state's stays in the column under its heading", () => {
+    // Anchored to an Enter that isn't there, it would fall to the column's foot over the heading, or ride its row.
+    const selectors: string[] = [];
+    phone?.walkRules((rule: Rule) => void selectors.push(...rule.selectors));
+    const moving = selectors.filter((selector) => /\.work\b/.test(selector));
+    expect(moving).toHaveLength(2);
+    for (const selector of moving) expect(selector).toMatch(/\.enter \+ \.work$/);
   });
 });
 
