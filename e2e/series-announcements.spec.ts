@@ -73,6 +73,17 @@ async function publishWithout(photoId: string): Promise<void> {
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
 }
 
+/** Publishes the whole series again when a test before this one, or a try of this one, left it short. */
+test.beforeEach(async () => {
+    if (!catalog) throw new Error('No catalog');
+    const record = await readAuthoredRecord(catalog.root, 'series', SERIES_ID);
+    if (record === null) throw new Error('No series record');
+    if (record.photoIds.length === R.length) return;
+    await writeAuthoredRecord({ ...record, photoIds: R }, { expectedVersion: record.version, root: catalog.root });
+    const outcome = await publish({ dataRoot: catalog.root, actor: 'e2e', confirmLaunch: true, logger: { log: () => undefined } });
+    expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
+});
+
 const viewer = (page: Page) => page.locator('[data-surface="viewer"]');
 const entry = (page: Page, photoId: string) => page.locator(`[id="photo-${photoId}"]`);
 const heading = (page: Page) => page.locator('h1#series-title');
@@ -114,11 +125,18 @@ async function expectHeadingAlone(page: Page, read: () => Promise<AnnouncerStep[
 
 /** A page change that focuses no heading: All work, from the series page. The announcer says Work's title. */
 async function expectNextChangeHeard(page: Page): Promise<void> {
-    const read = await recordAnnouncer(page);
+    const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
-    await expect(page.getByRole('alert')).toHaveText(/^Work\b/);
-    await expect(host(page)).not.toHaveAttribute('aria-hidden');
+    try {
+        await expect(page.getByRole('alert')).toHaveText(/^Work\b/);
+        await expect(host(page)).not.toHaveAttribute('aria-hidden');
+    } finally {
+        // The log, with the title's changes, in the report and the output, whether or not the alert came.
+        const log = describeLog(await read());
+        test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${log}` });
+        console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
+    }
     const steps = await read();
     expect(spokenOf(steps).filter((text) => /^Work\b/.test(text)), describeLog(steps)).not.toEqual([]);
 }

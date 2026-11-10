@@ -9,8 +9,8 @@
 
 /** One step of the log. `text` and `hidden` are the host's after the step. */
 export interface AnnouncerStep {
-    kind: 'text' | 'hidden' | 'focus';
-    /** The host's shadow-root text after the step. */
+    kind: 'text' | 'hidden' | 'focus' | 'title';
+    /** The host's shadow-root text after the step, or for a title step, the document's title it set. */
     text: string;
     /** Whether the host was aria-hidden="true" after the step. */
     hidden: boolean;
@@ -20,8 +20,12 @@ export interface AnnouncerStep {
 
 type Logs = Record<string, { observer: MutationObserver; records: MutationRecord[]; marks: Map<number, string[]>; hosts: Element[]; texts: Map<Node, { host: Element; value: string }> }>;
 
-/** Starts the log `key`, for the hosts there now and any that are appended to body later. */
-export function installAnnouncerLog(key: string): void {
+/**
+ * Starts the log `key`, for the hosts there now and any that are appended to body later. With `titles`, it also takes
+ * each change to the document's `<title>`, in the same order, since Next's announcer reads the title in its effect.
+ */
+export function installAnnouncerLog(options: string | { key: string; titles?: boolean }): void {
+    const { key, titles = false } = typeof options === 'string' ? { key: options } : options;
     const logs = ((window as unknown as { kgAnnouncerLogs?: Logs }).kgAnnouncerLogs ??= {});
     const records: MutationRecord[] = [];
     const marks = new Map<number, string[]>();
@@ -48,6 +52,7 @@ export function installAnnouncerLog(key: string): void {
     const start = () => {
         for (const host of document.getElementsByTagName('next-route-announcer')) watch(host, true);
         observer.observe(document.body, { childList: true });
+        if (titles && document.head !== null) observer.observe(document.head, { childList: true, characterData: true, characterDataOldValue: true, subtree: true });
     };
     if (document.body === null) document.addEventListener('DOMContentLoaded', start, { once: true });
     else start();
@@ -131,8 +136,22 @@ export function readAnnouncerLog(key: string): AnnouncerStep[] {
     const markAt = (index: number) => {
         for (const focus of marks.get(index) ?? []) steps.push({ kind: 'focus', focus, text: last === null ? '' : textOf(last), hidden: last === null ? false : (hidden.get(last) ?? false) });
     };
+    /** The title a record in `<head>` set, or null when it touched no `<title>`. */
+    const titleSet = (record: MutationRecord, index: number): string | null => {
+        const target = record.target;
+        if (record.type === 'characterData') return target.parentElement?.localName === 'title' ? textAfter(target, index) : null;
+        for (const added of record.addedNodes) if (added instanceof Element && added.localName === 'title') return added.textContent ?? '';
+        if (target instanceof Element && target.localName === 'title') return target.textContent ?? '';
+        return null;
+    };
     records.forEach((record, index) => {
         markAt(index);
+        const head = document.head;
+        if (head !== null && (record.target === head || head.contains(record.target))) {
+            const title = titleSet(record, index);
+            if (title !== null) steps.push({ kind: 'title', text: title, hidden: last === null ? false : (hidden.get(last) ?? false) });
+            return;
+        }
         if (record.target === document.body) {
             for (const added of record.addedNodes) if (added instanceof Element && added.localName === 'next-route-announcer') meet(added, index + 1, false);
             return;
@@ -185,5 +204,11 @@ export function shownHolding(steps: readonly AnnouncerStep[]): string[] {
 
 /** The log as one line per step, for a failure message. */
 export function describeLog(steps: readonly AnnouncerStep[]): string {
-    return steps.map((step) => (step.kind === 'focus' ? `focus ${step.focus}` : `${step.kind} ${JSON.stringify(step.text)}${step.hidden ? ' (hidden)' : ''}`)).join('; ');
+    return steps
+        .map((step) => {
+            if (step.kind === 'focus') return `focus ${step.focus}`;
+            if (step.kind === 'title') return `title ${JSON.stringify(step.text)}`;
+            return `${step.kind} ${JSON.stringify(step.text)}${step.hidden ? ' (hidden)' : ''}`;
+        })
+        .join('; ');
 }
