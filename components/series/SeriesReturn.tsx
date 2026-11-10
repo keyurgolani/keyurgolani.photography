@@ -18,6 +18,7 @@ import {
     RESTORE_WAIT_MS,
     restoreReturn,
     scheduleRestore,
+    takeViewerClose,
     withArrival,
     withReturn,
     type SeriesReturn as ReturnRecord,
@@ -145,6 +146,12 @@ function navigationType(): string | undefined {
  * - Closing the intercepted Viewer (#9), by Close, Escape, or Back, leaves
  *   this page mounted. #9's host puts focus back on the opener; this puts the
  *   scroll offset back too, in case the page moved under the modal.
+ * - A Close on the photograph's own page (the Viewer loaded directly) is a
+ *   link here with `?photo=`, which focuses the entry as above. When the
+ *   photograph isn't on the page (a publish dropped it), focus goes to the
+ *   series heading instead, under the landing hold, as the modal's Close
+ *   does (#256). The Close marks itself when it's activated (ViewerChrome),
+ *   and the next series page to mount uses the mark up.
  * - Every restore, and the reload that skips one, takes the record out of the
  *   entry. So a later Back to the series from anywhere but the Viewer (Work,
  *   another site) leaves the visitor where the browser puts them. Forward to
@@ -206,6 +213,8 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
     });
 
     useEffect(() => {
+        // Used up by whichever series page mounts first after a Close on the photograph's own page (#256).
+        const closed = takeViewerClose(path, photoInUrl());
         if (landed.current) return;
         const state: unknown = window.history.state;
         const record = readReturn(state);
@@ -239,10 +248,13 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
             };
             return scheduleRestore(record, { slug, revisionId, total, first: firstPosition }, missing);
         }
-        if (asked === null || asked !== focusPhotoId || arrivalOf(state) === asked) return;
-        const target = document.getElementById(entryId(asked));
-        if (target === null) return;
-        focusInView(target);
+        if (asked === null || arrivalOf(state) === asked) return;
+        const target = asked === focusPhotoId ? document.getElementById(entryId(asked)) : null;
+        if (target !== null) focusInView(target);
+        // A Close on the photograph's own page whose photograph isn't here lands on the heading, as the modal's does,
+        // under the landing hold, in this mount's passive effect for the Close's commit (#256). Any other way here moves nothing.
+        else if (!closed) return;
+        else if (focusHeading() !== null) holdLanding();
         window.history.replaceState(withArrival(window.history.state, asked), '');
         // Once per mount, with the props it arrived on: a refresh in place is no return.
         // eslint-disable-next-line react-hooks/exhaustive-deps
