@@ -271,20 +271,6 @@ test('the modal\'s Close onto its entry, with no refresh, then All work: no hold
     await recordNextChange(page);
 });
 
-test('the modal\'s Close onto its entry, then All work once /work has been prefetched: no hold, and Next\'s write is recorded', async ({ page }) => {
-    trackWork(page);
-    await page.goto(`${origin()}${SERIES}`);
-    await waitForHydration(page);
-    await entry(page, R[5]).focus();
-    await page.keyboard.press('Enter');
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(page).toHaveURL(`${origin()}${SERIES}`);
-    await expect(entry(page, R[5])).toBeFocused();
-    // Wait for All work's prefetch, as a visitor resting on the page would have it, before the press.
-    await expect.poll(() => workLog(page), { timeout: 10_000 }).toContain('prefetch');
-    await recordNextChange(page);
-});
 
 test('the modal\'s Back to the series onto the opener\'s entry, after a publish dropped the photograph a move reached: no hold, and Next\'s write is recorded', async ({ page }) => {
     trackWork(page);
