@@ -285,3 +285,26 @@ test('the modal\'s Close onto its entry, then All work once /work has been prefe
     await expect.poll(() => workLog(page), { timeout: 10_000 }).toContain('prefetch');
     await recordNextChange(page);
 });
+
+test('the modal\'s Back to the series onto the opener\'s entry, after a publish dropped the photograph a move reached: no hold, and Next\'s write is recorded', async ({ page }) => {
+    trackWork(page);
+    await page.clock.install();
+    await page.goto(`${origin()}${SERIES}`);
+    await waitForHydration(page);
+    await entry(page, R[0]).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    // A move to the next photograph, which the publish then drops: ViewerUnavailable, as in the heading's case.
+    await viewer(page).getByRole('button', { name: 'Next photograph', exact: true }).click();
+    await expect(page).not.toHaveURL(`${origin()}${href(R[0])}`);
+    const moved = new URL(page.url()).pathname.split('/').pop() ?? '';
+    expect(R).toContain(moved);
+    await publishWithout(moved);
+    await page.clock.fastForward(30_000);
+    await expect(viewer(page).getByRole('heading', { level: 1, name: 'This photograph is no longer here' })).toBeFocused();
+    await viewer(page).getByRole('button', { name: 'Back to the series' }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    // The opener's entry is still there, so focus goes back to it, with no landing hold.
+    await expect(entry(page, R[0])).toBeFocused();
+    await recordNextChange(page);
+});
