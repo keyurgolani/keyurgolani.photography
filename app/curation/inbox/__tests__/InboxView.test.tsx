@@ -1082,6 +1082,69 @@ describe('one item at a time on a phone', () => {
     });
 });
 
+// #248: Back to inbox goes back to the list the item was opened from, its page and filters kept, and the row it came
+// from focused. When that row isn't on the page any more, focus goes to the list's heading.
+describe('Back to inbox keeps the list it came from', () => {
+    /** 60 items, so the list runs to two pages of 50. */
+    const sixty = () => Array.from({ length: 60 }, (_, index) => item({ id: EVT(index + 1), sourcePath: `trips/harbor-${index + 1}.jpg` }));
+    const onPageTwo = (overrides: Partial<Extract<InboxView, { state: 'ready' }>> = {}) => view({ items: sixty(), needsJudgment: 60, selected: detail({ id: EVT(55) }), ...overrides });
+    type Query = { status: 'open' | null; type: 'new' | null; page: number };
+    const backHref = (v: ReturnType<typeof view>, query: Query) => {
+        const { unmount } = render(
+            <main>
+                <InboxList view={v} query={query} />
+                <InboxDetailView view={v} query={query} />
+            </main>,
+        );
+        const href = screen.getByRole('link', { name: 'Back to inbox' }).getAttribute('href');
+        unmount();
+        return href;
+    };
+
+    it('keeps the page, from list page 2', () => {
+        expect(backHref(onPageTwo(), { status: null, type: null, page: 2 })).toBe(`/curation/inbox?page=2#row-${EVT(55)}`);
+    });
+
+    it('keeps the filters, from a filtered list', () => {
+        expect(backHref(view({ items: [item(), item({ id: EVT(2) })] }), { status: 'open', type: 'new', page: 1 })).toBe(`/curation/inbox?status=open&type=new#row-${EVT(1)}`);
+    });
+
+    it('keeps both, from page 2 of a filtered list, and a page past the end is the last page, as the list shows it', () => {
+        expect(backHref(onPageTwo(), { status: 'open', type: 'new', page: 2 })).toBe(`/curation/inbox?status=open&type=new&page=2#row-${EVT(55)}`);
+        expect(backHref(onPageTwo(), { status: 'open', type: 'new', page: 9 })).toBe(`/curation/inbox?status=open&type=new&page=2#row-${EVT(55)}`);
+        // The filters keep 1 item, so the one page there is.
+        expect(backHref(view({ items: [item(), item({ id: EVT(2), type: 'replacement' })] }), { status: null, type: 'new', page: 2 })).toBe(`/curation/inbox?type=new#row-${EVT(1)}`);
+    });
+
+    it('keeps them for an item the inbox no longer has, with no row to land on', () => {
+        expect(backHref(onPageTwo({ selected: null, missingSelection: EVT(99) }), { status: 'open', type: null, page: 2 })).toBe('/curation/inbox?status=open&page=2');
+    });
+
+    it("focuses the list's heading when the row the URL names isn't on this page", () => {
+        window.location.hash = `#row-${EVT(99)}`;
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+            const heading = screen.getByRole('heading', { level: 1, name: 'Curation inbox' });
+            expect(heading).toHaveFocus();
+            // Focusable by script only: it stays out of the tab order.
+            expect(heading).toHaveAttribute('tabindex', '-1');
+        } finally {
+            window.location.hash = '';
+        }
+    });
+
+    it("leaves the browser's Back alone when the row it remembers isn't on this page", () => {
+        const entries = vi.spyOn(performance, 'getEntriesByType').mockReturnValue([{ type: 'back_forward' } as unknown as PerformanceEntry]);
+        rememberRow(EVT(99), 640);
+        try {
+            renderInbox(view({ items: [item(), item({ id: EVT(2) })] }), true);
+            expect(document.activeElement).toBe(document.body);
+        } finally {
+            entries.mockRestore();
+        }
+    });
+});
+
 describe('moving on after a decision', () => {
     const three = () => [item(), item({ id: EVT(2), sourcePath: 'trips/harbor-2.jpg' }), item({ id: EVT(3), sourcePath: 'trips/harbor-3.jpg' })];
     /** The page as the refresh after a finished action shows it: the item decided, at its next version. */

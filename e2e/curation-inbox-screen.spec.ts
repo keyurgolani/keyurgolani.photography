@@ -165,6 +165,54 @@ test('lists the library-unavailable item under its Type filter, and opens it', a
     await expect(page.getByRole('region', { name: 'Library', exact: true })).toHaveText("The library can't be reached (the library root is missing), so nothing changes until it's back.");
 });
 
+/** Opens a row's item from the list `query` shows, then presses Back to inbox. The row's event ID. */
+async function openAndGoBack(page: Page, query: string): Promise<string> {
+    await openInbox(page, `?${query}`);
+    const row = rows(page).nth(2);
+    const rowId = (await row.getAttribute('data-row')) ?? '';
+    await row.click();
+    await expect(page).toHaveURL(`${origin()}/curation/inbox?${query}&item=${rowId}#item`);
+    await waitForHydration(page);
+    await expect(list(page)).toBeHidden();
+    await page.getByRole('link', { name: 'Back to inbox' }).click();
+    await waitForHydration(page);
+    return rowId;
+}
+
+// #248: a phone's Back to inbox returns to the list the item was opened from, its page and filters kept, with the row it
+// came from focused. A wide screen shows the list beside the item, with no Back to inbox.
+test('returns a phone from an item opened on list page 2 to page 2, with its row focused', async ({ page, isMobile }) => {
+    test.skip(!isMobile, 'a wide screen shows the list beside the item');
+    const rowId = await openAndGoBack(page, 'page=2');
+    await expect(page).toHaveURL(`${origin()}/curation/inbox?page=2#row-${rowId}`);
+    await expect(page.getByRole('navigation', { name: 'Inbox pages' }).getByText(/^Page 2 of \d+$/)).toBeVisible();
+    await expect(page.locator(`#row-${rowId}`)).toBeFocused();
+    await expect(page.locator(`#row-${rowId}`)).toBeInViewport();
+});
+
+test('returns a phone from an item opened on a filtered list to that list, with its row focused', async ({ page, isMobile }) => {
+    test.skip(!isMobile, 'a wide screen shows the list beside the item');
+    const rowId = await openAndGoBack(page, 'type=processing-failure');
+    await expect(page).toHaveURL(`${origin()}/curation/inbox?type=processing-failure#row-${rowId}`);
+    await expect(page.getByRole('search', { name: 'Filter the inbox' }).getByRole('combobox', { name: 'Type' })).toHaveValue('processing-failure');
+    await expect(page.locator(`#row-${rowId}`)).toBeFocused();
+    await expect(page.locator(`#row-${rowId}`)).toBeInViewport();
+});
+
+test("lands a phone on the list's heading when the row Back to inbox names isn't on that page", async ({ page, isMobile }) => {
+    test.skip(!isMobile, 'a wide screen shows the list beside the item');
+    await openInbox(page, '?page=2');
+    const rowId = (await rows(page).first().getAttribute('data-row')) ?? '';
+    // As when the row moved to another page while its item was open: page 1 doesn't hold this page-2 row.
+    await openInbox(page, `#row-${rowId}`);
+    await expect(page.locator(`#row-${rowId}`)).toHaveCount(0);
+    const heading = list(page).getByRole('heading', { level: 1, name: 'Curation inbox' });
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport();
+    // It isn't a control, so, as the item's heading, it shows no ring.
+    expect(await heading.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe('none');
+});
+
 test('Decide later on two selected items sends one version each, and lists the one that moved in an error summary that has focus', async ({ page }) => {
     const moved = newItem(FRESH.stale);
     const kept = newItem(FRESH.decorative);
