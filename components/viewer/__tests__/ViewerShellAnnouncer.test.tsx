@@ -130,29 +130,19 @@ const settle = () => act(async () => await Promise.resolve());
 
 /**
  * Every change to the announcer's host attributes and its shadow root's text, in the order they happened: one
- * observer for both, so its records keep the order of the DOM changes.
+ * observer for both, so its records keep the order of the DOM changes. Each change reads its own value from the
+ * records' old values (test/helpers/announcerLog.ts), not the value at the callback, so the release emptying the
+ * stale title (#255) and Next's next write, in one task, stay two changes.
  */
+let watches = 0;
 function watch() {
-    const order: string[] = [];
-    const node = host() as Element;
-    const observer = new MutationObserver((records) => {
-        for (const record of records) {
-            if (record.type === 'attributes') order.push(`${record.attributeName}=${node.getAttribute(record.attributeName ?? '')}`);
-            else order.push(`text=${node.shadowRoot?.textContent ?? ''}`);
-        }
-    });
-    observer.observe(node, { attributes: true, attributeFilter: ['aria-hidden'] });
-    observer.observe(node.shadowRoot as ShadowRoot, { childList: true, characterData: true, subtree: true });
+    const key = `watch-${++watches}`;
+    installAnnouncerLog(key);
     return {
-        order: () => {
-            const records = observer.takeRecords();
-            observer.disconnect();
-            for (const record of records) {
-                if (record.type === 'attributes') order.push(`${record.attributeName}=${node.getAttribute(record.attributeName ?? '')}`);
-                else order.push(`text=${node.shadowRoot?.textContent ?? ''}`);
-            }
-            return order;
-        },
+        order: () =>
+            readAnnouncerLog(key)
+                .filter((step) => step.kind !== 'focus')
+                .map((step) => (step.kind === 'hidden' ? `aria-hidden=${step.hidden ? 'true' : 'null'}` : `text=${step.text}`)),
     };
 }
 
@@ -213,7 +203,8 @@ describe('Next\'s route announcer while the Viewer is mounted (#247)', () => {
         await settle();
         expect(host()).not.toHaveAttribute('aria-hidden');
         expect(said()).toBe(SERIES_TITLE);
-        expect(order(closing.order())).toEqual(['aria-hidden=null', `text=${SERIES_TITLE}`]);
+        // The stale title emptied while the host is still hidden (#255), then the mark off, then Next's write.
+        expect(order(closing.order())).toEqual(['text=', 'aria-hidden=null', `text=${SERIES_TITLE}`]);
     });
 
     it('keeps the mark while ViewerUnavailable is its child, and takes it off when the Viewer goes', async () => {
