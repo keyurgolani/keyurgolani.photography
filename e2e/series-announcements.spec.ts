@@ -132,6 +132,9 @@ async function expectHeadingAlone(page: Page, read: () => Promise<AnnouncerStep[
 
 const WORK = /^Work\b/;
 
+/** The alert's text when Next wrote Work's title, or `h1` exactly. */
+const namedOrHeaded = (h1: string | null) => (h1 === null || h1 === '' ? WORK : new RegExp(`${WORK.source}|^${h1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+
 type Trace = () => Promise<TitleTraceEntry[]>;
 
 /**
@@ -146,7 +149,8 @@ async function noteTrace(trace: Trace | undefined): Promise<void> {
 /**
  * A page change that focuses no heading: All work, from the series page. The verdict is read from what Next's announcer
  * read for Work's tree (nextChangeVerdict, test/helpers/announcerLog.ts). When it read Work's title, or an empty one,
- * the announcer must say Work's name. When it read another title, Work's landed after its tree and Next wrote nothing
+ * the announcer must say Work's title or Work's first h1, as it rendered after the change: Next's head can commit after
+ * its tree, and Next then reads the h1 (#258). The report says which was written. When it read another title, Work's landed after its tree and Next wrote nothing
  * (#258): that fails, unless `lateTitle` is 'record', where it's recorded and only what's guaranteed is asserted. Either
  * way the host is never hidden after the click, and shows nothing but Work's name. This reads the title only through
  * the log, never itself, so the log's first read is Next's.
@@ -156,6 +160,7 @@ async function expectNextChangeHeard(page: Page, { lateTitle = 'fail', trace }: 
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
     let steps: AnnouncerStep[] = [];
+    let h1: string | null = null;
     try {
         // Work's title in the document, and Next's read for Work's tree, whichever came first.
         await expect
@@ -164,9 +169,14 @@ async function expectNextChangeHeard(page: Page, { lateTitle = 'fail', trace }: 
                 return steps.some((step) => step.kind === 'title' && WORK.test(step.text)) && steps.some((step) => readOf(step) !== null);
             }, { message: 'Work\'s title, and a read of the title by Next\'s announcer' })
             .toBe(true);
+        // Work's first h1 as it rendered, read past querySelector, so the log's h1 reads stay Next's.
+        h1 = await page.evaluate(() => {
+            const found = document.getElementsByTagName('h1')[0];
+            return found === undefined ? null : found.innerText || found.textContent || '';
+        });
         const first = steps.map(readOf).find((found) => found !== null);
         // Its write is due: it lands in the commit after that read.
-        if (first?.of === 'title' && (first.value === '' || WORK.test(first.value ?? ''))) await expect(page.getByRole('alert')).toHaveText(WORK);
+        if (first?.of === 'title' && (first.value === '' || WORK.test(first.value ?? ''))) await expect(page.getByRole('alert')).toHaveText(namedOrHeaded(h1));
         steps = await read();
     } catch (error) {
         console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${describeLog(await read())}`);
@@ -174,9 +184,10 @@ async function expectNextChangeHeard(page: Page, { lateTitle = 'fail', trace }: 
         throw error;
     }
     await noteTrace(trace);
-    const verdict = nextChangeVerdict(steps, { name: WORK, lateTitle });
+    const verdict = nextChangeVerdict(steps, { name: WORK, h1, lateTitle });
     const log = describeLog(steps);
-    test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${verdict.note ?? verdict.branch} (${log})` });
+    const wrote = verdict.wrote === undefined ? '' : `, wrote the ${verdict.wrote === 'h1' ? `h1 ${JSON.stringify(h1)}` : 'title'}`;
+    test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${verdict.note ?? verdict.branch}${wrote} (${log})` });
     if (verdict.problems.length > 0 || verdict.branch === 'late-title') console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${verdict.note ?? verdict.branch}: ${log}`);
     expect(verdict.problems, log).toEqual([]);
     await expect(host(page), log).not.toHaveAttribute('aria-hidden');

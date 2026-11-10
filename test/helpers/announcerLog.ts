@@ -261,34 +261,46 @@ export interface NextChangeVerdict {
     problems: string[];
     /** LATE_TITLE_NOTE when the late title was recorded rather than failed. */
     note?: string;
+    /** On the strict branch, what Next wrote of the new page: its title, or its first h1 (#258). */
+    wrote?: 'title' | 'h1';
 }
 
 /**
  * The verdict on a page change from a log that began just before the click (#257, #258). Next's announcer reads the
- * title once for each new router tree, and writes only when it differs from what it read last. Whatever the branch:
- * the host is never hidden after the click, and whenever it's shown it holds nothing or the new page's name.
+ * title once for each new router tree, and writes only when it differs from what it read last. `h1` is the new page's
+ * first h1 as it rendered after the change, which Next writes when it reads an empty title: its head can commit after
+ * its tree (#258). Whatever the branch: the host is never hidden after the click, and whenever it's shown it holds
+ * nothing, the new page's title or that h1.
  *
  * - **Strict.** Next's first read is the new page's title, or an empty one followed by the first h1: then the new
- *   page's name must be written while the host is shown.
+ *   page's title or its h1 must be written while the host is shown. `wrote` says which. Nothing written, the old
+ *   page's title, or any other text fails.
  * - **Late title.** Next's first read is some other title: the new page's title landed after its tree, so Next wrote
  *   nothing (#258). With `lateTitle: 'record'` that passes with LATE_TITLE_NOTE, as long as the title then became the
  *   new page's. With 'fail', the default, it fails.
  *
  * With no read step at all, it fails: the log can't say what Next saw.
  */
-export function nextChangeVerdict(steps: readonly AnnouncerStep[], { name, lateTitle = 'fail' }: { name: RegExp; lateTitle?: 'fail' | 'record' }): NextChangeVerdict {
+export function nextChangeVerdict(steps: readonly AnnouncerStep[], { name, h1 = null, lateTitle = 'fail' }: { name: RegExp; h1?: string | null; lateTitle?: 'fail' | 'record' }): NextChangeVerdict {
     const problems: string[] = [];
+    const isTitle = (text: string) => name.test(text);
+    const isH1 = (text: string) => h1 !== null && h1 !== '' && text === h1;
     if (steps.some((step) => step.kind === 'hidden' || step.hidden)) problems.push('the host was hidden after the click');
     // A title step's text is the document's title; every other step carries the host's text.
-    const stale = steps.filter((step) => step.kind !== 'title' && !step.hidden && step.text !== '' && !name.test(step.text)).map((step) => step.text);
+    const stale = steps.filter((step) => step.kind !== 'title' && !step.hidden && step.text !== '' && !isTitle(step.text) && !isH1(step.text)).map((step) => step.text);
     if (stale.length > 0) problems.push(`the host was shown holding ${JSON.stringify([...new Set(stale)])}`);
     const reads = steps.map(readOf).filter((read) => read !== null);
     if (reads.length === 0) return { branch: 'strict', problems: [...problems, 'no read of the title after the click'] };
     const first = reads[0];
-    const due = first.of === 'title' && (first.value === '' || name.test(first.value ?? ''));
+    const due = first.of === 'title' && (first.value === '' || isTitle(first.value ?? ''));
     if (due) {
-        if (!spokenOf(steps).some((text) => name.test(text))) problems.push(`Next read ${JSON.stringify(first.value)} and wrote nothing with the new page's name`);
-        return { branch: 'strict', problems };
+        const spoken = spokenOf(steps);
+        const wrote = spoken.some(isTitle) ? 'title' : spoken.some(isH1) ? 'h1' : undefined;
+        if (wrote === undefined) {
+            problems.push(`Next read ${JSON.stringify(first.value)} and wrote neither the new page's title nor its h1${h1 === null ? '' : ` ${JSON.stringify(h1)}`}`);
+            return { branch: 'strict', problems };
+        }
+        return { branch: 'strict', problems, wrote };
     }
     if (lateTitle === 'fail') return { branch: 'late-title', problems: [...problems, `${LATE_TITLE_NOTE}: it read ${JSON.stringify(first.value)}`] };
     if (!steps.some((step) => step.kind === 'title' && name.test(step.text))) problems.push("the title never became the new page's");
