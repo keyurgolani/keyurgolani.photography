@@ -27,7 +27,15 @@ function restore(fromCache: boolean) {
     const id = asked ?? (fromCache || cameBack() ? (row?.id ?? null) : null);
     if (id === null) return;
     const target = document.getElementById(`row-${id}`);
-    if (!(target instanceof HTMLElement)) return;
+    if (!(target instanceof HTMLElement)) {
+        // The URL names a row this page doesn't hold: it moved to another page, or out of the filters, while its item was
+        // open (#248). Focus goes to the list's heading, the top of the list the curator asked for: a screen reader names
+        // the list and reads on into its summary, and the next Tab goes on through Refresh, the filters and the rows, as on
+        // a fresh visit. The first row would claim a row they didn't come from. A browser Back with no row in the URL is
+        // left alone: the row it remembers may be from another page of the list, and the browser puts its own place back.
+        if (asked !== null) document.getElementById('inbox-heading')?.focus();
+        return;
+    }
     if (row?.id === id) window.scrollTo(0, row.scrollY);
     // The list can change while the item is open (a decision moves its row to another group), so the row has to end up in view.
     const box = target.getBoundingClientRect();
