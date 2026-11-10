@@ -61,6 +61,7 @@ export default function CatalogHome({ home, portrait = null }: { home: Published
 
 function EmptyHome() {
   const { reportPhoto } = useHomeChrome();
+  const routes = useSiteRoutes();
   // No photograph will come, so loading ends now and the no-photo hold keeps the navigation up.
   useEffect(() => {
     reportPhoto('none');
@@ -71,6 +72,10 @@ function EmptyHome() {
       story={
         <div className={styles.story}>
           <h1 className={styles.title}>Nothing is featured right now.</h1>
+          {/* #4's way on from here, the featured story's own link, under the heading, since there's no series to enter. */}
+          <Link href={routes.workHref()} className={styles.work}>
+            All bodies of work
+          </Link>
         </div>
       }
     />
