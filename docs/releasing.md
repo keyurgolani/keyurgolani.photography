@@ -615,9 +615,10 @@ The host takes four steps. With an override, add `-f <override>` after each `-f 
 
    A file or folder inside the data root that step 2 missed passes this check. It shows later, as a permission error (`EACCES`) in the watcher's log or as an unhealthy watcher. Run step 2's `find` again: the same `chown` fixes what it lists.
 
-4. **Check it, then run `photos verify` once.** `/api/ready` names the same revision with `"state":"ok"`, on `PHOTOGRAPHY_PORT` if you set one. `status --check` ends `Check: passed.`, or lists each problem and exits 1. `verify` exits 0 when the live revision and the activation chain pass, even if an older revision fails, and 1 when either fails, and names what to put back, such as a set folder from your archive. Only `verify` writes, its record in `status/verify.json`. None of them touches the library:
+4. **Check it, then run `photos verify` once.** The first line prints the commit `web` was built from, its `org.opencontainers.image.revision` label, which is the commit the release tags, as [What's running](#whats-running) says. `/api/ready` names the catalog revision, not the code, and a deploy doesn't change it: it names the same revision as step 1, with `"state":"ok"`, on `PHOTOGRAPHY_PORT` if you set one. `status --check` ends `Check: passed.`, or lists each problem and exits 1. `verify` exits 0 when the live revision and the activation chain pass, even if an older revision fails, and 1 when either fails, and names what to put back, such as a set folder from your archive. Only `verify` writes, its record in `status/verify.json`. None of them touches the library:
 
    ```bash
+   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$(docker compose -f docker-compose.prod.yml ps -q web)"
    curl -s http://127.0.0.1:3000/api/ready
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs status --check
    docker compose -f docker-compose.prod.yml run --rm --no-deps image-watcher node dist/scripts/photos.mjs verify
