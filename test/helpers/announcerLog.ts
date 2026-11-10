@@ -9,7 +9,7 @@
 
 /** One step of the log. `text` and `hidden` are the host's after the step. */
 export interface AnnouncerStep {
-    kind: 'text' | 'hidden' | 'focus' | 'title';
+    kind: 'text' | 'hidden' | 'focus' | 'title' | 'read';
     /** The host's shadow-root text after the step, or for a title step, the document's title it set. */
     text: string;
     /** Whether the host was aria-hidden="true" after the step. */
@@ -22,7 +22,8 @@ type Logs = Record<string, { observer: MutationObserver; records: MutationRecord
 
 /**
  * Starts the log `key`, for the hosts there now and any that are appended to body later. With `titles`, it also takes
- * each change to the document's `<title>`, in the same order, since Next's announcer reads the title in its effect.
+ * each change to the document's `<title>`, in the same order, since Next's announcer reads the title in its effect,
+ * and each read of `document.title`, or of the page's first `h1`, which is what that effect reads, with the value.
  */
 export function installAnnouncerLog(options: string | { key: string; titles?: boolean }): void {
     const { key, titles = false } = typeof options === 'string' ? { key: options } : options;
@@ -56,6 +57,30 @@ export function installAnnouncerLog(options: string | { key: string; titles?: bo
     };
     if (document.body === null) document.addEventListener('DOMContentLoaded', start, { once: true });
     else start();
+    const mark = (entry: string) => {
+        for (const record of observer.takeRecords()) take(record);
+        marks.set(records.length, [...(marks.get(records.length) ?? []), entry]);
+    };
+    if (titles) {
+        const title = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+        const get = title?.get;
+        if (title && get) {
+            Object.defineProperty(Document.prototype, 'title', {
+                ...title,
+                get(this: Document) {
+                    const value = get.call(this) as string;
+                    mark(`\u0000read title ${JSON.stringify(value)}`);
+                    return value;
+                },
+            });
+        }
+        const query = Document.prototype.querySelector;
+        Document.prototype.querySelector = function (this: Document, selectors: string) {
+            const found = query.call(this, selectors);
+            if (selectors === 'h1') mark(`\u0000read h1 ${JSON.stringify(found?.textContent ?? null)}`);
+            return found;
+        } as typeof Document.prototype.querySelector;
+    }
     document.addEventListener(
         'focusin',
         (event) => {
@@ -134,7 +159,11 @@ export function readAnnouncerLog(key: string): AnnouncerStep[] {
     const steps: AnnouncerStep[] = [];
     let last: Element | null = log.hosts[0] ?? null;
     const markAt = (index: number) => {
-        for (const focus of marks.get(index) ?? []) steps.push({ kind: 'focus', focus, text: last === null ? '' : textOf(last), hidden: last === null ? false : (hidden.get(last) ?? false) });
+        for (const focus of marks.get(index) ?? []) {
+            const state = { text: last === null ? '' : textOf(last), hidden: last === null ? false : (hidden.get(last) ?? false) };
+            if (focus.startsWith('\u0000read ')) steps.push({ kind: 'read', focus: focus.slice('\u0000read '.length), ...state });
+            else steps.push({ kind: 'focus', focus, ...state });
+        }
     };
     /** The title a record in `<head>` set, or null when it touched no `<title>`. */
     const titleSet = (record: MutationRecord, index: number): string | null => {
@@ -207,6 +236,7 @@ export function describeLog(steps: readonly AnnouncerStep[]): string {
     return steps
         .map((step) => {
             if (step.kind === 'focus') return `focus ${step.focus}`;
+            if (step.kind === 'read') return `read ${step.focus}`;
             if (step.kind === 'title') return `title ${JSON.stringify(step.text)}`;
             return `${step.kind} ${JSON.stringify(step.text)}${step.hidden ? ' (hidden)' : ''}`;
         })
