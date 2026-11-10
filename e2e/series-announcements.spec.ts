@@ -3,7 +3,7 @@ import { publish } from '../lib/catalog/publish';
 import { createTestCatalog, type TestCatalog } from '../lib/catalog/testing';
 import { readAuthoredRecord } from '../lib/catalog/working-layer';
 import { writeAuthoredRecord } from '../lib/catalog/working-layer-writer';
-import { describeLog, nextChangeVerdict, readOf, recordAnnouncer, shownHolding, spokenOf, type AnnouncerStep } from './support/announcerLog';
+import { describeLog, describeTrace, nextChangeVerdict, readOf, recordAnnouncer, shownHolding, spokenOf, traceTitles, type AnnouncerStep, type TitleTraceEntry } from './support/announcerLog';
 import { READY_TIMEOUT, startCatalogServer, type CatalogServer } from './support/catalogServer';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
@@ -132,19 +132,35 @@ async function expectHeadingAlone(page: Page, read: () => Promise<AnnouncerStep[
 
 const WORK = /^Work\b/;
 
+/** The alert's text when Next wrote Work's title, or `h1` exactly. */
+const namedOrHeaded = (h1: string | null) => (h1 === null || h1 === '' ? WORK : new RegExp(`${WORK.source}|^${h1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+
+type Trace = () => Promise<TitleTraceEntry[]>;
+
+/**
+ * The test's title trace from its first load on (#258), with TITLE_TRACE=1, in the report: every <title> put in or taken out, each read of
+ * the title with every <title> there and the state of each Next.Metadata boundary, and the commits' history pushes.
+ */
+async function noteTrace(trace: Trace | undefined): Promise<void> {
+    if (trace === undefined) return;
+    test.info().annotations.push({ type: 'title trace', description: `${test.info().project.name}:\n${describeTrace(await trace())}` });
+}
+
 /**
  * A page change that focuses no heading: All work, from the series page. The verdict is read from what Next's announcer
  * read for Work's tree (nextChangeVerdict, test/helpers/announcerLog.ts). When it read Work's title, or an empty one,
- * the announcer must say Work's name. When it read another title, Work's landed after its tree and Next wrote nothing
+ * the announcer must say Work's title or Work's first h1, as it rendered after the change: Next's head can commit after
+ * its tree, and Next then reads the h1 (#258). The report says which was written. When it read another title, Work's landed after its tree and Next wrote nothing
  * (#258): that fails, unless `lateTitle` is 'record', where it's recorded and only what's guaranteed is asserted. Either
  * way the host is never hidden after the click, and shows nothing but Work's name. This reads the title only through
  * the log, never itself, so the log's first read is Next's.
  */
-async function expectNextChangeHeard(page: Page, { lateTitle = 'fail' }: { lateTitle?: 'fail' | 'record' } = {}): Promise<void> {
+async function expectNextChangeHeard(page: Page, { lateTitle = 'fail', trace }: { lateTitle?: 'fail' | 'record'; trace?: Trace } = {}): Promise<void> {
     const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
     let steps: AnnouncerStep[] = [];
+    let h1: string | null = null;
     try {
         // Work's title in the document, and Next's read for Work's tree, whichever came first.
         await expect
@@ -153,23 +169,32 @@ async function expectNextChangeHeard(page: Page, { lateTitle = 'fail' }: { lateT
                 return steps.some((step) => step.kind === 'title' && WORK.test(step.text)) && steps.some((step) => readOf(step) !== null);
             }, { message: 'Work\'s title, and a read of the title by Next\'s announcer' })
             .toBe(true);
+        // Work's first h1 as it rendered, read past querySelector, so the log's h1 reads stay Next's.
+        h1 = await page.evaluate(() => {
+            const found = document.getElementsByTagName('h1')[0];
+            return found === undefined ? null : found.innerText || found.textContent || '';
+        });
         const first = steps.map(readOf).find((found) => found !== null);
         // Its write is due: it lands in the commit after that read.
-        if (first?.of === 'title' && (first.value === '' || WORK.test(first.value ?? ''))) await expect(page.getByRole('alert')).toHaveText(WORK);
+        if (first?.of === 'title' && (first.value === '' || WORK.test(first.value ?? ''))) await expect(page.getByRole('alert')).toHaveText(namedOrHeaded(h1));
         steps = await read();
     } catch (error) {
         console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${describeLog(await read())}`);
+        await noteTrace(trace);
         throw error;
     }
-    const verdict = nextChangeVerdict(steps, { name: WORK, lateTitle });
+    await noteTrace(trace);
+    const verdict = nextChangeVerdict(steps, { name: WORK, h1, lateTitle });
     const log = describeLog(steps);
-    test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${verdict.note ?? verdict.branch} (${log})` });
+    const wrote = verdict.wrote === undefined ? '' : `, wrote the ${verdict.wrote === 'h1' ? `h1 ${JSON.stringify(h1)}` : 'title'}`;
+    test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${verdict.note ?? verdict.branch}${wrote} (${log})` });
     if (verdict.problems.length > 0 || verdict.branch === 'late-title') console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${verdict.note ?? verdict.branch}: ${log}`);
     expect(verdict.problems, log).toEqual([]);
     await expect(host(page), log).not.toHaveAttribute('aria-hidden');
 }
 
 test('the modal\'s Back to the series onto the heading, when a publish dropped its photograph: the heading alone says the name', async ({ page }) => {
+    const trace = await traceTitles(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -187,10 +212,11 @@ test('the modal\'s Back to the series onto the heading, when a publish dropped i
     await expect(entry(page, R[1])).toHaveCount(0);
     await expectHeadingAlone(page, read, true);
     // #258: Next can read the series page's title for All work's tree here, and then writes nothing.
-    await expectNextChangeHeard(page, { lateTitle: 'record' });
+    await expectNextChangeHeard(page, { lateTitle: 'record', trace });
 });
 
 test('Back after a reload on the Viewer to a deep link\'s page for a dropped photograph: the heading alone says the name', async ({ page }) => {
+    const trace = await traceTitles(page);
     await page.goto(`${origin()}${SERIES}?photo=${R[2]}`);
     await waitForHydration(page);
     // The deep link's own focus (B5), then Enter on it.
@@ -206,10 +232,11 @@ test('Back after a reload on the Viewer to a deep link\'s page for a dropped pho
     await expect(page).toHaveURL(`${origin()}${SERIES}?photo=${R[2]}`);
     await expect(entry(page, R[2])).toHaveCount(0);
     await expectHeadingAlone(page, read, true);
-    await expectNextChangeHeard(page);
+    await expectNextChangeHeard(page, { trace });
 });
 
 test('Back after a reload on the Viewer, whose return asks the server for the dropped photograph\'s page: the heading alone says the name from its landing on', async ({ page }) => {
+    const trace = await traceTitles(page);
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
     await entry(page, R[3]).focus();
@@ -226,7 +253,7 @@ test('Back after a reload on the Viewer, whose return asks the server for the dr
     await expect(entry(page, R[3])).toHaveCount(0);
     // The Back itself is a page change whose focus goes nowhere until the answer: the announcer may say it there.
     await expectHeadingAlone(page, read, false);
-    await expectNextChangeHeard(page);
+    await expectNextChangeHeard(page, { trace });
 });
 
 // The page change after a modal Close that takes no landing hold, for comparison with the returns above: All work,
@@ -240,7 +267,7 @@ function noteNextWrote(steps: AnnouncerStep[], type: string): void {
     test.info().annotations.push({ type, description: `${test.info().project.name}: ${wrote.length > 0 ? `yes, ${JSON.stringify(wrote)}` : 'no'} (${describeLog(steps)})` });
 }
 
-async function recordNextChange(page: Page): Promise<void> {
+async function recordNextChange(page: Page, trace?: Trace): Promise<void> {
     const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
@@ -250,6 +277,7 @@ async function recordNextChange(page: Page): Promise<void> {
     const steps = await read();
     const log = describeLog(steps);
     const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
+    await noteTrace(trace);
     noteNextWrote(steps, 'Next wrote on the next change');
     try {
         expect(steps.filter((step) => !step.hidden && step.text !== '' && !/^(Work|Fixture swell)\b/.test(step.text)), log).toEqual([]);
@@ -261,6 +289,7 @@ async function recordNextChange(page: Page): Promise<void> {
 }
 
 test('the modal\'s Close onto its entry, after the revision check refreshed the page under it, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
+    const trace = await traceTitles(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -274,10 +303,11 @@ test('the modal\'s Close onto its entry, after the revision check refreshed the 
     await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page).toHaveURL(`${origin()}${SERIES}`);
     await expect(entry(page, R[5])).toBeFocused();
-    await recordNextChange(page);
+    await recordNextChange(page, trace);
 });
 
 test('the modal\'s Close onto its entry, with no refresh, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
+    const trace = await traceTitles(page);
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
     await entry(page, R[5]).focus();
@@ -286,10 +316,11 @@ test('the modal\'s Close onto its entry, with no refresh, then All work: no hold
     await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page).toHaveURL(`${origin()}${SERIES}`);
     await expect(entry(page, R[5])).toBeFocused();
-    await recordNextChange(page);
+    await recordNextChange(page, trace);
 });
 
 test('the modal\'s Back to the series onto the opener\'s entry, after a publish dropped the photograph a move reached: no hold, and Next\'s write is recorded', async ({ page }) => {
+    const trace = await traceTitles(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -308,7 +339,7 @@ test('the modal\'s Back to the series onto the opener\'s entry, after a publish 
     await expect(page).toHaveURL(`${origin()}${SERIES}`);
     // The opener's entry is still there, so focus goes back to it, with no landing hold.
     await expect(entry(page, R[0])).toBeFocused();
-    await recordNextChange(page);
+    await recordNextChange(page, trace);
 });
 
 

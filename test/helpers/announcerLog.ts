@@ -261,36 +261,277 @@ export interface NextChangeVerdict {
     problems: string[];
     /** LATE_TITLE_NOTE when the late title was recorded rather than failed. */
     note?: string;
+    /** On the strict branch, what Next wrote of the new page: its title, or its first h1 (#258). */
+    wrote?: 'title' | 'h1';
 }
 
 /**
  * The verdict on a page change from a log that began just before the click (#257, #258). Next's announcer reads the
- * title once for each new router tree, and writes only when it differs from what it read last. Whatever the branch:
- * the host is never hidden after the click, and whenever it's shown it holds nothing or the new page's name.
+ * title once for each new router tree, and writes only when it differs from what it read last. `h1` is the new page's
+ * first h1 as it rendered after the change, which Next writes when it reads an empty title: its head can commit after
+ * its tree (#258). Whatever the branch: the host is never hidden after the click, and whenever it's shown it holds
+ * nothing, the new page's title or that h1.
  *
  * - **Strict.** Next's first read is the new page's title, or an empty one followed by the first h1: then the new
- *   page's name must be written while the host is shown.
+ *   page's title or its h1 must be written while the host is shown. `wrote` says which. Nothing written, the old
+ *   page's title, or any other text fails.
  * - **Late title.** Next's first read is some other title: the new page's title landed after its tree, so Next wrote
  *   nothing (#258). With `lateTitle: 'record'` that passes with LATE_TITLE_NOTE, as long as the title then became the
  *   new page's. With 'fail', the default, it fails.
  *
  * With no read step at all, it fails: the log can't say what Next saw.
  */
-export function nextChangeVerdict(steps: readonly AnnouncerStep[], { name, lateTitle = 'fail' }: { name: RegExp; lateTitle?: 'fail' | 'record' }): NextChangeVerdict {
+export function nextChangeVerdict(steps: readonly AnnouncerStep[], { name, h1 = null, lateTitle = 'fail' }: { name: RegExp; h1?: string | null; lateTitle?: 'fail' | 'record' }): NextChangeVerdict {
     const problems: string[] = [];
+    const isTitle = (text: string) => name.test(text);
+    const isH1 = (text: string) => h1 !== null && h1 !== '' && text === h1;
     if (steps.some((step) => step.kind === 'hidden' || step.hidden)) problems.push('the host was hidden after the click');
     // A title step's text is the document's title; every other step carries the host's text.
-    const stale = steps.filter((step) => step.kind !== 'title' && !step.hidden && step.text !== '' && !name.test(step.text)).map((step) => step.text);
+    const stale = steps.filter((step) => step.kind !== 'title' && !step.hidden && step.text !== '' && !isTitle(step.text) && !isH1(step.text)).map((step) => step.text);
     if (stale.length > 0) problems.push(`the host was shown holding ${JSON.stringify([...new Set(stale)])}`);
     const reads = steps.map(readOf).filter((read) => read !== null);
     if (reads.length === 0) return { branch: 'strict', problems: [...problems, 'no read of the title after the click'] };
     const first = reads[0];
-    const due = first.of === 'title' && (first.value === '' || name.test(first.value ?? ''));
+    const due = first.of === 'title' && (first.value === '' || isTitle(first.value ?? ''));
     if (due) {
-        if (!spokenOf(steps).some((text) => name.test(text))) problems.push(`Next read ${JSON.stringify(first.value)} and wrote nothing with the new page's name`);
-        return { branch: 'strict', problems };
+        const spoken = spokenOf(steps);
+        const wrote = spoken.some(isTitle) ? 'title' : spoken.some(isH1) ? 'h1' : undefined;
+        if (wrote === undefined) {
+            problems.push(`Next read ${JSON.stringify(first.value)} and wrote neither the new page's title nor its h1${h1 === null ? '' : ` ${JSON.stringify(h1)}`}`);
+            return { branch: 'strict', problems };
+        }
+        return { branch: 'strict', problems, wrote };
     }
     if (lateTitle === 'fail') return { branch: 'late-title', problems: [...problems, `${LATE_TITLE_NOTE}: it read ${JSON.stringify(first.value)}`] };
     if (!steps.some((step) => step.kind === 'title' && name.test(step.text))) problems.push("the title never became the new page's");
     return { branch: 'late-title', problems, note: LATE_TITLE_NOTE };
+}
+
+/**
+ * One entry of a title trace (#258), stamped with `performance.now()` when it was taken.
+ *
+ * - `read`: a read of `document.title`, with every `<title>` in the document then, and each `Next.Metadata` Suspense
+ *   boundary in React's current tree.
+ * - `added`, `removed`: a `<title>` put into the document or taken out of it, anywhere, with where.
+ * - `text`: a `<title>`'s text changed in place.
+ * - `push`, `replace`: a history entry pushed or replaced, with its URL. Next's app router pushes in the commit of the
+ *   new tree, before its announcer's effect runs, so a push stamps the commit.
+ * - `h1`: an `h1` put into the document, with its text.
+ */
+export interface TitleTraceEntry {
+    at: number;
+    kind: 'read' | 'added' | 'removed' | 'text' | 'push' | 'replace' | 'h1';
+    /** The title read, the title's or h1's text, or the URL. */
+    value: string;
+    /** For added, removed and text: the `<title>`'s id in this document, from 1 in the order the trace met them. */
+    id?: number;
+    /** For added and removed: the path of the parent it went into or came out of. */
+    where?: string;
+    /** For a read: every `<title>` in the document, in tree order. */
+    titles?: TitleFact[];
+    /** For a read: each `Next.Metadata` Suspense boundary in React's current tree. */
+    metadata?: MetadataFact[];
+    /** For a read: each of Next's Head components in React's current tree. */
+    heads?: HeadFact[];
+}
+
+export interface TitleFact {
+    id: number;
+    /** 'html', or the namespace's last path segment ('svg'). */
+    ns: string;
+    /** The path from `html` to the title's parent, as `tag#id` steps, `[hidden]` marking a hidden one. */
+    path: string;
+    text: string;
+    /**
+     * Whether React owns it, and where its fiber is: 'mounted' when the fiber's return path reaches a root, 'detached'
+     * when it doesn't (a deleted fiber), 'none' when the element carries no fiber (React never rendered or adopted it).
+     */
+    react: 'mounted' | 'detached' | 'none';
+    /** The React keys on its fiber's return path, innermost first, which name the Head it's under. */
+    keys?: string;
+}
+
+export interface MetadataFact {
+    /** 'content' when it shows its children, 'fallback' when it's suspended, 'dehydrated' while it waits to hydrate. */
+    state: 'content' | 'fallback' | 'dehydrated';
+    /** The React keys on its return path, innermost first. */
+    keys: string;
+}
+
+/**
+ * Next's Head (app-router.js), which renders `useDeferredValue(rsc, prefetchRsc ?? rsc)`: a partial prefetched head
+ * first, when there is one, then the full head in a later render.
+ */
+export interface HeadFact {
+    /** Its React key, from the head's vary path. */
+    key: string;
+    /** What its head render tree holds: 'null', '""', 'element', 'array', or a thenable with its status. */
+    prefetch: string;
+    rsc: string;
+    /** Which of the two it rendered in the current tree: 'rsc', 'prefetch', or 'other'. */
+    shows: 'rsc' | 'prefetch' | 'other';
+}
+
+type Traces = Record<string, { entries: TitleTraceEntry[]; flush: () => void }>;
+
+/**
+ * Starts the title trace `key` on this document (#258). Like installAnnouncerLog, it closes over nothing, so
+ * Playwright can send it to the page, and it can run before the document has a root element.
+ */
+export function installTitleTrace(key: string): void {
+    type TraceWindow = { kgTitleTraces?: Traces; kgTitleIds?: Map<Node, number> };
+    const traces = ((window as unknown as TraceWindow).kgTitleTraces ??= {});
+    // Shared by every trace on this document, so a title keeps its id across them. A Map, so its size numbers the next.
+    const ids = ((window as unknown as TraceWindow).kgTitleIds ??= new Map<Node, number>());
+    const idOf = (node: Node): number => {
+        let found = ids.get(node);
+        if (found === undefined) {
+            found = ids.size + 1;
+            ids.set(node, found);
+        }
+        return found;
+    };
+    const entries: TitleTraceEntry[] = [];
+    const isTitle = (node: Node): node is Element => node instanceof Element && node.localName === 'title';
+    const titlesIn = (node: Node): Element[] => (isTitle(node) ? [node] : node instanceof Element ? [...node.getElementsByTagName('title')] : []);
+    const step = (element: Element): string => `${element.localName}${element.id ? `#${element.id}` : ''}${element.hasAttribute('hidden') ? '[hidden]' : ''}`;
+    const pathOf = (node: Node | null): string => {
+        const parts: string[] = [];
+        for (let at = node; at instanceof Element; at = at.parentElement) parts.unshift(step(at));
+        return parts.join('>') || (node === null ? '(none)' : node.nodeName);
+    };
+    const h1sIn = (node: Node): Element[] => (node instanceof Element ? (node.localName === 'h1' ? [node] : [...node.getElementsByTagName('h1')]) : []);
+    const take = (record: MutationRecord, at: number) => {
+        if (record.type === 'characterData') {
+            const parent = record.target.parentNode;
+            if (parent !== null && isTitle(parent)) entries.push({ at, kind: 'text', value: parent.textContent ?? '', id: idOf(parent) });
+            return;
+        }
+        if (isTitle(record.target)) entries.push({ at, kind: 'text', value: record.target.textContent ?? '', id: idOf(record.target) });
+        for (const removed of record.removedNodes) for (const title of titlesIn(removed)) entries.push({ at, kind: 'removed', value: title.textContent ?? '', id: idOf(title), where: pathOf(record.target) });
+        for (const added of record.addedNodes) {
+            for (const title of titlesIn(added)) entries.push({ at, kind: 'added', value: title.textContent ?? '', id: idOf(title), where: pathOf(title.parentNode) });
+            for (const h1 of h1sIn(added)) entries.push({ at, kind: 'h1', value: h1.textContent ?? '' });
+        }
+    };
+    const observer = new MutationObserver((batch) => {
+        const at = performance.now();
+        for (const record of batch) take(record, at);
+    });
+    observer.observe(document, { childList: true, characterData: true, subtree: true });
+    const flush = () => {
+        const at = performance.now();
+        for (const record of observer.takeRecords()) take(record, at);
+    };
+    /** The fiber key on an element React made or adopted, and the fiber. */
+    const fiberOf = (node: object): { return: unknown } | null => {
+        const name = Object.keys(node).find((own) => own.startsWith('__reactFiber$'));
+        return name === undefined ? null : ((node as Record<string, { return: unknown }>)[name] ?? null);
+    };
+    type HeadData = { rsc?: unknown; prefetchRsc?: unknown };
+    type Fiber = { tag: number; key: string | null; return: Fiber | null; child: Fiber | null; sibling: Fiber | null; memoizedProps: { name?: unknown; headRenderTree?: { data?: HeadData } } | null; memoizedState: { dehydrated?: unknown; memoizedState?: unknown } | null; stateNode: unknown };
+    const keysOf = (fiber: Fiber): { keys: string; root: boolean } => {
+        const keys: string[] = [];
+        let at: Fiber | null = fiber.return;
+        let last: Fiber = fiber;
+        for (; at !== null; last = at, at = at.return) if (at.key !== null) keys.push(at.key);
+        // HostRoot is tag 3.
+        return { keys: keys.join(' < '), root: last.tag === 3 };
+    };
+    const valueOf = (value: unknown): string => {
+        if (value === null) return 'null';
+        if (value === '') return '""';
+        if (Array.isArray(value)) return 'array';
+        if (typeof value === 'object' && typeof (value as { then?: unknown }).then === 'function') return `thenable:${String((value as { status?: unknown }).status ?? 'untracked')}`;
+        if (typeof value === 'object' && (value as { $$typeof?: unknown }).$$typeof !== undefined) return 'element';
+        return typeof value;
+    };
+    let heads: HeadFact[] = [];
+    const metadataNow = (): MetadataFact[] => {
+        heads = [];
+        const name = Object.keys(document).find((own) => own.startsWith('__reactContainer$'));
+        if (name === undefined) return [];
+        const hostRoot = (document as unknown as Record<string, Fiber | undefined>)[name];
+        if (hostRoot === undefined) return [];
+        const current = (hostRoot.stateNode as { current?: Fiber } | null)?.current ?? hostRoot;
+        const found: MetadataFact[] = [];
+        const stack: Fiber[] = [current];
+        while (stack.length > 0) {
+            const fiber = stack.pop() as Fiber;
+            // SuspenseComponent is tag 13.
+            if (fiber.tag === 13 && fiber.memoizedProps?.name === 'Next.Metadata') {
+                const state = fiber.memoizedState === null ? 'content' : fiber.memoizedState.dehydrated ? 'dehydrated' : 'fallback';
+                found.push({ state, keys: keysOf(fiber).keys });
+            }
+            const data = fiber.memoizedProps?.headRenderTree?.data;
+            if (data !== undefined && fiber.key !== null) {
+                // A function component's first hook is its memoizedState: here useDeferredValue's, the value it rendered.
+                const shown = fiber.memoizedState?.memoizedState;
+                heads.push({ key: fiber.key, prefetch: valueOf(data.prefetchRsc), rsc: valueOf(data.rsc), shows: shown === data.rsc ? 'rsc' : shown === data.prefetchRsc ? 'prefetch' : 'other' });
+            }
+            if (fiber.sibling !== null) stack.push(fiber.sibling);
+            if (fiber.child !== null) stack.push(fiber.child);
+        }
+        return found;
+    };
+    const titlesNow = (): TitleFact[] =>
+        [...document.getElementsByTagName('title')].map((title) => {
+            const fiber = fiberOf(title) as Fiber | null;
+            const where = fiber === null ? null : keysOf(fiber);
+            return {
+                id: idOf(title),
+                ns: title.namespaceURI === 'http://www.w3.org/1999/xhtml' ? 'html' : (title.namespaceURI ?? '').split('/').pop() ?? '',
+                path: pathOf(title.parentNode),
+                text: title.textContent ?? '',
+                react: where === null ? 'none' : where.root ? 'mounted' : 'detached',
+                ...(where !== null && { keys: where.keys }),
+            };
+        });
+    const title = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+    const get = title?.get;
+    if (title && get) {
+        Object.defineProperty(Document.prototype, 'title', {
+            ...title,
+            get(this: Document) {
+                const value = get.call(this) as string;
+                flush();
+                const metadata = metadataNow();
+                entries.push({ at: performance.now(), kind: 'read', value, titles: titlesNow(), metadata, heads });
+                return value;
+            },
+        });
+    }
+    for (const kind of ['push', 'replace'] as const) {
+        const method = kind === 'push' ? 'pushState' : 'replaceState';
+        const original = History.prototype[method];
+        History.prototype[method] = function (this: History, data: unknown, unused: string, url?: string | URL | null) {
+            flush();
+            entries.push({ at: performance.now(), kind, value: url === undefined || url === null ? location.href : String(url) });
+            return original.call(this, data, unused, url);
+        };
+    }
+    traces[key] = { entries, flush };
+}
+
+/** The title trace `key` so far. */
+export function readTitleTrace(key: string): TitleTraceEntry[] {
+    const trace = (window as unknown as { kgTitleTraces?: Traces }).kgTitleTraces?.[key];
+    if (!trace) throw new Error(`No title trace ${key} on this page`);
+    trace.flush();
+    return trace.entries.map((entry) => ({ ...entry }));
+}
+
+/** A trace as one line per entry: `at kind value`, a title's `#id`, and at a read, the titles and metadata boundaries. */
+export function describeTrace(entries: readonly TitleTraceEntry[]): string {
+    const fact = (title: TitleFact) => `#${title.id} ${title.ns === 'html' ? '' : `${title.ns} `}${title.path} ${JSON.stringify(title.text)} react=${title.react}${title.keys ? ` keys=${title.keys}` : ''}`;
+    return entries
+        .map((entry) => {
+            const head = `${entry.at.toFixed(1)} ${entry.kind}${entry.id === undefined ? '' : ` #${entry.id}`} ${JSON.stringify(entry.value)}${entry.where ? ` @${entry.where}` : ''}`;
+            if (entry.kind !== 'read') return head;
+            const titles = (entry.titles ?? []).map(fact).join(', ');
+            const metadata = (entry.metadata ?? []).map((boundary) => `${boundary.state} keys=${boundary.keys}`).join(', ');
+            const heads = (entry.heads ?? []).map((one) => `${one.key} prefetch=${one.prefetch} rsc=${one.rsc} shows=${one.shows}`).join(', ');
+            return `${head} titles=[${titles}] metadata=[${metadata}]${entry.heads === undefined ? '' : ` heads=[${heads}]`}`;
+        })
+        .join('\n');
 }
