@@ -73,6 +73,23 @@ async function publishWithout(photoId: string): Promise<void> {
     expect(outcome.outcome, outcome.message).toBe('PUBLISHED');
 }
 
+/**
+ * Every request the page makes for /work's RSC payload, a prefetch or the navigation's own, with when it finished
+ * (ms since the test began), so a log of the next change can say whether /work was prefetched before the click.
+ */
+const workFetches = new WeakMap<Page, string[]>();
+function trackWork(page: Page): void {
+    const seen: string[] = [];
+    const began = Date.now();
+    workFetches.set(page, seen);
+    page.on('requestfinished', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname !== '/work' || !(url.searchParams.has('_rsc') || request.headers().rsc === '1')) return;
+        seen.push(`${request.headers()['next-router-prefetch'] ? 'prefetch' : 'fetch'} at ${Date.now() - began} ms`);
+    });
+}
+const workLog = (page: Page) => (workFetches.get(page) ?? []).join(', ') || 'none';
+
 /** Publishes the whole series again when a test before this one, or a try of this one, left it short. */
 test.beforeEach(async () => {
     if (!catalog) throw new Error('No catalog');
@@ -133,7 +150,7 @@ async function expectNextChangeHeard(page: Page): Promise<void> {
         await expect(host(page)).not.toHaveAttribute('aria-hidden');
     } finally {
         // The log, with the title's changes, in the report and the output, whether or not the alert came.
-        const log = describeLog(await read());
+        const log = `${describeLog(await read())} | /work requests: ${workLog(page)}`;
         test.info().annotations.push({ type: 'next change', description: `${test.info().project.name}: ${log}` });
         console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
     }
@@ -142,6 +159,7 @@ async function expectNextChangeHeard(page: Page): Promise<void> {
 }
 
 test('the modal\'s Back to the series onto the heading, when a publish dropped its photograph: the heading alone says the name', async ({ page }) => {
+    trackWork(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -206,6 +224,7 @@ test('Back after a reload on the Viewer, whose return asks the server for the dr
 // router's new tree, and a title that streams in after that tree is never announced), so it's recorded in the report,
 // with the log, and only what is guaranteed is asserted.
 async function recordNextChange(page: Page): Promise<void> {
+    const before = workLog(page);
     const read = await recordAnnouncer(page, { titles: true });
     await page.getByRole('link', { name: 'All work, back to the series list' }).click();
     await expect(page).toHaveURL(`${origin()}/work`);
@@ -213,7 +232,7 @@ async function recordNextChange(page: Page): Promise<void> {
     await expect(host(page)).not.toHaveAttribute('aria-hidden');
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)))));
     const steps = await read();
-    const log = describeLog(steps);
+    const log = `${describeLog(steps)} | /work requests before the click: ${before}; by the end: ${workLog(page)}`;
     const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
     test.info().annotations.push({ type: 'Next wrote on the next change', description: `${test.info().project.name}: ${wrote.length > 0 ? 'yes' : 'no'} (${log})` });
     console.log(`[${test.info().project.name}] next change after ${test.info().title}: ${log}`);
@@ -222,6 +241,7 @@ async function recordNextChange(page: Page): Promise<void> {
 }
 
 test('the modal\'s Close onto its entry, after the revision check refreshed the page under it, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
+    trackWork(page);
     await page.clock.install();
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
@@ -239,6 +259,7 @@ test('the modal\'s Close onto its entry, after the revision check refreshed the 
 });
 
 test('the modal\'s Close onto its entry, with no refresh, then All work: no hold, and Next\'s write is recorded', async ({ page }) => {
+    trackWork(page);
     await page.goto(`${origin()}${SERIES}`);
     await waitForHydration(page);
     await entry(page, R[5]).focus();
@@ -247,5 +268,20 @@ test('the modal\'s Close onto its entry, with no refresh, then All work: no hold
     await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page).toHaveURL(`${origin()}${SERIES}`);
     await expect(entry(page, R[5])).toBeFocused();
+    await recordNextChange(page);
+});
+
+test('the modal\'s Close onto its entry, then All work once /work has been prefetched: no hold, and Next\'s write is recorded', async ({ page }) => {
+    trackWork(page);
+    await page.goto(`${origin()}${SERIES}`);
+    await waitForHydration(page);
+    await entry(page, R[5]).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await viewer(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page).toHaveURL(`${origin()}${SERIES}`);
+    await expect(entry(page, R[5])).toBeFocused();
+    // Wait for All work's prefetch, as a visitor resting on the page would have it, before the press.
+    await expect.poll(() => workLog(page), { timeout: 10_000 }).toContain('prefetch');
     await recordNextChange(page);
 });
