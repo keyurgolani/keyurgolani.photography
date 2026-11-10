@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useDocumentVisible } from '@/components/motion/useDocumentVisible';
 import { usePrefersReducedMotion } from '@/components/motion/usePrefersReducedMotion';
+import { useLiveMessage } from '@/components/liveMessage';
 import { savesData } from '@/components/savesData';
 import { useOnline } from '@/components/site/onlineStatus';
 import { useSiteRoutes } from '@/components/site/siteRoutesContext';
@@ -11,6 +12,7 @@ import { useSiteRoutes } from '@/components/site/siteRoutesContext';
 import type { PeekPhotoState } from '@/lib/catalog/projections/viewer';
 import { StageMotion } from './stageMotion';
 import ViewerChrome, { type ViewerChromeActions } from './ViewerChrome';
+import { quietRouteAnnouncer } from './routeAnnouncer';
 import { ViewerContext, peekKey, type ViewerChromeState, type ViewerMode, type ViewerPeek, type ViewerShellContext } from './viewerContext';
 import { isViewerPath, stepForKey, type ViewerStep } from './viewerKeys';
 import { useDoubleTap } from './useDoubleTap';
@@ -65,8 +67,6 @@ async function revisedOf(response: Response): Promise<Revised> {
 export const REVISION_CHECK_MS = 30_000;
 /** A move's announcement waits this long after its photograph arrives, so rapid presses give one message (#178). */
 export const ANNOUNCE_SETTLE_MS = 250;
-/** A repeated message clears the region and lands again this long after, so a screen reader hears it again (bug 3). */
-export const REPEAT_GAP_MS = 100;
 
 /** Whether the browser says it's offline at the press. Unknown counts as online. */
 function offlineNow(): boolean {
@@ -122,7 +122,10 @@ async function fetchPeek(catalogApiHref: (path: string) => string, slug: string,
  * presses give one message, with the position, the title and the
  * description. An end is announced at once, alone, and drops a move's
  * message still settling; a repeat of the same message clears the region
- * first, so every press at an end is heard (bug 3).
+ * first, so every press at an end is heard (bug 3). Each message leaves the
+ * region once it's been heard (useLiveMessage), so reading on never meets it
+ * again (#246). While the Viewer is mounted, Next's route announcer is kept
+ * quiet (quietRouteAnnouncer), so its line is a move's one announcement (#247).
  * Keys ignore auto-repeat, composition and a key already taken; Escape while
  * zoomed only resets the zoom, and focus that was in the zoomed region goes
  * to Zoom. Offline, a move says so by the controls and doesn't navigate. One
@@ -164,14 +167,12 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const [zoomed, setZoomed] = useState(false);
     /** The technical details, open or not, for the whole visit: a move keeps them as they are (#7, decided). */
     const [technicalOpen, setTechnicalOpen] = useState(false);
-    const [message, setMessage] = useState('');
+    const { message, say, drop } = useLiveMessage();
     /** The direction a move was asked for offline, which the notice by the controls names, or null (#178). */
     const [offline, setOffline] = useState<ViewerStep | null>(null);
     /** Whether ViewerUnavailable is the child: the photograph isn't there, so neither are its controls (#178). */
     const [unavailable, setUnavailable] = useState(false);
     const unavailableRef = useRef(false);
-    /** The last message asked for, so a repeat clears the region before it lands again (bug 3). */
-    const lastMessage = useRef('');
     const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     /** Whether any move has navigated, so a page still shows the route it loaded with (see revised). */
     const movedOnce = useRef(false);
@@ -217,23 +218,15 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
         setChrome((current) => (sameChrome(current, state) ? current : state));
     }, []);
 
+    // Next's route announcer says nothing while the Viewer is here, and speaks again as it goes (#247).
+    useLayoutEffect(() => quietRouteAnnouncer(), []);
+
+    /** Drops a message still settling, and a repeat still waiting to land. */
     const clearAnnouncement = useCallback(() => {
         if (announceTimer.current !== null) clearTimeout(announceTimer.current);
         announceTimer.current = null;
-    }, []);
-    /** The region's text, now: a new message at once, a repeat cleared first and set REPEAT_GAP_MS later (bug 3). */
-    const land = useCallback((text: string) => {
-        if (text !== lastMessage.current) {
-            lastMessage.current = text;
-            setMessage(text);
-            return;
-        }
-        setMessage('');
-        announceTimer.current = setTimeout(() => {
-            announceTimer.current = null;
-            setMessage(text);
-        }, REPEAT_GAP_MS);
-    }, []);
+        drop();
+    }, [drop]);
     /**
      * The one way the live region speaks. Whatever was waiting to land is dropped, so the latest message is the one
      * heard. `settle` waits ANNOUNCE_SETTLE_MS first, for a move's arrival.
@@ -241,13 +234,13 @@ export default function ViewerShell({ mode, children }: { mode: ViewerMode; chil
     const announce = useCallback(
         (text: string, { settle = false }: { settle?: boolean } = {}) => {
             clearAnnouncement();
-            if (!settle) return land(text);
+            if (!settle) return say(text);
             announceTimer.current = setTimeout(() => {
                 announceTimer.current = null;
-                land(text);
+                say(text);
             }, ANNOUNCE_SETTLE_MS);
         },
-        [clearAnnouncement, land],
+        [clearAnnouncement, say],
     );
     useEffect(() => clearAnnouncement, [clearAnnouncement]);
 

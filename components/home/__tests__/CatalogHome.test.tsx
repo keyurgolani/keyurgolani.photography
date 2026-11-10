@@ -733,8 +733,9 @@ describe('CatalogHome', () => {
       expect([heading(), enter(), position()]).toEqual(['Fixture series A', '/work/fixture-a', '03 / 04']);
       expect(screen.getByText('Fixture short statement A.')).toBeInTheDocument();
       expect(status().textContent).toBe('');
-      // The opening isn't a crossing: the heading names its series.
-      expect(said().textContent).toBe('3 of 4, Described photograph 3');
+      // The opening isn't a crossing: the heading names its series. The region holds nothing until a move of the
+      // visitor's is announced, so the slide is read once (#246).
+      expect(said().textContent).toBe('');
       expect(said()).toHaveAttribute('aria-live', 'off');
     });
 
