@@ -569,7 +569,7 @@ The data root needs nothing: `v1.7.0` writes it as `v1.6.x` does, and `v1.6.x`'s
 
 The host takes four steps. With an override, add `-f <override>` after each `-f docker-compose.prod.yml`, and add `curator` to the `pull` and `up -d` lines when it runs. A host on `v1.6.x` or older takes `v1.7.0`'s steps on the way.
 
-1. **Note the running tag and revision, and back up the data root.** The `grep` prints the line [Rolling back](#rolling-back-from-v200) below returns to, `docker inspect` checks that `web` runs it, as [Deploying](#deploying) says, and `/api/ready`, on `PHOTOGRAPHY_PORT` if you set one, names the revision step 4 compares. On a host that runs `v2.0.0-rc.1`, the `grep` prints the candidate's `sha-` line instead, which is no rollback target: Rolling back goes to the line the candidate replaced, `PHOTOGRAPHY_IMAGE_TAG=v1.7.0@sha256:77f5cfcdc713828e280419d459741e7e139c18e2b5a50f3aa9fcf278aed6c40d`. Then back up with the block in [Backing up](data-root.md#backing-up), whose archive is the one [Restoring](data-root.md#restoring) takes. Keep the last backup made on `v1.7.x`, which on that host is the one from before the candidate: it's the last data root `v1.7.x` reads in full.
+1. **Note the running tag and revision, and back up the data root.** The `grep` prints the line [Rolling back](#rolling-back-from-v200) below returns to, `docker inspect` checks that `web` runs it, as [Deploying](#deploying) says, and `/api/ready`, on `PHOTOGRAPHY_PORT` if you set one, names the revision step 4 compares. On a host that runs a `v2.0.0` release candidate, `v2.0.0-rc.1` or `v2.0.0-rc.2`, the `grep` prints the candidate's `sha-` line instead, which is no rollback target: Rolling back goes to the line the candidate replaced, `PHOTOGRAPHY_IMAGE_TAG=v1.7.0@sha256:77f5cfcdc713828e280419d459741e7e139c18e2b5a50f3aa9fcf278aed6c40d`. Then back up with the block in [Backing up](data-root.md#backing-up), whose archive is the one [Restoring](data-root.md#restoring) takes. Keep the last backup made on `v1.7.x`, which on that host is the one from before the candidate: it's the last data root `v1.7.x` reads in full.
 
    ```bash
    grep '^PHOTOGRAPHY_IMAGE_TAG=' .env
@@ -628,7 +628,7 @@ The host takes four steps. With an override, add `-f <override>` after each `-f 
 
 #### Rolling back from v2.0.0
 
-Rolling back goes to `v1.7.x` with the same compose file, since its only change is a comment. Set the `v1.7.x` line from step 1: the one it printed, or on a host that ran `v2.0.0-rc.1`, the `v1.7.0` line it gives, never the candidate's `sha-` line. Then run the scoped commands, with `-f <override>` and `curator` as above:
+Rolling back goes to `v1.7.x` with the same compose file, since its only change is a comment. Set the `v1.7.x` line from step 1: the one it printed, or on a host that ran a `v2.0.0` release candidate, the `v1.7.0` line it gives, never the candidate's `sha-` line. Then run the scoped commands, with `-f <override>` and `curator` as above:
 
 ```bash
 # set PHOTOGRAPHY_IMAGE_TAG in .env back to the v1.7.x line from step 1
