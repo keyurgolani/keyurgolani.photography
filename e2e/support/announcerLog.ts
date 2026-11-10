@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test';
-import { installAnnouncerLog, readAnnouncerLog, type AnnouncerStep } from '../../test/helpers/announcerLog';
+import { installAnnouncerLog, installTitleTrace, readAnnouncerLog, readTitleTrace, type AnnouncerStep, type TitleTraceEntry } from '../../test/helpers/announcerLog';
 
-export { describeLog, nextChangeVerdict, readOf, shownHolding, spokenOf, type AnnouncerStep } from '../../test/helpers/announcerLog';
+export { describeLog, describeTrace, nextChangeVerdict, readOf, shownHolding, spokenOf, type AnnouncerStep, type TitleTraceEntry } from '../../test/helpers/announcerLog';
 
 let count = 0;
 
@@ -14,4 +14,14 @@ export async function recordAnnouncer(page: Page, { titles = false }: { titles?:
     await page.addInitScript(installAnnouncerLog, { key, titles });
     await page.evaluate(installAnnouncerLog, { key, titles });
     return () => page.evaluate(readAnnouncerLog, key);
+}
+
+/**
+ * Starts a title trace (#258) on every document the page loads from now on, before any script runs. Call it before
+ * the first goto. The reader reads the current document's trace.
+ */
+export async function traceTitles(page: Page): Promise<() => Promise<TitleTraceEntry[]>> {
+    const key = `titles-${++count}`;
+    await page.addInitScript(installTitleTrace, key);
+    return () => page.evaluate(readTitleTrace, key);
 }
