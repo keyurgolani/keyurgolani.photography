@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LIVE_HOLD_MS } from '@/components/liveMessage';
 import type { PublishedViewerPhoto, ViewerImage } from '@/lib/catalog/projections/viewer';
 import { VARIANT_FORMATS, VARIANT_WIDTHS } from '@/lib/identity/variants';
 import { mediaUrl } from '@/lib/media/url';
@@ -861,5 +862,105 @@ describe('a renamed series, the end said alone before a move\'s message settles,
         act(() => options.onInvalidate?.());
         advance(1000);
         expect(router.prefetch).toHaveBeenCalledTimes(3);
+    });
+});
+
+describe('#246: the status is empty again once its message has been heard', () => {
+    const MOVED = 'Photograph 2 of 3. Fixture title 2. A described photograph, number 2.';
+    const END = 'Last photograph in Fixture series.';
+
+    it.each(['page', 'modal'] as const)('in the %s, a move\'s message stays at least a second after it lands, then the status is empty', (mode) => {
+        vi.useFakeTimers();
+        const { move } = renderShell(mode, 1);
+        fireEvent.click(step('Next photograph'));
+        move(2);
+        advance(250);
+        expect(announcer().textContent).toBe(MOVED);
+        advance(1000);
+        expect(announcer().textContent).toBe(MOVED);
+        advance(9000);
+        expect(announcer().textContent).toBe('');
+    });
+
+    it('empties the status LIVE_HOLD_MS after a move\'s message lands, the hold Home\'s carousel keeps too', () => {
+        vi.useFakeTimers();
+        const { move } = renderShell('page', 1);
+        fireEvent.click(step('Next photograph'));
+        move(2);
+        advance(250 + LIVE_HOLD_MS - 1);
+        expect(announcer().textContent).toBe(MOVED);
+        advance(1);
+        expect(announcer().textContent).toBe('');
+    });
+
+    it('says an end at once, keeps it at least a second, then empties the status', () => {
+        vi.useFakeTimers();
+        renderShell('page', 3);
+        fireEvent.click(step('Next photograph'));
+        expect(announcer().textContent).toBe(END);
+        advance(1000);
+        expect(announcer().textContent).toBe(END);
+        advance(9000);
+        expect(announcer().textContent).toBe('');
+    });
+
+    it('still says a repeat that comes while the clear is pending, and holds it from its own landing', () => {
+        vi.useFakeTimers();
+        renderShell('page', 3);
+        const region = announcer();
+        const ears = listen(region);
+        fireEvent.click(step('Next photograph'));
+        advance(500);
+        fireEvent.click(step('Next photograph'));
+        // Cleared first and set REPEAT_GAP_MS later, as before, so the second landing is a change a screen reader hears.
+        expect(region.textContent).toBe('');
+        advance(100);
+        expect(ears.landings(END)).toBe(2);
+        // The first message's clear doesn't take the second one early.
+        advance(1000);
+        expect(region.textContent).toBe(END);
+        advance(9000);
+        expect(region.textContent).toBe('');
+        expect(announcer()).toBe(region);
+        ears.stop();
+    });
+
+    it('says a repeat that comes after the clear at once', () => {
+        vi.useFakeTimers();
+        renderShell('page', 3);
+        const ears = listen(announcer());
+        fireEvent.click(step('Next photograph'));
+        advance(10_000);
+        expect(announcer().textContent).toBe('');
+        fireEvent.click(step('Next photograph'));
+        expect(announcer().textContent).toBe(END);
+        expect(ears.landings(END)).toBe(2);
+        ears.stop();
+    });
+
+    it('empties the status after an offline move\'s message, and the notice by the controls stays', () => {
+        vi.useFakeTimers();
+        vi.spyOn(navigator, 'onLine', 'get').mockImplementation(() => false);
+        renderShell('page', 2);
+        fireEvent.click(step('Next photograph'));
+        const offline = "You're offline. The next photograph couldn't load.";
+        expect(announcer().textContent).toBe(offline);
+        advance(1000);
+        expect(announcer().textContent).toBe(offline);
+        advance(9000);
+        expect(announcer().textContent).toBe('');
+        expect(document.querySelector('[data-viewer-offline]')).toHaveTextContent(offline);
+    });
+
+    it('empties the status after the unavailable announcement, and the heading stays', () => {
+        vi.useFakeTimers();
+        const { show } = renderShell('page', 2);
+        fireEvent.click(step('Next photograph'));
+        show(<ViewerUnavailable />);
+        advance(250);
+        expect(announcer().textContent).toBe('This photograph is no longer here. It was unpublished or moved after this page loaded.');
+        advance(10_000);
+        expect(announcer().textContent).toBe('');
+        expect(screen.getByRole('heading', { name: 'This photograph is no longer here' })).toBeInTheDocument();
     });
 });

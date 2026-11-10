@@ -94,7 +94,8 @@ export default defineConfig({
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
       // #16's Publish screen frame checks that loading the preview never scrolls the page, which browsers differ on too.
-      testMatch: /(?:home-immersive|viewer-touch|curator-login|curation-publish-frame)\.spec\.ts/,
+      // What Home and the Viewer announce runs on both too, since WebKit is VoiceOver's browser (#246, #247).
+      testMatch: /(?:home-immersive|viewer-touch|curator-login|curation-publish-frame|home-announcements|viewer-announcements)\.spec\.ts/,
     },
   ],
   webServer: [
