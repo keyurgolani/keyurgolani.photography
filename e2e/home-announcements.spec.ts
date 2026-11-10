@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 import { altOf, CATALOG_ORIGIN, HOME_OPENING, HOME_ORDER, HOME_SERIES } from './support/catalog-home';
 import { expectHomeImmersive } from './support/home';
 import { waitForHydration } from './support/hydration';
+import { HOME_LIVE, recordLiveFromLoad } from './support/liveRecord';
 import { expect, test } from './support/test';
 
 // #246, Home's half: the carousel's live region says the slide after the visitor's own move, and is empty the rest of
@@ -11,7 +12,7 @@ import { expect, test } from './support/test';
 test.use({ baseURL: CATALOG_ORIGIN });
 
 const carousel = (page: Page) => page.getByRole('region', { name: HOME_SERIES.title });
-const live = (page: Page) => page.locator('[data-home-carousel] > p[aria-live]');
+const live = (page: Page) => page.locator(HOME_LIVE);
 const next = (page: Page) => page.getByRole('button', { name: 'Next photograph', exact: true });
 const shownSlide = (page: Page) => page.locator('[data-photo-id][aria-hidden="false"]');
 /** Longer than the hold (LIVE_HOLD_MS in components/liveMessage.ts), with room for a slow run. */
@@ -37,12 +38,14 @@ async function expectSlideOnce(page: Page, photoId: string, why: string) {
 }
 
 test('reading through the carousel meets the slide once: while Home plays, and after the visitor\'s own move once it has been said', async ({ page }) => {
+    const heard = await recordLiveFromLoad(page, HOME_LIVE);
     await page.goto('/');
     await waitForHydration(page);
     await expectHomeImmersive(page);
     await expectShown(page, HOME_OPENING);
     await expect(live(page)).toHaveAttribute('aria-live', 'off');
     await expect(live(page)).toHaveText('');
+    expect(await heard(), 'nothing said while Home opens and plays').toEqual([]);
     await expectSlideOnce(page, HOME_OPENING, 'Home, as it opens');
 
     // The visitor's own Next, as a screen reader's activation sends it: the move is announced, politely.
@@ -52,5 +55,7 @@ test('reading through the carousel meets the slide once: while Home plays, and a
     await expect(live(page)).toHaveText(line(after(1)));
     // Once it has been heard, the region is empty again, and the carousel reads as the slide alone.
     await expect(live(page)).toHaveText('', { timeout: AFTER_HOLD });
+    // The one message since Home opened: the visitor's move, once.
+    expect(await heard(), 'what the region said').toEqual([line(after(1))]);
     await expectSlideOnce(page, after(1), 'after the visitor\'s Next');
 });

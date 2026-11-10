@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import { waitForHydration } from './support/hydration';
+import { recordLiveFromLoad, VIEWER_STATUS } from './support/liveRecord';
 import { expect, test } from './support/test';
 import { HARBOR, P, href, useViewerCatalog } from './support/viewerCatalog';
 
@@ -49,6 +50,7 @@ async function focusPlace(page: Page): Promise<'viewer' | 'body' | string> {
 
 test.describe('a directly loaded Viewer is a page', () => {
     test('page semantics: a main with one h1 and a visible series link, no dialog, nothing inert, and focus left alone', async ({ page }) => {
+        const heard = await recordLiveFromLoad(page, VIEWER_STATUS);
         await page.goto(`${origin()}${href(P[1])}`);
         await waitForHydration(page);
         await expect(viewer(page)).toHaveCount(1);
@@ -66,6 +68,7 @@ test.describe('a directly loaded Viewer is a page', () => {
         // The region is there and empty, so the first move is a change it announces.
         await expect(announcer(page)).toHaveAttribute('aria-live', 'polite');
         await expect(announcer(page)).toHaveText('');
+        expect(await heard(), 'nothing announced since the page began loading').toEqual([]);
     });
 
     test('Escape never leaves a page, from the document or from a control', async ({ page }) => {

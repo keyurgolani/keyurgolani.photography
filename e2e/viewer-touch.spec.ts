@@ -2,6 +2,7 @@ import type { Locator, Page, TestInfo } from '@playwright/test';
 import { waitForHydration } from './support/hydration';
 import { expectReflow } from './support/reflow';
 import { checkSurface } from './support/surface';
+import { recordLive, VIEWER_STATUS } from './support/liveRecord';
 import { expectMinTargetSize } from './support/targets';
 import { expect, test } from './support/test';
 import { centerOf, doubleTap, dragThenFlick, flick, holdFinger, realTouches, touchDrag, twoFingerSpread } from './support/touch';
@@ -229,6 +230,7 @@ test.describe('swipe', () => {
         if (size) await page.setViewportSize({ width: size.width, height: 400 });
         await openPage(page, P[0]);
         expect(await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight), 'the page can scroll').toBe(true);
+        const heard = await recordLive(page, VIEWER_STATUS);
         // Slow drags, 40 px over 400 ms, so neither is a flick (9a).
         await swipe(page, -40, { duration: 400 });
         await swipe(page, 40, { duration: 400 });
@@ -240,6 +242,7 @@ test.describe('swipe', () => {
             await expect.poll(() => page.evaluate(() => window.scrollY), 'the drag scrolled the page').toBeGreaterThan(0);
         }
         await expect(announcer(page)).toHaveText('');
+        expect(await heard(), 'nothing announced since the gesture began').toEqual([]);
         // The control: in the same short viewport, back at the top, a full swipe still moves.
         await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
         await swipe(page, -150);
@@ -258,9 +261,11 @@ test.describe('swipe', () => {
         await openPage(page, P[1]);
         const from = await centerOf(stage(page));
         const scale = () => page.evaluate(() => window.visualViewport?.scale ?? 1);
+        const heard = await recordLive(page, VIEWER_STATUS);
         await twoFingerSpread(page, { from });
         await expectStill(page, P[1], 2);
         await expect(announcer(page)).toHaveText('');
+        expect(await heard(), 'nothing announced since the gesture began').toEqual([]);
         if (realTouches(page)) {
             // The stage keeps pinch zoom (touch-action pinch-zoom), so the spread zoomed the page in.
             await expect.poll(scale, 'the pinch zoomed the page').toBeGreaterThan(1.01);
@@ -326,6 +331,7 @@ test.describe('the photograph follows the finger (9a)', () => {
         await openPage(page, P[1]);
         const from = await centerOf(stage(page));
         const before = { header: await header(page).boundingBox(), reading: await viewer(page).locator('[data-viewer-reading]').boundingBox() };
+        const heard = await recordLive(page, VIEWER_STATUS);
         const finger = await holdFinger(page, from);
         await peeksIn(page, 2);
         // Past the claim, then on: the photograph moves with the finger from where it was claimed, with no jump.
@@ -347,6 +353,7 @@ test.describe('the photograph follows the finger (9a)', () => {
         await atRest(page);
         await expectStill(page, P[1], 2);
         await expect(announcer(page)).toHaveText('');
+        expect(await heard(), 'nothing announced since the gesture began').toEqual([]);
     });
 
     test('a short fast flick moves, and a short slow drag springs back', async ({ page }) => {
@@ -438,10 +445,12 @@ test.describe('the photograph follows the finger (9a)', () => {
 
     test('a drag past 48 px flicked back the other way cancels and slides back, as a paging view does', async ({ page }) => {
         await openPage(page, P[1]);
+        const heard = await recordLive(page, VIEWER_STATUS);
         await dragThenFlick(page, await centerOf(stage(page)), -120, 50);
         await atRest(page);
         await expectStill(page, P[1], 2);
         await expect(announcer(page)).toHaveText('');
+        expect(await heard(), 'nothing announced since the gesture began').toEqual([]);
         // The same drag let go at rest moves.
         await swipe(page, -70, { duration: 300 });
         await expectStill(page, P[2], 3);
@@ -787,6 +796,7 @@ test.describe('double-tap', () => {
         await openPage(page, P[1]);
         await settled(page);
         const zoom = button(page, 'Zoom');
+        const heard = await recordLive(page, VIEWER_STATUS);
         await doubleTap(page, await centerOf(stage(page)));
         await expect(zoom).toHaveAttribute('aria-pressed', 'true');
         const region = viewer(page).getByRole('region', { name: 'Zoomed photograph' });
@@ -798,6 +808,7 @@ test.describe('double-tap', () => {
         await expect(zoom).toHaveAttribute('aria-pressed', 'false');
         await expectStill(page, P[1], 2);
         await expect(announcer(page)).toHaveText('');
+        expect(await heard(), 'nothing announced since the gesture began').toEqual([]);
         await swipe(page, -150);
         await expectStill(page, P[2], 3);
     });
@@ -861,6 +872,7 @@ test.describe('double-tap', () => {
         await page.goto(`${origin()}${href(SHAPES[1], 'shapes')}`);
         await waitForHydration(page);
         await expect(header(page)).toContainText('02 / 03');
+        const heard = await recordLive(page, VIEWER_STATUS);
         for (const name of ['Next photograph', 'Previous photograph']) {
             const at = await centerOf(button(page, name));
             const zoom = button(page, 'Zoom');
@@ -875,6 +887,7 @@ test.describe('double-tap', () => {
             await expect(page).toHaveURL(`${origin()}${href(SHAPES[1], 'shapes')}`);
             await expect(header(page)).toContainText('02 / 03');
             await expect(announcer(page)).toHaveText('');
+            expect(await heard(), `${name}: nothing announced since the first gesture began`).toEqual([]);
             await settled(page);
         }
     });
