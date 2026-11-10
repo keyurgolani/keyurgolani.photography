@@ -3,6 +3,7 @@
 import { usePathname, useSelectedLayoutSegments } from 'next/navigation';
 import { use, useEffect, useRef, type ReactNode } from 'react';
 import { focusHeading } from '@/components/series/returnPosition';
+import { useLandingHold } from './routeAnnouncer';
 import type { ViewerMode } from './viewerContext';
 import { cancelViewerShellLoad, loadViewerShell, preloadViewerShell, viewerShellLoaded } from './viewerShellLoader';
 import { isViewerPath } from './viewerKeys';
@@ -66,7 +67,9 @@ function photoIdOf(pathname: string): string {
  * modal closes, however many moves came between. If that link is no longer
  * in the document, focus goes to the series entry of the photograph that
  * opened the modal, `photo-<photoId>`, and if that's gone too (a publish
- * dropped it), to the series heading, `#series-title` (#178).
+ * dropped it), to the series heading, `#series-title` (#178). The heading says
+ * the page's name, so that landing takes the landing hold, and Next's route
+ * announcer doesn't say it too (#255).
  */
 export default function ViewerHost({ children, modal }: { children: ReactNode; modal: ReactNode }) {
     const pathname = usePathname();
@@ -77,6 +80,7 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
     const opener = useRef<Opener | null>(null);
     const wasOpen = useRef(false);
     const busy = useRef<HTMLElement | null>(null);
+    const holdLanding = useLandingHold();
 
     useEffect(() => {
         const onClick = (event: MouseEvent) => {
@@ -131,15 +135,16 @@ export default function ViewerHost({ children, modal }: { children: ReactNode; m
             opener.current = null;
             // The series page stays mounted under the modal, so the opener is normally the same node. If the series re-rendered its
             // entries (Show more, #6), the old node is gone: focus the entry for the photograph that opened the modal, not the one shown last.
-            // Neither there (a publish dropped the photograph, #178): the series heading, as #5's return does.
+            // Neither there (a publish dropped the photograph, #178): the series heading, as #5's return does, which says the
+            // page's name. This effect runs in the passive flush of the close's commit, as the landing hold needs (#255).
             if (recorded !== null) {
                 const entry = recorded.element.isConnected ? recorded.element : document.getElementById(`photo-${recorded.photoId}`);
                 if (entry !== null) entry.focus();
-                else focusHeading();
+                else if (focusHeading() !== null) holdLanding();
             }
         }
         wasOpen.current = modalOpen;
-    }, [modalOpen]);
+    }, [modalOpen, holdLanding]);
 
     if (onPhotoPage) return <ViewerShell mode="page">{slotHoldsPhoto ? modal : children}</ViewerShell>;
     return (
