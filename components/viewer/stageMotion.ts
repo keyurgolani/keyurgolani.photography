@@ -24,6 +24,15 @@ const translate = (offset: number) => `translate3d(${offset}px, 0, 0)`;
 /** Whether this browser runs the Web Animations the settle needs. jsdom doesn't, and there a settle lands at once. */
 const animates = (element: Element) => typeof element.animate === 'function';
 
+/** Move a running slide onto `element` with new keyframes, keeping its clock. False where its effect can't be moved. */
+function retarget(animation: Animation, element: Element, keyframes: Keyframe[]): boolean {
+    const effect = animation.effect as KeyframeEffect | null;
+    if (effect === null || !('target' in effect) || typeof effect.setKeyframes !== 'function') return false;
+    effect.target = element;
+    effect.setKeyframes(keyframes);
+    return true;
+}
+
 interface Running {
     element: HTMLElement;
     animation: Animation | null;
@@ -137,14 +146,17 @@ export class StageMotion {
         if (running !== null && running.step !== null) {
             const shift = running.step === 'next' ? this.pitch() : -this.pitch();
             const time = running.animation?.currentTime ?? null;
-            this.stop();
             if (time === null || Number(time) >= running.duration) {
                 // It had already landed: the new track is at its rest.
+                this.stop();
                 this.rest(element);
                 landed();
                 return;
             }
-            this.animate(element, running.from + shift, running.to + shift, null, running.duration, running.easing, Number(time), landed);
+            // The same animation goes on on the new track, on its own clock. A new one from a copy of its time would
+            // start from that copy, which WebKit gives in whole ms, and a frame late, so the photograph would step back.
+            const carried = this.detach();
+            this.animate(element, running.from + shift, running.to + shift, null, running.duration, running.easing, Number(time), landed, carried);
             return;
         }
         // The photograph leaving sits one stage over on the new track: wherever a slide left it, or at its rest.
@@ -242,8 +254,23 @@ export class StageMotion {
         return duration;
     }
 
-    private animate(element: HTMLElement, from: number, to: number, step: ViewerStep | null, duration: number, easing: string, at: number, over?: () => void): void {
+    /**
+     * `carried`, when given, is a slide already running on another track, which goes on here from where its own clock
+     * is; `at` is used only when it can't be moved (then it's cancelled, and a new one starts at `at`).
+     */
+    private animate(
+        element: HTMLElement,
+        from: number,
+        to: number,
+        step: ViewerStep | null,
+        duration: number,
+        easing: string,
+        at: number,
+        over?: () => void,
+        carried: Animation | null = null,
+    ): void {
         if (!animates(element)) {
+            carried?.cancel();
             if (step === null && to === 0) this.rest(element);
             else this.place(element, to, step);
             over?.();
@@ -251,8 +278,14 @@ export class StageMotion {
         }
         element.toggleAttribute('data-moving', true);
         element.style.transform = translate(to);
-        const animation = element.animate([{ transform: translate(from) }, { transform: translate(to) }], { duration, easing, fill: 'backwards' });
-        animation.currentTime = at;
+        const keyframes = [{ transform: translate(from) }, { transform: translate(to) }];
+        let animation: Animation;
+        if (carried !== null && retarget(carried, element, keyframes)) animation = carried;
+        else {
+            carried?.cancel();
+            animation = element.animate(keyframes, { duration, easing, fill: 'backwards' });
+            animation.currentTime = at;
+        }
         const running: Running = { element, animation, from, to, duration, easing, step, over };
         this.running = running;
         animation.onfinish = () => {
@@ -277,13 +310,17 @@ export class StageMotion {
     }
 
     private stop(): void {
+        this.detach()?.cancel();
+    }
+
+    /** End the settle as stop() does, but hand back its animation still running, for arrive to carry on. */
+    private detach(): Animation | null {
         const running = this.running;
         this.running = null;
-        if (running?.animation) {
-            running.animation.onfinish = null;
-            running.animation.cancel();
-        }
+        const animation = running?.animation ?? null;
+        if (animation !== null) animation.onfinish = null;
         running?.over?.();
+        return animation;
     }
 
     /**
