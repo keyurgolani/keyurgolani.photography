@@ -213,8 +213,8 @@ jobs:
       - name: Dark against the base (computed style)
         run: PARITY_BUILD=1 PARITY_BASE_DIR="$(cd ../parity-base && pwd)" npx playwright test -c e2e/themes/parity.config.ts
 
-      # Each visitor route's first-load CSS, from the two builds' manifests: at most +2,500 B gzipped (R2-P2-1). It
-      # runs whether parity passed or not.
+      # Each visitor route's first-load CSS, from the two builds' manifests: at most +2,500 B gzipped (R2-P2-1), and none
+      # of it from app/curation/ (ci/curator-css.mjs). It runs whether parity passed or not.
       - name: Check the CSS budget
         if: ${{ !cancelled() }}
         # A run step without a shell has no pipefail, so the budget's exit would be tee's.
