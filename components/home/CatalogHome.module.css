@@ -132,10 +132,11 @@
    which stays today's (HomeChrome.module.css), then left the title at 4.03:1 over a white photograph on Pixel 7. Both fit
    from 360 px in every theme (Inter's advances: 140 + 8 + 153 px, against Bright's 304 px inside the print, the
    narrowest). Below 360, or with the text enlarged, it stays under Enter, and Dark's wash follows the copy there as it
-   does today. Without anchoring it rides Enter's row at the story's right edge, its margin taking back its height. */
+   does today. Without anchoring it rides Enter's row at the story's right edge, its margin taking back its height. Only
+   the link after Enter moves: the empty state has no Enter, so its link stays under the heading. */
 @media (min-width: 22.5rem) and (max-width: 39.99rem) {
   @supports (anchor-name: --home-enter) {
-    :global(main:not([data-text-enlarged])) .work {
+    :global(main:not([data-text-enlarged])) .enter + .work {
       position: absolute;
       position-anchor: --home-enter;
       top: anchor(top);
@@ -146,7 +147,7 @@
   }
 
   @supports not (anchor-name: --home-enter) {
-    :global(main:not([data-text-enlarged])) .work {
+    :global(main:not([data-text-enlarged])) .enter + .work {
       align-self: flex-end;
       margin-top: -44px;
     }

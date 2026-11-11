@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { describeLog, recordAnnouncer, shownHolding, spokenOf, type AnnouncerStep } from './support/announcerLog';
 import { waitForHydration } from './support/hydration';
 import { expect, test } from './support/test';
 import { HARBOR, href, useViewerCatalog } from './support/viewerCatalog';
@@ -31,6 +32,29 @@ async function expectNoAlert(page: Page, why: string) {
     expect(await page.locator('body').ariaSnapshot(), why).not.toMatch(/^\s*- alert\b/m);
 }
 
+/** The series page's name, as Next writes it: its title, or in WebKit, read during the title's swap, its h1. */
+const SERIES_NAME = /^Fixture harbor( · |$)/;
+
+/**
+ * A page-mode Close, from the log `read` began before it (#255): what's guaranteed, and a record of the rest. Whenever
+ * the host isn't hidden, it holds nothing or the series page's name, never a title it took under the Viewer's mark.
+ * Whatever Next writes after Close is the series page's name. Whether Next writes at all isn't guaranteed: in WebKit,
+ * after a move, it can read the page's h1 during the title's swap both for the move and for Close, and then writes
+ * nothing, since the text is the same. So that is only recorded, in the report's annotations.
+ */
+async function expectPageClose(page: Page, read: () => Promise<AnnouncerStep[]>): Promise<void> {
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(host(page)).not.toHaveAttribute('aria-hidden');
+    // Past the commit Next's write would land in, after the one that removed the Viewer.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)))));
+    const steps = await read();
+    const log = describeLog(steps);
+    const wrote = steps.filter((step) => step.kind === 'text' && step.text !== '').map((step) => step.text);
+    test.info().annotations.push({ type: 'Next wrote on page Close', description: `${test.info().project.name}: ${wrote.length > 0 ? `yes, ${JSON.stringify(wrote)}` : 'no'} (${log})` });
+    expect(steps.filter((step) => !step.hidden && step.text !== '' && !SERIES_NAME.test(step.text)), log).toEqual([]);
+    expect(wrote.filter((text) => !SERIES_NAME.test(text)), log).toEqual([]);
+}
+
 test.describe('Next\'s route announcer stays quiet for the Viewer\'s moves (#247)', () => {
     test('on a directly loaded page, a move says the Viewer\'s line alone, and the series page is announced after Close', async ({ page }) => {
         await page.goto(`${origin()}${href(HARBOR[0])}`);
@@ -56,12 +80,11 @@ test.describe('Next\'s route announcer stays quiet for the Viewer\'s moves (#247
         await expectNoAlert(page, 'the move to photograph 3');
         await expect(host(page)).toHaveAttribute('aria-hidden', 'true');
 
-        // Close is a link to the series: a page change like any other, which the announcer speaks.
+        // Close is a link to the series: a page change like any other, which the announcer speaks when Next writes.
+        const leaving = await recordAnnouncer(page);
         await viewer(page).getByRole('link', { name: 'Close' }).click();
         await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${HARBOR[2]}`);
-        await expect(viewer(page)).toHaveCount(0);
-        await expect(host(page)).not.toHaveAttribute('aria-hidden');
-        await expect(page.getByRole('alert')).toHaveText(/^Fixture harbor( · |$)/);
+        await expectPageClose(page, leaving);
     });
 
     test('in the modal opened from the series page, a move is the Viewer\'s line alone, and Close gives the announcer back', async ({ page }) => {
@@ -85,6 +108,45 @@ test.describe('Next\'s route announcer stays quiet for the Viewer\'s moves (#247
         await expect(page.locator('dialog')).toHaveCount(0);
         await expect(host(page)).not.toHaveAttribute('aria-hidden');
         await expect(page.getByRole('alert')).toHaveText(/^Fixture harbor( · |$)/);
+    });
+});
+
+test.describe('Close never shows the announcer holding a title it took while the Viewer held it (#255)', () => {
+    // The alert keeps the last title Next wrote under the Viewer's mark. Shown again as it was, a screen reader could
+    // read that stale title out, so the Viewer's release empties it first, and the series page is Next's next write.
+    test('in the modal, Close shows the host empty, then the announcer says the series page; on a page, Close never shows a stale title', async ({ page }) => {
+        await page.goto(`${origin()}/work/harbor`);
+        await waitForHydration(page);
+        await expect(host(page)).toHaveCount(1);
+        await page.locator(`[id="photo-${HARBOR[0]}"]`).click();
+        const dialog = page.getByRole('dialog', { name: /^Fixture harbor/ });
+        await expect(dialog).toBeVisible();
+        const moving = await recordAnnouncer(page);
+        await dialog.getByRole('button', { name: 'Next photograph', exact: true }).click();
+        await expect(status(page)).toHaveText(moved(2, 3));
+        await expect.poll(() => announcerText(page)).toMatch(/^Fixture harbor(, photograph 2 of 3 · |$)/);
+        const moves = await moving();
+        expect(spokenOf(moves), describeLog(moves)).toEqual([]);
+
+        const closing = await recordAnnouncer(page);
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+        await expect(page).toHaveURL(`${origin()}/work/harbor`);
+        await expect(page.getByRole('alert')).toHaveText(/^Fixture harbor( · |$)/);
+        const closed = await closing();
+        expect(shownHolding(closed), describeLog(closed)).toEqual([]);
+        expect(spokenOf(closed).filter((text) => /^Fixture harbor( · |$)/.test(text)), describeLog(closed)).not.toEqual([]);
+
+        // A page: the Viewer loaded directly, a move, then Close, its link to the series.
+        await page.goto(`${origin()}${href(HARBOR[0])}`);
+        await waitForHydration(page);
+        await expect(host(page)).toHaveAttribute('aria-hidden', 'true');
+        await control(page, 'Next photograph').click();
+        await expect(page).toHaveURL(`${origin()}${href(HARBOR[1])}`);
+        await expect.poll(() => announcerText(page)).toMatch(/^Fixture harbor(, photograph 2 of 3 · |$)/);
+        const leaving = await recordAnnouncer(page);
+        await viewer(page).getByRole('link', { name: 'Close' }).click();
+        await expect(page).toHaveURL(`${origin()}/work/harbor?photo=${HARBOR[1]}`);
+        await expectPageClose(page, leaving);
     });
 });
 

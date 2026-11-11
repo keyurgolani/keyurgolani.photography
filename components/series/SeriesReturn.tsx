@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useLandingHold } from '@/components/viewer/routeAnnouncer';
 import { isViewerPath } from '@/components/viewer/viewerKeys';
 import { PHOTO_PARAM, photoParamOf } from '@/lib/catalog/routes';
 import { redirectLocation } from '@/lib/site/redirect';
@@ -17,6 +18,7 @@ import {
     RESTORE_WAIT_MS,
     restoreReturn,
     scheduleRestore,
+    takeViewerClose,
     withArrival,
     withReturn,
     type SeriesReturn as ReturnRecord,
@@ -87,15 +89,19 @@ function endFind(): void {
 /**
  * Focus `held`'s photograph if it's on the page, else the heading, and use the
  * record up. Focus the visitor moved during the round trip stays where it is.
+ * Returns whether focus went to the heading, whose landing then takes the
+ * landing hold (#255).
  */
-function landReturn(held: HeldKeys): void {
+function landReturn(held: HeldKeys): boolean {
+    let onHeading = false;
     const focused = document.activeElement;
     if (focused === null || focused === document.body) {
         const target = openerElement(held.record);
-        if (target === null) focusHeading();
+        if (target === null) onHeading = focusHeading() !== null;
         else focusInView(target);
     }
     clearReturn();
+    return onHeading;
 }
 
 /** The document's own navigation type: `reload`, `back_forward`, or `navigate`. */
@@ -130,7 +136,8 @@ function navigationType(): string | undefined {
  *   focus go to the series heading. If the answer never lands,
  *   RESTORE_WAIT_MS later focus goes there. Either way it moves focus only
  *   from the body, never from where the visitor put it, and the record is
- *   used up.
+ *   used up. The heading says the page's name, so each landing on it takes
+ *   the landing hold, and Next's route announcer doesn't say it too (#255).
  * - Back to a series page that mounts again (after a reload on the Viewer,
  *   or any return that renders the page afresh) restores the scroll offset
  *   and focuses the opener. When the opener is past what's loaded and #6 is
@@ -139,6 +146,12 @@ function navigationType(): string | undefined {
  * - Closing the intercepted Viewer (#9), by Close, Escape, or Back, leaves
  *   this page mounted. #9's host puts focus back on the opener; this puts the
  *   scroll offset back too, in case the page moved under the modal.
+ * - A Close on the photograph's own page (the Viewer loaded directly) is a
+ *   link here with `?photo=`, which focuses the entry as above. When the
+ *   photograph isn't on the page (a publish dropped it), focus goes to the
+ *   series heading instead, under the landing hold, as the modal's Close
+ *   does (#256). The Close marks itself when it's activated (ViewerChrome),
+ *   and the next series page to mount uses the mark up.
  * - Every restore, and the reload that skips one, takes the record out of the
  *   entry. So a later Back to the series from anywhere but the Viewer (Work,
  *   another site) leaves the visitor where the browser puts them. Forward to
@@ -153,6 +166,9 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
     const previousPath = useRef<string | null>(null);
     /** Set when this mount is the page a return asked the server for, which the layout effect has already handled. */
     const landed = useRef(false);
+    const holdLanding = useLandingHold();
+    /** Set when the layout effect below landed a return on the heading, for the passive effect after it to take the hold. */
+    const landedOnHeading = useRef(false);
 
     useEffect(() => {
         const onClick = (event: MouseEvent) => {
@@ -185,10 +201,20 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
         landed.current = true;
         writeBack(held);
         window.history.replaceState(withArrival(window.history.state, held.record.photoId), '');
-        landReturn(held);
+        if (landReturn(held)) landedOnHeading.current = true;
+    });
+
+    // The landing hold for a heading the layout effect above focused, taken here, in the passive flush of the answer's
+    // commit, where Next's announcer queues that navigation's write: from a layout effect it would end before the write.
+    useEffect(() => {
+        if (!landedOnHeading.current) return;
+        landedOnHeading.current = false;
+        holdLanding();
     });
 
     useEffect(() => {
+        // Used up by whichever series page mounts first after a Close on the photograph's own page (#256).
+        const closed = takeViewerClose(path, photoInUrl());
         if (landed.current) return;
         const state: unknown = window.history.state;
         const record = readReturn(state);
@@ -204,8 +230,9 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
             // The saved pages couldn't bring the photograph back. When this page is already the server's answer for it,
             // it left the revision; else ask the server once for the page that holds it, with ?photo=.
             const missing = (lost: ReturnRecord) => {
+                // In this mount's passive effect for the Back's commit, or on #6's event after it, as the hold needs.
                 if (photoInUrl() === lost.photoId) {
-                    focusHeading();
+                    if (focusHeading() !== null) holdLanding();
                     return;
                 }
                 endFind();
@@ -214,17 +241,20 @@ export default function SeriesReturn({ path, slug, revisionId, total, firstPosit
                     // The answer never landed: put focus somewhere sensible and use the record up.
                     if (pendingFind?.timer !== timer) return;
                     endFind();
-                    landReturn(held);
+                    if (landReturn(held)) holdLanding();
                 }, RESTORE_WAIT_MS);
                 pendingFind = { ...held, timer };
                 router.replace(hrefWithPhoto(path, lost.photoId), { scroll: false });
             };
             return scheduleRestore(record, { slug, revisionId, total, first: firstPosition }, missing);
         }
-        if (asked === null || asked !== focusPhotoId || arrivalOf(state) === asked) return;
-        const target = document.getElementById(entryId(asked));
-        if (target === null) return;
-        focusInView(target);
+        if (asked === null || arrivalOf(state) === asked) return;
+        const target = asked === focusPhotoId ? document.getElementById(entryId(asked)) : null;
+        if (target !== null) focusInView(target);
+        // A Close on the photograph's own page whose photograph isn't here lands on the heading, as the modal's does,
+        // under the landing hold, in this mount's passive effect for the Close's commit (#256). Any other way here moves nothing.
+        else if (!closed) return;
+        else if (focusHeading() !== null) holdLanding();
         window.history.replaceState(withArrival(window.history.state, asked), '');
         // Once per mount, with the props it arrived on: a refresh in place is no return.
         // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -2,6 +2,7 @@
 // history entry when a photograph opens the Viewer, and how it puts the
 // visitor back. No React. The return contract with #6 (the stored extent
 // and the restored event) comes from seriesContinuation.ts.
+import { PHOTO_PARAM, photoParamOf } from '@/lib/catalog/routes';
 import { readSeriesPages, SERIES_RESTORED_EVENT } from './seriesContinuation';
 
 /** The key in `history.state`. Next keeps its router keys in the same object, so every write spreads it. */
@@ -187,6 +188,36 @@ export function restoreReturn(record: SeriesReturn, { scroll = true, onlyIfIdle 
     }
     target.focus({ preventScroll: true });
     return target;
+}
+
+/**
+ * A Close on a photograph's own page (#256), from the activation of its link to the series (`?photo=<id>`) until the
+ * series page it opens mounts. Module scope, like the find's, since the link pushes a history entry the click can't
+ * write to: the series page that mounts next takes it, whatever page it is, so it's used once.
+ */
+let viewerClose: { path: string; photoId: string; at: number } | null = null;
+
+/** Records a plain activation of the Viewer's page-mode Close, a link to `href`, for the series page it lands on. */
+export function markViewerClose(href: string, base: string = window.location.href, now: number = Date.now()): void {
+    let url: URL;
+    try {
+        url = new URL(href, base);
+    } catch {
+        return;
+    }
+    const values = url.searchParams.getAll(PHOTO_PARAM);
+    const photoId = values.length === 1 ? photoParamOf(values[0]) : null;
+    viewerClose = photoId === null ? null : { path: url.pathname.replace(/\/$/, ''), photoId, at: now };
+}
+
+/**
+ * Whether this series page at `path`, with `?photo=` naming `photoId`, is the one a Close on the photograph's own page
+ * just opened: the same path and photograph, within RESTORE_WAIT_MS. It uses the Close up either way.
+ */
+export function takeViewerClose(path: string, photoId: string | null, now: number = Date.now()): boolean {
+    const close = viewerClose;
+    viewerClose = null;
+    return close !== null && photoId !== null && close.path === path.replace(/\/$/, '') && close.photoId === photoId && now - close.at <= RESTORE_WAIT_MS;
 }
 
 /** Takes the record out of the series' entry with the same spread, so it's used once: a later Back that isn't from the Viewer moves nothing. */

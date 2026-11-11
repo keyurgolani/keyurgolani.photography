@@ -2,6 +2,8 @@
 
 import { ArrowLeft, ArrowRight, X, ZoomIn } from 'lucide-react';
 import Link from 'next/link';
+import type { MouseEvent } from 'react';
+import { markViewerClose } from '@/components/series/returnPosition';
 import type { ViewerChromeState, ViewerMode } from './viewerContext';
 import type { ViewerStep } from './viewerKeys';
 import { CLOSE_LABEL, NEXT_LABEL, PREVIOUS_LABEL, ZOOM_LABEL, headingLabel, positionLabel } from './viewerLabels';
@@ -60,6 +62,15 @@ function Step({ step, href, actions }: { step: ViewerStep; href: string | null; 
 }
 
 /**
+ * A plain activation of Close on the photograph's own page (#256), a click or Enter: the series page it lands on puts
+ * focus on the photograph's entry, or its heading, as the modal's Close does. A modified click opens elsewhere.
+ */
+function onPageClose(event: MouseEvent<HTMLAnchorElement>, closeHref: string): void {
+    if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    markViewerClose(closeHref);
+}
+
+/**
  * The Viewer's controls (#7, kept apart by #9): the header with Close, the
  * series title and position, and Zoom, then Previous and Next. The shell
  * renders them once and keeps them across moves. Close links back to the
@@ -76,7 +87,7 @@ export default function ViewerChrome({ state, mode, headingId, zoomed, onZoom, a
                         {CLOSE_LABEL}
                     </button>
                 ) : (
-                    <Link href={closeHref} prefetch={false} className={styles.control}>
+                    <Link href={closeHref} prefetch={false} className={styles.control} onClick={mode === 'page' ? (event) => onPageClose(event, closeHref) : undefined}>
                         <X aria-hidden="true" size={18} />
                         {CLOSE_LABEL}
                     </Link>
